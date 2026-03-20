@@ -48,6 +48,7 @@ import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { forbidden } from "../errors.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -313,6 +314,14 @@ export function pluginRoutes(
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
+
+  function assertInstanceAdmin(req: Request) {
+    assertBoard(req);
+    if (req.actor.type === "board" && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+      return;
+    }
+    throw forbidden("Instance admin access required");
+  }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
     if (typeof (db as { select?: unknown }).select === "function") {
@@ -601,7 +610,7 @@ export function pluginRoutes(
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -1228,7 +1237,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -1264,7 +1273,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.post("/plugins/:pluginId/enable", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1302,7 +1311,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.post("/plugins/:pluginId/disable", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const body = req.body as { reason?: string } | undefined;
     const reason = body?.reason;
@@ -1461,7 +1470,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
@@ -1540,7 +1549,7 @@ export function pluginRoutes(
    * - 404 if plugin not found
    */
   router.post("/plugins/:pluginId/config", async (req, res) => {
-    assertBoard(req);
+    assertInstanceAdmin(req);
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
