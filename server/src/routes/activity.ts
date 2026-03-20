@@ -82,6 +82,7 @@ export function activityRoutes(db: Db) {
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
+    assertBoard(req);
     const runId = req.params.runId as string;
     const run = await db
       .select({ companyId: heartbeatRuns.companyId })
