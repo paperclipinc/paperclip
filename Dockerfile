@@ -80,47 +80,9 @@ RUN mkdir -p /paperclip && chown node:node /paperclip
 
 WORKDIR /app
 
-# Copy only production node_modules (rebuilt as prod-only in build stage)
-COPY --chown=node:node --from=build /app/node_modules ./node_modules
-COPY --chown=node:node --from=build /app/package.json /app/pnpm-workspace.yaml /app/.npmrc ./
-
-# Server: only compiled output + runtime deps
-COPY --chown=node:node --from=build /app/server/dist ./server/dist
-COPY --chown=node:node --from=build /app/server/package.json ./server/
-COPY --chown=node:node --from=build /app/server/node_modules ./server/node_modules
-
-# UI: only built static files
-COPY --chown=node:node --from=build /app/ui/dist ./ui/dist
-
-# Shared packages: only dist output
-COPY --chown=node:node --from=build /app/packages/shared/dist ./packages/shared/dist
-COPY --chown=node:node --from=build /app/packages/shared/package.json ./packages/shared/
-COPY --chown=node:node --from=build /app/packages/db/dist ./packages/db/dist
-COPY --chown=node:node --from=build /app/packages/db/package.json ./packages/db/
-COPY --chown=node:node --from=build /app/packages/adapter-utils/dist ./packages/adapter-utils/dist
-COPY --chown=node:node --from=build /app/packages/adapter-utils/package.json ./packages/adapter-utils/
-COPY --chown=node:node --from=build /app/packages/plugins/sdk/dist ./packages/plugins/sdk/dist
-COPY --chown=node:node --from=build /app/packages/plugins/sdk/package.json ./packages/plugins/sdk/
-
-# Adapters: only dist output
-COPY --chown=node:node --from=build /app/packages/adapters/claude-local/dist ./packages/adapters/claude-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/claude-local/package.json ./packages/adapters/claude-local/
-COPY --chown=node:node --from=build /app/packages/adapters/codex-local/dist ./packages/adapters/codex-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/codex-local/package.json ./packages/adapters/codex-local/
-COPY --chown=node:node --from=build /app/packages/adapters/cursor-local/dist ./packages/adapters/cursor-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/cursor-local/package.json ./packages/adapters/cursor-local/
-COPY --chown=node:node --from=build /app/packages/adapters/gemini-local/dist ./packages/adapters/gemini-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/gemini-local/package.json ./packages/adapters/gemini-local/
-COPY --chown=node:node --from=build /app/packages/adapters/openclaw-gateway/dist ./packages/adapters/openclaw-gateway/dist
-COPY --chown=node:node --from=build /app/packages/adapters/openclaw-gateway/package.json ./packages/adapters/openclaw-gateway/
-COPY --chown=node:node --from=build /app/packages/adapters/opencode-local/dist ./packages/adapters/opencode-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/opencode-local/package.json ./packages/adapters/opencode-local/
-COPY --chown=node:node --from=build /app/packages/adapters/pi-local/dist ./packages/adapters/pi-local/dist
-COPY --chown=node:node --from=build /app/packages/adapters/pi-local/package.json ./packages/adapters/pi-local/
-
-# CLI
-COPY --chown=node:node --from=build /app/cli/dist ./cli/dist
-COPY --chown=node:node --from=build /app/cli/package.json ./cli/
+# Copy built app — tsx transpiles workspace TypeScript at runtime,
+# so source files must be present alongside dist output.
+COPY --chown=node:node --from=build /app /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
