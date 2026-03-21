@@ -2077,7 +2077,7 @@ export function accessRoutes(
 
       const actorEmail =
         requestType === "human" ? await resolveActorEmail(db, req) : null;
-      const created = !inviteAlreadyAccepted
+      let created = !inviteAlreadyAccepted
         ? await db.transaction(async (tx) => {
             await tx
               .update(invites)
@@ -2249,6 +2249,40 @@ export function accessRoutes(
         }
       }
 
+      // Auto-approve human join requests — the inviter already made the decision.
+      let autoApproved = false;
+      if (requestType === "human" && !inviteAlreadyAccepted && created.requestingUserId) {
+        await access.ensureMembership(
+          companyId,
+          "user",
+          created.requestingUserId,
+          "member",
+          "active"
+        );
+        const grants = grantsFromDefaults(
+          invite.defaultsPayload as Record<string, unknown> | null,
+          "human"
+        );
+        await access.setPrincipalGrants(
+          companyId,
+          "user",
+          created.requestingUserId,
+          grants,
+          invite.invitedByUserId ?? null
+        );
+        await db
+          .update(joinRequests)
+          .set({
+            status: "approved",
+            approvedByUserId: invite.invitedByUserId ?? "system",
+            approvedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(joinRequests.id, created.id));
+        created = { ...created, status: "approved" as const, approvedAt: new Date() };
+        autoApproved = true;
+      }
+
       await logActivity(db, {
         companyId,
         actorType: req.actor.type === "agent" ? "agent" : "user",
@@ -2257,15 +2291,18 @@ export function accessRoutes(
             ? req.actor.agentId ?? "invite-agent"
             : req.actor.userId ??
               (requestType === "agent" ? "invite-anon" : "board"),
-        action: inviteAlreadyAccepted
-          ? "join.request_replayed"
-          : "join.requested",
+        action: autoApproved
+          ? "join.auto_approved"
+          : inviteAlreadyAccepted
+            ? "join.request_replayed"
+            : "join.requested",
         entityType: "join_request",
         entityId: created.id,
         details: {
           requestType,
           requestIp: created.requestIp,
-          inviteReplay: inviteAlreadyAccepted
+          inviteReplay: inviteAlreadyAccepted,
+          autoApproved
         }
       });
 
