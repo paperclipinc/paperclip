@@ -1,7 +1,7 @@
 #[cfg(desktop)]
 mod tray;
 
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
 
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -22,7 +22,7 @@ pub fn run() {
 
             // Listen for deep link events and forward to the webview
             let handle = app.handle().clone();
-            app.listen("deep-link://new-url", move |event| {
+            app.handle().listen("deep-link://new-url", move |event| {
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.emit("deep-link", event.payload());
                 }
@@ -55,9 +55,11 @@ pub fn run() {
 
 #[cfg(desktop)]
 async fn check_for_updates(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+
     let updater = match app.updater() {
         Ok(updater) => updater,
-        Err(_) => return, // updater not configured (e.g. no pubkey yet)
+        Err(_) => return,
     };
 
     match updater.check().await {
