@@ -9,6 +9,7 @@ import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, Check, Download, Upload } from "lucide-react";
+import { BillingSection } from "../components/BillingSection";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -388,6 +389,16 @@ export function CompanySettings() {
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
             onChange={(v) => settingsMutation.mutate(v)}
           />
+        </div>
+      </div>
+
+      {/* Subscription & Billing */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Subscription & Billing
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <BillingSection companyId={selectedCompany.id} />
         </div>
       </div>
 

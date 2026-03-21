@@ -308,6 +308,8 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  SubscriptionPlan,
+  CompanySubscription,
 } from "./types/index.js";
 
 export {

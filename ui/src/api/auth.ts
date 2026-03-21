@@ -98,4 +98,12 @@ export const authApi = {
   resendVerificationEmail: async (email: string) => {
     await authPost("/send-verification-email", { email, callbackURL: "/auth/verify-email" });
   },
+
+  updateUser: async (input: { name: string }) => {
+    return authPost("/update-user", input);
+  },
+
+  changePassword: async (input: { currentPassword: string; newPassword: string }) => {
+    return authPost("/change-password", input);
+  },
 };

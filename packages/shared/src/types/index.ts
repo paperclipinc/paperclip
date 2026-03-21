@@ -139,6 +139,7 @@ export type {
   InstanceUserRoleGrant,
 } from "./access.js";
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
+export type { SubscriptionPlan, CompanySubscription } from "./subscription.js";
 export type {
   CompanyPortabilityInclude,
   CompanyPortabilityEnvInput,

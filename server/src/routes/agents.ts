@@ -44,6 +44,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { planLimits } from "../middleware/plan-limits.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -80,6 +81,7 @@ export function agentRoutes(db: Db) {
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
+  const limits = planLimits(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
@@ -1304,6 +1306,9 @@ export function agentRoutes(db: Db) {
     if (req.actor.type === "agent") {
       assertBoard(req);
     }
+
+    // Check plan-based agent limit before creating
+    await limits.checkAgentLimit(companyId);
 
     const {
       desiredSkills: requestedDesiredSkills,
