@@ -47,9 +47,8 @@ COPY . .
 RUN pnpm -r build \
   && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-# Re-install with prod-only deps for a clean node_modules
-RUN rm -rf node_modules */node_modules packages/*/node_modules packages/adapters/*/node_modules packages/plugins/*/node_modules packages/plugins/examples/*/node_modules \
-  && pnpm install --frozen-lockfile --prod --ignore-scripts
+# Note: no prod prune — tsx is in devDependencies but needed at runtime
+# as the Node ESM loader. Image size is controlled by selective COPY below.
 
 # ── Stage 4: production ───────────────────────────────────────
 # Distroless-style minimal image. No shell, no package manager,
