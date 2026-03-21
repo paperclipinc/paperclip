@@ -47,8 +47,7 @@ WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
 
-RUN pnpm --filter @paperclipai/ui build \
-  && pnpm --filter @paperclipai/server build \
+RUN pnpm -r build \
   && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
 # Prune dev dependencies after build
