@@ -1,8 +1,10 @@
-FROM node:lts-trixie-slim AS base
+# ── Stage 1: base ─────────────────────────────────────────────
+# Pinned Node 22 on Debian Trixie slim for reproducibility.
+FROM node:22-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 tini \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
@@ -11,6 +13,7 @@ RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
 
+# ── Stage 2: deps ─────────────────────────────────────────────
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
@@ -29,10 +32,12 @@ COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
 COPY packages/plugins/sdk/package.json packages/plugins/sdk/
+COPY packages/plugins/create-paperclip-plugin/package.json packages/plugins/create-paperclip-plugin/
 COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
 
+# ── Stage 3: build ────────────────────────────────────────────
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
@@ -42,12 +47,21 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
+# ── Stage 4: production ───────────────────────────────────────
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+
+# Labels for container registries
+LABEL org.opencontainers.image.source="https://github.com/paperclipinc/paperclip"
+LABEL org.opencontainers.image.description="Paperclip — AI company orchestration platform"
+LABEL org.opencontainers.image.vendor="Paperclip Inc."
+LABEL org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+  && npm cache clean --force \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -74,5 +88,8 @@ ENV NODE_ENV=production \
 VOLUME ["/paperclip"]
 EXPOSE 3100
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:3100/api/health || exit 1
+
+ENTRYPOINT ["tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
