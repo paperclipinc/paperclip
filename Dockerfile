@@ -47,8 +47,9 @@ COPY . .
 RUN pnpm -r build \
   && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-# Note: no prod prune — tsx is in devDependencies but needed at runtime
-# as the Node ESM loader. Image size is controlled by selective COPY below.
+# Prune dev dependencies — tsx is no longer needed at runtime
+# since all workspace packages export precompiled dist/ output.
+RUN pnpm prune --prod --no-optional
 
 # ── Stage 4: production ───────────────────────────────────────
 # Distroless-style minimal image. No shell, no package manager,
@@ -142,4 +143,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS http://localhost:3100/api/health || exit 1
 
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["node", "server/dist/index.js"]
