@@ -161,7 +161,7 @@ export function loadConfig(): Config {
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
   const resendApiKey = process.env.RESEND_API_KEY?.trim() || undefined;
-  const emailFrom = process.env.PAPERCLIP_EMAIL_FROM?.trim() || "Paperclip <noreply@paperclip.dev>";
+  const emailFrom = process.env.PAPERCLIP_EMAIL_FROM?.trim() || "Paperclip <noreply@paperclip.inc>";
   const emailVerificationRequiredFromEnv = process.env.PAPERCLIP_EMAIL_VERIFICATION_REQUIRED;
   const emailVerificationRequired: boolean =
     emailVerificationRequiredFromEnv !== undefined
