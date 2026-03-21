@@ -269,11 +269,11 @@ require_clean_worktree() {
   fi
 }
 
-require_on_master_branch() {
+require_on_main_branch() {
   local current_branch
   current_branch="$(git_current_branch)"
-  if [ "$current_branch" != "master" ]; then
-    release_fail "this release step must run from branch master, but current branch is ${current_branch:-<detached>}."
+  if [ "$current_branch" != "main" ]; then
+    release_fail "this release step must run from branch main, but current branch is ${current_branch:-<detached>}."
   fi
 }
 
