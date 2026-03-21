@@ -39,7 +39,7 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "dev:desktop": "pnpm --filter @paperclipai/desktop dev",
-    "build:desktop": "pnpm --filter @paperclipai/desktop build"
+    "build:desktop": "pnpm --filter @paperclipai/desktop build:desktop"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
