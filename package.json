@@ -34,7 +34,7 @@
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "dev:desktop": "pnpm --filter @paperclipai/desktop dev",
-    "build:desktop": "pnpm --filter @paperclipai/desktop build"
+    "build:desktop": "pnpm --filter @paperclipai/desktop build:desktop"
   },
   "devDependencies": {
     "cross-env": "^10.1.0",
