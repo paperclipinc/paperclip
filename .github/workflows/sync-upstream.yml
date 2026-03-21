@@ -1,0 +1,129 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/paperclipai/paperclip.git
+
+      - name: Fetch upstream
+        run: git fetch upstream main
+
+      - name: Check for new commits
+        id: check
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" -eq 0 ]; then
+            echo "Already up to date with upstream."
+          else
+            echo "Fork is $behind commit(s) behind upstream."
+          fi
+
+      - name: Rebase onto upstream
+        if: steps.check.outputs.behind != '0'
+        id: rebase
+        run: |
+          BRANCH="sync/upstream"
+          git config user.name "upstream-sync-bot"
+          git config user.email "upstream-sync-bot@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+
+          if git rebase upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Rebase has conflicts — manual resolution required."
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.behind != '0' && steps.rebase.outputs.conflict == 'false'
+        run: git push --force origin sync/upstream
+
+      - name: Create or update pull request
+        if: steps.check.outputs.behind != '0'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="sync/upstream"
+          behind=${{ steps.check.outputs.behind }}
+          conflict=${{ steps.rebase.outputs.conflict }}
+
+          existing=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+
+          if [ "$conflict" = "true" ]; then
+            title="sync: upstream has $behind new commit(s) (conflicts)"
+            body="$(cat <<'EOF'
+          ## Upstream Sync
+
+          The upstream repository [paperclipai/paperclip](https://github.com/paperclipai/paperclip) has **new commits** that could not be rebased automatically due to merge conflicts.
+
+          **Manual resolution required.** Please pull the `sync/upstream` branch locally and resolve conflicts:
+
+          ```bash
+          git fetch origin sync/upstream
+          git checkout sync/upstream
+          git rebase upstream/main
+          # resolve conflicts
+          git push --force origin sync/upstream
+          ```
+          EOF
+          )"
+          else
+            title="sync: rebase $behind commit(s) from upstream"
+            body="$(cat <<'EOF'
+          ## Upstream Sync
+
+          Automated rebase of new commits from [paperclipai/paperclip](https://github.com/paperclipai/paperclip). No conflicts detected — safe to merge.
+          EOF
+          )"
+          fi
+
+          if [ -z "$existing" ]; then
+            if [ "$conflict" = "true" ]; then
+              echo "Skipping PR creation — conflicts need resolution before branch can be pushed."
+              exit 0
+            fi
+            gh pr create \
+              --head "$BRANCH" \
+              --title "$title" \
+              --body "$body"
+          else
+            gh pr edit "$existing" --title "$title" --body "$body"
+            echo "Updated existing PR #$existing."
+          fi
+
+      - name: Auto-merge if clean
+        if: steps.check.outputs.behind != '0' && steps.rebase.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_url="$(gh pr list --head sync/upstream --json url --jq '.[0].url')"
+          if [ -z "$pr_url" ]; then
+            echo "PR not found, skipping auto-merge."
+            exit 0
+          fi
+          gh pr merge --auto --rebase --delete-branch "$pr_url"
