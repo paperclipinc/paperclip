@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    paperclip_desktop::run()
+    paperclip_app::run()
 }
