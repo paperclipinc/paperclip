@@ -47,9 +47,8 @@ COPY . .
 RUN pnpm -r build \
   && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-# Prune dev dependencies — tsx is no longer needed at runtime
-# since all workspace packages export precompiled dist/ output.
-RUN pnpm prune --prod --no-optional
+# No prod prune — upstream lists runtime deps (drizzle-orm, etc.)
+# as devDependencies. Image size is controlled by selective COPY below.
 
 # ── Stage 4: production ───────────────────────────────────────
 # Distroless-style minimal image. No shell, no package manager,
