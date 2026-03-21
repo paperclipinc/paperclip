@@ -1,16 +1,23 @@
+#[cfg(desktop)]
 mod tray;
 
 use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+
+    // Auto-updater is desktop-only
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .setup(|app| {
-            // Build system tray
+            // System tray (desktop only)
+            #[cfg(desktop)]
             tray::create_tray(app.handle())?;
 
             // Listen for deep link events and forward to the webview
@@ -21,11 +28,14 @@ pub fn run() {
                 }
             });
 
-            // Check for updates on launch (non-blocking)
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                check_for_updates(handle).await;
-            });
+            // Check for updates on launch (desktop only, non-blocking)
+            #[cfg(desktop)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    check_for_updates(handle).await;
+                });
+            }
 
             Ok(())
         })
@@ -34,7 +44,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 #[cfg(target_os = "macos")]
                 {
-                    window.hide().unwrap_or_default();
+                    let _ = window.hide();
                     api.prevent_close();
                 }
             }
@@ -43,6 +53,7 @@ pub fn run() {
         .expect("error while running Paperclip");
 }
 
+#[cfg(desktop)]
 async fn check_for_updates(app: tauri::AppHandle) {
     let updater = match app.updater() {
         Ok(updater) => updater,
@@ -51,7 +62,6 @@ async fn check_for_updates(app: tauri::AppHandle) {
 
     match updater.check().await {
         Ok(Some(update)) => {
-            // Emit update-available event to the webview
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.emit(
                     "update-available",
@@ -62,7 +72,7 @@ async fn check_for_updates(app: tauri::AppHandle) {
                 );
             }
         }
-        Ok(None) => {} // already up to date
-        Err(_) => {}    // network error, skip silently
+        Ok(None) => {}
+        Err(_) => {}
     }
 }
