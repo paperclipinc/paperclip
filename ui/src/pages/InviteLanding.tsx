@@ -12,9 +12,18 @@ import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 type JoinType = "human" | "agent";
 const joinAdapterOptions: AgentAdapterType[] = [...AGENT_ADAPTER_TYPES];
 
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+const adapterLabels: Record<string, string> = {
+  claude_local: "Claude (local)",
+  codex_local: "Codex (local)",
+  gemini_local: "Gemini CLI (local)",
+  opencode_local: "OpenCode (local)",
+  openclaw_gateway: "OpenClaw Gateway",
+  cursor: "Cursor (local)",
+  process: "Process",
+  http: "HTTP",
+};
 
-const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"]);
+const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor"]);
 
 function dateTime(value: string) {
   return new Date(value).toLocaleString();
@@ -58,7 +67,6 @@ export function InviteLandingPage() {
   });
 
   const invite = inviteQuery.data;
-  const companyName = invite?.companyName?.trim() || null;
   const allowedJoinTypes = invite?.allowedJoinTypes ?? "both";
   const availableJoinTypes = useMemo(() => {
     if (invite?.inviteType === "bootstrap_ceo") return ["human"] as JoinType[];
@@ -133,7 +141,7 @@ export function InviteLandingPage() {
         <div className="rounded-lg border border-border bg-card p-6">
           <h1 className="text-lg font-semibold">Bootstrap complete</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            The first instance admin is now configured. You can continue to the board.
+            Your admin account is now configured. You can continue to the board.
           </p>
           <Button asChild className="mt-4">
             <Link to="/">Open board</Link>
@@ -217,18 +225,9 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo"
-            ? "Bootstrap your Paperclip instance"
-            : companyName
-              ? `Join ${companyName}`
-              : "Join this Paperclip company"}
+          {invite.inviteType === "bootstrap_ceo" ? "Set up your Paperclip account" : "Join this Paperclip company"}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {invite.inviteType !== "bootstrap_ceo" && companyName
-            ? `You were invited to join ${companyName}. `
-            : null}
-          Invite expires {dateTime(invite.expiresAt)}.
-        </p>
+        <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-5 flex gap-2">
@@ -268,7 +267,7 @@ export function InviteLandingPage() {
               >
                 {joinAdapterOptions.map((type) => (
                   <option key={type} value={type} disabled={!ENABLED_INVITE_ADAPTERS.has(type)}>
-                    {getAdapterLabel(type)}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
+                    {adapterLabels[type]}{!ENABLED_INVITE_ADAPTERS.has(type) ? " (Coming soon)" : ""}
                   </option>
                 ))}
               </select>
