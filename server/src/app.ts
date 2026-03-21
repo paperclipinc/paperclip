@@ -135,6 +135,13 @@ export async function createApp(
     },
   }));
   app.use(httpLogger);
+
+  // Mount Stripe webhook route before auth middleware (needs raw body for signature verification)
+  if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET) {
+    const { stripeWebhookRoute } = await import("./routes/stripe-webhook.js");
+    app.use("/api", stripeWebhookRoute(db));
+  }
+
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -205,6 +212,8 @@ export async function createApp(
   api.use(approvalRoutes(db));
   api.use(secretRoutes(db));
   api.use(costRoutes(db));
+  const { billingRoutes } = await import("./routes/billing.js");
+  api.use(billingRoutes(db));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(sidebarBadgeRoutes(db));

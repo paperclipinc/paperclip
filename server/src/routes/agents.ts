@@ -50,6 +50,7 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import { planLimits } from "../middleware/plan-limits.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -120,6 +121,7 @@ export function agentRoutes(db: Db) {
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const heartbeat = heartbeatService(db);
+  const limits = planLimits(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const instructions = agentInstructionsService();
@@ -1541,6 +1543,9 @@ export function agentRoutes(db: Db) {
     if (req.actor.type === "agent") {
       assertBoard(req);
     }
+
+    // Check plan-based agent limit before creating
+    await limits.checkAgentLimit(companyId);
 
     const {
       desiredSkills: requestedDesiredSkills,
