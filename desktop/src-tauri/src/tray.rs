@@ -1,5 +1,4 @@
 use tauri::{
-    image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Manager,
@@ -15,11 +14,10 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    let icon = Image::from_path("icons/icon.png").unwrap_or_else(|_| {
-        // Fallback: use the app's default icon
-        Image::from_bytes(include_bytes!("../icons/icon.png"))
-            .expect("failed to load embedded tray icon")
-    });
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .expect("no default icon configured");
 
     TrayIconBuilder::new()
         .icon(icon)
