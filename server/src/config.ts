@@ -60,6 +60,9 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  resendApiKey: string | undefined;
+  emailFrom: string;
+  emailVerificationRequired: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -212,6 +215,13 @@ export function loadConfig(): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
+  const resendApiKey = process.env.RESEND_API_KEY?.trim() || undefined;
+  const emailFrom = process.env.PAPERCLIP_EMAIL_FROM?.trim() || "Paperclip <noreply@paperclip.dev>";
+  const emailVerificationRequiredFromEnv = process.env.PAPERCLIP_EMAIL_VERIFICATION_REQUIRED;
+  const emailVerificationRequired: boolean =
+    emailVerificationRequiredFromEnv !== undefined
+      ? emailVerificationRequiredFromEnv === "true"
+      : false;
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -295,6 +305,9 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    resendApiKey,
+    emailFrom,
+    emailVerificationRequired,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(
