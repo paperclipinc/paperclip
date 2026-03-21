@@ -47,10 +47,11 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
-RUN pnpm --filter @paperclipai/ui build
-RUN pnpm --filter @paperclipai/plugin-sdk build
-RUN pnpm --filter @paperclipai/server build
-RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN pnpm -r build \
+  && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+
+# Prune dev dependencies after build
+RUN pnpm prune --prod --no-optional
 
 # ── Stage 4: production ───────────────────────────────────────
 FROM base AS production
