@@ -27,12 +27,12 @@ jobs:
         run: git remote add upstream https://github.com/paperclipai/paperclip.git
 
       - name: Fetch upstream
-        run: git fetch upstream main
+        run: git fetch upstream master
 
       - name: Check for new commits
         id: check
         run: |
-          behind=$(git rev-list --count HEAD..upstream/main)
+          behind=$(git rev-list --count HEAD..upstream/master)
           echo "behind=$behind" >> "$GITHUB_OUTPUT"
           if [ "$behind" -eq 0 ]; then
             echo "Already up to date with upstream."
@@ -50,7 +50,7 @@ jobs:
 
           git checkout -B "$BRANCH"
 
-          if git rebase upstream/main; then
+          if git rebase upstream/master; then
             echo "conflict=false" >> "$GITHUB_OUTPUT"
           else
             git rebase --abort
@@ -86,7 +86,7 @@ jobs:
           ```bash
           git fetch origin sync/upstream
           git checkout sync/upstream
-          git rebase upstream/main
+          git rebase upstream/master
           # resolve conflicts
           git push --force origin sync/upstream
           ```
