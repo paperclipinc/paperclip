@@ -17,8 +17,15 @@ export interface EnvSecretRefBinding {
   version?: SecretVersionSelector;
 }
 
+export interface EnvConnectionRefBinding {
+  type: "connection_ref";
+  providerId: string;
+  /** Which field to extract — defaults to "access_token". */
+  tokenField?: string;
+}
+
 // Backward-compatible: legacy plaintext string values are still accepted.
-export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
+export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding | EnvConnectionRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
