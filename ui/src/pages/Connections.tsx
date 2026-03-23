@@ -201,14 +201,14 @@ export function Connections() {
 
   if (isLoading) {
     return (
-      <div className="mx-auto max-w-5xl px-6 py-8">
+      <div className="space-y-6">
         <div className="text-sm text-muted-foreground">Loading connections...</div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-2">
         <Link2 className="h-5 w-5 text-muted-foreground" />
