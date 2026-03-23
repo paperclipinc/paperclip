@@ -179,25 +179,23 @@ export const BUILTIN_OAUTH_PROVIDERS: OAuthProviderDefinition[] = [
 ];
 
 /**
- * Merges the built-in provider catalog with optional overrides.
- * On the server, pass `process.env.PAPERCLIP_OAUTH_PROVIDERS` as the
- * overridesJson argument. On the client, call with no arguments to get
- * the built-in catalog only.
+ * Returns the active provider catalog.
+ *
+ * When `overridesJson` is set (via `PAPERCLIP_OAUTH_PROVIDERS`), it **replaces**
+ * the built-in catalog entirely. This gives operators full control over which
+ * providers appear — useful when deploying via the K8s operator where only
+ * configured providers should be shown.
+ *
+ * The JSON value is a record of `{ [providerId]: OAuthProviderDefinition }`.
+ * Each entry must include all required fields (authorizationUrl, tokenUrl, etc.).
+ *
+ * When `overridesJson` is not set, the built-in catalog is returned as-is.
  */
 export function getProviderCatalog(overridesJson?: string): OAuthProviderDefinition[] {
   if (!overridesJson) return BUILTIN_OAUTH_PROVIDERS;
   try {
-    const overrides = JSON.parse(overridesJson) as Record<string, Partial<OAuthProviderDefinition>>;
-    const merged = [...BUILTIN_OAUTH_PROVIDERS];
-    for (const [id, override] of Object.entries(overrides)) {
-      const existing = merged.findIndex((p) => p.id === id);
-      if (existing >= 0) {
-        merged[existing] = { ...merged[existing], ...override, id };
-      } else {
-        merged.push(override as OAuthProviderDefinition);
-      }
-    }
-    return merged;
+    const providers = JSON.parse(overridesJson) as Record<string, Partial<OAuthProviderDefinition>>;
+    return Object.entries(providers).map(([id, def]) => ({ ...def, id }) as OAuthProviderDefinition);
   } catch {
     return BUILTIN_OAUTH_PROVIDERS;
   }
