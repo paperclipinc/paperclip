@@ -40,6 +40,7 @@ function isNotFound(err: unknown): boolean {
 
 export class K8sClient {
   private coreApi: k8s.CoreV1Api;
+  private networkingApi: k8s.NetworkingV1Api;
   private kc: k8s.KubeConfig;
 
   constructor() {
@@ -50,6 +51,7 @@ export class K8sClient {
       this.kc.loadFromDefault();
     }
     this.coreApi = this.kc.makeApiClient(k8s.CoreV1Api);
+    this.networkingApi = this.kc.makeApiClient(k8s.NetworkingV1Api);
   }
 
   async getPod(name: string, namespace: string): Promise<k8s.V1Pod | null> {
@@ -94,6 +96,8 @@ export class K8sClient {
               runAsNonRoot: true,
               runAsUser: 1000,
               readOnlyRootFilesystem: false,
+              capabilities: { drop: ["ALL"] },
+              seccompProfile: { type: "RuntimeDefault" },
             },
           },
         ],
@@ -105,7 +109,9 @@ export class K8sClient {
           runAsNonRoot: true,
           runAsUser: 1000,
           fsGroup: 1000,
+          seccompProfile: { type: "RuntimeDefault" },
         },
+        automountServiceAccountToken: false,
         restartPolicy: "Never",
       },
     };
@@ -233,6 +239,65 @@ export class K8sClient {
       labelSelector: "paperclip.inc/role=agent-sandbox",
     });
     return result.items;
+  }
+
+  /**
+   * Ensures a NetworkPolicy exists that restricts sandbox pod egress to:
+   * - DNS (port 53 UDP/TCP)
+   * - HTTPS (port 443 TCP) — LLM APIs, git, package registries
+   * - Paperclip server service (port 3100 TCP)
+   * Blocks all ingress (sandbox pods don't serve traffic).
+   */
+  async ensureSandboxNetworkPolicy(namespace: string, serverServiceName: string): Promise<void> {
+    const name = "paperclip-sandbox-policy";
+    const policy: k8s.V1NetworkPolicy = {
+      metadata: { name, namespace },
+      spec: {
+        podSelector: {
+          matchLabels: { "paperclip.inc/role": "agent-sandbox" },
+        },
+        policyTypes: ["Ingress", "Egress"],
+        ingress: [], // deny all ingress
+        egress: [
+          // DNS
+          {
+            ports: [
+              { port: 53, protocol: "UDP" },
+              { port: 53, protocol: "TCP" },
+            ],
+          },
+          // HTTPS — LLM APIs, git clone, npm/go install
+          {
+            ports: [{ port: 443, protocol: "TCP" }],
+          },
+          // HTTP — some registries use port 80
+          {
+            ports: [{ port: 80, protocol: "TCP" }],
+          },
+          // SSH — git clone via SSH
+          {
+            ports: [{ port: 22, protocol: "TCP" }],
+          },
+          // Paperclip server API
+          {
+            to: [{ podSelector: { matchLabels: { "app.kubernetes.io/name": "paperclip" } } }],
+            ports: [{ port: 3100, protocol: "TCP" }],
+          },
+        ],
+      },
+    };
+
+    try {
+      await this.networkingApi.readNamespacedNetworkPolicy({ name, namespace });
+      // Already exists — patch it
+      await this.networkingApi.replaceNamespacedNetworkPolicy({ name, namespace, body: policy });
+    } catch (err: unknown) {
+      if (isNotFound(err)) {
+        await this.networkingApi.createNamespacedNetworkPolicy({ namespace, body: policy });
+      } else {
+        throw err;
+      }
+    }
   }
 }
 

@@ -77,6 +77,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  // Ensure NetworkPolicy restricts sandbox pod network access
+  await client.ensureSandboxNetworkPolicy(config.namespace, "paperclip").catch(() => {
+    // Non-critical — may lack NetworkPolicy RBAC in some clusters
+  });
+
   // Ensure the sandbox pod exists
   try {
     await client.ensurePod({
