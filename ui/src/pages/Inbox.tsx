@@ -8,6 +8,7 @@ import { dashboardApi } from "../api/dashboard";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { connectionsApi } from "../api/connections";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -36,6 +37,7 @@ import {
   XCircle,
   X,
   RotateCcw,
+  Link2,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -377,6 +379,18 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: connectionsData } = useQuery({
+    queryKey: queryKeys.connections.list(selectedCompanyId!),
+    queryFn: () => connectionsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const expiredConnections = useMemo(
+    () => (connectionsData?.connections ?? []).filter(
+      (c) => (c.status === "expired" || c.status === "error") && !dismissed.has(`connection:${c.id}`),
+    ),
+    [connectionsData, dismissed],
+  );
+
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -601,7 +615,8 @@ export function Inbox() {
     dashboard.costs.monthBudgetCents > 0 &&
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissed.has("alert:budget");
-  const hasAlerts = showAggregateAgentError || showBudgetAlert;
+  const hasExpiredConnections = expiredConnections.length > 0;
+  const hasAlerts = showAggregateAgentError || showBudgetAlert || hasExpiredConnections;
   const hasJoinRequests = joinRequests.length > 0;
   const showWorkItemsSection = workItemsToRender.length > 0;
   const showJoinRequestsSection =
@@ -894,6 +909,27 @@ export function Inbox() {
                   </button>
                 </div>
               )}
+              {hasExpiredConnections && expiredConnections.map((conn) => (
+                <div key={conn.id} className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Link
+                    to="/company/connections"
+                    className="flex flex-1 cursor-pointer items-center gap-3 no-underline text-inherit"
+                  >
+                    <Link2 className="h-4 w-4 shrink-0 text-amber-600" />
+                    <span className="text-sm">
+                      <span className="font-medium">{conn.providerId}</span> connection {conn.status === "expired" ? "expired" : "has an error"} — reconnect to resume agent access
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => dismiss(`connection:${conn.id}`)}
+                    className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
               {showBudgetAlert && (
                 <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
                   <Link
