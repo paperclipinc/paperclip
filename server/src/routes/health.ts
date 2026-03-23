@@ -23,12 +23,14 @@ export function healthRoutes(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     emailEnabled: boolean;
+    cloudSandboxEnabled: boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
     authReady: true,
     companyDeletionEnabled: true,
     emailEnabled: false,
+    cloudSandboxEnabled: false,
   },
 ) {
   const router = Router();
@@ -126,6 +128,7 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
         emailEnabled: opts.emailEnabled,
+        cloudSandboxEnabled: opts.cloudSandboxEnabled,
       },
       ...(devServer ? { devServer } : {}),
     });

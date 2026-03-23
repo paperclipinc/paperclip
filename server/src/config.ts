@@ -91,6 +91,11 @@ export interface Config {
   telemetryEnabled: boolean;
   stripeSecretKey: string | undefined;
   stripeWebhookSecret: string | undefined;
+  // Cloud sandbox
+  cloudSandboxEnabled: boolean;
+  cloudSandboxNamespace: string;
+  cloudSandboxDefaultImage: string;
+  cloudSandboxIdleTimeoutMin: number;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -351,5 +356,10 @@ export function loadConfig(): Config {
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
     stripeSecretKey,
     stripeWebhookSecret,
+    // Cloud sandbox
+    cloudSandboxEnabled: process.env.PAPERCLIP_CLOUD_SANDBOX_ENABLED === "true",
+    cloudSandboxNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "",
+    cloudSandboxDefaultImage: process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest",
+    cloudSandboxIdleTimeoutMin: parseInt(process.env.PAPERCLIP_CLOUD_SANDBOX_IDLE_TIMEOUT_MIN || "30", 10),
   };
 }

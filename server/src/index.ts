@@ -555,6 +555,7 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     emailEnabled,
+    cloudSandboxEnabled: config.cloudSandboxEnabled,
     betterAuthHandler,
     resolveSession,
   });
