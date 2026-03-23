@@ -43,6 +43,7 @@ import { VerifyEmailPage } from "./pages/VerifyEmail";
 import { ForgotPasswordPage } from "./pages/ForgotPassword";
 import { ResetPasswordPage } from "./pages/ResetPassword";
 import { BoardClaimPage } from "./pages/BoardClaim";
+import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
 import { queryKeys } from "./lib/queryKeys";
@@ -309,6 +310,7 @@ export function App() {
         <Route path="auth/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="auth/reset-password" element={<ResetPasswordPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
+        <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
 
         <Route element={<CloudAccessGate />}>
