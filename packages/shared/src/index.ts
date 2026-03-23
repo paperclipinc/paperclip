@@ -36,6 +36,8 @@ export {
   APPROVAL_TYPES,
   APPROVAL_STATUSES,
   SECRET_PROVIDERS,
+  CONNECTION_STATUSES,
+  OAUTH_PROVIDER_CATEGORIES,
   STORAGE_PROVIDERS,
   BILLING_TYPES,
   FINANCE_EVENT_KINDS,
@@ -343,6 +345,7 @@ export type {
   CompanyPortabilityImportResult,
   CompanyPortabilityExportRequest,
   EnvBinding,
+  EnvConnectionRefBinding,
   AgentEnvConfig,
   CompanySecret,
   SecretProviderDescriptor,
@@ -356,6 +359,11 @@ export type {
   RoutineRunSummary,
   RoutineExecutionIssueOrigin,
   RoutineListItem,
+  Connection,
+  ConnectionWithProvider,
+  ConnectionStatus,
+  OAuthProviderCategory,
+  OAuthProviderDefinition,
   JsonSchema,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
@@ -540,6 +548,7 @@ export {
   type AddApprovalComment,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingConnectionRefSchema,
   envBindingSchema,
   envConfigSchema,
   createSecretSchema,
@@ -657,6 +666,8 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./validators/index.js";
+
+export { BUILTIN_OAUTH_PROVIDERS, getProviderCatalog } from "./types/connection-providers.js";
 
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";

@@ -206,6 +206,7 @@ export {
 export {
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingConnectionRefSchema,
   envBindingSchema,
   envConfigSchema,
   createSecretSchema,

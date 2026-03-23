@@ -240,6 +240,20 @@ export const SECRET_PROVIDERS = [
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
+export const CONNECTION_STATUSES = ["active", "expired", "revoked", "error"] as const;
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+
+export const OAUTH_PROVIDER_CATEGORIES = [
+  "source_control",
+  "communication",
+  "project_management",
+  "cloud",
+  "productivity",
+  "ai",
+  "other",
+] as const;
+export type OAuthProviderCategory = (typeof OAUTH_PROVIDER_CATEGORIES)[number];
+
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 

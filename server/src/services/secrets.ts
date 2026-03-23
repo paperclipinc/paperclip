@@ -13,7 +13,8 @@ const REDACTED_SENTINEL = "***REDACTED***";
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
-  | { type: "secret_ref"; secretId: string; version: number | "latest" };
+  | { type: "secret_ref"; secretId: string; version: number | "latest" }
+  | { type: "connection_ref"; providerId: string; tokenField?: string };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -30,6 +31,13 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   }
   if (binding.type === "plain") {
     return { type: "plain", value: String(binding.value) };
+  }
+  if (binding.type === "connection_ref") {
+    return {
+      type: "connection_ref",
+      providerId: binding.providerId,
+      tokenField: binding.tokenField,
+    };
   }
   return {
     type: "secret_ref",
@@ -126,6 +134,15 @@ export function secretService(db: Db) {
           throw unprocessable(`Refusing to persist redacted placeholder for key: ${key}`);
         }
         normalized[key] = binding;
+        continue;
+      }
+
+      if (binding.type === "connection_ref") {
+        normalized[key] = {
+          type: "connection_ref",
+          providerId: binding.providerId,
+          tokenField: binding.tokenField,
+        };
         continue;
       }
 
@@ -337,6 +354,11 @@ export function secretService(db: Db) {
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") {
           resolved[key] = binding.value;
+        } else if (binding.type === "connection_ref") {
+          const { connectionService: connSvc } = await import("./connections.js");
+          const svc = connSvc(db);
+          resolved[key] = await svc.resolveAccessToken(companyId, binding.providerId);
+          secretKeys.add(key);
         } else {
           resolved[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
           secretKeys.add(key);
@@ -368,6 +390,11 @@ export function secretService(db: Db) {
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") {
           env[key] = binding.value;
+        } else if (binding.type === "connection_ref") {
+          const { connectionService: connSvc } = await import("./connections.js");
+          const svc = connSvc(db);
+          env[key] = await svc.resolveAccessToken(companyId, binding.providerId);
+          secretKeys.add(key);
         } else {
           env[key] = await resolveSecretValue(companyId, binding.secretId, binding.version);
           secretKeys.add(key);

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, not } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
+import { agents, approvals, heartbeatRuns, connections } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
@@ -67,6 +67,17 @@ export function sidebarBadgeService(db: Db) {
         && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
       ).length;
 
+      const expiredConnections = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(connections)
+        .where(
+          and(
+            eq(connections.companyId, companyId),
+            inArray(connections.status, ["expired", "error"]),
+          ),
+        )
+        .then((rows) => Number(rows[0]?.count ?? 0));
+
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
         !isDismissed(
           extra?.dismissals ?? new Map(),
@@ -76,10 +87,11 @@ export function sidebarBadgeService(db: Db) {
       ).length;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues + expiredConnections,
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,
+        expiredConnections,
       };
     },
   };
