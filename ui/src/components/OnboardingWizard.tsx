@@ -46,6 +46,11 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import {
+  CLOUD_MODELS,
+  getAdapterProvider,
+} from "../lib/cloud-models";
+import type { ByokProvider } from "../lib/cloud-models";
+import {
   ArrowLeft,
   ArrowRight,
   Bot,
@@ -70,55 +75,6 @@ type Step = 1 | 2 | 3 | 4 | 5;
 type AdapterType = string;
 
 type InferenceChoice = "managed" | "byok";
-type ByokProvider = "anthropic" | "openai" | "google" | "openrouter";
-
-/** Known models per provider for cloud sandbox mode (no CLI discovery needed) */
-const CLOUD_MODELS: Record<string, { id: string; label: string }[]> = {
-  anthropic: [
-    { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
-    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
-    { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
-    { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
-  ],
-  openai: [
-    { id: "gpt-5.4", label: "GPT-5.4" },
-    { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
-    { id: "o3", label: "o3" },
-    { id: "o4-mini", label: "o4-mini" },
-    { id: "gpt-5-mini", label: "GPT-5 Mini" },
-    { id: "codex-mini-latest", label: "Codex Mini" },
-  ],
-  google: [
-    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  ],
-  openrouter: [
-    { id: "minimax/minimax-m2.5", label: "MiniMax M2.5" },
-    { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5" },
-    { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
-    { id: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
-    { id: "anthropic/claude-opus-4.6", label: "Claude Opus 4.6" },
-    { id: "openai/gpt-5.4", label: "GPT-5.4" },
-    { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-    { id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro" },
-    { id: "x-ai/grok-4.1-fast", label: "Grok 4.1 Fast" },
-    { id: "qwen/qwen3-coder", label: "Qwen3 Coder" },
-    { id: "mistralai/devstral-2512", label: "Devstral 2" },
-  ],
-};
-
-/** Map adapter type to its fixed provider (null = multi-provider, user picks) */
-function getAdapterProvider(adapterType: AdapterType): ByokProvider | null {
-  switch (adapterType) {
-    case "claude_local": return "anthropic";
-    case "codex_local": return "openai";
-    case "gemini_local": return "google";
-    default: return null; // cursor, pi, opencode = multi-provider
-  }
-}
 
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 

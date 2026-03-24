@@ -22,7 +22,19 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import {
+  Code,
+  Eye,
+  EyeOff,
+  FolderOpen,
+  Gem,
+  Heart,
+  ChevronDown,
+  MousePointer2,
+  Sparkles,
+  Terminal,
+  X,
+} from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -45,6 +57,16 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
+import {
+  CLOUD_MODELS,
+  CLOUD_RUNTIME_OPTIONS,
+  getAdapterProvider,
+  inferProviderFromEnv,
+  PROVIDER_ENV_KEY,
+  PROVIDER_KEY_LABELS,
+  PROVIDER_KEY_PLACEHOLDERS,
+} from "../lib/cloud-models";
+import type { ByokProvider } from "../lib/cloud-models";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -174,7 +196,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
 
   // Sync disabled adapter types from server so dropdown filters them out
@@ -649,6 +671,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
+
+          {/* ---- Cloud Sandbox: runtime / provider / model / API key ---- */}
+          {adapterType === "cloud_sandbox" && (
+            <CloudSandboxFields
+              isCreate={isCreate}
+              config={config}
+              eff={eff}
+              mark={mark}
+              val={val}
+              set={set}
+              cards={cards}
+              availableSecrets={availableSecrets}
+              onCreateSecret={async (name, value) => {
+                const created = await createSecret.mutateAsync({ name, value });
+                return created;
+              }}
+            />
+          )}
         </div>
 
       </div>
@@ -969,6 +1009,299 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ---- Cloud Sandbox config fields ---- */
+
+/** Icon lookup for runtime cards */
+const RUNTIME_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  claude: Sparkles,
+  codex: Code,
+  gemini: Gem,
+  cursor: MousePointer2,
+  pi: Terminal,
+  opencode: OpenCodeLogoIcon,
+};
+
+function CloudSandboxFields({
+  isCreate,
+  config,
+  eff,
+  mark,
+  val,
+  set,
+  cards: _cards,
+  availableSecrets,
+  onCreateSecret,
+}: {
+  isCreate: boolean;
+  config: Record<string, unknown>;
+  eff: <T>(group: "adapterConfig", field: string, original: T) => T;
+  mark: (group: "adapterConfig", field: string, value: unknown) => void;
+  val: CreateConfigValues | null;
+  set: ((patch: Partial<CreateConfigValues>) => void) | null;
+  cards: boolean;
+  availableSecrets: CompanySecret[];
+  onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
+}) {
+  const { selectedCompany } = useCompany();
+  const isByok = selectedCompany?.inferenceMode === "byok";
+
+  // --- Derive current runtime ---
+  const currentRuntime: string = isCreate
+    ? (val as Record<string, unknown> | null)?.runtime as string ?? "claude"
+    : eff("adapterConfig", "runtime", String(config.runtime ?? "claude"));
+
+  // --- Derive current provider ---
+  const fixedProvider = getAdapterProvider(currentRuntime);
+  const isMultiProvider = fixedProvider === null;
+
+  // For edit mode, infer provider from env keys if available
+  const configEnv = config.env as Record<string, unknown> | undefined;
+  const inferredProvider = inferProviderFromEnv(
+    isCreate ? undefined : eff("adapterConfig", "env", configEnv) as Record<string, unknown> | undefined,
+  );
+  const [localProvider, setLocalProvider] = useState<ByokProvider>(
+    fixedProvider ?? inferredProvider ?? "anthropic",
+  );
+  const activeProvider: ByokProvider = fixedProvider ?? localProvider;
+
+  // --- Derive current model ---
+  const currentModel: string = isCreate
+    ? val?.model ?? ""
+    : eff("adapterConfig", "model", String(config.model ?? ""));
+
+  const cloudModelList = CLOUD_MODELS[activeProvider] ?? [];
+
+  // --- API key visibility ---
+  const [keyVisible, setKeyVisible] = useState(false);
+  // Track the plain-text key entered by the user before it's sealed
+  const [pendingKeyValue, setPendingKeyValue] = useState("");
+
+  // --- Resolve existing secret ref for the active provider env key ---
+  const envKeyName = PROVIDER_ENV_KEY[activeProvider];
+  const existingEnvBindings = (isCreate ? undefined : eff("adapterConfig", "env", configEnv)) as
+    | Record<string, unknown>
+    | undefined;
+  const existingBinding = existingEnvBindings?.[envKeyName] as
+    | { type?: string; secretId?: string }
+    | undefined;
+  const hasExistingSecret =
+    existingBinding?.type === "secret_ref" && Boolean(existingBinding?.secretId);
+  const matchedSecret = hasExistingSecret
+    ? availableSecrets.find((s) => s.id === existingBinding!.secretId!)
+    : null;
+
+  /** Persist runtime + clear model when switching runtime */
+  function handleRuntimeChange(runtime: string) {
+    if (isCreate && set) {
+      set({ ...(val as Partial<CreateConfigValues>), runtime, model: "" } as Partial<CreateConfigValues>);
+    } else {
+      // When runtime changes the provider may change, so clear env too
+      mark("adapterConfig", "runtime", runtime);
+      mark("adapterConfig", "model", "");
+      mark("adapterConfig", "env", undefined);
+    }
+    const nextFixed = getAdapterProvider(runtime);
+    if (nextFixed) {
+      setLocalProvider(nextFixed);
+    }
+  }
+
+  function handleProviderChange(provider: ByokProvider) {
+    setLocalProvider(provider);
+    // Clear model & env when provider changes
+    if (isCreate && set) {
+      set({ model: "" } as Partial<CreateConfigValues>);
+    } else {
+      mark("adapterConfig", "model", "");
+      mark("adapterConfig", "env", undefined);
+    }
+    setPendingKeyValue("");
+  }
+
+  function handleModelChange(modelId: string) {
+    if (isCreate && set) {
+      set({ model: modelId } as Partial<CreateConfigValues>);
+    } else {
+      mark("adapterConfig", "model", modelId || undefined);
+    }
+  }
+
+  async function handleSealKey() {
+    if (!pendingKeyValue.trim()) return;
+    const secret = await onCreateSecret(envKeyName, pendingKeyValue.trim());
+    const nextEnv = {
+      ...(existingEnvBindings ?? {}),
+      [envKeyName]: { type: "secret_ref" as const, secretId: secret.id },
+    };
+    mark("adapterConfig", "env", nextEnv);
+    setPendingKeyValue("");
+  }
+
+  function handleSecretSelect(secretId: string) {
+    if (!secretId) return;
+    const nextEnv = {
+      ...(existingEnvBindings ?? {}),
+      [envKeyName]: { type: "secret_ref" as const, secretId },
+    };
+    mark("adapterConfig", "env", nextEnv);
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Runtime picker */}
+      <Field label="Runtime" hint="The coding agent runtime used inside the cloud sandbox.">
+        <div className="grid grid-cols-3 gap-2">
+          {CLOUD_RUNTIME_OPTIONS.map((opt) => {
+            const Icon = RUNTIME_ICONS[opt.value] ?? Terminal;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                className={cn(
+                  "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
+                  currentRuntime === opt.value
+                    ? "border-foreground bg-accent"
+                    : "border-border hover:bg-accent/50",
+                )}
+                onClick={() => handleRuntimeChange(opt.value)}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="font-medium">{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+
+      {/* Provider selector (multi-provider runtimes only) */}
+      {isMultiProvider && (
+        <Field label="Provider" hint="The inference provider used by this runtime.">
+          <div className="flex flex-wrap gap-1.5">
+            {(
+              [
+                { value: "anthropic" as const, label: "Anthropic" },
+                { value: "openai" as const, label: "OpenAI" },
+                { value: "google" as const, label: "Google" },
+                { value: "openrouter" as const, label: "OpenRouter" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={cn(
+                  "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                  activeProvider === opt.value
+                    ? "border-foreground bg-accent"
+                    : "border-border hover:bg-accent/50",
+                )}
+                onClick={() => handleProviderChange(opt.value)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+      )}
+
+      {/* Model dropdown */}
+      <Field label="Model" hint="The model to use for inference. Leave as Default to use the runtime's default.">
+        <select
+          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+          value={currentModel}
+          onChange={(e) => handleModelChange(e.target.value)}
+        >
+          <option value="">Default</option>
+          {cloudModelList.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      {/* API key (BYOK only) */}
+      {isByok && (
+        <Field
+          label={PROVIDER_KEY_LABELS[activeProvider] ?? "API key"}
+          hint="Your API key for inference. Stored as a sealed secret."
+        >
+          {hasExistingSecret ? (
+            <div className="flex items-center gap-2">
+              <div className="flex-1 rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground font-mono">
+                {matchedSecret ? matchedSecret.name : "Secret configured"}
+              </div>
+              <button
+                type="button"
+                className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 transition-colors"
+                onClick={() => {
+                  // Clear existing binding to allow entering a new key
+                  const nextEnv = { ...(existingEnvBindings ?? {}) };
+                  delete (nextEnv as Record<string, unknown>)[envKeyName];
+                  mark("adapterConfig", "env", Object.keys(nextEnv).length > 0 ? nextEnv : undefined);
+                }}
+              >
+                Change
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="relative">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  type={keyVisible ? "text" : "password"}
+                  placeholder={PROVIDER_KEY_PLACEHOLDERS[activeProvider] ?? "..."}
+                  value={pendingKeyValue}
+                  onChange={(e) => setPendingKeyValue(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setKeyVisible((v) => !v)}
+                >
+                  {keyVisible ? (
+                    <EyeOff className="h-3.5 w-3.5" />
+                  ) : (
+                    <Eye className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              </div>
+              {pendingKeyValue.trim() && (
+                <button
+                  type="button"
+                  className="rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-accent/50 transition-colors"
+                  onClick={() => void handleSealKey()}
+                >
+                  Save as secret
+                </button>
+              )}
+              {/* Or pick from existing secrets */}
+              {availableSecrets.length > 0 && (
+                <div>
+                  <label className="text-[11px] text-muted-foreground mb-0.5 block">
+                    Or use an existing secret:
+                  </label>
+                  <select
+                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+                    value=""
+                    onChange={(e) => handleSecretSelect(e.target.value)}
+                  >
+                    <option value="">Select secret...</option>
+                    {availableSecrets.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+        </Field>
+      )}
     </div>
   );
 }
