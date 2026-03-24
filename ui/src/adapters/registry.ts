@@ -12,6 +12,18 @@ import { httpUIAdapter } from "./http";
 import { loadDynamicParser, invalidateDynamicParser } from "./dynamic-loader";
 import { SchemaConfigFields, buildSchemaAdapterConfig } from "./schema-config-fields";
 
+/** Cloud sandbox adapter — config is handled by CloudSandboxFields in AgentConfigForm */
+const cloudSandboxUIAdapter: UIAdapterModule = {
+  type: "cloud_sandbox",
+  label: "Cloud Sandbox",
+  parseStdoutLine: (_line, _ts) => [],
+  ConfigFields: () => null,
+  buildAdapterConfig: (values) => ({
+    runtime: values.runtime ?? "claude",
+    model: values.model || undefined,
+  }),
+};
+
 const uiAdapters: UIAdapterModule[] = [];
 const adaptersByType = new Map<string, UIAdapterModule>();
 
@@ -55,6 +67,7 @@ function registerBuiltInUIAdapters() {
     piLocalUIAdapter,
     cursorLocalUIAdapter,
     openClawGatewayUIAdapter,
+    cloudSandboxUIAdapter,
     processUIAdapter,
     httpUIAdapter,
   ]) {
