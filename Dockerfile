@@ -47,42 +47,40 @@ COPY . .
 RUN pnpm -r build \
   && test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
-# No prod prune — upstream lists runtime deps (drizzle-orm, etc.)
-# as devDependencies. Image size is controlled by selective COPY below.
+# ── Stage 4: agent CLIs ──────────────────────────────────────
+# Separate stage so agent CLI install is cached independently.
+# Bump the versions here to update (avoids @latest cache-busting).
+FROM base AS agent-clis
 
-# ── Stage 4: production ───────────────────────────────────────
-# Distroless-style minimal image. No shell, no package manager,
-# no build tools — only the Node runtime and built artifacts.
+RUN npm install --global --omit=dev \
+    @anthropic-ai/claude-code@2.1.81 \
+    @openai/codex@0.116.0 \
+    opencode-ai@1.3.0 \
+  && npm cache clean --force \
+  && rm -rf /tmp/*
+
+# ── Stage 5: production ──────────────────────────────────────
 FROM node:22-trixie-slim AS production
 
 LABEL org.opencontainers.image.source="https://github.com/paperclipinc/paperclip"
-LABEL org.opencontainers.image.description="Paperclip — AI company orchestration platform"
+LABEL org.opencontainers.image.description="Paperclip - AI company orchestration platform"
 LABEL org.opencontainers.image.vendor="Paperclip Inc."
 LABEL org.opencontainers.image.licenses="MIT"
 
-# Minimal runtime deps: tini for PID 1, curl for healthcheck, git for agent runtimes
 RUN apt-get update \
   && apt-get install -y --no-install-recommends tini curl git ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false
+  && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable
 
-# Agent runtimes — pinned versions for reproducibility
-RUN npm install --global --omit=dev \
-    @anthropic-ai/claude-code@latest \
-    @openai/codex@latest \
-    opencode-ai \
-  && npm cache clean --force \
-  && rm -rf /tmp/*
+# Copy pre-built agent CLIs from separate cached stage
+COPY --from=agent-clis /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=agent-clis /usr/local/bin/ /usr/local/bin/
 
 RUN mkdir -p /paperclip && chown node:node /paperclip
 
 WORKDIR /app
 
-# Copy full built app — pnpm symlinks node_modules per workspace package,
-# so selective dist-only copy breaks dependency resolution. The .dockerignore
-# already excludes tests, docs, desktop source, and dev files from context.
 COPY --chown=node:node --from=build /app /app
 
 ENV NODE_ENV=production \
