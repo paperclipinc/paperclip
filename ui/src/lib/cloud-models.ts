@@ -63,12 +63,13 @@ export function getAdapterProvider(adapterType: string): ByokProvider | null {
   }
 }
 
-/** Map from runtime name (as stored in adapterConfig.runtime) to a display label */
+/** Map from runtime name (as stored in adapterConfig.runtime) to a display label.
+ *  Ordered as a 2x2 grid: Codex + Gemini (top), Pi + OpenCode (bottom). */
 export const CLOUD_RUNTIME_OPTIONS = [
-  { value: "codex", label: "Codex" },
-  { value: "gemini", label: "Gemini CLI" },
-  { value: "pi", label: "Pi" },
-  { value: "opencode", label: "OpenCode" },
+  { value: "codex", label: "Codex", recommended: true },
+  { value: "gemini", label: "Gemini CLI", recommended: false },
+  { value: "pi", label: "Pi", recommended: false },
+  { value: "opencode", label: "OpenCode", recommended: false },
 ] as const;
 
 /** Env key name per provider for storing the BYOK API key */
