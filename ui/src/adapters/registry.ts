@@ -19,8 +19,8 @@ const cloudSandboxUIAdapter: UIAdapterModule = {
   parseStdoutLine: (_line, _ts) => [],
   ConfigFields: () => null,
   buildAdapterConfig: (values) => ({
-    runtime: values.runtime ?? "claude",
-    model: values.model || undefined,
+    runtime: (values as Record<string, unknown>).runtime ?? "claude",
+    model: (values as Record<string, unknown>).model || undefined,
   }),
 };
 
