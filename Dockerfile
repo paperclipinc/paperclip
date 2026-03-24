@@ -53,9 +53,9 @@ RUN pnpm -r build \
 FROM base AS agent-clis
 
 RUN npm install --global --omit=dev \
-    @anthropic-ai/claude-code@1.0.20 \
-    @openai/codex@0.1.2 \
-    opencode-ai@0.3.5 \
+    @anthropic-ai/claude-code@2.1.81 \
+    @openai/codex@0.116.0 \
+    opencode-ai@1.3.0 \
   && npm cache clean --force \
   && rm -rf /tmp/*
 
@@ -75,9 +75,7 @@ RUN corepack enable
 
 # Copy pre-built agent CLIs from separate cached stage
 COPY --from=agent-clis /usr/local/lib/node_modules /usr/local/lib/node_modules
-COPY --from=agent-clis /usr/local/bin/claude /usr/local/bin/claude
-COPY --from=agent-clis /usr/local/bin/codex /usr/local/bin/codex
-COPY --from=agent-clis /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=agent-clis /usr/local/bin/ /usr/local/bin/
 
 RUN mkdir -p /paperclip && chown node:node /paperclip
 
