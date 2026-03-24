@@ -122,7 +122,7 @@ jobs:
       - name: Get manifest digest
         id: digest
         run: |
-          digest=$(docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" --format '{{.Manifest.Digest}}')
+          digest=$(docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" --format '{{println .Manifest.Digest}}' | grep sha256)
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Generate artifact attestation
