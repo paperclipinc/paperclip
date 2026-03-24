@@ -1,4 +1,4 @@
-import type { CompanyStatus, PauseReason } from "../constants.js";
+import type { CompanyStatus, InferenceMode, PauseReason } from "../constants.js";
 
 export interface Company {
   id: string;
@@ -12,6 +12,7 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
+  inferenceMode: InferenceMode;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

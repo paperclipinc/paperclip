@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "inference_mode" text DEFAULT 'byok' NOT NULL;

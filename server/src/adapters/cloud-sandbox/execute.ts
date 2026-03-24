@@ -1,6 +1,25 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import { K8sClient } from "./k8s-client.js";
 
+/**
+ * Extracts the result event from Claude Code stream-json stdout output.
+ * Claude Code emits one JSON object per line; the result event has type "result".
+ */
+export function extractStreamJsonResult(stdout: string): Record<string, unknown> | null {
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.type === "result") return parsed;
+    } catch {
+      // Not valid JSON, skip
+    }
+  }
+  return null;
+}
+
 let sharedClient: K8sClient | null = null;
 
 function getClient(): K8sClient {
@@ -74,6 +93,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   for (const [key, value] of Object.entries(config.env)) {
     if (typeof value === "string") {
       podEnv.push({ name: key, value });
+    }
+  }
+
+  // Inject platform-managed inference API key when inferenceMode is "managed"
+  const inferenceMode = ctx.context.inferenceMode as string | undefined;
+  const managedApiKey = process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim();
+  if (inferenceMode === "managed" && managedApiKey) {
+    const existingKeys = new Set(podEnv.map((e) => e.name));
+    const provider = process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic";
+    if (provider === "openai" || config.runtime === "codex") {
+      if (!existingKeys.has("OPENAI_API_KEY")) {
+        podEnv.push({ name: "OPENAI_API_KEY", value: managedApiKey });
+      }
+    } else {
+      if (!existingKeys.has("ANTHROPIC_API_KEY")) {
+        podEnv.push({ name: "ANTHROPIC_API_KEY", value: managedApiKey });
+      }
     }
   }
 

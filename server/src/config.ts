@@ -80,6 +80,10 @@ export interface Config {
   cloudSandboxNamespace: string;
   cloudSandboxDefaultImage: string;
   cloudSandboxIdleTimeoutMin: number;
+  // Managed inference
+  managedInferenceApiKey: string | undefined;
+  managedInferenceProvider: string;
+  managedInferenceModel: string;
 }
 
 export function loadConfig(): Config {
@@ -282,5 +286,9 @@ export function loadConfig(): Config {
     cloudSandboxNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "",
     cloudSandboxDefaultImage: process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest",
     cloudSandboxIdleTimeoutMin: parseInt(process.env.PAPERCLIP_CLOUD_SANDBOX_IDLE_TIMEOUT_MIN || "30", 10),
+    // Managed inference
+    managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
+    managedInferenceProvider: process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic",
+    managedInferenceModel: process.env.PAPERCLIP_MANAGED_INFERENCE_MODEL || "claude-sonnet-4-6",
   };
 }

@@ -16,6 +16,7 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     emailEnabled: boolean;
     cloudSandboxEnabled: boolean;
+    managedInferenceEnabled: boolean;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -23,6 +24,7 @@ export function healthRoutes(
     companyDeletionEnabled: true,
     emailEnabled: false,
     cloudSandboxEnabled: false,
+    managedInferenceEnabled: false,
   },
 ) {
   const router = Router();
@@ -90,6 +92,7 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
         emailEnabled: opts.emailEnabled,
         cloudSandboxEnabled: opts.cloudSandboxEnabled,
+        managedInferenceEnabled: opts.managedInferenceEnabled,
       },
       ...(devServer ? { devServer } : {}),
     });

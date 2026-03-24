@@ -1,5 +1,6 @@
 export {
   COMPANY_STATUSES,
+  INFERENCE_MODES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
   AUTH_BASE_URL_MODES,
@@ -70,6 +71,7 @@ export {
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
   type CompanyStatus,
+  type InferenceMode,
   type DeploymentMode,
   type DeploymentExposure,
   type AuthBaseUrlMode,
