@@ -231,6 +231,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let exitCode = -1;
   let timedOut = false;
+  let stdoutBuffer = "";
 
   try {
     const result = await client.exec({
@@ -239,7 +240,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command: ["sh", "-c", setupAndRun],
       env: execEnv,
       stdin: ctx.context.prompt as string | undefined,
-      onStdout: (data) => { void ctx.onLog("stdout", data); },
+      onStdout: (data) => { stdoutBuffer += data; void ctx.onLog("stdout", data); },
       onStderr: (data) => { void ctx.onLog("stderr", data); },
       timeoutMs: config.timeoutSec * 1000,
     });
@@ -256,6 +257,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  // Extract error from CLI stream-json output (e.g. authentication failures)
+  let cliError: string | null = null;
+  try {
+    for (const line of stdoutBuffer.split("\n")) {
+      if (!line.trim()) continue;
+      const parsed = JSON.parse(line);
+      if (parsed.type === "result" && parsed.is_error) {
+        cliError = parsed.result || null;
+      } else if (parsed.error === "authentication_failed" && parsed.message?.content) {
+        const text = parsed.message.content.find((c: { type: string; text?: string }) => c.type === "text");
+        if (text?.text) cliError = text.text;
+      }
+    }
+  } catch {
+    // Not valid JSON or not stream-json format — ignore
+  }
+
+  if (exitCode !== 0 && cliError) {
+    await ctx.onLog("stderr", `[cloud-sandbox] CLI error: ${cliError}\n`);
+  }
+
   // Update last-exec annotation for idle reaper
   void client.updateLastExecAnnotation(name, namespace);
 
@@ -263,6 +285,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     exitCode,
     signal: null,
     timedOut,
-    errorMessage: timedOut ? `Execution timed out after ${config.timeoutSec}s` : null,
+    errorMessage: timedOut ? `Execution timed out after ${config.timeoutSec}s` : cliError,
   };
 }
