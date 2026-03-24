@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { heartbeatRuns } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { validate } from "../middleware/validate.js";
 import { activityService } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess } from "./authz.js";
-import { heartbeatService, issueService } from "../services/index.js";
+import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
 const createActivitySchema = z.object({
@@ -20,7 +22,6 @@ const createActivitySchema = z.object({
 export function activityRoutes(db: Db) {
   const router = Router();
   const svc = activityService(db);
-  const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
 
   async function resolveIssueByRef(rawId: string) {
@@ -59,11 +60,10 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/activity", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const result = await svc.forIssue(issue.id);
     res.json(result);
   });
@@ -71,24 +71,26 @@ export function activityRoutes(db: Db) {
   router.get("/issues/:id/runs", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const result = await svc.runsForIssue(issue.companyId, issue.id);
     res.json(result);
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {
-    assertAuthenticated(req);
+    assertBoard(req);
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
-    if (!run) {
-      res.json([]);
+    const run = await db
+      .select({ companyId: heartbeatRuns.companyId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || !hasCompanyAccess(req, run.companyId)) {
+      res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }
-    assertCompanyAccess(req, run.companyId);
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });

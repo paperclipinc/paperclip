@@ -1,11 +1,9 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
-import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
-import { getTelemetryClient } from "../telemetry.js";
+import { assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -21,11 +19,10 @@ export function goalRoutes(db: Db) {
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
     const goal = await svc.getById(id);
-    if (!goal) {
+    if (!goal || !hasCompanyAccess(req, goal.companyId)) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, goal.companyId);
     res.json(goal);
   });
 
@@ -44,21 +41,16 @@ export function goalRoutes(db: Db) {
       entityId: goal.id,
       details: { title: goal.title },
     });
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      trackGoalCreated(telemetryClient, { goalLevel: goal.level });
-    }
     res.status(201).json(goal);
   });
 
   router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const goal = await svc.update(id, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
@@ -83,11 +75,10 @@ export function goalRoutes(db: Db) {
   router.delete("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
