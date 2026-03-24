@@ -57,7 +57,6 @@ import {
   Eye,
   EyeOff,
   Gem,
-  Key,
   ListTodo,
   Loader2,
   MousePointer2,
@@ -547,13 +546,23 @@ export function OnboardingWizard() {
             setError("Please enter your API key.");
             return;
           }
-          const envKeyName = byokProvider === "anthropic"
-            ? "ANTHROPIC_API_KEY"
-            : "OPENAI_API_KEY";
+          // Infer provider from adapter type; pi/opencode use the explicit byokProvider toggle
+          const resolvedProvider = (adapterType === "pi_local" || adapterType === "opencode_local")
+            ? byokProvider
+            : adapterType === "codex_local" ? "openai"
+            : adapterType === "gemini_local" ? "google"
+            : "anthropic";
+          const envKeyMap: Record<string, string> = {
+            anthropic: "ANTHROPIC_API_KEY",
+            openai: "OPENAI_API_KEY",
+            google: "GOOGLE_AI_API_KEY",
+          };
+          const envKeyName = envKeyMap[resolvedProvider] ?? "ANTHROPIC_API_KEY";
+          const providerLabel = resolvedProvider.charAt(0).toUpperCase() + resolvedProvider.slice(1);
           const secret = await secretsApi.create(createdCompanyId, {
             name: envKeyName,
             value: byokApiKey.trim(),
-            description: `${byokProvider === "anthropic" ? "Anthropic" : "OpenAI"} API key for BYOK inference`,
+            description: `${providerLabel} API key for BYOK inference`,
           });
           await companiesApi.update(createdCompanyId, { inferenceMode: "byok" });
           finalAdapterConfig = {
@@ -997,113 +1006,8 @@ export function OnboardingWizard() {
                   </div>
                   )}
 
-                  {/* Cloud sandbox: inference mode picker */}
-                  {cloudSandboxEnabled && (
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-2 block">
-                        API key
-                      </label>
-                      <div className="space-y-2">
-                        {managedInferenceEnabled && (
-                          <button
-                            className={cn(
-                              "flex items-start gap-3 w-full rounded-md border p-3 text-left text-xs transition-colors relative",
-                              inferenceChoice === "managed"
-                                ? "border-foreground bg-accent"
-                                : "border-border hover:bg-accent/50"
-                            )}
-                            onClick={() => setInferenceChoice("managed")}
-                          >
-                            <Cloud className="h-4 w-4 mt-0.5 shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium">Managed</span>
-                                <span className="bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
-                                  Recommended
-                                </span>
-                              </div>
-                              <p className="text-muted-foreground text-[10px] mt-0.5">
-                                Billed to your Paperclip account. No API key needed.
-                              </p>
-                            </div>
-                          </button>
-                        )}
-                        <button
-                          className={cn(
-                            "flex items-start gap-3 w-full rounded-md border p-3 text-left text-xs transition-colors",
-                            inferenceChoice === "byok"
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => setInferenceChoice("byok")}
-                        >
-                          <Key className="h-4 w-4 mt-0.5 shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <span className="font-medium">Bring your own key</span>
-                            <p className="text-muted-foreground text-[10px] mt-0.5">
-                              Use your own Anthropic or OpenAI API key.
-                            </p>
-                          </div>
-                        </button>
-                      </div>
-
-                      {/* BYOK expanded form */}
-                      {inferenceChoice === "byok" && (
-                        <div className="mt-3 space-y-3 rounded-md border border-border p-3">
-                          <div>
-                            <label className="text-xs text-muted-foreground mb-1 block">
-                              Provider
-                            </label>
-                            <div className="grid grid-cols-2 gap-2">
-                              {([
-                                { value: "anthropic" as const, label: "Anthropic" },
-                                { value: "openai" as const, label: "OpenAI" },
-                              ]).map((opt) => (
-                                <button
-                                  key={opt.value}
-                                  className={cn(
-                                    "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
-                                    byokProvider === opt.value
-                                      ? "border-foreground bg-accent"
-                                      : "border-border hover:bg-accent/50"
-                                  )}
-                                  onClick={() => setByokProvider(opt.value)}
-                                >
-                                  {opt.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted-foreground mb-1 block">
-                              API key
-                            </label>
-                            <div className="relative">
-                              <input
-                                className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                                type={byokKeyVisible ? "text" : "password"}
-                                placeholder={byokProvider === "anthropic" ? "sk-ant-..." : "sk-..."}
-                                value={byokApiKey}
-                                onChange={(e) => setByokApiKey(e.target.value)}
-                              />
-                              <button
-                                type="button"
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                                onClick={() => setByokKeyVisible((v) => !v)}
-                              >
-                                {byokKeyVisible
-                                  ? <EyeOff className="h-3.5 w-3.5" />
-                                  : <Eye className="h-3.5 w-3.5" />}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Conditional adapter fields */}
-                  {!cloudSandboxEnabled && isLocalAdapter && (
+                  {/* Conditional adapter fields: model selector */}
+                  {isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1202,6 +1106,104 @@ export function OnboardingWizard() {
                           </PopoverContent>
                         </Popover>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Cloud sandbox: smart API key input */}
+                  {cloudSandboxEnabled && (
+                    <div className="space-y-3">
+                      {/* Provider selector: only for pi/opencode which support multiple providers */}
+                      {(adapterType === "pi_local" || adapterType === "opencode_local") && (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Provider
+                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            {([
+                              { value: "anthropic" as const, label: "Anthropic" },
+                              { value: "openai" as const, label: "OpenAI" },
+                            ]).map((opt) => (
+                              <button
+                                key={opt.value}
+                                className={cn(
+                                  "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                                  byokProvider === opt.value
+                                    ? "border-foreground bg-accent"
+                                    : "border-border hover:bg-accent/50"
+                                )}
+                                onClick={() => setByokProvider(opt.value)}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {inferenceChoice === "byok" && (
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            {(() => {
+                              if (adapterType === "pi_local" || adapterType === "opencode_local") return "API key";
+                              if (adapterType === "codex_local") return "OpenAI API key";
+                              if (adapterType === "gemini_local") return "Google AI API key";
+                              return "Anthropic API key";
+                            })()}
+                          </label>
+                          <div className="relative">
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                              type={byokKeyVisible ? "text" : "password"}
+                              placeholder={(() => {
+                                if (adapterType === "pi_local" || adapterType === "opencode_local")
+                                  return byokProvider === "anthropic" ? "sk-ant-..." : "sk-...";
+                                if (adapterType === "codex_local") return "sk-...";
+                                if (adapterType === "gemini_local") return "AIza...";
+                                return "sk-ant-...";
+                              })()}
+                              value={byokApiKey}
+                              onChange={(e) => setByokApiKey(e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                              onClick={() => setByokKeyVisible((v) => !v)}
+                            >
+                              {byokKeyVisible
+                                ? <EyeOff className="h-3.5 w-3.5" />
+                                : <Eye className="h-3.5 w-3.5" />}
+                            </button>
+                          </div>
+                          {managedInferenceEnabled && (
+                            <button
+                              className="text-[10px] text-muted-foreground hover:text-foreground mt-1.5 transition-colors"
+                              onClick={() => { setInferenceChoice("managed"); setByokApiKey(""); }}
+                            >
+                              or use managed inference (no key needed)
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {inferenceChoice === "managed" && (
+                        <div className="rounded-md border border-border p-3">
+                          <div className="flex items-start gap-2">
+                            <Cloud className="h-4 w-4 mt-0.5 shrink-0 text-green-500" />
+                            <div>
+                              <p className="text-xs font-medium">Managed inference</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                Billed to your Paperclip account. No API key needed.
+                              </p>
+                              <button
+                                className="text-[10px] text-muted-foreground hover:text-foreground mt-1 transition-colors"
+                                onClick={() => setInferenceChoice("byok")}
+                              >
+                                use your own key instead
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
