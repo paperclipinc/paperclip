@@ -17,60 +17,34 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
 
-  // Check that the namespace env var or config is set
-  const namespace = (config.namespace as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "";
-  if (!namespace) {
+  const namespace = (config.namespace as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "default";
+  const image = (config.runtimeImage as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest";
+
+  if (!namespace || namespace === "default") {
     checks.push({
       code: "cloud_sandbox_namespace_missing",
       level: "warn",
-      message: "No namespace configured; will default to \"default\".",
-      hint: "Set PAPERCLIP_CLOUD_SANDBOX_NAMESPACE or adapterConfig.namespace.",
-    });
-  } else {
-    checks.push({
-      code: "cloud_sandbox_namespace_configured",
-      level: "info",
-      message: `Target namespace: ${namespace}`,
+      message: "No dedicated namespace configured for sandbox pods.",
+      hint: "Set PAPERCLIP_CLOUD_SANDBOX_NAMESPACE.",
     });
   }
 
-  // Check runtime image
-  const image = (config.runtimeImage as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "";
-  if (!image) {
-    checks.push({
-      code: "cloud_sandbox_image_missing",
-      level: "warn",
-      message: "No runtime image configured; will default to ghcr.io/paperclipinc/agent-multi:latest.",
-      hint: "Set PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE or adapterConfig.runtimeImage.",
-    });
-  } else {
-    checks.push({
-      code: "cloud_sandbox_image_configured",
-      level: "info",
-      message: `Runtime image: ${image}`,
-    });
-  }
-
-  // Check K8s connectivity by attempting to load config
+  // Verify the sandbox runtime is reachable
   try {
-    // Dynamic import so the test doesn't fail at import-time if the k8s
-    // client-node package is missing (it's only needed at runtime).
     const { K8sClient } = await import("./k8s-client.js");
     const client = new K8sClient();
-    const ns = namespace || "default";
-    // Attempt to list pods to verify API access
-    await client.listSandboxPods(ns);
+    await client.listSandboxPods(namespace);
     checks.push({
-      code: "cloud_sandbox_k8s_reachable",
+      code: "cloud_sandbox_ready",
       level: "info",
-      message: "Kubernetes API is reachable and authorized.",
+      message: "Cloud sandbox is configured and ready.",
     });
   } catch (err) {
     checks.push({
-      code: "cloud_sandbox_k8s_unreachable",
+      code: "cloud_sandbox_unreachable",
       level: "error",
-      message: err instanceof Error ? err.message : "Cannot reach Kubernetes API.",
-      hint: "Ensure the server is running in-cluster with a valid ServiceAccount or has a local kubeconfig.",
+      message: "Cloud sandbox is not reachable. Agent runs may fail.",
+      hint: err instanceof Error ? err.message : "Check server logs for details.",
     });
   }
 
