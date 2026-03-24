@@ -41,6 +41,8 @@ interface ParsedConfig {
   persistenceEnabled: boolean;
   persistenceStorageClass: string;
   persistenceSize: string;
+  nodeSelector: Record<string, string> | undefined;
+  tolerations: Array<{ key: string; operator?: string; value?: string; effect?: string }> | undefined;
 }
 
 function parseConfig(config: Record<string, unknown>): ParsedConfig {
@@ -57,6 +59,8 @@ function parseConfig(config: Record<string, unknown>): ParsedConfig {
     persistenceEnabled: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_ENABLED === "true",
     persistenceStorageClass: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_STORAGE_CLASS || "",
     persistenceSize: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_SIZE || "10Gi",
+    nodeSelector: process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR) : undefined,
+    tolerations: process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS) : undefined,
   };
 }
 
@@ -189,6 +193,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         limits: { cpu: config.resources.cpu || "4", memory: config.resources.memory || "8Gi" },
       } : undefined,
       persistence,
+      nodeSelector: config.nodeSelector,
+      tolerations: config.tolerations,
     });
 
     await client.waitForReady(name, namespace);

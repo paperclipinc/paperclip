@@ -100,6 +100,8 @@ export interface Config {
   cloudSandboxPersistenceStorageClass: string;
   cloudSandboxPersistenceSize: string;
   cloudSandboxMultiNamespace: boolean;
+  cloudSandboxNodeSelector: Record<string, string> | undefined;
+  cloudSandboxTolerations: Array<{ key: string; operator?: string; value?: string; effect?: string }> | undefined;
   // Managed inference
   managedInferenceApiKey: string | undefined;
   managedInferenceProvider: string;
@@ -373,6 +375,8 @@ export function loadConfig(): Config {
     cloudSandboxPersistenceStorageClass: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_STORAGE_CLASS || "",
     cloudSandboxPersistenceSize: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_SIZE || "10Gi",
     cloudSandboxMultiNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_MULTI_NAMESPACE === "true",
+    cloudSandboxNodeSelector: process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR) : undefined,
+    cloudSandboxTolerations: process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS) : undefined,
     // Managed inference
     managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
     managedInferenceProvider: process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic",

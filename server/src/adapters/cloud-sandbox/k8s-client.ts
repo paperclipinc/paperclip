@@ -15,6 +15,8 @@ export interface SandboxPodOptions {
   env: Array<{ name: string; value: string }>;
   resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
   persistence?: PersistenceOptions;
+  nodeSelector?: Record<string, string>;
+  tolerations?: Array<{ key: string; operator?: string; value?: string; effect?: string }>;
 }
 
 export interface ExecOptions {
@@ -135,6 +137,8 @@ export class K8sClient {
         },
         automountServiceAccountToken: false,
         restartPolicy: "Never",
+        ...(opts.nodeSelector ? { nodeSelector: opts.nodeSelector } : {}),
+        ...(opts.tolerations ? { tolerations: opts.tolerations } : {}),
       },
     };
 
