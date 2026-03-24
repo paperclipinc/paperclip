@@ -248,6 +248,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let exitCode = -1;
   let timedOut = false;
   let stdoutBuffer = "";
+  let lineBuffer = "";
+
+  // Parse stream-json lines and only surface meaningful content to the transcript
+  function handleStdout(data: string): void {
+    stdoutBuffer += data;
+    lineBuffer += data;
+    const lines = lineBuffer.split("\n");
+    lineBuffer = lines.pop() ?? ""; // keep incomplete line in buffer
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "assistant" && event.message?.content) {
+          for (const block of event.message.content) {
+            if (block.type === "text" && block.text) {
+              void ctx.onLog("stdout", block.text + "\n");
+            } else if (block.type === "tool_use") {
+              void ctx.onLog("stdout", `[tool: ${block.name}]\n`);
+            }
+          }
+        } else if (event.type === "result") {
+          if (event.is_error && event.result) {
+            // Error result is handled separately via cliError extraction
+          } else if (event.result) {
+            void ctx.onLog("stdout", event.result + "\n");
+          }
+        }
+        // Skip system init, raw message objects, etc.
+      } catch {
+        // Not JSON - pass through as-is (e.g. non-stream-json output)
+        void ctx.onLog("stdout", line + "\n");
+      }
+    }
+  }
 
   try {
     const result = await client.exec({
@@ -256,7 +290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command: ["sh", "-c", setupAndRun],
       env: execEnv,
       stdin: ctx.context.prompt as string | undefined,
-      onStdout: (data) => { stdoutBuffer += data; void ctx.onLog("stdout", data); },
+      onStdout: handleStdout,
       onStderr: (data) => { void ctx.onLog("stderr", data); },
       timeoutMs: config.timeoutSec * 1000,
     });
