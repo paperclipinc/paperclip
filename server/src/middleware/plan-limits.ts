@@ -7,7 +7,7 @@ interface PlanQuotas {
   maxAgents: number | null;
   maxIssues: number | null;
   maxProjects: number | null;
-  maxStorageBytes: string | null; // bigint comes as string from pg
+  maxStorageBytes: number | null;
 }
 
 export function planLimits(db: Db) {

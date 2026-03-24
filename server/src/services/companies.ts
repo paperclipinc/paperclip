@@ -330,8 +330,7 @@ export function companyService(db: Db) {
         // Approvals
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
-        // Secrets
-        await tx.delete(companySecretVersions).where(eq(companySecretVersions.companyId, id));
+        // Secrets (versions cascade-delete via FK on secretId)
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         // Access
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
