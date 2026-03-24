@@ -15,6 +15,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    inferenceMode: "byok",
     brandColor: null,
     logoAssetId: null,
     logoUrl: null,
