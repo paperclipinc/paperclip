@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
@@ -60,6 +60,19 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (!agent) throw notFound("Agent not found");
       if (agent.companyId !== companyId) {
         throw unprocessable("Agent does not belong to company");
+      }
+
+      // Validate heartbeat run belongs to the reporting agent
+      if (data.heartbeatRunId) {
+        const run = await db
+          .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, data.heartbeatRunId))
+          .then((rows) => rows[0] ?? null);
+        if (!run) throw notFound("Heartbeat run not found");
+        if (run.companyId !== companyId || run.agentId !== data.agentId) {
+          throw unprocessable("Heartbeat run does not belong to reporting agent");
+        }
       }
 
       const event = await db

@@ -456,6 +456,19 @@ export async function startServer(): Promise<StartedServer> {
         throw new Error("authenticated public exposure requires auth.publicBaseUrl");
       }
     }
+
+    const rawBetterAuthSecret = process.env.BETTER_AUTH_SECRET?.trim();
+    if (!rawBetterAuthSecret || rawBetterAuthSecret === "paperclip-dev-secret") {
+      throw new Error(
+        "BETTER_AUTH_SECRET must be explicitly configured in authenticated deployment mode (cannot use default dev secret)",
+      );
+    }
+    if (!process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()) {
+      throw new Error("PAPERCLIP_AGENT_JWT_SECRET must be set in authenticated deployment mode");
+    }
+    if (rawBetterAuthSecret.length < 32) {
+      logger.warn("BETTER_AUTH_SECRET is shorter than 32 characters — consider using a stronger secret");
+    }
   }
   
   let authReady = config.deploymentMode === "local_trusted";
@@ -665,6 +678,15 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Periodically sweep runs that have been running longer than the maximum allowed duration.
+    setInterval(() => {
+      void heartbeat
+        .sweepStaleRuns()
+        .catch((err) => {
+          logger.error({ err }, "stale run sweep failed");
+        });
+    }, 60_000); // every minute
   }
   
   // Start OAuth connection token refresh job

@@ -65,3 +65,4 @@ export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
 export { subscriptionPlans, companySubscriptions } from "./subscriptions.js";
 export { connections } from "./connections.js";
+export { auditEvents } from "./audit_events.js";

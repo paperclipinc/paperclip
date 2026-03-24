@@ -1,4 +1,6 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import helmet from "helmet";
+import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -131,13 +133,37 @@ export async function createApp(
   const app = express();
 
   app.use(express.json({
-    // Company import/export payloads can inline full portable packages.
-    limit: "10mb",
+    limit: "1mb",
     verify: (req, _res, buf) => {
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
   app.use(httpLogger);
+
+  // Security headers
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // Optional CORS – set PAPERCLIP_CORS_ORIGIN to a comma-separated list of allowed origins
+  const corsOrigin = process.env.PAPERCLIP_CORS_ORIGIN;
+  if (corsOrigin) {
+    app.use(cors({
+      origin: corsOrigin.split(",").map(s => s.trim()),
+      credentials: true,
+    }));
+  }
+
+  // Rate limiting (after security headers, before auth)
+  const { createGlobalRateLimit, createAuthRateLimit, createWebhookRateLimit } =
+    await import("./middleware/rate-limit.js");
+  const globalLimiter = await createGlobalRateLimit();
+  app.use(globalLimiter);
+
+  // Stricter rate limit for auth endpoints
+  const authLimiter = await createAuthRateLimit();
+  app.use("/api/auth", authLimiter);
 
   // Mount Stripe webhook route before auth middleware (needs raw body for signature verification)
   if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET) {

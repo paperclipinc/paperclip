@@ -31,7 +31,7 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 14_400),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };
@@ -65,9 +65,17 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  companySigningKey?: string,
+) {
   const config = jwtConfig();
   if (!config) return null;
+
+  const signingSecret = companySigningKey ?? config.secret;
 
   const now = Math.floor(Date.now() / 1000);
   const claims: LocalAgentJwtClaims = {
@@ -87,12 +95,15 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
   };
 
   const signingInput = `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
-  const signature = signPayload(config.secret, signingInput);
+  const signature = signPayload(signingSecret, signingInput);
 
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export async function verifyLocalAgentJwt(
+  token: string,
+  resolveCompanyKey?: (companyId: string) => Promise<string | null>,
+): Promise<LocalAgentJwtClaims | null> {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -101,23 +112,37 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (parts.length !== 3) return null;
   const [headerB64, claimsB64, signature] = parts;
 
+  // Parse header and claims WITHOUT verifying the signature first so we can
+  // extract company_id and resolve a per-company signing key.
   const header = parseJson(base64UrlDecode(headerB64));
   if (!header || header.alg !== JWT_ALGORITHM) return null;
-
-  const signingInput = `${headerB64}.${claimsB64}`;
-  const expectedSig = signPayload(config.secret, signingInput);
-  if (!safeCompare(signature, expectedSig)) return null;
 
   const claims = parseJson(base64UrlDecode(claimsB64));
   if (!claims) return null;
 
-  const sub = typeof claims.sub === "string" ? claims.sub : null;
   const companyId = typeof claims.company_id === "string" ? claims.company_id : null;
+  if (!companyId) return null;
+
+  // Determine the signing secret: prefer per-company key, fall back to instance-wide.
+  let signingSecret = config.secret;
+  if (resolveCompanyKey) {
+    const companyKey = await resolveCompanyKey(companyId);
+    if (companyKey) {
+      signingSecret = companyKey;
+    }
+  }
+
+  // Now verify the signature with the resolved secret.
+  const signingInput = `${headerB64}.${claimsB64}`;
+  const expectedSig = signPayload(signingSecret, signingInput);
+  if (!safeCompare(signature, expectedSig)) return null;
+
+  const sub = typeof claims.sub === "string" ? claims.sub : null;
   const adapterType = typeof claims.adapter_type === "string" ? claims.adapter_type : null;
   const runId = typeof claims.run_id === "string" ? claims.run_id : null;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
-  if (!sub || !companyId || !adapterType || !runId || !iat || !exp) return null;
+  if (!sub || !adapterType || !runId || !iat || !exp) return null;
 
   const now = Math.floor(Date.now() / 1000);
   if (exp < now) return null;

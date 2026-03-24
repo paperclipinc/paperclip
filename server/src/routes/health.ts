@@ -6,14 +6,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
-
-function shouldExposeFullHealthDetails(
-  actorType: "none" | "board" | "agent" | null | undefined,
-  deploymentMode: DeploymentMode,
-) {
-  if (deploymentMode !== "authenticated") return true;
-  return actorType === "board" || actorType === "agent";
-}
+import { assertBoard } from "./authz.js";
 
 export function healthRoutes(
   db?: Db,
@@ -37,30 +30,17 @@ export function healthRoutes(
 ) {
   const router = Router();
 
-  router.get("/", async (req, res) => {
-    const actorType = "actor" in req ? req.actor?.type : null;
-    const exposeFullDetails = shouldExposeFullHealthDetails(
-      actorType,
-      opts.deploymentMode,
-    );
+  // Public, no auth required
+  router.get("/", async (_req, res) => {
+    res.json({ status: "ok", version: serverVersion });
+  });
+
+  // Authenticated — full details
+  router.get("/details", async (req, res) => {
+    assertBoard(req);
 
     if (!db) {
-      res.json(
-        exposeFullDetails
-          ? { status: "ok", version: serverVersion }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
-      );
-      return;
-    }
-
-    try {
-      await db.execute(sql`SELECT 1`);
-    } catch {
-      res.status(503).json({
-        status: "unhealthy",
-        version: serverVersion,
-        error: "database_unreachable",
-      });
+      res.json({ status: "ok", version: serverVersion });
       return;
     }
 
@@ -94,7 +74,7 @@ export function healthRoutes(
 
     const persistedDevServerStatus = readPersistedDevServerStatus();
     let devServer: ReturnType<typeof toDevServerHealthStatus> | undefined;
-    if (persistedDevServerStatus && typeof (db as { select?: unknown }).select === "function") {
+    if (persistedDevServerStatus) {
       const instanceSettings = instanceSettingsService(db);
       const experimentalSettings = await instanceSettings.getExperimental();
       const activeRunCount = await db
@@ -107,16 +87,6 @@ export function healthRoutes(
         autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
         activeRunCount,
       });
-    }
-
-    if (!exposeFullDetails) {
-      res.json({
-        status: "ok",
-        deploymentMode: opts.deploymentMode,
-        bootstrapStatus,
-        bootstrapInviteActive,
-      });
-      return;
     }
 
     res.json({

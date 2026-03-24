@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, timestamp, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 export const subscriptionPlans = pgTable("subscription_plans", {
@@ -9,6 +9,9 @@ export const subscriptionPlans = pgTable("subscription_plans", {
   maxAgents: integer("max_agents"),
   maxCompanies: integer("max_companies"),
   maxMonthlyCostCents: integer("max_monthly_cost_cents"),
+  maxStorageBytes: bigint("max_storage_bytes", { mode: "number" }),
+  maxIssues: integer("max_issues"),
+  maxProjects: integer("max_projects"),
   features: text("features"),
   sortOrder: integer("sort_order").notNull().default(0),
   active: boolean("active").notNull().default(true),

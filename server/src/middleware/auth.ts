@@ -109,7 +109,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      const claims = await verifyLocalAgentJwt(token);
       if (!claims) {
         next();
         return;

@@ -76,6 +76,12 @@ type PluginUiContribution = {
   launchers: PluginLauncherDeclaration[];
 };
 
+/**
+ * Maximum size (in bytes) for webhook payloads stored in the database.
+ * Payloads exceeding this limit are replaced with a truncation marker.
+ */
+const MAX_WEBHOOK_PAYLOAD_BYTES = 256 * 1024; // 256KB
+
 /** Request body for POST /api/plugins/install */
 interface PluginInstallRequest {
   /** npm package name (e.g., @paperclip/plugin-linear) or local path */
@@ -1968,7 +1974,18 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    // Step 6: Truncate oversized payloads before storing
+    let storedPayload: Record<string, unknown> = payload;
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > MAX_WEBHOOK_PAYLOAD_BYTES) {
+      storedPayload = {
+        _truncated: true,
+        _originalSize: payloadJson.length,
+        _message: "Payload exceeded 256KB limit and was truncated",
+      };
+    }
+
+    // Step 7: Record the delivery in the database
     const startedAt = new Date();
     const [delivery] = await db
       .insert(pluginWebhookDeliveries)
@@ -1976,13 +1993,13 @@ export function pluginRoutes(
         pluginId: plugin.id,
         webhookKey: endpointKey,
         status: "pending",
-        payload,
+        payload: storedPayload,
         headers: rawHeaders,
         startedAt,
       })
       .returning({ id: pluginWebhookDeliveries.id });
 
-    // Step 7: Dispatch to the worker via handleWebhook RPC
+    // Step 8: Dispatch to the worker via handleWebhook RPC
     try {
       await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
         endpointKey,
@@ -1992,7 +2009,7 @@ export function pluginRoutes(
         requestId,
       });
 
-      // Step 8: Update delivery record to success
+      // Step 9: Update delivery record to success
       const finishedAt = new Date();
       const durationMs = finishedAt.getTime() - startedAt.getTime();
       await db
@@ -2009,7 +2026,7 @@ export function pluginRoutes(
         status: "success",
       });
     } catch (err) {
-      // Step 8 (error): Update delivery record to failed
+      // Step 9 (error): Update delivery record to failed
       const finishedAt = new Date();
       const durationMs = finishedAt.getTime() - startedAt.getTime();
       const errorMessage = err instanceof Error ? err.message : String(err);
