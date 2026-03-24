@@ -184,13 +184,18 @@ export class K8sClient {
   async exec(opts: ExecOptions): Promise<ExecResult> {
     const exec = new k8s.Exec(this.kc);
 
-    // Build the command: wrap in env + sh to pass per-exec env vars
+    // Build the command: inject env vars into the shell command
     let shellCommand: string[];
     if (opts.env && Object.keys(opts.env).length > 0) {
-      const envPrefix = Object.entries(opts.env)
-        .map(([k, v]) => `${k}=${shellEscape(v)}`)
-        .join(" ");
-      shellCommand = ["sh", "-c", `env ${envPrefix} ${opts.command.join(" ")}`];
+      const envExports = Object.entries(opts.env)
+        .map(([k, v]) => `export ${k}=${shellEscape(v)}`)
+        .join(" && ");
+      // If the command is already ["sh", "-c", "..."], prepend env exports to the inner script
+      if (opts.command[0] === "sh" && opts.command[1] === "-c" && opts.command.length === 3) {
+        shellCommand = ["sh", "-c", `${envExports} && ${opts.command[2]}`];
+      } else {
+        shellCommand = ["sh", "-c", `${envExports} && ${opts.command.join(" ")}`];
+      }
     } else {
       shellCommand = opts.command;
     }
