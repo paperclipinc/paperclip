@@ -127,19 +127,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
-  // Inject platform-managed inference API key when inferenceMode is "managed"
+  // Inject platform-managed inference API keys when inferenceMode is "managed"
+  // Each provider has its own env var: PAPERCLIP_MANAGED_ANTHROPIC_API_KEY, etc.
+  // The adapter injects all available platform keys so agents can use any provider.
   const inferenceMode = ctx.context.inferenceMode as string | undefined;
-  const managedApiKey = process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim();
-  if (inferenceMode === "managed" && managedApiKey) {
+  if (inferenceMode === "managed") {
     const existingKeys = new Set(podEnv.map((e) => e.name));
-    const provider = process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic";
-    if (provider === "openai" || config.runtime === "codex") {
-      if (!existingKeys.has("OPENAI_API_KEY")) {
-        podEnv.push({ name: "OPENAI_API_KEY", value: managedApiKey });
+    const managedKeys: Array<{ envKey: string; source: string }> = [
+      { envKey: "ANTHROPIC_API_KEY", source: "PAPERCLIP_MANAGED_ANTHROPIC_API_KEY" },
+      { envKey: "OPENAI_API_KEY", source: "PAPERCLIP_MANAGED_OPENAI_API_KEY" },
+      { envKey: "GEMINI_API_KEY", source: "PAPERCLIP_MANAGED_GEMINI_API_KEY" },
+      { envKey: "OPENROUTER_API_KEY", source: "PAPERCLIP_MANAGED_OPENROUTER_API_KEY" },
+    ];
+    for (const { envKey, source } of managedKeys) {
+      const value = process.env[source]?.trim();
+      if (value && !existingKeys.has(envKey)) {
+        podEnv.push({ name: envKey, value });
       }
-    } else {
-      if (!existingKeys.has("ANTHROPIC_API_KEY")) {
-        podEnv.push({ name: "ANTHROPIC_API_KEY", value: managedApiKey });
+    }
+    // Legacy single-key fallback
+    const legacyKey = process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim();
+    if (legacyKey) {
+      const legacyProvider = process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic";
+      const legacyEnvMap: Record<string, string> = {
+        anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY",
+        google: "GEMINI_API_KEY", openrouter: "OPENROUTER_API_KEY",
+      };
+      const legacyEnvKey = legacyEnvMap[legacyProvider] ?? "ANTHROPIC_API_KEY";
+      if (!existingKeys.has(legacyEnvKey) && !podEnv.some(e => e.name === legacyEnvKey)) {
+        podEnv.push({ name: legacyEnvKey, value: legacyKey });
       }
     }
   }

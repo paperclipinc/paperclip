@@ -104,6 +104,7 @@ export interface Config {
   cloudSandboxTolerations: Array<{ key: string; operator?: string; value?: string; effect?: string }> | undefined;
   // Managed inference
   managedInferenceApiKey: string | undefined;
+  managedInferenceEnabled: boolean;
   managedInferenceProvider: string;
   managedInferenceModel: string;
 }
@@ -379,6 +380,13 @@ export function loadConfig(): Config {
     cloudSandboxTolerations: process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS) : undefined,
     // Managed inference
     managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
+    managedInferenceEnabled: !!(
+      process.env.PAPERCLIP_MANAGED_ANTHROPIC_API_KEY?.trim() ||
+      process.env.PAPERCLIP_MANAGED_OPENAI_API_KEY?.trim() ||
+      process.env.PAPERCLIP_MANAGED_GEMINI_API_KEY?.trim() ||
+      process.env.PAPERCLIP_MANAGED_OPENROUTER_API_KEY?.trim() ||
+      process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim()
+    ),
     managedInferenceProvider: process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic",
     managedInferenceModel: process.env.PAPERCLIP_MANAGED_INFERENCE_MODEL || "claude-sonnet-4-6",
   };

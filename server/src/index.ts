@@ -556,7 +556,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     emailEnabled,
     cloudSandboxEnabled: config.cloudSandboxEnabled,
-    managedInferenceEnabled: !!config.managedInferenceApiKey,
+    managedInferenceEnabled: config.managedInferenceEnabled,
     betterAuthHandler,
     resolveSession,
   });
