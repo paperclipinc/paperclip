@@ -136,7 +136,7 @@ export function OnboardingWizard() {
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
   const [inferenceChoice, setInferenceChoice] = useState<InferenceChoice>("managed");
   const [byokApiKey, setByokApiKey] = useState("");
-  const [byokProvider, setByokProvider] = useState<"anthropic" | "openai">("anthropic");
+  const [byokProvider, setByokProvider] = useState<"anthropic" | "openai" | "google" | "openrouter">("anthropic");
   const [byokKeyVisible, setByokKeyVisible] = useState(false);
   const [cloudSandboxEnabled, setCloudSandboxEnabled] = useState(false);
   const [managedInferenceEnabled, setManagedInferenceEnabled] = useState(false);
@@ -545,8 +545,9 @@ export function OnboardingWizard() {
             setError("Please enter your API key.");
             return;
           }
-          // Infer provider from adapter type; pi/opencode use the explicit byokProvider toggle
-          const resolvedProvider = (adapterType === "pi_local" || adapterType === "opencode_local")
+          // Infer provider from adapter type; multi-provider adapters use the explicit byokProvider toggle
+          const multiProviderAdapter = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
+          const resolvedProvider = multiProviderAdapter
             ? byokProvider
             : adapterType === "codex_local" ? "openai"
             : adapterType === "gemini_local" ? "google"
@@ -554,7 +555,8 @@ export function OnboardingWizard() {
           const envKeyMap: Record<string, string> = {
             anthropic: "ANTHROPIC_API_KEY",
             openai: "OPENAI_API_KEY",
-            google: "GOOGLE_AI_API_KEY",
+            google: "GEMINI_API_KEY",
+            openrouter: "OPENROUTER_API_KEY",
           };
           const envKeyName = envKeyMap[resolvedProvider] ?? "ANTHROPIC_API_KEY";
           const providerLabel = resolvedProvider.charAt(0).toUpperCase() + resolvedProvider.slice(1);
@@ -1122,21 +1124,23 @@ export function OnboardingWizard() {
 
                       {inferenceChoice === "byok" && (
                         <>
-                          {/* Provider selector: only for pi/opencode which support multiple providers */}
-                          {(adapterType === "pi_local" || adapterType === "opencode_local") && (
+                          {/* Provider selector for multi-provider adapters */}
+                          {(adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor") && (
                             <div>
                               <label className="text-xs text-muted-foreground mb-1 block">
                                 Provider
                               </label>
-                              <div className="grid grid-cols-2 gap-2">
+                              <div className="flex flex-wrap gap-1.5">
                                 {([
                                   { value: "anthropic" as const, label: "Anthropic" },
                                   { value: "openai" as const, label: "OpenAI" },
+                                  { value: "google" as const, label: "Google" },
+                                  { value: "openrouter" as const, label: "OpenRouter" },
                                 ]).map((opt) => (
                                   <button
                                     key={opt.value}
                                     className={cn(
-                                      "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                                      "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
                                       byokProvider === opt.value
                                         ? "border-foreground bg-accent"
                                         : "border-border hover:bg-accent/50"
@@ -1152,9 +1156,13 @@ export function OnboardingWizard() {
                           <div>
                             <label className="text-xs text-muted-foreground mb-1 block">
                               {(() => {
-                                if (adapterType === "pi_local" || adapterType === "opencode_local") return "API key";
+                                const multiProvider = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
+                                if (multiProvider) {
+                                  const labels: Record<string, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", google: "Google AI API key", openrouter: "OpenRouter API key" };
+                                  return labels[byokProvider] ?? "API key";
+                                }
                                 if (adapterType === "codex_local") return "OpenAI API key";
-                                if (adapterType === "gemini_local") return "Google AI API key";
+                                if (adapterType === "gemini_local") return "Gemini API key";
                                 return "Anthropic API key";
                               })()}
                             </label>
@@ -1163,8 +1171,9 @@ export function OnboardingWizard() {
                                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                                 type={byokKeyVisible ? "text" : "password"}
                                 placeholder={(() => {
-                                  if (adapterType === "pi_local" || adapterType === "opencode_local")
-                                    return byokProvider === "anthropic" ? "sk-ant-..." : "sk-...";
+                                  const placeholders: Record<string, string> = { anthropic: "sk-ant-...", openai: "sk-...", google: "AIza...", openrouter: "sk-or-..." };
+                                  const multiProvider = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
+                                  if (multiProvider) return placeholders[byokProvider] ?? "...";
                                   if (adapterType === "codex_local") return "sk-...";
                                   if (adapterType === "gemini_local") return "AIza...";
                                   return "sk-ant-...";
