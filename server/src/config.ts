@@ -96,6 +96,14 @@ export interface Config {
   cloudSandboxNamespace: string;
   cloudSandboxDefaultImage: string;
   cloudSandboxIdleTimeoutMin: number;
+  cloudSandboxPersistenceEnabled: boolean;
+  cloudSandboxPersistenceStorageClass: string;
+  cloudSandboxPersistenceSize: string;
+  cloudSandboxMultiNamespace: boolean;
+  // Managed inference
+  managedInferenceApiKey: string | undefined;
+  managedInferenceProvider: string;
+  managedInferenceModel: string;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -361,5 +369,13 @@ export function loadConfig(): Config {
     cloudSandboxNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "",
     cloudSandboxDefaultImage: process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest",
     cloudSandboxIdleTimeoutMin: parseInt(process.env.PAPERCLIP_CLOUD_SANDBOX_IDLE_TIMEOUT_MIN || "30", 10),
+    cloudSandboxPersistenceEnabled: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_ENABLED === "true",
+    cloudSandboxPersistenceStorageClass: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_STORAGE_CLASS || "",
+    cloudSandboxPersistenceSize: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_SIZE || "10Gi",
+    cloudSandboxMultiNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_MULTI_NAMESPACE === "true",
+    // Managed inference
+    managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
+    managedInferenceProvider: process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic",
+    managedInferenceModel: process.env.PAPERCLIP_MANAGED_INFERENCE_MODEL || "claude-sonnet-4-6",
   };
 }

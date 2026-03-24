@@ -120,6 +120,7 @@ export async function createApp(
     companyDeletionEnabled: boolean;
     emailEnabled: boolean;
     cloudSandboxEnabled: boolean;
+    managedInferenceEnabled: boolean;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -199,6 +200,7 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
       emailEnabled: opts.emailEnabled,
       cloudSandboxEnabled: opts.cloudSandboxEnabled,
+      managedInferenceEnabled: opts.managedInferenceEnabled,
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));

@@ -1,4 +1,4 @@
-import type { CompanyStatus, PauseReason } from "../constants.js";
+import type { CompanyStatus, InferenceMode, PauseReason } from "../constants.js";
 
 export interface Company {
   id: string;
@@ -16,6 +16,7 @@ export interface Company {
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  inferenceMode: InferenceMode;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

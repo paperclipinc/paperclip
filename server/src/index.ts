@@ -556,6 +556,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     emailEnabled,
     cloudSandboxEnabled: config.cloudSandboxEnabled,
+    managedInferenceEnabled: !!config.managedInferenceApiKey,
     betterAuthHandler,
     resolveSession,
   });
@@ -668,6 +669,17 @@ export async function startServer(): Promise<StartedServer> {
   
   // Start OAuth connection token refresh job
   startConnectionRefreshJob(db as any);
+
+  // Start idle reaper for cloud sandbox pods
+  if (config.cloudSandboxEnabled) {
+    const { K8sClient } = await import("./adapters/cloud-sandbox/k8s-client.js");
+    const { startIdleReaper } = await import("./adapters/cloud-sandbox/idle-reaper.js");
+    startIdleReaper(new K8sClient(), config.cloudSandboxNamespace, config.cloudSandboxIdleTimeoutMin);
+    logger.info(
+      { namespace: config.cloudSandboxNamespace, idleTimeoutMin: config.cloudSandboxIdleTimeoutMin },
+      "Cloud sandbox idle reaper started",
+    );
+  }
 
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

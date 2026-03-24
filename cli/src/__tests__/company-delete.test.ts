@@ -15,10 +15,14 @@ function makeCompany(overrides: Partial<Company>): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+<<<<<<< HEAD
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
+=======
+    inferenceMode: "byok",
+>>>>>>> a3dc7835 (feat: managed inference, onboarding simplification, and production hardening (#22))
     brandColor: null,
     logoAssetId: null,
     logoUrl: null,

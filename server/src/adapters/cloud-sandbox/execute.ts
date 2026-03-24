@@ -1,5 +1,25 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
+import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
+
+/**
+ * Extracts the result event from Claude Code stream-json stdout output.
+ * Claude Code emits one JSON object per line; the result event has type "result".
+ */
+export function extractStreamJsonResult(stdout: string): Record<string, unknown> | null {
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.type === "result") return parsed;
+    } catch {
+      // Not valid JSON, skip
+    }
+  }
+  return null;
+}
 
 let sharedClient: K8sClient | null = null;
 
@@ -8,22 +28,48 @@ function getClient(): K8sClient {
   return sharedClient;
 }
 
-function parseConfig(config: Record<string, unknown>) {
+interface ParsedConfig {
+  runtime: string;
+  model: string;
+  image: string;
+  isolation: string;
+  namespace: string;
+  multiNamespace: boolean;
+  timeoutSec: number;
+  resources: { cpu?: string; memory?: string } | undefined;
+  env: Record<string, string>;
+  persistenceEnabled: boolean;
+  persistenceStorageClass: string;
+  persistenceSize: string;
+}
+
+function parseConfig(config: Record<string, unknown>): ParsedConfig {
   return {
     runtime: (config.runtime as string) || "multi",
     model: (config.model as string) || "",
     image: (config.runtimeImage as string) || process.env.PAPERCLIP_CLOUD_SANDBOX_DEFAULT_IMAGE || "ghcr.io/paperclipinc/agent-multi:latest",
     isolation: (config.isolation as string) || "shared",
     namespace: process.env.PAPERCLIP_CLOUD_SANDBOX_NAMESPACE || "default",
+    multiNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_MULTI_NAMESPACE === "true",
     timeoutSec: (config.timeoutSec as number) || 600,
     resources: config.resources as { cpu?: string; memory?: string } | undefined,
     env: (config.env as Record<string, string>) || {},
+    persistenceEnabled: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_ENABLED === "true",
+    persistenceStorageClass: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_STORAGE_CLASS || "",
+    persistenceSize: process.env.PAPERCLIP_CLOUD_SANDBOX_PERSISTENCE_SIZE || "10Gi",
   };
 }
 
 function podName(companyId: string, agentId: string, isolation: string): string {
   const id = isolation === "isolated" ? agentId : companyId;
   return `pci-sandbox-${id.slice(0, 8)}`;
+}
+
+function resolveNamespace(config: ParsedConfig, companyId: string): string {
+  if (config.multiNamespace) {
+    return `pci-sandbox-${companyId.slice(0, 8)}`;
+  }
+  return config.namespace;
 }
 
 function resolveRuntimeCommand(runtime: string, model: string): string[] {
@@ -77,16 +123,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
 
+  // Inject platform-managed inference API key when inferenceMode is "managed"
+  const inferenceMode = ctx.context.inferenceMode as string | undefined;
+  const managedApiKey = process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim();
+  if (inferenceMode === "managed" && managedApiKey) {
+    const existingKeys = new Set(podEnv.map((e) => e.name));
+    const provider = process.env.PAPERCLIP_MANAGED_INFERENCE_PROVIDER || "anthropic";
+    if (provider === "openai" || config.runtime === "codex") {
+      if (!existingKeys.has("OPENAI_API_KEY")) {
+        podEnv.push({ name: "OPENAI_API_KEY", value: managedApiKey });
+      }
+    } else {
+      if (!existingKeys.has("ANTHROPIC_API_KEY")) {
+        podEnv.push({ name: "ANTHROPIC_API_KEY", value: managedApiKey });
+      }
+    }
+  }
+
+  // Resolve target namespace (per-company namespace when multi-namespace is enabled)
+  const namespace = resolveNamespace(config, companyId);
+
+  // Ensure the target namespace exists when multi-namespace isolation is enabled
+  if (config.multiNamespace) {
+    try {
+      await client.ensureNamespace(namespace, {
+        "paperclip.inc/role": "sandbox-namespace",
+        "paperclip.inc/company-id": companyId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to ensure sandbox namespace";
+      await ctx.onLog("stderr", `[cloud-sandbox] ${message}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: message,
+      };
+    }
+  }
+
   // Ensure NetworkPolicy restricts sandbox pod network access
-  await client.ensureSandboxNetworkPolicy(config.namespace, "paperclip").catch(() => {
+  await client.ensureSandboxNetworkPolicy(namespace, "paperclip").catch(() => {
     // Non-critical — may lack NetworkPolicy RBAC in some clusters
   });
+
+  // Build persistence options when PVC-backed workspaces are enabled
+  const persistence: PersistenceOptions | undefined = config.persistenceEnabled
+    ? {
+      pvcName: `pci-ws-${name}`,
+      storageClass: config.persistenceStorageClass || undefined,
+      size: config.persistenceSize,
+    }
+    : undefined;
 
   // Ensure the sandbox pod exists
   try {
     await client.ensurePod({
       name,
-      namespace: config.namespace,
+      namespace,
       labels,
       image: config.image,
       env: podEnv,
@@ -94,9 +188,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         requests: { cpu: config.resources.cpu || "500m", memory: config.resources.memory || "1Gi" },
         limits: { cpu: config.resources.cpu || "4", memory: config.resources.memory || "8Gi" },
       } : undefined,
+      persistence,
     });
 
-    await client.waitForReady(name, config.namespace);
+    await client.waitForReady(name, namespace);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create sandbox pod";
     await ctx.onLog("stderr", `[cloud-sandbox] ${message}\n`);
@@ -126,7 +221,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     command.join(" "),
   ].join(" && ");
 
-  await ctx.onLog("stdout", `[cloud-sandbox] Executing in pod ${name} (ns: ${config.namespace})\n`);
+  await ctx.onLog("stdout", `[cloud-sandbox] Executing in pod ${name} (ns: ${namespace})\n`);
 
   let exitCode = -1;
   let timedOut = false;
@@ -134,7 +229,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   try {
     const result = await client.exec({
       podName: name,
-      namespace: config.namespace,
+      namespace,
       command: ["sh", "-c", setupAndRun],
       env: execEnv,
       stdin: ctx.context.prompt as string | undefined,
@@ -156,7 +251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   // Update last-exec annotation for idle reaper
-  void client.updateLastExecAnnotation(name, config.namespace);
+  void client.updateLastExecAnnotation(name, namespace);
 
   return {
     exitCode,

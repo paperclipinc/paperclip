@@ -1,6 +1,12 @@
 import * as k8s from "@kubernetes/client-node";
 import { PassThrough } from "node:stream";
 
+export interface PersistenceOptions {
+  pvcName: string;
+  storageClass?: string;
+  size: string;
+}
+
 export interface SandboxPodOptions {
   name: string;
   namespace: string;
@@ -8,6 +14,7 @@ export interface SandboxPodOptions {
   image: string;
   env: Array<{ name: string; value: string }>;
   resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
+  persistence?: PersistenceOptions;
 }
 
 export interface ExecOptions {
@@ -64,6 +71,21 @@ export class K8sClient {
   }
 
   async createPod(opts: SandboxPodOptions): Promise<k8s.V1Pod> {
+    // When persistence is enabled, ensure the PVC exists before creating the pod
+    if (opts.persistence) {
+      await this.ensurePVC({
+        name: opts.persistence.pvcName,
+        namespace: opts.namespace,
+        storageClass: opts.persistence.storageClass,
+        size: opts.persistence.size,
+        labels: opts.labels,
+      });
+    }
+
+    const workspacesVolume: k8s.V1Volume = opts.persistence
+      ? { name: "workspaces", persistentVolumeClaim: { claimName: opts.persistence.pvcName } }
+      : { name: "workspaces", emptyDir: {} };
+
     const pod: k8s.V1Pod = {
       metadata: {
         name: opts.name,
@@ -102,7 +124,7 @@ export class K8sClient {
           },
         ],
         volumes: [
-          { name: "workspaces", emptyDir: {} },
+          workspacesVolume,
           { name: "agent-homes", emptyDir: {} },
         ],
         securityContext: {
@@ -239,6 +261,61 @@ export class K8sClient {
       labelSelector: "paperclip.inc/role=agent-sandbox",
     });
     return result.items;
+  }
+
+  async ensurePVC(opts: { name: string; namespace: string; storageClass?: string; size: string; labels: Record<string, string> }): Promise<void> {
+    try {
+      await this.coreApi.readNamespacedPersistentVolumeClaim({ name: opts.name, namespace: opts.namespace });
+      // PVC already exists
+      return;
+    } catch (err: unknown) {
+      if (!isNotFound(err)) throw err;
+    }
+
+    const pvc: k8s.V1PersistentVolumeClaim = {
+      metadata: {
+        name: opts.name,
+        namespace: opts.namespace,
+        labels: opts.labels,
+      },
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        resources: {
+          requests: { storage: opts.size },
+        },
+        ...(opts.storageClass ? { storageClassName: opts.storageClass } : {}),
+      },
+    };
+
+    await this.coreApi.createNamespacedPersistentVolumeClaim({ namespace: opts.namespace, body: pvc });
+  }
+
+  async deletePVC(name: string, namespace: string): Promise<void> {
+    try {
+      await this.coreApi.deleteNamespacedPersistentVolumeClaim({ name, namespace });
+    } catch (err: unknown) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+  }
+
+  async ensureNamespace(name: string, labels: Record<string, string>): Promise<void> {
+    try {
+      await this.coreApi.readNamespace({ name });
+      // Namespace already exists
+      return;
+    } catch (err: unknown) {
+      if (!isNotFound(err)) throw err;
+    }
+
+    const ns: k8s.V1Namespace = {
+      metadata: {
+        name,
+        labels,
+      },
+    };
+
+    await this.coreApi.createNamespace({ body: ns });
   }
 
   /**
