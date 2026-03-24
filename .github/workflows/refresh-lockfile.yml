@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -30,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Refresh pnpm lockfile
@@ -49,16 +50,30 @@ jobs:
             exit 1
           fi
 
-      - name: Commit and push lockfile
+      - name: Create PR to update lockfile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
             exit 0
           fi
 
+          branch="chore/refresh-lockfile"
           git config user.name "lockfile-bot"
           git config user.email "lockfile-bot@users.noreply.github.com"
 
+          git checkout -b "$branch"
           git add pnpm-lock.yaml
           git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
-          git push origin main
+          git push -f origin "$branch"
+
+          if gh pr view "$branch" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "PR already exists, updated branch."
+          else
+            gh pr create \
+              --title "chore(lockfile): refresh pnpm-lock.yaml" \
+              --body "Auto-generated lockfile refresh. Merge to unblock Docker builds." \
+              --head "$branch" \
+              --base main
+          fi
