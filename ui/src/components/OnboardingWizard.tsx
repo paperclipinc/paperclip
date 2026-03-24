@@ -506,14 +506,12 @@ export function OnboardingWizard() {
       if (useCloudSandbox) {
         finalAdapterType = "cloud_sandbox";
         const runtimeMap: Record<string, string> = {
-          claude_local: "claude",
           codex_local: "codex",
           gemini_local: "gemini",
           opencode_local: "opencode",
           pi_local: "pi",
-          cursor: "cursor",
         };
-        const runtime = runtimeMap[adapterType] ?? "claude";
+        const runtime = runtimeMap[adapterType] ?? "codex";
 
         if (inferenceChoice === "managed") {
           // Managed inference: platform provides API key
@@ -875,14 +873,12 @@ export function OnboardingWizard() {
                       {CLOUD_RUNTIME_OPTIONS.map((opt) => {
                         // Map cloud runtime values to local adapter types for state compatibility
                         const runtimeToAdapter: Record<string, AdapterType> = {
-                          claude: "claude_local",
                           codex: "codex_local",
                           gemini: "gemini_local",
                           opencode: "opencode_local",
                           pi: "pi_local",
-                          cursor: "cursor",
                         };
-                        const mappedAdapterType = runtimeToAdapter[opt.value] ?? "claude_local";
+                        const mappedAdapterType = runtimeToAdapter[opt.value] ?? "codex_local";
                         return (
                           <button
                             key={opt.value}

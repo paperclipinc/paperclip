@@ -53,7 +53,6 @@ RUN pnpm -r build \
 FROM base AS agent-clis
 
 RUN npm install --global --omit=dev \
-    @anthropic-ai/claude-code@2.1.81 \
     @openai/codex@0.116.0 \
     opencode-ai@1.3.0 \
   && npm cache clean --force \

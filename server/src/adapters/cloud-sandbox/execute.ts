@@ -3,8 +3,8 @@ import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
 
 /**
- * Extracts the result event from Claude Code stream-json stdout output.
- * Claude Code emits one JSON object per line; the result event has type "result".
+ * Extracts the result event from stream-json stdout output.
+ * The CLI emits one JSON object per line; the result event has type "result".
  */
 export function extractStreamJsonResult(stdout: string): Record<string, unknown> | null {
   const lines = stdout.split("\n");
@@ -78,19 +78,15 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
 
 function resolveRuntimeCommand(runtime: string, model: string): string[] {
   switch (runtime) {
-    case "claude":
-      return ["claude", "--print", "-", "--output-format", "stream-json", "--verbose",
-        ...(model ? ["--model", model] : []),
-        "--dangerously-skip-permissions"];
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
       return ["opencode"];
     default:
-      // multi — default to claude
-      return ["claude", "--print", "-", "--output-format", "stream-json", "--verbose",
-        "--dangerously-skip-permissions"];
+      // multi — default to codex
+      return ["codex", "--full-auto",
+        ...(model ? ["--model", model] : [])];
   }
 }
 
