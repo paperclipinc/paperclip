@@ -47,6 +47,7 @@ import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import {
   CLOUD_MODELS,
+  CLOUD_RUNTIME_OPTIONS,
   getAdapterProvider,
 } from "../lib/cloud-models";
 import type { ByokProvider } from "../lib/cloud-models";
@@ -904,8 +905,46 @@ export function OnboardingWizard() {
                     />
                   </div>
 
-                  {/* Adapter/runtime picker: always shown */}
-                  {(
+                  {/* Adapter/runtime picker */}
+                  {cloudSandboxEnabled ? (
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-2 block">
+                      Runtime
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {CLOUD_RUNTIME_OPTIONS.map((opt) => {
+                        // Map cloud runtime values to local adapter types for state compatibility
+                        const runtimeToAdapter: Record<string, AdapterType> = {
+                          claude: "claude_local",
+                          codex: "codex_local",
+                          gemini: "gemini_local",
+                          opencode: "opencode_local",
+                          pi: "pi_local",
+                          cursor: "cursor",
+                        };
+                        const mappedAdapterType = runtimeToAdapter[opt.value] ?? "claude_local";
+                        return (
+                          <button
+                            key={opt.value}
+                            className={cn(
+                              "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
+                              adapterType === mappedAdapterType
+                                ? "border-foreground bg-accent"
+                                : "border-border hover:bg-accent/50"
+                            )}
+                            onClick={() => {
+                              setAdapterType(mappedAdapterType);
+                              setModel("");
+                            }}
+                          >
+                            <Terminal className="h-4 w-4" />
+                            <span className="font-medium">{opt.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  ) : (
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type

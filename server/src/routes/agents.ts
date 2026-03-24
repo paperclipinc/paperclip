@@ -96,6 +96,7 @@ export function agentRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const cloudSandboxEnabled = process.env.PAPERCLIP_CLOUD_SANDBOX_ENABLED === "true";
 
   async function getCurrentUserRedactionOptions() {
     return {
@@ -1160,6 +1161,20 @@ export function agentRoutes(db: Db) {
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
+
+    // Cloud sandbox enforcement: only cloud_sandbox adapter type is allowed
+    if (cloudSandboxEnabled && hireInput.adapterType !== "cloud_sandbox") {
+      res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
+      return;
+    }
+
+    // Strip dangerous fields from cloud_sandbox adapterConfig
+    if (hireInput.adapterType === "cloud_sandbox" && hireInput.adapterConfig) {
+      const cfg = hireInput.adapterConfig as Record<string, unknown>;
+      delete cfg.command;
+      delete cfg.args;
+    }
+
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       ((hireInput.adapterConfig ?? {}) as Record<string, unknown>),
@@ -1323,6 +1338,20 @@ export function agentRoutes(db: Db) {
       desiredSkills: requestedDesiredSkills,
       ...createInput
     } = req.body;
+
+    // Cloud sandbox enforcement: only cloud_sandbox adapter type is allowed
+    if (cloudSandboxEnabled && createInput.adapterType !== "cloud_sandbox") {
+      res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
+      return;
+    }
+
+    // Strip dangerous fields from cloud_sandbox adapterConfig
+    if (createInput.adapterType === "cloud_sandbox" && createInput.adapterConfig) {
+      const cfg = createInput.adapterConfig as Record<string, unknown>;
+      delete cfg.command;
+      delete cfg.args;
+    }
+
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       ((createInput.adapterConfig ?? {}) as Record<string, unknown>),
@@ -1702,6 +1731,28 @@ export function agentRoutes(db: Db) {
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+
+    // Cloud sandbox enforcement: reject adapter type changes to non-cloud_sandbox
+    if (cloudSandboxEnabled) {
+      const requestedAdapterType =
+        typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType;
+      if (requestedAdapterType !== "cloud_sandbox") {
+        res.status(400).json({ error: "Only cloud_sandbox adapter type is allowed when cloud sandbox mode is enabled" });
+        return;
+      }
+    }
+
+    // Strip dangerous fields from cloud_sandbox adapterConfig
+    if (
+      (typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType) === "cloud_sandbox" &&
+      patchData.adapterConfig &&
+      typeof patchData.adapterConfig === "object"
+    ) {
+      const cfg = patchData.adapterConfig as Record<string, unknown>;
+      delete cfg.command;
+      delete cfg.args;
+    }
+
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     if (Object.prototype.hasOwnProperty.call(patchData, "adapterConfig")) {
