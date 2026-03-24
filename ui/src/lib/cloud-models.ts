@@ -47,14 +47,11 @@ export const CLOUD_MODELS: Record<string, { id: string; label: string }[]> = {
 
 /**
  * Map a local adapter type to its fixed provider.
- * Returns null for multi-provider adapters (cursor, pi, opencode) where the
+ * Returns null for multi-provider adapters (pi, opencode) where the
  * user picks the provider themselves.
  */
 export function getAdapterProvider(adapterType: string): ByokProvider | null {
   switch (adapterType) {
-    case "claude_local":
-    case "claude":
-      return "anthropic";
     case "codex_local":
     case "codex":
       return "openai";
@@ -62,16 +59,14 @@ export function getAdapterProvider(adapterType: string): ByokProvider | null {
     case "gemini":
       return "google";
     default:
-      return null; // cursor, pi, opencode = multi-provider
+      return null; // pi, opencode = multi-provider
   }
 }
 
 /** Map from runtime name (as stored in adapterConfig.runtime) to a display label */
 export const CLOUD_RUNTIME_OPTIONS = [
-  { value: "claude", label: "Claude Code" },
   { value: "codex", label: "Codex" },
   { value: "gemini", label: "Gemini CLI" },
-  { value: "cursor", label: "Cursor" },
   { value: "pi", label: "Pi" },
   { value: "opencode", label: "OpenCode" },
 ] as const;

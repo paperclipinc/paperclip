@@ -1,5 +1,5 @@
 # Agent runtime image — multi-CLI variant
-# Contains Claude Code, Codex, and OpenCode CLIs for cloud sandbox execution.
+# Contains Codex and OpenCode CLIs for cloud sandbox execution.
 # The container runs as a non-root user and is kept alive (sleep infinity);
 # the Paperclip server exec's agent CLI commands into it via the K8s exec API.
 #
@@ -28,8 +28,7 @@ RUN curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-$(dpkg --print-architectu
 ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
 
 # Install agent CLIs globally
-RUN npm install -g @anthropic-ai/claude-code@latest 2>/dev/null || true \
-    && npm install -g @openai/codex@latest 2>/dev/null || true \
+RUN npm install -g @openai/codex@latest 2>/dev/null || true \
     && npm cache clean --force
 
 # Install OpenCode, then remove Go toolchain
