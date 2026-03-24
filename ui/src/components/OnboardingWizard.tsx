@@ -127,7 +127,7 @@ export function OnboardingWizard() {
 
   // Step 3 (agent — was step 2)
   const [agentName, setAgentName] = useState("CEO");
-  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("codex_local");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -909,7 +909,7 @@ export function OnboardingWizard() {
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Runtime
                     </label>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       {CLOUD_RUNTIME_OPTIONS.map((opt) => {
                         // Map cloud runtime values to local adapter types for state compatibility
                         const runtimeToAdapter: Record<string, AdapterType> = {
@@ -923,7 +923,7 @@ export function OnboardingWizard() {
                           <button
                             key={opt.value}
                             className={cn(
-                              "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
+                              "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
                               adapterType === mappedAdapterType
                                 ? "border-foreground bg-accent"
                                 : "border-border hover:bg-accent/50"
@@ -933,6 +933,11 @@ export function OnboardingWizard() {
                               setModel("");
                             }}
                           >
+                            {opt.recommended && (
+                              <span className="absolute -top-2 right-2 bg-green-500 text-white text-[9px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
+                                Recommended
+                              </span>
+                            )}
                             <Terminal className="h-4 w-4" />
                             <span className="font-medium">{opt.label}</span>
                           </button>
