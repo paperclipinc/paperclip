@@ -674,6 +674,72 @@ export function agentRoutes(db: Db) {
     res.json(models);
   });
 
+  // Validate an API key by making a lightweight call to the provider
+  router.post("/companies/:companyId/validate-api-key", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const { provider, apiKey } = req.body as { provider?: string; apiKey?: string };
+    if (!provider || !apiKey) {
+      res.status(400).json({ valid: false, error: "provider and apiKey are required" });
+      return;
+    }
+
+    try {
+      let valid = false;
+      let error: string | null = null;
+
+      switch (provider) {
+        case "openai": {
+          const resp = await fetch("https://api.openai.com/v1/models", {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(10000),
+          });
+          valid = resp.ok;
+          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
+          break;
+        }
+        case "anthropic": {
+          const resp = await fetch("https://api.anthropic.com/v1/models", {
+            headers: {
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            signal: AbortSignal.timeout(10000),
+          });
+          valid = resp.ok;
+          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
+          break;
+        }
+        case "google": {
+          const resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+            { signal: AbortSignal.timeout(10000) },
+          );
+          valid = resp.ok;
+          if (!valid) error = resp.status === 400 || resp.status === 403 ? "Invalid API key" : `API returned ${resp.status}`;
+          break;
+        }
+        case "openrouter": {
+          const resp = await fetch("https://openrouter.ai/api/v1/models", {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(10000),
+          });
+          valid = resp.ok;
+          if (!valid) error = resp.status === 401 ? "Invalid API key" : `API returned ${resp.status}`;
+          break;
+        }
+        default:
+          res.status(400).json({ valid: false, error: `Unknown provider: ${provider}` });
+          return;
+      }
+
+      res.json({ valid, error });
+    } catch (err) {
+      res.json({ valid: false, error: err instanceof Error ? err.message : "Validation failed" });
+    }
+  });
+
   router.post(
     "/companies/:companyId/adapters/:type/test-environment",
     validate(testAdapterEnvironmentSchema),

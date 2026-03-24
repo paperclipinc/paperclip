@@ -144,6 +144,8 @@ export function OnboardingWizard() {
   const [byokApiKey, setByokApiKey] = useState("");
   const [byokProvider, setByokProvider] = useState<"anthropic" | "openai" | "google" | "openrouter">("anthropic");
   const [byokKeyVisible, setByokKeyVisible] = useState(false);
+  const [byokKeyStatus, setByokKeyStatus] = useState<"idle" | "validating" | "valid" | "invalid">("idle");
+  const [byokKeyError, setByokKeyError] = useState<string | null>(null);
   const [cloudSandboxEnabled, setCloudSandboxEnabled] = useState(false);
   const [managedInferenceEnabled, setManagedInferenceEnabled] = useState(false);
 
@@ -1226,22 +1228,51 @@ export function OnboardingWizard() {
                             </label>
                             <div className="relative">
                               <input
-                                className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                                className={cn(
+                                  "w-full rounded-md border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50",
+                                  byokKeyStatus === "valid" ? "border-green-500" : byokKeyStatus === "invalid" ? "border-destructive" : "border-border"
+                                )}
                                 type={byokKeyVisible ? "text" : "password"}
                                 placeholder={({ anthropic: "sk-ant-...", openai: "sk-...", google: "AIza...", openrouter: "sk-or-..." } as Record<string, string>)[activeProvider] ?? "..."}
                                 value={byokApiKey}
-                                onChange={(e) => setByokApiKey(e.target.value)}
+                                onChange={(e) => { setByokApiKey(e.target.value); setByokKeyStatus("idle"); setByokKeyError(null); }}
+                                onBlur={async () => {
+                                  const key = byokApiKey.trim();
+                                  if (!key || !createdCompanyId) return;
+                                  setByokKeyStatus("validating");
+                                  setByokKeyError(null);
+                                  try {
+                                    const res = await fetch(`/api/companies/${createdCompanyId}/validate-api-key`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      credentials: "include",
+                                      body: JSON.stringify({ provider: activeProvider, apiKey: key }),
+                                    });
+                                    const data = await res.json() as { valid: boolean; error?: string };
+                                    setByokKeyStatus(data.valid ? "valid" : "invalid");
+                                    setByokKeyError(data.valid ? null : (data.error ?? "Invalid key"));
+                                  } catch {
+                                    setByokKeyStatus("idle");
+                                  }
+                                }}
                               />
                               <button
                                 type="button"
                                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                                 onClick={() => setByokKeyVisible((v) => !v)}
                               >
-                                {byokKeyVisible
+                                {byokKeyStatus === "validating"
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : byokKeyStatus === "valid"
+                                  ? <Check className="h-3.5 w-3.5 text-green-500" />
+                                  : byokKeyVisible
                                   ? <EyeOff className="h-3.5 w-3.5" />
                                   : <Eye className="h-3.5 w-3.5" />}
                               </button>
                             </div>
+                            {byokKeyStatus === "invalid" && byokKeyError && (
+                              <p className="text-[10px] text-destructive mt-1">{byokKeyError}</p>
+                            )}
                             {managedInferenceEnabled && (
                               <button
                                 className="text-[10px] text-muted-foreground hover:text-foreground mt-1.5 transition-colors"
