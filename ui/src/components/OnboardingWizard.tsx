@@ -70,6 +70,49 @@ type Step = 1 | 2 | 3 | 4 | 5;
 type AdapterType = string;
 
 type InferenceChoice = "managed" | "byok";
+type ByokProvider = "anthropic" | "openai" | "google" | "openrouter";
+
+/** Known models per provider for cloud sandbox mode (no CLI discovery needed) */
+const CLOUD_MODELS: Record<string, { id: string; label: string }[]> = {
+  anthropic: [
+    { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
+    { id: "claude-sonnet-4-5-20250929", label: "Claude Sonnet 4.5" },
+    { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+  ],
+  openai: [
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { id: "o3", label: "o3" },
+    { id: "o4-mini", label: "o4-mini" },
+    { id: "gpt-5-mini", label: "GPT-5 Mini" },
+    { id: "codex-mini-latest", label: "Codex Mini" },
+  ],
+  google: [
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+  ],
+  openrouter: [
+    { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+    { id: "anthropic/claude-opus-4-6", label: "Claude Opus 4.6" },
+    { id: "openai/gpt-5.4", label: "GPT-5.4" },
+    { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { id: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+  ],
+};
+
+/** Map adapter type to its fixed provider (null = multi-provider, user picks) */
+function getAdapterProvider(adapterType: AdapterType): ByokProvider | null {
+  switch (adapterType) {
+    case "claude_local": return "anthropic";
+    case "codex_local": return "openai";
+    case "gemini_local": return "google";
+    default: return null; // cursor, pi, opencode = multi-provider
+  }
+}
 
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
@@ -545,13 +588,8 @@ export function OnboardingWizard() {
             setError("Please enter your API key.");
             return;
           }
-          // Infer provider from adapter type; multi-provider adapters use the explicit byokProvider toggle
-          const multiProviderAdapter = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
-          const resolvedProvider = multiProviderAdapter
-            ? byokProvider
-            : adapterType === "codex_local" ? "openai"
-            : adapterType === "gemini_local" ? "google"
-            : "anthropic";
+          // Resolve provider: fixed for single-provider adapters, user-selected for multi-provider
+          const resolvedProvider = getAdapterProvider(adapterType) ?? byokProvider;
           const envKeyMap: Record<string, string> = {
             anthropic: "ANTHROPIC_API_KEY",
             openai: "OPENAI_API_KEY",
@@ -1007,8 +1045,8 @@ export function OnboardingWizard() {
                   </div>
                   )}
 
-                  {/* Conditional adapter fields: model selector */}
-                  {isLocalAdapter && (
+                  {/* Conditional adapter fields: model selector (non-cloud-sandbox only) */}
+                  {!cloudSandboxEnabled && isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1110,74 +1148,85 @@ export function OnboardingWizard() {
                     </div>
                   )}
 
-                  {/* Cloud sandbox: smart API key input */}
-                  {cloudSandboxEnabled && (
-                    <div className="space-y-3">
-                      {inferenceChoice === "managed" && managedInferenceEnabled && (
-                        <button
-                          className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                          onClick={() => setInferenceChoice("byok")}
-                        >
-                          or use your own AI key
-                        </button>
-                      )}
+                  {/* Cloud sandbox: provider -> model -> API key */}
+                  {cloudSandboxEnabled && (() => {
+                    const fixedProvider = getAdapterProvider(adapterType);
+                    const isMultiProvider = fixedProvider === null;
+                    const activeProvider = fixedProvider ?? byokProvider;
+                    const cloudModelList = CLOUD_MODELS[activeProvider] ?? [];
 
-                      {inferenceChoice === "byok" && (
-                        <>
-                          {/* Provider selector for multi-provider adapters */}
-                          {(adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor") && (
-                            <div>
-                              <label className="text-xs text-muted-foreground mb-1 block">
-                                Provider
-                              </label>
-                              <div className="flex flex-wrap gap-1.5">
-                                {([
-                                  { value: "anthropic" as const, label: "Anthropic" },
-                                  { value: "openai" as const, label: "OpenAI" },
-                                  { value: "google" as const, label: "Google" },
-                                  { value: "openrouter" as const, label: "OpenRouter" },
-                                ]).map((opt) => (
-                                  <button
-                                    key={opt.value}
-                                    className={cn(
-                                      "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-                                      byokProvider === opt.value
-                                        ? "border-foreground bg-accent"
-                                        : "border-border hover:bg-accent/50"
-                                    )}
-                                    onClick={() => setByokProvider(opt.value)}
-                                  >
-                                    {opt.label}
-                                  </button>
-                                ))}
-                              </div>
+                    return (
+                      <div className="space-y-3">
+                        {/* Provider selector for multi-provider adapters */}
+                        {isMultiProvider && (
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">
+                              Provider
+                            </label>
+                            <div className="flex flex-wrap gap-1.5">
+                              {([
+                                { value: "anthropic" as const, label: "Anthropic" },
+                                { value: "openai" as const, label: "OpenAI" },
+                                { value: "google" as const, label: "Google" },
+                                { value: "openrouter" as const, label: "OpenRouter" },
+                              ]).map((opt) => (
+                                <button
+                                  key={opt.value}
+                                  className={cn(
+                                    "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+                                    byokProvider === opt.value
+                                      ? "border-foreground bg-accent"
+                                      : "border-border hover:bg-accent/50"
+                                  )}
+                                  onClick={() => { setByokProvider(opt.value); setModel(""); }}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
                             </div>
-                          )}
+                          </div>
+                        )}
+
+                        {/* Model selector from static catalog */}
+                        <div>
+                          <label className="text-xs text-muted-foreground mb-1 block">
+                            Model
+                          </label>
+                          <select
+                            className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+                            value={model}
+                            onChange={(e) => setModel(e.target.value)}
+                          >
+                            <option value="">Default</option>
+                            {cloudModelList.map((m) => (
+                              <option key={m.id} value={m.id}>{m.label}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* API key: managed default or BYOK */}
+                        {inferenceChoice === "managed" && managedInferenceEnabled && (
+                          <button
+                            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => setInferenceChoice("byok")}
+                          >
+                            or use your own AI key
+                          </button>
+                        )}
+
+                        {inferenceChoice === "byok" && (
                           <div>
                             <label className="text-xs text-muted-foreground mb-1 block">
                               {(() => {
-                                const multiProvider = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
-                                if (multiProvider) {
-                                  const labels: Record<string, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", google: "Google AI API key", openrouter: "OpenRouter API key" };
-                                  return labels[byokProvider] ?? "API key";
-                                }
-                                if (adapterType === "codex_local") return "OpenAI API key";
-                                if (adapterType === "gemini_local") return "Gemini API key";
-                                return "Anthropic API key";
+                                const labels: Record<string, string> = { anthropic: "Anthropic API key", openai: "OpenAI API key", google: "Gemini API key", openrouter: "OpenRouter API key" };
+                                return labels[activeProvider] ?? "API key";
                               })()}
                             </label>
                             <div className="relative">
                               <input
                                 className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                                 type={byokKeyVisible ? "text" : "password"}
-                                placeholder={(() => {
-                                  const placeholders: Record<string, string> = { anthropic: "sk-ant-...", openai: "sk-...", google: "AIza...", openrouter: "sk-or-..." };
-                                  const multiProvider = adapterType === "pi_local" || adapterType === "opencode_local" || adapterType === "cursor";
-                                  if (multiProvider) return placeholders[byokProvider] ?? "...";
-                                  if (adapterType === "codex_local") return "sk-...";
-                                  if (adapterType === "gemini_local") return "AIza...";
-                                  return "sk-ant-...";
-                                })()}
+                                placeholder={({ anthropic: "sk-ant-...", openai: "sk-...", google: "AIza...", openrouter: "sk-or-..." } as Record<string, string>)[activeProvider] ?? "..."}
                                 value={byokApiKey}
                                 onChange={(e) => setByokApiKey(e.target.value)}
                               />
@@ -1200,10 +1249,10 @@ export function OnboardingWizard() {
                               </button>
                             )}
                           </div>
-                        </>
-                      )}
-                    </div>
-                  )}
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {(!cloudSandboxEnabled) && isLocalAdapter && (
                     <div className="space-y-2 rounded-md border border-border p-3">
