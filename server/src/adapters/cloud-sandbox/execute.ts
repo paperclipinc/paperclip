@@ -263,8 +263,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     exitCode = result.exitCode;
     timedOut = result.timedOut;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Exec failed";
-    await ctx.onLog("stderr", `[cloud-sandbox] ${message}\n`);
+    const message = err instanceof Error
+      ? `${err.message}${err.stack ? `\n${err.stack.split("\n").slice(1, 3).join("\n")}` : ""}`
+      : String(err) || "Exec failed";
+    await ctx.onLog("stderr", `[cloud-sandbox] Exec error: ${message}\n`);
     return {
       exitCode: 1,
       signal: null,
