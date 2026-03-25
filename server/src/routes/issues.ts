@@ -748,6 +748,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const { assertActiveSubscription } = await import("../middleware/subscription-guard.js");
+    await assertActiveSubscription(db, companyId);
     await limits.checkIssueLimit(companyId);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
       await assertCanAssignTasks(req, companyId);
@@ -1417,6 +1419,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
     assertCompanyAccess(req, companyId);
+    await limits.checkStorageLimit(companyId);
     const issue = await svc.getById(issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

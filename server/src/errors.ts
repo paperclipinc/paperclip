@@ -17,6 +17,10 @@ export function unauthorized(message = "Unauthorized") {
   return new HttpError(401, message);
 }
 
+export function paymentRequired(message = "Payment required") {
+  return new HttpError(402, message);
+}
+
 export function forbidden(message = "Forbidden") {
   return new HttpError(403, message);
 }

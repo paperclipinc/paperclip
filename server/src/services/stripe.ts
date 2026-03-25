@@ -1,7 +1,14 @@
 import Stripe from "stripe";
+import { Resend } from "resend";
 import { eq, and, asc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions, subscriptionPlans, companies } from "@paperclipai/db";
+import {
+  companySubscriptions,
+  subscriptionPlans,
+  companies,
+  companyMemberships,
+  authUsers,
+} from "@paperclipai/db";
 import type { SubscriptionPlan, CompanySubscription } from "@paperclipai/shared";
 
 let _stripe: Stripe | null = null;
@@ -12,6 +19,87 @@ function getStripe(): Stripe | null {
   if (!key) return null;
   _stripe = new Stripe(key);
   return _stripe;
+}
+
+/**
+ * Send a billing-related notification email directly via Resend.
+ * Self-contained so the webhook handler doesn't need the EmailSender wired in.
+ */
+async function sendBillingEmail(
+  db: Db,
+  stripeCustomerId: string,
+  subject: string,
+  body: string,
+): Promise<void> {
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (!resendApiKey) {
+    console.warn(`[stripe] Cannot send billing email: RESEND_API_KEY not set. Subject: ${subject}`);
+    return;
+  }
+
+  try {
+    // Look up the company subscription to find the companyId
+    const subRow = await db
+      .select({ companyId: companySubscriptions.companyId })
+      .from(companySubscriptions)
+      .where(eq(companySubscriptions.stripeCustomerId, stripeCustomerId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!subRow) {
+      console.warn(`[stripe] No subscription found for customer ${stripeCustomerId}, cannot send billing email`);
+      return;
+    }
+
+    // Look up company name
+    const company = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, subRow.companyId))
+      .then((rows) => rows[0] ?? null);
+
+    const companyName = company?.name ?? "your company";
+    const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() ?? "https://paperclip.inc";
+
+    // Find active members of the company to email
+    const members = await db
+      .select({ email: authUsers.email })
+      .from(companyMemberships)
+      .innerJoin(authUsers, eq(companyMemberships.principalId, authUsers.id))
+      .where(
+        and(
+          eq(companyMemberships.companyId, subRow.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+
+    if (members.length === 0) {
+      console.warn(`[stripe] No active members found for company ${subRow.companyId}, cannot send billing email`);
+      return;
+    }
+
+    const emailFrom = process.env.PAPERCLIP_EMAIL_FROM?.trim() || "Paperclip <noreply@paperclip.inc>";
+    const resend = new Resend(resendApiKey);
+
+    // Interpolate company name and public URL into the body
+    const interpolatedBody = body
+      .replace(/\{companyName\}/g, companyName)
+      .replace(/\{publicUrl\}/g, publicUrl);
+
+    const recipientEmails = members.map((m) => m.email);
+
+    await resend.emails.send({
+      from: emailFrom,
+      to: recipientEmails,
+      subject,
+      text: interpolatedBody,
+    });
+
+    console.info(`[stripe] Sent billing email "${subject}" to ${recipientEmails.length} recipient(s) for company ${subRow.companyId}`);
+  } catch (err) {
+    // Never let email failures break the webhook handler
+    console.error(`[stripe] Failed to send billing email: ${err}`);
+  }
 }
 
 function parseFeatures(raw: string | null): Record<string, boolean> {
@@ -266,6 +354,13 @@ export function stripeService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(companySubscriptions.stripeCustomerId, customerId));
+
+          await sendBillingEmail(
+            db,
+            customerId,
+            "Your Paperclip subscription has been canceled",
+            "Your subscription for {companyName} has been canceled and your account has been reverted to the free plan.\n\nIf this was a mistake, you can resubscribe at {publicUrl}/billing.\n\nIf you have any questions, please reach out to our support team.",
+          );
           break;
         }
 
@@ -281,6 +376,13 @@ export function stripeService(db: Db) {
               updatedAt: new Date(),
             })
             .where(eq(companySubscriptions.stripeCustomerId, customerId));
+
+          await sendBillingEmail(
+            db,
+            customerId,
+            "Payment failed for your Paperclip subscription",
+            "We couldn't process your payment for {companyName}. Please update your billing information at {publicUrl}/billing.\n\nIf payment continues to fail, your subscription may be canceled.",
+          );
           break;
         }
 

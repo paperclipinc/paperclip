@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   ensurePostgresDatabase,
@@ -621,6 +621,17 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
   
+async function withSchedulerLock(db: any, fn: () => Promise<void>) {
+  const LOCK_ID = 73297; // arbitrary unique constant for the scheduler
+  const acquired = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID}) AS acquired`);
+  if (!acquired.rows[0]?.acquired) return;
+  try {
+    await fn();
+  } finally {
+    await db.execute(sql`SELECT pg_advisory_unlock(${LOCK_ID})`);
+  }
+}
+
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any);
     const routines = routineService(db as any);
@@ -643,28 +654,29 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
-    setInterval(() => {
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+    const schedulerTimerId = setInterval(() => {
+      void withSchedulerLock(db, async () => {
+        await heartbeat
+          .tickTimers(new Date())
+          .then((result) => {
+            if (result.enqueued > 0) {
+              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat timer tick failed");
+          });
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
+        await routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
@@ -687,13 +699,25 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
 
     // Periodically sweep runs that have been running longer than the maximum allowed duration.
-    setInterval(() => {
-      void heartbeat
-        .sweepStaleRuns()
-        .catch((err) => {
-          logger.error({ err }, "stale run sweep failed");
-        });
+    const sweepTimerId = setInterval(() => {
+      void withSchedulerLock(db, async () => {
+        await heartbeat
+          .sweepStaleRuns()
+          .catch((err) => {
+            logger.error({ err }, "stale run sweep failed");
+          });
+      });
     }, 60_000); // every minute
+
+    function gracefulShutdown(signal: string) {
+      logger.info({ signal }, "Received shutdown signal, cleaning up...");
+      clearInterval(schedulerTimerId);
+      clearInterval(sweepTimerId);
+      // Give in-flight work 10 seconds to finish
+      setTimeout(() => process.exit(0), 10_000);
+    }
+    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
   }
   
   // Start OAuth connection token refresh job
