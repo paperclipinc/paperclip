@@ -107,6 +107,9 @@ export interface Config {
   googleClientSecret: string | undefined;
   appleClientId: string | undefined;
   appleClientSecret: string | undefined;
+  appleTeamId: string | undefined;
+  appleKeyId: string | undefined;
+  applePrivateKey: string | undefined;
   // Managed inference
   managedInferenceApiKey: string | undefined;
   managedInferenceEnabled: boolean;
@@ -388,6 +391,9 @@ export function loadConfig(): Config {
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,
     appleClientId: process.env.APPLE_CLIENT_ID?.trim() || undefined,
     appleClientSecret: process.env.APPLE_CLIENT_SECRET?.trim() || undefined,
+    appleTeamId: process.env.APPLE_TEAM_ID?.trim() || undefined,
+    appleKeyId: process.env.APPLE_KEY_ID?.trim() || undefined,
+    applePrivateKey: process.env.APPLE_PRIVATE_KEY?.trim() || undefined,
     // Managed inference
     managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
     managedInferenceEnabled: !!(

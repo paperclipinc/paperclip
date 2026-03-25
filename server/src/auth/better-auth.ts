@@ -1,3 +1,4 @@
+import { createSign } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
@@ -64,6 +65,32 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   }
 
   return Array.from(trustedOrigins);
+}
+
+function generateAppleClientSecret(teamId: string, keyId: string, clientId: string, privateKey: string): string {
+  // Apple client secrets are ES256 JWTs valid for max 6 months.
+  // We generate a fresh one at startup so there's nothing to rotate.
+  const header = { alg: "ES256", kid: keyId, typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: teamId,
+    iat: now,
+    exp: now + 86400 * 180, // 6 months (Apple maximum)
+    aud: "https://appleid.apple.com",
+    sub: clientId,
+  };
+  // Use Node.js crypto to sign the JWT (no external dependencies)
+  // createSign imported at top level
+  const segments = [
+    Buffer.from(JSON.stringify(header)).toString("base64url"),
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+  ];
+  const signingInput = segments.join(".");
+  const sign = createSign("SHA256");
+  sign.update(signingInput);
+  const derSig = sign.sign({ key: privateKey, dsaEncoding: "ieee-p1363" });
+  segments.push(derSig.toString("base64url"));
+  return segments.join(".");
 }
 
 export function createBetterAuthInstance(
@@ -136,14 +163,22 @@ export function createBetterAuthInstance(
             },
           }
         : {}),
-      ...(config.appleClientId && config.appleClientSecret
-        ? {
-            apple: {
-              clientId: config.appleClientId,
-              clientSecret: config.appleClientSecret,
-            },
-          }
-        : {}),
+      ...(() => {
+        // Support auto-generating Apple client secret from .p8 key
+        const appleClientId = config.appleClientId;
+        let appleClientSecret = config.appleClientSecret;
+        if (!appleClientSecret && appleClientId && config.appleTeamId && config.appleKeyId && config.applePrivateKey) {
+          appleClientSecret = generateAppleClientSecret(
+            config.appleTeamId,
+            config.appleKeyId,
+            appleClientId,
+            config.applePrivateKey,
+          );
+        }
+        return appleClientId && appleClientSecret
+          ? { apple: { clientId: appleClientId, clientSecret: appleClientSecret } }
+          : {};
+      })(),
     },
     user: {
       changeEmail: {
