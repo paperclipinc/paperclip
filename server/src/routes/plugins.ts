@@ -2052,10 +2052,11 @@ export function pluginRoutes(
    *
    * This route is called by external systems (e.g. GitHub, Linear, Stripe) to
    * deliver webhook payloads to a plugin. The host validates that:
-   * 1. A valid `wh_token` query parameter is present (SaaS mode)
-   * 2. The plugin exists and is in 'ready' state
-   * 3. The plugin declares the `webhooks.receive` capability
-   * 4. The `endpointKey` matches a declared webhook in the manifest
+   * 0. The `wh_token` query parameter matches the server-derived HMAC token
+   *    (in authenticated mode; skipped in local_trusted mode)
+   * 1. The plugin exists and is in 'ready' state
+   * 2. The plugin declares the `webhooks.receive` capability
+   * 3. The `endpointKey` matches a declared webhook in the manifest
    *
    * The delivery is recorded in the `plugin_webhook_deliveries` table and
    * dispatched to the worker via the `handleWebhook` RPC method.
