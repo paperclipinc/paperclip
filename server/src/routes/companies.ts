@@ -19,7 +19,7 @@ import {
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -331,14 +331,27 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   });
 
   router.delete("/:companyId", async (req, res) => {
-    assertBoard(req);
+    // Hard delete requires instance admin — regular company members may only archive
+    assertInstanceAdmin(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+
+    // Archive first to stop schedulers from spawning new work
+    await svc.archive(companyId);
+
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.deleted",
+      entityType: "company",
+      entityId: companyId,
+    });
     res.json({ ok: true });
   });
 

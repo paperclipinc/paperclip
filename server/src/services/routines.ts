@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companySecrets,
   goals,
   heartbeatRuns,
@@ -1463,11 +1464,13 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .innerJoin(companies, eq(routines.companyId, companies.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
             eq(routineTriggers.enabled, true),
             eq(routines.status, "active"),
+            ne(companies.status, "archived"),
             isNotNull(routineTriggers.nextRunAt),
             lte(routineTriggers.nextRunAt, now),
           ),

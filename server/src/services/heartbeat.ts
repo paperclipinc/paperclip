@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -1898,10 +1898,13 @@ export function heartbeatService(db: Db) {
   }
 
   async function resumeQueuedRuns() {
+    // Skip queued runs for agents in archived companies
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "queued"));
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .innerJoin(companies, eq(agents.companyId, companies.id))
+      .where(and(eq(heartbeatRuns.status, "queued"), ne(companies.status, "archived")));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -3074,6 +3077,9 @@ export function heartbeatService(db: Db) {
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    // Reject wakeup for agents in archived companies
+    const company = await db.select({ status: companies.status }).from(companies).where(eq(companies.id, agent.companyId)).then((r) => r[0]);
+    if (company?.status === "archived") return null;
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -3888,7 +3894,13 @@ export function heartbeatService(db: Db) {
     resumeQueuedRuns,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      // Join on companies to exclude agents belonging to archived companies
+      const allAgents = await db
+        .select({ agent: agents })
+        .from(agents)
+        .innerJoin(companies, eq(agents.companyId, companies.id))
+        .where(ne(companies.status, "archived"))
+        .then((rows) => rows.map((r) => r.agent));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
