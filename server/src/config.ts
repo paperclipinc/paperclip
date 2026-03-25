@@ -86,6 +86,11 @@ export interface Config {
   cloudSandboxMultiNamespace: boolean;
   cloudSandboxNodeSelector: Record<string, string> | undefined;
   cloudSandboxTolerations: Array<{ key: string; operator?: string; value?: string; effect?: string }> | undefined;
+  // OAuth social providers
+  googleClientId: string | undefined;
+  googleClientSecret: string | undefined;
+  appleClientId: string | undefined;
+  appleClientSecret: string | undefined;
   // Managed inference
   managedInferenceApiKey: string | undefined;
   managedInferenceEnabled: boolean;
@@ -299,6 +304,11 @@ export function loadConfig(): Config {
     cloudSandboxMultiNamespace: process.env.PAPERCLIP_CLOUD_SANDBOX_MULTI_NAMESPACE === "true",
     cloudSandboxNodeSelector: process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_NODE_SELECTOR) : undefined,
     cloudSandboxTolerations: process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS ? JSON.parse(process.env.PAPERCLIP_CLOUD_SANDBOX_TOLERATIONS) : undefined,
+    // OAuth social providers
+    googleClientId: process.env.GOOGLE_CLIENT_ID?.trim() || undefined,
+    googleClientSecret: process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined,
+    appleClientId: process.env.APPLE_CLIENT_ID?.trim() || undefined,
+    appleClientSecret: process.env.APPLE_CLIENT_SECRET?.trim() || undefined,
     // Managed inference
     managedInferenceApiKey: process.env.PAPERCLIP_MANAGED_INFERENCE_API_KEY?.trim() || undefined,
     managedInferenceEnabled: !!(

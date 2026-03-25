@@ -106,4 +106,16 @@ export const authApi = {
   changePassword: async (input: { currentPassword: string; newPassword: string }) => {
     return authPost("/change-password", input);
   },
+
+  changeEmail: async (input: { newEmail: string }) => {
+    return authPost("/change-email", { newEmail: input.newEmail, callbackURL: "/auth/verify-email" });
+  },
+
+  signInSocial: async (provider: "google" | "apple", callbackURL = "/") => {
+    const res = await authPost("/sign-in/social", { provider, callbackURL });
+    const data = res as { url?: string } | null;
+    if (data?.url) {
+      window.location.href = data.url;
+    }
+  },
 };
