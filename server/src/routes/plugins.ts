@@ -19,13 +19,13 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
+import { companies, pluginCompanySettings, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
   PluginStatus,
   PaperclipPluginManifestV1,
@@ -80,6 +80,28 @@ type PluginUiContribution = {
  * Payloads exceeding this limit are replaced with a truncation marker.
  */
 const MAX_WEBHOOK_PAYLOAD_BYTES = 256 * 1024; // 256KB
+
+/**
+ * Derive a deterministic per-plugin webhook delivery token from a server secret.
+ * External services include this token as a `?wh_token=` query parameter so the
+ * server can verify the webhook URL was issued by us before dispatching to the
+ * plugin worker. This prevents unauthenticated callers from triggering arbitrary
+ * webhook processing in a multi-tenant SaaS deployment.
+ *
+ * Returns `null` in local_trusted mode (no secret configured).
+ */
+function deriveWebhookToken(pluginId: string): string | null {
+  const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (!secret) return null; // local_trusted mode — no enforcement
+  return createHmac("sha256", secret).update(`wh:${pluginId}`).digest("hex");
+}
+
+function safeWebhookTokenCompare(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
 
 /** Request body for POST /api/plugins/install */
 interface PluginInstallRequest {
@@ -832,9 +854,11 @@ export function pluginRoutes(
       return;
     }
 
-    if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (!body.companyId) {
+      res.status(400).json({ error: '"companyId" is required for multi-tenant isolation' });
+      return;
     }
+    assertCompanyAccess(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -915,9 +939,11 @@ export function pluginRoutes(
       return;
     }
 
-    if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (!body.companyId) {
+      res.status(400).json({ error: '"companyId" is required for multi-tenant isolation' });
+      return;
     }
+    assertCompanyAccess(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -998,9 +1024,11 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (!body?.companyId) {
+      res.status(400).json({ error: '"companyId" is required for multi-tenant isolation' });
+      return;
     }
+    assertCompanyAccess(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1077,9 +1105,11 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
+    if (!body?.companyId) {
+      res.status(400).json({ error: '"companyId" is required for multi-tenant isolation' });
+      return;
     }
+    assertCompanyAccess(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1431,6 +1461,20 @@ export function pluginRoutes(
     const since = req.query.since as string | undefined;
 
     const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+
+    // Multi-tenancy: restrict logs to the caller's companies unless instance admin
+    if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+      const allowed = req.actor.companyIds ?? [];
+      if (allowed.length === 0) {
+        res.json([]);
+        return;
+      }
+      // Show logs scoped to the caller's companies OR instance-level logs (null companyId)
+      conditions.push(
+        or(inArray(pluginLogs.companyId, allowed), isNull(pluginLogs.companyId))!,
+      );
+    }
+
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
@@ -1733,6 +1777,100 @@ export function pluginRoutes(
   });
 
   // ===========================================================================
+  // Per-company plugin settings routes
+  // ===========================================================================
+
+  /**
+   * GET /api/plugins/:pluginId/company-settings/:companyId
+   *
+   * Retrieve per-company settings for a plugin. Returns the settings row or
+   * `null` if no override exists for the given company.
+   *
+   * Requires board access to the target company.
+   */
+  router.get("/plugins/:pluginId/company-settings/:companyId", async (req, res) => {
+    assertBoard(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const rows = await db
+      .select()
+      .from(pluginCompanySettings)
+      .where(
+        and(
+          eq(pluginCompanySettings.pluginId, plugin.id),
+          eq(pluginCompanySettings.companyId, companyId),
+        ),
+      );
+
+    res.json(rows[0] ?? null);
+  });
+
+  /**
+   * PUT /api/plugins/:pluginId/company-settings/:companyId
+   *
+   * Create or update per-company settings for a plugin. Allows a company to
+   * disable a plugin or provide company-specific configuration overrides.
+   *
+   * Request body:
+   * - `enabled` (boolean): Whether the plugin is enabled for this company
+   * - `settingsJson` (object, optional): Company-specific settings
+   *
+   * Requires board access to the target company.
+   */
+  router.put("/plugins/:pluginId/company-settings/:companyId", async (req, res) => {
+    assertBoard(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      enabled?: boolean;
+      settingsJson?: Record<string, unknown>;
+    } | undefined;
+
+    if (body?.enabled === undefined && !body?.settingsJson) {
+      res.status(400).json({ error: 'At least one of "enabled" or "settingsJson" is required' });
+      return;
+    }
+
+    const now = new Date();
+    const values = {
+      pluginId: plugin.id,
+      companyId,
+      enabled: body?.enabled ?? true,
+      settingsJson: body?.settingsJson ?? {},
+      updatedAt: now,
+    };
+
+    const rows = await db
+      .insert(pluginCompanySettings)
+      .values({ ...values, createdAt: now })
+      .onConflictDoUpdate({
+        target: [pluginCompanySettings.companyId, pluginCompanySettings.pluginId],
+        set: {
+          enabled: values.enabled,
+          settingsJson: values.settingsJson,
+          updatedAt: now,
+        },
+      })
+      .returning();
+
+    res.json(rows[0]);
+  });
+
+  // ===========================================================================
   // Job scheduling routes
   // ===========================================================================
 
@@ -1871,6 +2009,39 @@ export function pluginRoutes(
   });
 
   // ===========================================================================
+  // Webhook delivery token endpoint
+  // ===========================================================================
+
+  /**
+   * GET /api/plugins/:pluginId/webhook-token
+   *
+   * Retrieve the server-derived webhook delivery token for a plugin. This token
+   * must be included as a `?wh_token=` query parameter when registering the
+   * webhook URL with external services (GitHub, Linear, etc.).
+   *
+   * Instance-admin only — regular board users should not need direct access to
+   * the raw token.
+   */
+  router.get("/plugins/:pluginId/webhook-token", async (req, res) => {
+    assertInstanceAdmin(req);
+    const { pluginId } = req.params;
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const token = deriveWebhookToken(plugin.id);
+    if (!token) {
+      res.json({ token: null, message: "Webhook tokens are not enforced in local_trusted mode" });
+      return;
+    }
+
+    res.json({ token });
+  });
+
+  // ===========================================================================
   // Webhook ingestion route
   // ===========================================================================
 
@@ -1881,19 +2052,21 @@ export function pluginRoutes(
    *
    * This route is called by external systems (e.g. GitHub, Linear, Stripe) to
    * deliver webhook payloads to a plugin. The host validates that:
-   * 1. The plugin exists and is in 'ready' state
-   * 2. The plugin declares the `webhooks.receive` capability
-   * 3. The `endpointKey` matches a declared webhook in the manifest
+   * 1. A valid `wh_token` query parameter is present (SaaS mode)
+   * 2. The plugin exists and is in 'ready' state
+   * 3. The plugin declares the `webhooks.receive` capability
+   * 4. The `endpointKey` matches a declared webhook in the manifest
    *
    * The delivery is recorded in the `plugin_webhook_deliveries` table and
    * dispatched to the worker via the `handleWebhook` RPC method.
    *
-   * **Note:** This route does NOT require board authentication — webhook
-   * endpoints must be publicly accessible for external callers. Signature
-   * verification is the plugin's responsibility.
+   * The `wh_token` is a server-derived HMAC that ensures only URLs issued by
+   * this instance can trigger webhook processing. Plugin workers still perform
+   * their own provider-specific signature verification.
    *
    * Response: `{ deliveryId: string, status: string }`
    * Errors:
+   * - 403 if webhook delivery token is invalid or missing
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
    * - 502 if the worker is unavailable or the RPC call fails
@@ -1905,6 +2078,19 @@ export function pluginRoutes(
     }
 
     const { pluginId, endpointKey } = req.params;
+
+    // Step 0: Verify webhook delivery token (SaaS multi-tenant protection).
+    // The token is derived from the server secret + pluginId. When a secret is
+    // configured (authenticated mode), every inbound webhook must carry a valid
+    // `wh_token` query parameter. In local_trusted mode the check is skipped.
+    const expectedToken = deriveWebhookToken(pluginId);
+    if (expectedToken) {
+      const providedToken = req.query.wh_token as string | undefined;
+      if (!providedToken || !safeWebhookTokenCompare(providedToken, expectedToken)) {
+        res.status(403).json({ error: "Invalid or missing webhook delivery token (wh_token)" });
+        return;
+      }
+    }
 
     // Step 1: Resolve the plugin
     const plugin = await resolvePlugin(registry, pluginId);

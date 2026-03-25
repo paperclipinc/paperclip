@@ -3,7 +3,7 @@ import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { verifyLocalAgentJwt, resolveCompanySigningKey } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -109,7 +109,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = await verifyLocalAgentJwt(token);
+      const claims = await verifyLocalAgentJwt(token, resolveCompanySigningKey);
       if (!claims) {
         next();
         return;
