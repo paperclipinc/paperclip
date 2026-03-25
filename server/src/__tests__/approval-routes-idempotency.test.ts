@@ -73,6 +73,14 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "approved",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
     mockApprovalService.approve.mockResolvedValue({
       approval: {
         id: "approval-1",
@@ -96,6 +104,13 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-1",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "rejected",
+      payload: {},
+    });
     mockApprovalService.reject.mockResolvedValue({
       approval: {
         id: "approval-1",

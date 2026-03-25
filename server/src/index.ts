@@ -516,6 +516,10 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     emailEnabled,
+    socialProviders: [
+      ...(config.googleClientId && config.googleClientSecret ? ["google" as const] : []),
+      ...(config.appleClientId && config.appleClientSecret ? ["apple" as const] : []),
+    ],
     cloudSandboxEnabled: config.cloudSandboxEnabled,
     managedInferenceEnabled: config.managedInferenceEnabled,
     betterAuthHandler,
