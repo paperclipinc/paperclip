@@ -35,7 +35,14 @@ export function healthRoutes(
   // Public, no auth required — includes deploymentMode so the UI knows
   // whether to redirect to /auth before the user has a session.
   router.get("/", async (_req, res) => {
-    res.json({ status: "ok", version: serverVersion, deploymentMode: opts.deploymentMode });
+    res.json({
+      status: "ok",
+      version: serverVersion,
+      deploymentMode: opts.deploymentMode,
+      features: {
+        socialProviders: opts.socialProviders,
+      },
+    });
   });
 
   // Authenticated — full details
