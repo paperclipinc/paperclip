@@ -623,8 +623,10 @@ export async function startServer(): Promise<StartedServer> {
   
 async function withSchedulerLock(db: any, fn: () => Promise<void>) {
   const LOCK_ID = 73297; // arbitrary unique constant for the scheduler
-  const acquired = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID}) AS acquired`);
-  if (!acquired.rows[0]?.acquired) return;
+  const result = await db.execute(sql`SELECT pg_try_advisory_lock(${LOCK_ID}) AS acquired`);
+  // drizzle execute() returns rows directly as an array
+  const row = Array.isArray(result) ? result[0] : result?.rows?.[0];
+  if (!row?.acquired) return;
   try {
     await fn();
   } finally {
