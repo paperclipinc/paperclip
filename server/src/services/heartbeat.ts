@@ -3080,6 +3080,14 @@ export function heartbeatService(db: Db) {
     // Reject wakeup for agents in archived companies
     const company = await db.select({ status: companies.status }).from(companies).where(eq(companies.id, agent.companyId)).then((r) => r[0]);
     if (company?.status === "archived") return null;
+    // Check subscription status before spawning work
+    try {
+      const { assertActiveSubscription } = await import("../middleware/subscription-guard.js");
+      await assertActiveSubscription(db, agent.companyId);
+    } catch (err: any) {
+      if (err?.code === "SUBSCRIPTION_INACTIVE") return null;
+      throw err;
+    }
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;

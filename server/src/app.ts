@@ -10,6 +10,7 @@ import { authUsers } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
+import { metricsMiddleware, metricsRoute } from "./middleware/metrics.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -95,16 +96,31 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  // Prometheus metrics collection — must be early to capture all requests
+  app.use(metricsMiddleware());
+  app.use(metricsRoute(db));
+
   app.use(httpLogger);
 
   // Security headers
   app.use(helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'", "wss:", "https:"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
     crossOriginEmbedderPolicy: false,
   }));
 
-  // Optional CORS – set PAPERCLIP_CORS_ORIGIN to a comma-separated list of allowed origins
-  const corsOrigin = process.env.PAPERCLIP_CORS_ORIGIN;
+  // CORS – defaults to PAPERCLIP_PUBLIC_URL when PAPERCLIP_CORS_ORIGIN is not set
+  const corsOrigin = process.env.PAPERCLIP_CORS_ORIGIN ?? process.env.PAPERCLIP_PUBLIC_URL;
   if (corsOrigin) {
     app.use(cors({
       origin: corsOrigin.split(",").map(s => s.trim()),
