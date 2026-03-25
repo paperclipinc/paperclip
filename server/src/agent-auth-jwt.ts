@@ -19,6 +19,28 @@ export interface LocalAgentJwtClaims {
 
 const JWT_ALGORITHM = "HS256";
 
+/**
+ * Derive a per-company signing key from the master JWT secret and a companyId.
+ * This ensures that a JWT forged with one company's key cannot be used to
+ * authenticate as an agent in a different company, even if the attacker has
+ * access to the raw JWT of another company's agent.
+ *
+ * Returns `null` when no master secret is configured (local_trusted mode).
+ */
+export function deriveCompanySigningKey(companyId: string): string | null {
+  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+  if (!secret) return null;
+  return createHmac("sha256", secret).update(`jwt:${companyId}`).digest("hex");
+}
+
+/**
+ * Resolver function suitable for passing to `verifyLocalAgentJwt`. Looks up
+ * the per-company key for the given companyId.
+ */
+export async function resolveCompanySigningKey(companyId: string): Promise<string | null> {
+  return deriveCompanySigningKey(companyId);
+}
+
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -31,7 +53,7 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 14_400),
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 3_600),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
   };

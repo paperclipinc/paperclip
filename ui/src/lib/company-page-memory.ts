@@ -4,7 +4,18 @@ import {
   toCompanyRelativePath,
 } from "./company-routes";
 
-const GLOBAL_SEGMENTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs"]);
+// Must stay in sync with GLOBAL_ROUTE_ROOTS in company-routes.ts — any
+// path rooted at a global segment belongs to the instance, not a company.
+const GLOBAL_SEGMENTS = new Set([
+  "auth",
+  "invite",
+  "board-claim",
+  "cli-auth",
+  "docs",
+  "instance",
+  "account",
+  "onboarding",
+]);
 
 export function isRememberableCompanyPath(path: string): boolean {
   const pathname = path.split("?")[0] ?? "";

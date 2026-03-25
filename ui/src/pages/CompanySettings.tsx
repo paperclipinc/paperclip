@@ -220,6 +220,17 @@ export function CompanySettings() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
       });
+      // Navigate to the next company's dashboard. Using window.location
+      // avoids the company-prefix wrapper that can mis-apply the old prefix
+      // still present in the current URL.
+      const nextCompany = nextCompanyId
+        ? companies.find((c) => c.id === nextCompanyId)
+        : null;
+      if (nextCompany) {
+        window.location.replace("/" + nextCompany.issuePrefix + "/dashboard");
+      } else {
+        window.location.replace("/");
+      }
     }
   });
 

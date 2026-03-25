@@ -75,11 +75,15 @@ export function createBetterAuthInstance(
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
-    throw new Error(
-      "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set. " +
-      "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
-    );
+    if (config.deploymentMode === "authenticated") {
+      throw new Error(
+        "BETTER_AUTH_SECRET (or PAPERCLIP_AGENT_JWT_SECRET) must be set in authenticated deployment mode. " +
+        "Refusing to start with a hardcoded fallback secret.",
+      );
+    }
+    // local_trusted mode only — use a non-production placeholder
   }
+  const effectiveSecret = secret ?? "paperclip-dev-secret-local-only";
   const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
@@ -87,7 +91,7 @@ export function createBetterAuthInstance(
 
   const authConfig = {
     baseURL: baseUrl,
-    secret,
+    secret: effectiveSecret,
     trustedOrigins: effectiveTrustedOrigins,
     database: drizzleAdapter(db, {
       provider: "pg",

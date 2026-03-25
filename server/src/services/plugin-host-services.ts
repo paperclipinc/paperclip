@@ -522,12 +522,24 @@ export function buildHostServices(
 
     state: {
       async get(params) {
+        // Validate company-scoped reads reference an existing company
+        if (params.scopeKind === "company" && params.scopeId) {
+          const company = await companies.getById(params.scopeId);
+          if (!company) throw new Error("Company not found for state read");
+        }
         return stateStore.get(pluginId, params.scopeKind as any, params.stateKey, {
           scopeId: params.scopeId,
           namespace: params.namespace,
         });
       },
       async set(params) {
+        // Validate company-scoped writes reference an existing company.
+        // This prevents a buggy or malicious plugin from writing state keyed
+        // to a non-existent or arbitrary company UUID.
+        if (params.scopeKind === "company" && params.scopeId) {
+          const company = await companies.getById(params.scopeId);
+          if (!company) throw new Error("Company not found for state write");
+        }
         await stateStore.set(pluginId, {
           scopeKind: params.scopeKind as any,
           scopeId: params.scopeId,
@@ -537,6 +549,10 @@ export function buildHostServices(
         });
       },
       async delete(params) {
+        if (params.scopeKind === "company" && params.scopeId) {
+          const company = await companies.getById(params.scopeId);
+          if (!company) throw new Error("Company not found for state delete");
+        }
         await stateStore.delete(pluginId, params.scopeKind as any, params.stateKey, {
           scopeId: params.scopeId,
           namespace: params.namespace,
