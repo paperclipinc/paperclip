@@ -8,6 +8,7 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
+import { planLimits } from "../middleware/plan-limits.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -85,6 +86,7 @@ function sanitizeSvgBuffer(input: Buffer): Buffer | null {
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = assetService(db);
+  const limits = planLimits(db);
   const assetUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
@@ -110,6 +112,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/assets/images", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await limits.checkStorageLimit(companyId);
 
     try {
       await runSingleFileUpload(assetUpload, req, res);
@@ -213,6 +216,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await limits.checkStorageLimit(companyId);
 
     try {
       await runSingleFileUpload(companyLogoUpload, req, res);
