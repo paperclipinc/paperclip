@@ -461,7 +461,7 @@ export function OnboardingWizard() {
       if (budgetAmount.trim()) {
         const cents = Math.round(parseFloat(budgetAmount) * 100);
         if (cents > 0) {
-          companiesApi.update(company.id, { budgetMonthlyCents: cents });
+          await companiesApi.update(company.id, { budgetMonthlyCents: cents });
         }
       }
 
@@ -542,6 +542,14 @@ export function OnboardingWizard() {
           // BYOK: store API key as company secret, reference it in env
           if (!byokApiKey.trim()) {
             setError("Please enter your API key.");
+            return;
+          }
+          if (byokKeyStatus === "invalid") {
+            setError(byokKeyError ?? "The API key you entered is invalid. Please check it and try again.");
+            return;
+          }
+          if (byokKeyStatus === "validating") {
+            setError("API key is still being validated. Please wait.");
             return;
           }
           // Resolve provider: fixed for single-provider adapters, user-selected for multi-provider
@@ -646,7 +654,10 @@ export function OnboardingWizard() {
   }
 
   async function handleStep3Launch() {
-    if (!createdCompanyId || !createdAgentId) return;
+    if (!createdCompanyId || !createdAgentId) {
+      setError("Company or agent is missing. Please go back and complete the previous steps.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -841,8 +852,13 @@ export function OnboardingWizard() {
                       />
                       Monthly budget (optional)
                     </button>
-                    {showBudget && (
-                      <div className="mt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <div
+                      className={cn(
+                        "grid transition-[grid-template-rows,opacity] duration-300 ease-in-out",
+                        showBudget ? "grid-rows-[1fr] opacity-100 mt-2" : "grid-rows-[0fr] opacity-0"
+                      )}
+                    >
+                      <div className="overflow-hidden">
                         <div className="group">
                           <label
                             className={cn(
@@ -869,7 +885,7 @@ export function OnboardingWizard() {
                           </p>
                         </div>
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -1591,7 +1607,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "Setting up company..." : "Next"}
                     </Button>
                   )}
                   {step === 2 && (
@@ -1608,7 +1624,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
+                      {loading ? "Creating agent..." : "Next"}
                     </Button>
                   )}
                   {step === 3 && (
