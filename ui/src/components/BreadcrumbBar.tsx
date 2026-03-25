@@ -1,10 +1,10 @@
 import { Link } from "@/lib/router";
-import { Menu, Settings, LogOut } from "lucide-react";
+import { Menu, Settings, LogOut, Building2 } from "lucide-react";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -64,6 +64,7 @@ function UserMenu() {
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" className="ml-2 h-8 w-8 rounded-full p-0">
           <Avatar size="sm">
+            {session.user.image && <AvatarImage src={session.user.image} />}
             <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
         </Button>
@@ -81,6 +82,10 @@ function UserMenu() {
         <DropdownMenuItem onClick={() => { window.location.href = "/account"; }}>
           <Settings className="mr-2 h-4 w-4" />
           Account settings
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => { window.location.href = "/companies"; }}>
+          <Building2 className="mr-2 h-4 w-4" />
+          Manage companies
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem

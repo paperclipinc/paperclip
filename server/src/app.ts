@@ -34,6 +34,7 @@ import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { userRoutes } from "./routes/user.js";
 import { connectionRoutes } from "./routes/connections.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -116,6 +117,7 @@ export async function createApp(
         now?: Date;
       }): Promise<unknown>;
     };
+    storageProvider: import("./storage/types.js").StorageProvider | null;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -247,6 +249,7 @@ export async function createApp(
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
+  api.use(userRoutes(db, opts.storageProvider));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
