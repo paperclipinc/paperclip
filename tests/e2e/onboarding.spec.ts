@@ -74,7 +74,8 @@ test.describe("Onboarding wizard", () => {
     await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
     await expect(page.getByText(AGENT_NAME, { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Launch" }).click();
+    // Use .last() to target the action button, not the progress tab also labelled "Launch"
+    await page.getByRole("button", { name: "Launch" }).last().click();
 
     await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
 
