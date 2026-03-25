@@ -108,7 +108,7 @@ export class K8sClient {
               requests: opts.resources.requests,
               limits: opts.resources.limits,
             } : {
-              requests: { cpu: "500m", memory: "1Gi" },
+              requests: { cpu: "50m", memory: "256Mi" },
               limits: { cpu: "4", memory: "8Gi" },
             },
             volumeMounts: [
