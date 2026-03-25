@@ -67,7 +67,11 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
   return Array.from(trustedOrigins);
 }
 
-function generateAppleClientSecret(teamId: string, keyId: string, clientId: string, privateKey: string): string {
+function generateAppleClientSecret(teamId: string, keyId: string, clientId: string, rawPrivateKey: string): string {
+  // Normalize PEM: 1Password and K8s secrets often strip newlines
+  const pem = rawPrivateKey.trim();
+  const body = pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+  const privateKey = `-----BEGIN PRIVATE KEY-----\n${body.match(/.{1,64}/g)?.join("\n")}\n-----END PRIVATE KEY-----`;
   // Apple client secrets are ES256 JWTs valid for max 6 months.
   // We generate a fresh one at startup so there's nothing to rotate.
   const header = { alg: "ES256", kid: keyId, typ: "JWT" };
