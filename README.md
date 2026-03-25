@@ -61,7 +61,7 @@ pnpm install
 pnpm dev
 ```
 
-Refer to the upstream [documentation](https://paperclip.ing/docs) and [development guide](doc/DEVELOPING.md) for detailed setup instructions.
+Refer to the upstream [documentation](https://paperclip.inc/docs) and [development guide](doc/DEVELOPING.md) for detailed setup instructions.
 
 <br/>
 
