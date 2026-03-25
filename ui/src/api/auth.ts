@@ -1,6 +1,6 @@
 export type AuthSession = {
   session: { id: string; userId: string };
-  user: { id: string; email: string | null; name: string | null };
+  user: { id: string; email: string | null; name: string | null; image: string | null };
 };
 
 function toSession(value: unknown): AuthSession | null {
@@ -20,6 +20,7 @@ function toSession(value: unknown): AuthSession | null {
       id: user.id,
       email: typeof user.email === "string" ? user.email : null,
       name: typeof user.name === "string" ? user.name : null,
+      image: typeof user.image === "string" ? user.image : null,
     },
   };
 }
@@ -105,6 +106,29 @@ export const authApi = {
 
   changePassword: async (input: { currentPassword: string; newPassword: string }) => {
     return authPost("/change-password", input);
+  },
+
+  uploadAvatar: async (file: File): Promise<{ url: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/user/avatar", {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => null);
+      throw new Error((payload as { error?: string } | null)?.error ?? "Upload failed");
+    }
+    return res.json();
+  },
+
+  deleteAvatar: async () => {
+    const res = await fetch("/api/user/avatar", {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!res.ok) throw new Error("Failed to remove avatar");
   },
 
   changeEmail: async (input: { newEmail: string }) => {
