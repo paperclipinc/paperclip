@@ -121,6 +121,7 @@ export async function createApp(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     emailEnabled: boolean;
+    socialProviders: string[];
     cloudSandboxEnabled: boolean;
     managedInferenceEnabled: boolean;
     instanceId?: string;
@@ -225,6 +226,7 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       emailEnabled: opts.emailEnabled,
+      socialProviders: opts.socialProviders,
       cloudSandboxEnabled: opts.cloudSandboxEnabled,
       managedInferenceEnabled: opts.managedInferenceEnabled,
     }),

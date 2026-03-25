@@ -16,6 +16,7 @@ export function healthRoutes(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     emailEnabled: boolean;
+    socialProviders: string[];
     cloudSandboxEnabled: boolean;
     managedInferenceEnabled: boolean;
   } = {
@@ -24,6 +25,7 @@ export function healthRoutes(
     authReady: true,
     companyDeletionEnabled: true,
     emailEnabled: false,
+    socialProviders: [],
     cloudSandboxEnabled: false,
     managedInferenceEnabled: false,
   },
@@ -100,6 +102,7 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
         emailEnabled: opts.emailEnabled,
+        socialProviders: opts.socialProviders,
         cloudSandboxEnabled: opts.cloudSandboxEnabled,
         managedInferenceEnabled: opts.managedInferenceEnabled,
       },

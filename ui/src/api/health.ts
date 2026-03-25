@@ -22,6 +22,8 @@ export type HealthStatus = {
   bootstrapInviteActive?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
+    emailEnabled?: boolean;
+    socialProviders?: string[];
     cloudSandboxEnabled?: boolean;
     managedInferenceEnabled?: boolean;
   };

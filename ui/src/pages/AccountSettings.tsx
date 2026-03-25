@@ -1,28 +1,43 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { authApi } from "../api/auth";
 import { Button } from "@/components/ui/button";
-import { User } from "lucide-react";
-import { Field } from "../components/agent-config-primitives";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { User, LogOut, Check, Mail } from "lucide-react";
 
 export function AccountSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: session } = useQuery({
+  const { data: session, isLoading } = useQuery({
     queryKey: ["auth", "session"],
     queryFn: () => authApi.getSession(),
   });
 
   // Profile local state
   const [name, setName] = useState("");
+  const [profileSaved, setProfileSaved] = useState(false);
+
+  // Email local state
+  const [newEmail, setNewEmail] = useState("");
 
   // Security local state
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
   // Sync name from session
@@ -36,12 +51,45 @@ export function AccountSettings() {
     setBreadcrumbs([{ label: "Account Settings" }]);
   }, [setBreadcrumbs]);
 
-  const profileDirty = !!session && name !== (session.user.name ?? "");
+  const profileDirty = !!session && name.trim() !== (session.user.name ?? "");
+
+  // Clear the "saved" indicator when the user starts editing again
+  useEffect(() => {
+    if (profileDirty) setProfileSaved(false);
+  }, [profileDirty]);
 
   const profileMutation = useMutation({
     mutationFn: (data: { name: string }) => authApi.updateUser(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["auth", "session"] });
+      setProfileSaved(true);
+      pushToast({ tone: "success", title: "Profile updated" });
+    },
+    onError: (err) => {
+      pushToast({
+        tone: "error",
+        title: "Failed to update profile",
+        body: err instanceof Error ? err.message : "Something went wrong",
+      });
+    },
+  });
+
+  const emailMutation = useMutation({
+    mutationFn: (data: { newEmail: string }) => authApi.changeEmail(data),
+    onSuccess: () => {
+      setNewEmail("");
+      pushToast({
+        tone: "success",
+        title: "Verification email sent",
+        body: "Check your new email inbox to confirm the change.",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        tone: "error",
+        title: "Failed to change email",
+        body: err instanceof Error ? err.message : "Something went wrong",
+      });
     },
   });
 
@@ -53,22 +101,29 @@ export function AccountSettings() {
       setNewPassword("");
       setConfirmPassword("");
       setPasswordError(null);
-      setPasswordSuccess("Password changed successfully.");
+      pushToast({ tone: "success", title: "Password changed successfully" });
     },
     onError: (err) => {
-      setPasswordSuccess(null);
       setPasswordError(
-        err instanceof Error ? err.message : "Failed to change password"
+        err instanceof Error ? err.message : "Failed to change password",
       );
     },
   });
 
-  function handleSaveProfile() {
+  function handleSaveProfile(e: React.FormEvent) {
+    e.preventDefault();
     profileMutation.mutate({ name: name.trim() });
   }
 
-  function handleChangePassword() {
-    setPasswordSuccess(null);
+  function handleChangeEmail(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = newEmail.trim();
+    if (!trimmed || trimmed === session?.user.email) return;
+    emailMutation.mutate({ newEmail: trimmed });
+  }
+
+  function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
     setPasswordError(null);
 
     if (newPassword.length < 8) {
@@ -83,6 +138,32 @@ export function AccountSettings() {
     passwordMutation.mutate({ currentPassword, newPassword });
   }
 
+  const canSubmitEmail =
+    !emailMutation.isPending &&
+    newEmail.trim().length > 0 &&
+    newEmail.trim() !== (session?.user.email ?? "");
+
+  const canSubmitPassword =
+    !passwordMutation.isPending &&
+    currentPassword.length > 0 &&
+    newPassword.length > 0 &&
+    confirmPassword.length > 0;
+
+  if (isLoading) {
+    return (
+      <div className="max-w-2xl space-y-6">
+        <div className="flex items-center gap-2">
+          <User className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Account Settings</h1>
+        </div>
+        <div className="space-y-4">
+          <div className="h-48 animate-pulse rounded-md border border-border bg-muted/30" />
+          <div className="h-64 animate-pulse rounded-md border border-border bg-muted/30" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
@@ -91,116 +172,174 @@ export function AccountSettings() {
       </div>
 
       {/* Profile */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Profile
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Display name">
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </Field>
-          <Field label="Email">
-            <p className="text-sm text-muted-foreground">
-              {session?.user.email ?? "—"}
-            </p>
-          </Field>
-        </div>
-      </div>
+      <Card className="rounded-lg">
+        <CardHeader>
+          <CardTitle className="text-sm">Profile</CardTitle>
+          <CardDescription>
+            Your personal information visible to other members.
+          </CardDescription>
+        </CardHeader>
+        <form onSubmit={handleSaveProfile}>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="display-name">Display name</Label>
+              <Input
+                id="display-name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <p className="text-sm text-muted-foreground">
+                {session?.user.email ?? "\u2014"}
+              </p>
+            </div>
+          </CardContent>
+          <Separator />
+          <CardFooter className="pt-4 gap-3">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={profileMutation.isPending || !profileDirty || !name.trim()}
+            >
+              {profileMutation.isPending ? "Saving..." : "Save changes"}
+            </Button>
+            {profileSaved && !profileDirty && (
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Check className="h-3 w-3" />
+                Saved
+              </span>
+            )}
+          </CardFooter>
+        </form>
+      </Card>
 
-      {profileDirty && (
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            onClick={handleSaveProfile}
-            disabled={profileMutation.isPending || !name.trim()}
-          >
-            {profileMutation.isPending ? "Saving..." : "Save changes"}
-          </Button>
-          {profileMutation.isSuccess && (
-            <span className="text-xs text-muted-foreground">Saved</span>
-          )}
-          {profileMutation.isError && (
-            <span className="text-xs text-destructive">
-              {profileMutation.error instanceof Error
-                ? profileMutation.error.message
-                : "Failed to save"}
+      {/* Email */}
+      <Card className="rounded-lg">
+        <CardHeader>
+          <CardTitle className="text-sm">
+            <span className="flex items-center gap-1.5">
+              <Mail className="h-3.5 w-3.5" />
+              Email address
             </span>
-          )}
-        </div>
-      )}
+          </CardTitle>
+          <CardDescription>
+            Change the email associated with your account. A verification link
+            will be sent to the new address.
+          </CardDescription>
+        </CardHeader>
+        <form onSubmit={handleChangeEmail}>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-email">New email</Label>
+              <Input
+                id="new-email"
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder={session?.user.email ?? "new@example.com"}
+                autoComplete="email"
+              />
+            </div>
+          </CardContent>
+          <Separator />
+          <CardFooter className="pt-4">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!canSubmitEmail}
+            >
+              {emailMutation.isPending ? "Sending..." : "Send verification email"}
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
 
-      {/* Security */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Security
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <Field label="Current password">
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-            />
-          </Field>
-          <Field label="New password">
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-            />
-          </Field>
-          <Field label="Confirm new password">
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-            />
-          </Field>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          onClick={handleChangePassword}
-          disabled={
-            passwordMutation.isPending ||
-            !currentPassword ||
-            !newPassword ||
-            !confirmPassword
-          }
-        >
-          {passwordMutation.isPending ? "Changing..." : "Change password"}
-        </Button>
-        {passwordSuccess && (
-          <span className="text-xs text-muted-foreground">{passwordSuccess}</span>
-        )}
-        {passwordError && (
-          <span className="text-xs text-destructive">{passwordError}</span>
-        )}
-      </div>
+      {/* Password */}
+      <Card className="rounded-lg">
+        <CardHeader>
+          <CardTitle className="text-sm">Password</CardTitle>
+          <CardDescription>
+            Update your password to keep your account secure.
+          </CardDescription>
+        </CardHeader>
+        <form onSubmit={handleChangePassword}>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="current-password">Current password</Label>
+              <Input
+                id="current-password"
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-password">New password</Label>
+              <Input
+                id="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+              <p className="text-xs text-muted-foreground">
+                Must be at least 8 characters.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirm-password">Confirm new password</Label>
+              <Input
+                id="confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+            </div>
+            {passwordError && (
+              <p className="text-sm text-destructive">{passwordError}</p>
+            )}
+          </CardContent>
+          <Separator />
+          <CardFooter className="pt-4">
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!canSubmitPassword}
+            >
+              {passwordMutation.isPending ? "Changing..." : "Change password"}
+            </Button>
+          </CardFooter>
+        </form>
+      </Card>
 
       {/* Sign Out */}
-      <div className="space-y-4">
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={async () => {
-            await authApi.signOut();
-            window.location.href = "/auth";
-          }}
-        >
-          Sign out
-        </Button>
-      </div>
+      <Card className="rounded-lg border-destructive/30">
+        <CardHeader>
+          <CardTitle className="text-sm">Sign out</CardTitle>
+          <CardDescription>
+            End your current session on this device.
+          </CardDescription>
+        </CardHeader>
+        <CardFooter>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={async () => {
+              await authApi.signOut();
+              window.location.href = "/auth";
+            }}
+          >
+            <LogOut className="mr-1.5 h-3.5 w-3.5" />
+            Sign out
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   );
 }

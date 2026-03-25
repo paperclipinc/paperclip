@@ -108,20 +108,47 @@ export function createBetterAuthInstance(
       disableSignUp: config.authDisableSignUp,
       ...(emailSender
         ? {
-            sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
-              const frontendUrl = url.replace("/api/auth/verify-email", "/auth/verify-email");
-              await emailSender.sendVerificationEmail(user.email, frontendUrl);
-            },
-          }
-        : {}),
-      ...(emailSender
-        ? {
             sendResetPassword: async ({ user, url }: { user: { email: string }; url: string }) => {
               const frontendUrl = url.replace("/api/auth/reset-password", "/auth/reset-password");
               await emailSender.sendPasswordResetEmail(user.email, frontendUrl);
             },
           }
         : {}),
+    },
+    ...(emailSender
+      ? {
+          emailVerification: {
+            sendVerificationEmail: async ({ user, url }: { user: { email: string }; url: string }) => {
+              const frontendUrl = url.replace("/api/auth/verify-email", "/auth/verify-email");
+              await emailSender.sendVerificationEmail(user.email, frontendUrl);
+            },
+            sendOnSignUp: true,
+            autoSignInAfterVerification: true,
+          },
+        }
+      : {}),
+    socialProviders: {
+      ...(config.googleClientId && config.googleClientSecret
+        ? {
+            google: {
+              clientId: config.googleClientId,
+              clientSecret: config.googleClientSecret,
+            },
+          }
+        : {}),
+      ...(config.appleClientId && config.appleClientSecret
+        ? {
+            apple: {
+              clientId: config.appleClientId,
+              clientSecret: config.appleClientSecret,
+            },
+          }
+        : {}),
+    },
+    user: {
+      changeEmail: {
+        enabled: true,
+      },
     },
     ...(isHttpOnly ? { advanced: { useSecureCookies: false } } : {}),
   };
