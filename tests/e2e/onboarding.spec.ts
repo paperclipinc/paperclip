@@ -70,10 +70,12 @@ test.describe("Onboarding wizard", () => {
     await taskTitleInput.clear();
     await taskTitleInput.fill(TASK_TITLE);
 
-    // Summary is now visible on the same page
+    // Summary card is visible on the same page as the task form.
+    // Use exact matching for AGENT_NAME to avoid collision with the task
+    // description textarea which contains "You are the CEO...".
     await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
+    await expect(page.getByText(AGENT_NAME, { exact: true })).toBeVisible();
+    await expect(page.getByText(TASK_TITLE, { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Launch" }).click();
 
