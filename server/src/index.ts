@@ -28,6 +28,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { heartbeatService, reconcilePersistedRuntimeServicesOnStartup, routineService, startConnectionRefreshJob } from "./services/index.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 
@@ -505,10 +506,12 @@ export async function startServer(): Promise<StartedServer> {
   const listenPort = await detectPort(config.port);
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const storageProvider = createStorageProviderFromConfig(config);
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
     storageService,
+    storageProvider,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,

@@ -15,7 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { User, LogOut, Check, Mail } from "lucide-react";
+import { User, LogOut, Check, Mail, Camera, X } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export function AccountSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -110,6 +111,32 @@ export function AccountSettings() {
     },
   });
 
+  const avatarMutation = useMutation({
+    mutationFn: (file: File) => authApi.uploadAvatar(file),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auth", "session"] });
+      pushToast({ tone: "success", title: "Profile picture updated" });
+    },
+    onError: (err) => {
+      pushToast({ tone: "error", title: "Upload failed", body: err instanceof Error ? err.message : "Something went wrong" });
+    },
+  });
+
+  const removeAvatarMutation = useMutation({
+    mutationFn: () => authApi.deleteAvatar(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auth", "session"] });
+      pushToast({ tone: "success", title: "Profile picture removed" });
+    },
+  });
+
+  function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    avatarMutation.mutate(file);
+  }
+
   function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
     profileMutation.mutate({ name: name.trim() });
@@ -181,6 +208,50 @@ export function AccountSettings() {
         </CardHeader>
         <form onSubmit={handleSaveProfile}>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>Profile picture</Label>
+              <div className="flex items-center gap-4">
+                <div className="relative group">
+                  <Avatar size="lg">
+                    {session?.user.image && <AvatarImage src={session.user.image} />}
+                    <AvatarFallback>
+                      {(session?.user.name || session?.user.email || "?").slice(0, 2).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={avatarMutation.isPending}
+                    onClick={() => document.getElementById("avatar-upload")?.click()}
+                  >
+                    <Camera className="h-3.5 w-3.5 mr-1.5" />
+                    {avatarMutation.isPending ? "Uploading..." : "Upload"}
+                  </Button>
+                  {session?.user.image && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={removeAvatarMutation.isPending}
+                      onClick={() => removeAvatarMutation.mutate()}
+                    >
+                      <X className="h-3.5 w-3.5 mr-1.5" />
+                      Remove
+                    </Button>
+                  )}
+                  <input
+                    id="avatar-upload"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={handleAvatarChange}
+                  />
+                </div>
+              </div>
+            </div>
             <div className="space-y-2">
               <Label htmlFor="display-name">Display name</Label>
               <Input
