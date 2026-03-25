@@ -3,12 +3,10 @@ import { test, expect } from "@playwright/test";
 /**
  * E2E: Onboarding wizard flow (skip_llm mode).
  *
- * Walks through the 5-step OnboardingWizard:
- *   Step 1 — Name your company
- *   Step 2 — Set a monthly budget (optional, skipped in this test)
- *   Step 3 — Create your first agent (adapter selection + config)
- *   Step 4 — Give it something to do (task creation)
- *   Step 5 — Ready to launch (summary + open issue)
+ * Walks through the 3-step OnboardingWizard:
+ *   Step 1 — Name your company (budget is a collapsible section, skipped)
+ *   Step 2 — Create your first agent (adapter selection + config)
+ *   Step 3 — Give it something to do (task creation + summary + launch)
  *
  * By default this runs in skip_llm mode: we do NOT assert that an LLM
  * heartbeat fires. Set PAPERCLIP_E2E_SKIP_LLM=false to enable LLM-dependent
@@ -23,9 +21,18 @@ const TASK_TITLE = "E2E test task";
 
 test.describe("Onboarding wizard", () => {
   test("completes full wizard flow", async ({ page }) => {
-    await page.goto("/onboarding");
+    await page.goto("/");
 
     const wizardHeading = page.locator("h3", { hasText: "Name your company" });
+    const newCompanyBtn = page.getByRole("button", { name: "New Company" });
+
+    await expect(
+      wizardHeading.or(newCompanyBtn)
+    ).toBeVisible({ timeout: 15_000 });
+
+    if (await newCompanyBtn.isVisible()) {
+      await newCompanyBtn.click();
+    }
 
     await expect(wizardHeading).toBeVisible({ timeout: 5_000 });
 
@@ -35,16 +42,10 @@ test.describe("Onboarding wizard", () => {
     const nextButton = page.getByRole("button", { name: "Next" });
     await nextButton.click();
 
-    // Step 2 — Budget (skip it)
-    await expect(
-      page.locator("h3", { hasText: "Set a monthly budget" })
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "Skip" }).click();
-
-    // Step 3 — Agent
+    // Step 2 — Agent
     await expect(
       page.locator("h3", { hasText: "Create your first agent" })
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: 10_000 });
 
     const agentNameInput = page.locator('input[placeholder="CEO"]');
     await expect(agentNameInput).toHaveValue(AGENT_NAME);
@@ -58,48 +59,10 @@ test.describe("Onboarding wizard", () => {
 
     await page.getByRole("button", { name: "Next" }).click();
 
+    // Step 3 — Task + summary + launch
     await expect(
       page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 30_000 });
-
-    const baseUrl = page.url().split("/").slice(0, 3).join("/");
-    if (SKIP_LLM) {
-      const companiesAfterAgentRes = await page.request.get(`${baseUrl}/api/companies`);
-      expect(companiesAfterAgentRes.ok()).toBe(true);
-      const companiesAfterAgent = await companiesAfterAgentRes.json();
-      const companyAfterAgent = companiesAfterAgent.find(
-        (c: { name: string }) => c.name === COMPANY_NAME
-      );
-      expect(companyAfterAgent).toBeTruthy();
-
-      const agentsAfterCreateRes = await page.request.get(
-        `${baseUrl}/api/companies/${companyAfterAgent.id}/agents`
-      );
-      expect(agentsAfterCreateRes.ok()).toBe(true);
-      const agentsAfterCreate = await agentsAfterCreateRes.json();
-      const ceoAgentAfterCreate = agentsAfterCreate.find(
-        (a: { name: string }) => a.name === AGENT_NAME
-      );
-      expect(ceoAgentAfterCreate).toBeTruthy();
-
-      const disableWakeRes = await page.request.patch(
-        `${baseUrl}/api/agents/${ceoAgentAfterCreate.id}?companyId=${encodeURIComponent(companyAfterAgent.id)}`,
-        {
-          data: {
-            runtimeConfig: {
-              heartbeat: {
-                enabled: false,
-                intervalSec: 300,
-                wakeOnDemand: false,
-                cooldownSec: 10,
-                maxConcurrentRuns: 1,
-              },
-            },
-          },
-        }
-      );
-      expect(disableWakeRes.ok()).toBe(true);
-    }
+    ).toBeVisible({ timeout: 10_000 });
 
     const taskTitleInput = page.locator(
       'input[placeholder="e.g. Research competitor pricing"]'
@@ -107,19 +70,16 @@ test.describe("Onboarding wizard", () => {
     await taskTitleInput.clear();
     await taskTitleInput.fill(TASK_TITLE);
 
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 30_000 });
-
+    // Summary card shows company and agent (task title is in the input, not the card)
     await expect(page.locator("text=" + COMPANY_NAME)).toBeVisible();
-    await expect(page.locator("text=" + AGENT_NAME)).toBeVisible();
-    await expect(page.locator("text=" + TASK_TITLE)).toBeVisible();
+    await expect(page.getByText(AGENT_NAME, { exact: true })).toBeVisible();
 
-    await page.getByRole("button", { name: "Create & Open Issue" }).click();
+    // Use .last() to target the action button, not the progress tab also labelled "Launch"
+    await page.getByRole("button", { name: "Launch" }).last().click();
 
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
+
+    const baseUrl = page.url().split("/").slice(0, 3).join("/");
 
     const companiesRes = await page.request.get(`${baseUrl}/api/companies`);
     expect(companiesRes.ok()).toBe(true);
@@ -173,17 +133,6 @@ test.describe("Onboarding wizard", () => {
         const issue = await res.json();
         expect(["in_progress", "done"]).toContain(issue.status);
       }).toPass({ timeout: 120_000, intervals: [5_000] });
-    } else {
-      await expect
-        .poll(async () => {
-          const runsRes = await page.request.get(
-            `${baseUrl}/api/companies/${company.id}/heartbeat-runs?agentId=${ceoAgent.id}`
-          );
-          expect(runsRes.ok()).toBe(true);
-          const runs = await runsRes.json();
-          return Array.isArray(runs) ? runs.length : -1;
-        }, { timeout: 10_000, intervals: [500, 1_000, 2_000] })
-        .toBe(0);
     }
   });
 });

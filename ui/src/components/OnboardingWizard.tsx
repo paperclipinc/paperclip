@@ -25,10 +25,6 @@ import {
   extractProviderIdWithFallback
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
-import { listUIAdapters } from "../adapters";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
-import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import {
@@ -36,7 +32,6 @@ import {
   buildOnboardingProjectPayload,
   selectDefaultCompanyGoalId
 } from "../lib/onboarding-launch";
-import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL
@@ -45,6 +40,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
+import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import {
   CLOUD_MODELS,
   CLOUD_RUNTIME_OPTIONS,
@@ -72,8 +68,17 @@ import {
   X
 } from "lucide-react";
 
-type Step = 1 | 2 | 3 | 4 | 5;
-type AdapterType = string;
+type Step = 1 | 2 | 3;
+type AdapterType =
+  | "claude_local"
+  | "codex_local"
+  | "gemini_local"
+  | "opencode_local"
+  | "pi_local"
+  | "cursor"
+  | "http"
+  | "openclaw_gateway"
+  | "cloud_sandbox";
 
 type InferenceChoice = "managed" | "byok";
 
@@ -91,9 +96,6 @@ export function OnboardingWizard() {
   const location = useLocation();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const [routeDismissed, setRouteDismissed] = useState(false);
-
-  // Sync disabled adapter types from server so adapter grid filters them out
-  const disabledTypes = useDisabledAdaptersSync();
 
   const routeOnboardingOptions =
     companyPrefix && companiesLoading
@@ -122,10 +124,11 @@ export function OnboardingWizard() {
   const [companyName, setCompanyName] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
-  // Step 2 (budget)
+  // Step 1 (budget — collapsible within Company step)
   const [budgetAmount, setBudgetAmount] = useState("");
+  const [showBudget, setShowBudget] = useState(false);
 
-  // Step 3 (agent — was step 2)
+  // Step 2 (agent)
   const [agentName, setAgentName] = useState("CEO");
   const [adapterType, setAdapterType] = useState<AdapterType>("codex_local");
   const [model, setModel] = useState("");
@@ -149,7 +152,7 @@ export function OnboardingWizard() {
   const [cloudSandboxEnabled, setCloudSandboxEnabled] = useState(false);
   const [managedInferenceEnabled, setManagedInferenceEnabled] = useState(false);
 
-  // Step 4 (task — was step 3)
+  // Step 3 (task + launch)
   const [taskTitle, setTaskTitle] = useState(
     "Hire your first engineer and create a hiring plan"
   );
@@ -212,7 +215,7 @@ export function OnboardingWizard() {
 
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
-    if (step === 4) autoResizeTextarea();
+    if (step === 3) autoResizeTextarea();
   }, [step, taskDescription, autoResizeTextarea]);
 
   // Fetch deployment features to detect cloud sandbox mode
@@ -247,39 +250,31 @@ export function OnboardingWizard() {
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType)
       : ["agents", "none", "adapter-models", adapterType],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType),
-    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 3
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
-  const getCapabilities = useAdapterCapabilities();
-  const adapterCaps = getCapabilities(adapterType);
-  const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
-
-  // Build adapter grids dynamically from the UI registry + display metadata.
-  // External/plugin adapters automatically appear with generic defaults.
-  const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
-    const all = listUIAdapters()
-      .filter((a) => !SYSTEM_ADAPTER_TYPES.has(a.type) && !disabledTypes.has(a.type))
-      .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
-
-    return {
-      recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
-    };
-  }, [disabledTypes]);
-  const COMMAND_PLACEHOLDERS: Record<string, string> = {
-    claude_local: "claude",
-    codex_local: "codex",
-    gemini_local: "gemini",
-    pi_local: "pi",
-    cursor: "agent",
-    opencode_local: "opencode",
-  };
+  const isLocalAdapter =
+    adapterType === "claude_local" ||
+    adapterType === "codex_local" ||
+    adapterType === "gemini_local" ||
+    adapterType === "opencode_local" ||
+    adapterType === "pi_local" ||
+    adapterType === "cursor";
   const effectiveAdapterCommand =
     command.trim() ||
-    (COMMAND_PLACEHOLDERS[adapterType] ?? adapterType.replace(/_local$/, ""));
+    (adapterType === "codex_local"
+      ? "codex"
+      : adapterType === "gemini_local"
+        ? "gemini"
+      : adapterType === "pi_local"
+      ? "pi"
+      : adapterType === "cursor"
+      ? "agent"
+      : adapterType === "opencode_local"
+      ? "opencode"
+      : "claude");
 
   useEffect(() => {
-    if (step !== 3) return;
+    if (step !== 2) return;
     setAdapterEnvResult(null);
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url]);
@@ -337,6 +332,7 @@ export function OnboardingWizard() {
     setCompanyName("");
     setCompanyGoal("");
     setBudgetAmount("");
+    setShowBudget(false);
     setAgentName("CEO");
     setAdapterType("claude_local");
     setModel("");
@@ -383,8 +379,7 @@ export function OnboardingWizard() {
       command,
       args,
       url,
-      dangerouslySkipPermissions:
-        adapterType === "claude_local" || adapterType === "opencode_local",
+      dangerouslySkipPermissions: adapterType === "claude_local",
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
           ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
@@ -462,6 +457,14 @@ export function OnboardingWizard() {
         setCreatedCompanyGoalId(null);
       }
 
+      // Save budget if provided (merged from old budget step)
+      if (budgetAmount.trim()) {
+        const cents = Math.round(parseFloat(budgetAmount) * 100);
+        if (cents > 0) {
+          companiesApi.update(company.id, { budgetMonthlyCents: cents });
+        }
+      }
+
       setStep(2);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
@@ -470,17 +473,7 @@ export function OnboardingWizard() {
     }
   }
 
-  function handleBudgetNext() {
-    if (budgetAmount.trim() && createdCompanyId) {
-      const cents = Math.round(parseFloat(budgetAmount) * 100);
-      if (cents > 0) {
-        companiesApi.update(createdCompanyId, { budgetMonthlyCents: cents });
-      }
-    }
-    setStep(3);
-  }
-
-  async function handleStep3Next() {
+  async function handleStep2Next() {
     if (!createdCompanyId) return;
     setLoading(true);
     setError(null);
@@ -581,13 +574,21 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType: finalAdapterType,
         adapterConfig: finalAdapterConfig,
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        runtimeConfig: {
+          heartbeat: {
+            enabled: true,
+            intervalSec: 3600,
+            wakeOnDemand: true,
+            cooldownSec: 10,
+            maxConcurrentRuns: 1
+          }
+        }
       });
       setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      setStep(4);
+      setStep(3);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
@@ -644,13 +645,7 @@ export function OnboardingWizard() {
     }
   }
 
-  async function handleStep4Next() {
-    if (!createdCompanyId || !createdAgentId) return;
-    setError(null);
-    setStep(5);
-  }
-
-  async function handleLaunch() {
+  async function handleStep3Launch() {
     if (!createdCompanyId || !createdAgentId) return;
     setLoading(true);
     setError(null);
@@ -713,10 +708,8 @@ export function OnboardingWizard() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (step === 1 && companyName.trim()) handleStep1Next();
-      else if (step === 2) handleBudgetNext();
-      else if (step === 3 && agentName.trim()) handleStep3Next();
-      else if (step === 4 && taskTitle.trim()) handleStep4Next();
-      else if (step === 5) handleLaunch();
+      else if (step === 2 && agentName.trim()) handleStep2Next();
+      else if (step === 3 && taskTitle.trim()) handleStep3Launch();
     }
   }
 
@@ -760,10 +753,8 @@ export function OnboardingWizard() {
                 {(
                   [
                     { step: 1 as Step, label: "Company", icon: Building2 },
-                    { step: 2 as Step, label: "Budget", icon: Wallet },
-                    { step: 3 as Step, label: "Agent", icon: Bot },
-                    { step: 4 as Step, label: "Task", icon: ListTodo },
-                    { step: 5 as Step, label: "Launch", icon: Rocket }
+                    { step: 2 as Step, label: "Agent", icon: Bot },
+                    { step: 3 as Step, label: "Launch", icon: Rocket }
                   ] as const
                 ).map(({ step: s, label, icon: Icon }) => (
                   <button
@@ -785,7 +776,7 @@ export function OnboardingWizard() {
 
               {/* Step content */}
               {step === 1 && (
-                <div className="space-y-5">
+                <div key={1} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
@@ -834,53 +825,57 @@ export function OnboardingWizard() {
                       onChange={(e) => setCompanyGoal(e.target.value)}
                     />
                   </div>
+
+                  {/* Collapsible budget section */}
+                  <div>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowBudget((v) => !v)}
+                    >
+                      <ChevronDown
+                        className={cn(
+                          "h-3 w-3 transition-transform",
+                          showBudget ? "rotate-0" : "-rotate-90"
+                        )}
+                      />
+                      Monthly budget (optional)
+                    </button>
+                    {showBudget && (
+                      <div className="mt-2 animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="group">
+                          <label
+                            className={cn(
+                              "text-xs mb-1 block transition-colors",
+                              budgetAmount.trim()
+                                ? "text-foreground"
+                                : "text-muted-foreground group-focus-within:text-foreground"
+                            )}
+                          >
+                            Monthly budget (USD)
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                            <input
+                              className="w-full rounded-md border border-border bg-transparent pl-7 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                              placeholder="500.00"
+                              value={budgetAmount}
+                              onChange={(e) => setBudgetAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                              inputMode="decimal"
+                            />
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-2">
+                            When spend reaches this limit, agents will pause and wait for board approval. Leave empty for no limit.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {step === 2 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Wallet className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Set a monthly budget</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Optional spending limit for this company. You can always change this later.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="group">
-                    <label
-                      className={cn(
-                        "text-xs mb-1 block transition-colors",
-                        budgetAmount.trim()
-                          ? "text-foreground"
-                          : "text-muted-foreground group-focus-within:text-foreground"
-                      )}
-                    >
-                      Monthly budget (USD)
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent pl-7 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                        placeholder="500.00"
-                        value={budgetAmount}
-                        onChange={(e) => setBudgetAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                        inputMode="decimal"
-                        autoFocus
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      When spend reaches this limit, agents will pause and wait for board approval. Leave empty for no limit.
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {step === 3 && (
-                <div className="space-y-5">
+                <div key={2} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Bot className="h-5 w-5 text-muted-foreground" />
@@ -953,17 +948,32 @@ export function OnboardingWizard() {
                       Adapter type
                     </label>
                     <div className="grid grid-cols-2 gap-2">
-                      {recommendedAdapters.map((opt) => (
+                      {[
+                        {
+                          value: "claude_local" as const,
+                          label: "Claude Code",
+                          icon: Sparkles,
+                          desc: "Local Claude agent",
+                          recommended: true
+                        },
+                        {
+                          value: "codex_local" as const,
+                          label: "Codex",
+                          icon: Code,
+                          desc: "Local Codex agent",
+                          recommended: true
+                        }
+                      ].map((opt) => (
                         <button
-                          key={opt.type}
+                          key={opt.value}
                           className={cn(
                             "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            adapterType === opt.type
+                            adapterType === opt.value
                               ? "border-foreground bg-accent"
                               : "border-border hover:bg-accent/50"
                           )}
                           onClick={() => {
-                            const nextType = opt.type;
+                            const nextType = opt.value as AdapterType;
                             setAdapterType(nextType);
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
@@ -981,7 +991,7 @@ export function OnboardingWizard() {
                           <opt.icon className="h-4 w-4" />
                           <span className="font-medium">{opt.label}</span>
                           <span className="text-muted-foreground text-[10px]">
-                            {opt.description}
+                            {opt.desc}
                           </span>
                         </button>
                       ))}
@@ -1002,21 +1012,54 @@ export function OnboardingWizard() {
 
                     {showMoreAdapters && (
                       <div className="grid grid-cols-2 gap-2 mt-2">
-                        {moreAdapters.map((opt) => (
-                           <button
-                             key={opt.type}
-                             disabled={!!opt.comingSoon}
-                             className={cn(
-                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                               opt.comingSoon
-                                 ? "border-border opacity-40 cursor-not-allowed"
-                                 : adapterType === opt.type
-                                 ? "border-foreground bg-accent"
-                                 : "border-border hover:bg-accent/50"
-                             )}
-                             onClick={() => {
-                               if (opt.comingSoon) return;
-                               const nextType = opt.type;
+                        {[
+                          {
+                            value: "gemini_local" as const,
+                            label: "Gemini CLI",
+                            icon: Gem,
+                            desc: "Local Gemini agent"
+                          },
+                          {
+                            value: "opencode_local" as const,
+                            label: "OpenCode",
+                            icon: OpenCodeLogoIcon,
+                            desc: "Local multi-provider agent"
+                          },
+                          {
+                            value: "pi_local" as const,
+                            label: "Pi",
+                            icon: Terminal,
+                            desc: "Local Pi agent"
+                          },
+                          {
+                            value: "cursor" as const,
+                            label: "Cursor",
+                            icon: MousePointer2,
+                            desc: "Local Cursor agent"
+                          },
+                          {
+                            value: "openclaw_gateway" as const,
+                            label: "OpenClaw Gateway",
+                            icon: Bot,
+                            desc: "Invoke OpenClaw via gateway protocol",
+                            comingSoon: true,
+                            disabledLabel: "Configure OpenClaw within the App"
+                          }
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            disabled={!!opt.comingSoon}
+                            className={cn(
+                              "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
+                              opt.comingSoon
+                                ? "border-border opacity-40 cursor-not-allowed"
+                                : adapterType === opt.value
+                                ? "border-foreground bg-accent"
+                                : "border-border hover:bg-accent/50"
+                            )}
+                            onClick={() => {
+                              if (opt.comingSoon) return;
+                              const nextType = opt.value as AdapterType;
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
@@ -1039,8 +1082,9 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
-                                : opt.description}
+                                ? (opt as { disabledLabel?: string })
+                                    .disabledLabel ?? "Coming soon"
+                                : opt.desc}
                             </span>
                           </button>
                         ))}
@@ -1050,7 +1094,12 @@ export function OnboardingWizard() {
                   )}
 
                   {/* Conditional adapter fields: model selector (non-cloud-sandbox only) */}
-                  {!cloudSandboxEnabled && isLocalAdapter && (
+                  {!cloudSandboxEnabled && (adapterType === "claude_local" ||
+                    adapterType === "codex_local" ||
+                    adapterType === "gemini_local" ||
+                    adapterType === "opencode_local" ||
+                    adapterType === "pi_local" ||
+                    adapterType === "cursor") && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1428,17 +1477,16 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {step === 4 && (
-                <div className="space-y-5">
+              {step === 3 && (
+                <div key={3} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
-                      <ListTodo className="h-5 w-5 text-muted-foreground" />
+                      <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
                       <h3 className="font-medium">Give it something to do</h3>
                       <p className="text-xs text-muted-foreground">
-                        Give your agent a small task to start with — a bug fix,
-                        a research question, writing a script.
+                        Define a first task, then launch your company.
                       </p>
                     </div>
                   </div>
@@ -1466,24 +1514,9 @@ export function OnboardingWizard() {
                       onChange={(e) => setTaskDescription(e.target.value)}
                     />
                   </div>
-                </div>
-              )}
 
-              {step === 5 && (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 mb-1">
-                    <div className="bg-muted/50 p-2">
-                      <Rocket className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <h3 className="font-medium">Ready to launch</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Everything is set up. Launching now will create the
-                        starter task, wake the agent, and open the issue.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="border border-border divide-y divide-border">
+                  {/* Summary card */}
+                  <div className="border border-border divide-y divide-border rounded-md">
                     <div className="flex items-center gap-3 px-3 py-2.5">
                       <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div className="flex-1 min-w-0">
@@ -1517,16 +1550,6 @@ export function OnboardingWizard() {
                             ? `${getUIAdapter(adapterType).label} (${inferenceChoice === "managed" ? "Managed" : "BYOK"})`
                             : getUIAdapter(adapterType).label}
                         </p>
-                      </div>
-                      <Check className="h-4 w-4 text-green-500 shrink-0" />
-                    </div>
-                    <div className="flex items-center gap-3 px-3 py-2.5">
-                      <ListTodo className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {taskTitle}
-                        </p>
-                        <p className="text-xs text-muted-foreground">Task</p>
                       </div>
                       <Check className="h-4 w-4 text-green-500 shrink-0" />
                     </div>
@@ -1572,31 +1595,13 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 2 && (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setStep(3)}
-                      >
-                        Skip
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={handleBudgetNext}
-                      >
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                        Next
-                      </Button>
-                    </>
-                  )}
-                  {step === 3 && (
                     <Button
                       size="sm"
                       disabled={
                         !agentName.trim() || loading || adapterEnvLoading ||
                         (cloudSandboxEnabled && inferenceChoice === "byok" && !byokApiKey.trim())
                       }
-                      onClick={handleStep3Next}
+                      onClick={handleStep2Next}
                     >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
@@ -1606,28 +1611,18 @@ export function OnboardingWizard() {
                       {loading ? "Creating..." : "Next"}
                     </Button>
                   )}
-                  {step === 4 && (
+                  {step === 3 && (
                     <Button
                       size="sm"
                       disabled={!taskTitle.trim() || loading}
-                      onClick={handleStep4Next}
+                      onClick={handleStep3Launch}
                     >
                       {loading ? (
                         <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
                       ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                        <Rocket className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Next"}
-                    </Button>
-                  )}
-                  {step === 5 && (
-                    <Button size="sm" disabled={loading} onClick={handleLaunch}>
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Create & Open Issue"}
+                      {loading ? "Launching..." : "Launch"}
                     </Button>
                   )}
                 </div>
