@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, count, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -284,6 +284,17 @@ export function companyService(db: Db) {
             and(
               eq(heartbeatRuns.companyId, id),
               inArray(heartbeatRuns.status, ["queued", "running"]),
+            ),
+          );
+
+        // Detach wakeup requests from heartbeat runs before deleting them
+        await tx
+          .update(heartbeatRuns)
+          .set({ wakeupRequestId: null })
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, id),
+              isNotNull(heartbeatRuns.wakeupRequestId),
             ),
           );
 
