@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { secretsApi } from "../api/secrets";
 import { healthApi } from "../api/health";
 import { issuesApi } from "../api/issues";
+import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
@@ -65,7 +66,8 @@ import {
   Sparkles,
   Terminal,
   Wallet,
-  X
+  X,
+  LogOut,
 } from "lucide-react";
 
 type Step = 1 | 2 | 3;
@@ -361,6 +363,16 @@ export function OnboardingWizard() {
   function handleClose() {
     reset();
     closeOnboarding();
+    // Navigate away from /onboarding so the route-based open doesn't re-trigger
+    if (companies.length > 0) {
+      const target = companies[0];
+      navigate(`/${target.issuePrefix}/dashboard`);
+    }
+  }
+
+  async function handleSignOut() {
+    await authApi.signOut();
+    window.location.href = "/auth";
   }
 
   function buildAdapterConfig(): Record<string, unknown> {
