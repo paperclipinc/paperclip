@@ -758,14 +758,25 @@ export function OnboardingWizard() {
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
         <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Close button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
-          </button>
+          {/* Top-left: X for returning users, sign-out for everyone */}
+          <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
+            {companies.length > 0 && (
+              <button
+                onClick={handleClose}
+                className="rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
+              >
+                <X className="h-5 w-5" />
+                <span className="sr-only">Close</span>
+              </button>
+            )}
+            <button
+              onClick={async () => { await authApi.signOut(); window.location.href = "/auth"; }}
+              className="flex items-center gap-1.5 rounded-sm px-2 py-1.5 text-xs text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              Sign out
+            </button>
+          </div>
 
           {/* Left half — form */}
           <div
