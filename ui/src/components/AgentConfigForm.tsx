@@ -757,6 +757,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       return result.data?.model ?? null;
                     }
                   : undefined}
+                detectModelLabel={adapterType === "hermes_local" ? "Detect from Hermes config" : undefined}
               />
               {fetchedModelsError && (
                 <p className="text-xs text-destructive">
@@ -1341,6 +1342,7 @@ function ModelDropdown({
   creatable,
   detectedModel,
   onDetectModel,
+  detectModelLabel,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1353,6 +1355,7 @@ function ModelDropdown({
   creatable?: boolean;
   detectedModel?: string | null;
   onDetectModel?: () => Promise<string | null>;
+  detectModelLabel?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
@@ -1440,6 +1443,7 @@ function ModelDropdown({
               placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
               value={modelSearch}
               onChange={(e) => setModelSearch(e.target.value)}
+              autoFocus
             />
             {modelSearch && (
               <button
@@ -1467,7 +1471,7 @@ function ModelDropdown({
                 <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
                 <path d="M3 3v5h5" />
               </svg>
-              {detectingModel ? "Detecting..." : "Detect from Hermes config"}
+              {detectingModel ? "Detecting..." : (detectModelLabel ?? "Detect from config")}
             </button>
           )}
           {value && !models.some((m) => m.id === value) && (

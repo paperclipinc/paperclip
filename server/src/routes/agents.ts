@@ -677,7 +677,7 @@ export function agentRoutes(db: Db) {
     const type = req.params.type as string;
 
     const detected = await detectAdapterModel(type);
-    res.json(detected ?? { model: null, provider: null, source: null });
+    res.json(detected);
   });
 
   router.post(

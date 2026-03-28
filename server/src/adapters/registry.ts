@@ -227,7 +227,7 @@ export function listServerAdapters(): ServerAdapterModule[] {
 
 export async function detectAdapterModel(
   type: string,
-): Promise<{ model: string | null; provider: string | null; source: string | null } | null> {
+): Promise<{ model: string; provider: string; source: string } | null> {
   const adapter = adaptersByType.get(type);
   if (!adapter?.detectModel) return null;
   const detected = await adapter.detectModel();
