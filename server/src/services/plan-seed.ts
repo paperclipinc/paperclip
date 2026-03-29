@@ -30,10 +30,10 @@ export async function ensureSubscriptionPlans(db: Db): Promise<void> {
   const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
   if (!stripeKey) return;
 
-  const stripePriceId = process.env.STRIPE_CLOUD_PRICE_ID?.trim();
+  const stripePriceId = process.env.STRIPE_PRICE_ID?.trim();
   if (!stripePriceId) {
     logger.warn(
-      "STRIPE_SECRET_KEY is set but STRIPE_CLOUD_PRICE_ID is missing. " +
+      "STRIPE_SECRET_KEY is set but STRIPE_PRICE_ID is missing. " +
         "The cloud plan will not be purchasable until this is configured.",
     );
   }
