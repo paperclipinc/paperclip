@@ -8,6 +8,7 @@ import {
   companySecretVersions,
   companySkills,
   companySubscriptions,
+  subscriptionPlans,
   assets,
   agents,
   agentApiKeys,
@@ -201,6 +202,34 @@ export function companyService(db: Db) {
 
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
+
+      // Provision subscription: cloud (trial) or self-hosted (free)
+      const isCloud = !!process.env.STRIPE_SECRET_KEY?.trim();
+      const planId = isCloud ? "cloud" : "free";
+
+      // Only provision if the plan exists in the database
+      const plan = await db
+        .select({ id: subscriptionPlans.id })
+        .from(subscriptionPlans)
+        .where(eq(subscriptionPlans.id, planId))
+        .then((rows) => rows[0] ?? null);
+
+      if (plan) {
+        const now = new Date();
+        const trialEndsAt = isCloud
+          ? new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000)
+          : null;
+
+        await db.insert(companySubscriptions).values({
+          companyId: created.id,
+          planId,
+          status: isCloud ? "trialing" : "free",
+          trialEndsAt,
+          currentPeriodStart: now,
+          currentPeriodEnd: trialEndsAt,
+        });
+      }
+
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

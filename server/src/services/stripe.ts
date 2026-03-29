@@ -161,6 +161,7 @@ export function stripeService(db: Db) {
         currentPeriodStart: row.sub.currentPeriodStart?.toISOString() ?? null,
         currentPeriodEnd: row.sub.currentPeriodEnd?.toISOString() ?? null,
         cancelAtPeriodEnd: row.sub.cancelAtPeriodEnd,
+        trialEndsAt: row.sub.trialEndsAt?.toISOString() ?? null,
       };
     },
 
@@ -306,6 +307,7 @@ export function stripeService(db: Db) {
               planId,
               stripeSubscriptionId,
               status: "active",
+              trialEndsAt: null,
               updatedAt: new Date(),
             })
             .where(eq(companySubscriptions.companyId, companyId));
@@ -337,17 +339,11 @@ export function stripeService(db: Db) {
           const sub = event.data.object as Stripe.Subscription;
           const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
 
-          // Find a free plan to revert to
-          const freePlan = await db
-            .select({ id: subscriptionPlans.id })
-            .from(subscriptionPlans)
-            .where(eq(subscriptionPlans.id, "free"))
-            .then((rows) => rows[0] ?? null);
-
+          // Keep the current plan (don't revert to "free" in cloud mode)
+          // so the user can easily resubscribe from the billing page.
           await db
             .update(companySubscriptions)
             .set({
-              planId: freePlan?.id ?? "free",
               status: "canceled",
               stripeSubscriptionId: null,
               cancelAtPeriodEnd: false,

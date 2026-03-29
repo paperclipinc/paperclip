@@ -428,6 +428,13 @@
       "when": 1774375318749,
       "tag": "0060_plugin_company_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1774994400000,
+      "tag": "0061_subscription_trial",
+      "breakpoints": true
     }
   ]
 }

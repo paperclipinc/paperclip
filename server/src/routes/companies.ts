@@ -1,5 +1,7 @@
 import express, { Router, type Request } from "express";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companySubscriptions, companyMemberships } from "@paperclipai/db";
 import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -219,6 +221,39 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
+
+    // Trial abuse protection: in cloud mode, require all existing companies
+    // to be on a paid subscription before allowing a new company (which gets
+    // its own 14-day trial). This prevents infinite trial cycling.
+    const isCloud = !!process.env.STRIPE_SECRET_KEY?.trim();
+    if (isCloud && req.actor.userId) {
+      const userSubs = await db
+        .select({ status: companySubscriptions.status })
+        .from(companySubscriptions)
+        .innerJoin(
+          companyMemberships,
+          eq(companySubscriptions.companyId, companyMemberships.companyId),
+        )
+        .where(
+          and(
+            eq(companyMemberships.principalId, req.actor.userId),
+            eq(companyMemberships.principalType, "user"),
+          ),
+        );
+
+      const hasUnpaid = userSubs.some(
+        (s) => s.status !== "active" && s.status !== "free",
+      );
+
+      if (hasUnpaid) {
+        res.status(402).json({
+          error: "Please subscribe to your existing companies before creating a new one. Each company is $15/mo after the 14-day free trial.",
+          code: "TRIAL_LIMIT_REACHED",
+        });
+        return;
+      }
+    }
+
     const company = await svc.create(req.body);
     await access.ensureMembership(company.id, "user", req.actor.userId ?? "local-board", "owner", "active");
     await logActivity(db, {

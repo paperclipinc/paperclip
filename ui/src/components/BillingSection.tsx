@@ -14,14 +14,22 @@ function StatusBadge({ status }: { status: string }) {
     trialing: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
     past_due: "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
     canceled: "bg-red-500/10 text-red-700 dark:text-red-400",
+    trial_expired: "bg-red-500/10 text-red-700 dark:text-red-400",
     free: "bg-muted text-muted-foreground",
   };
   const color = colorMap[status] ?? colorMap.free;
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>
-      {status}
+      {status === "trial_expired" ? "trial expired" : status}
     </span>
   );
+}
+
+function trialDaysRemaining(trialEndsAt: string | null | undefined): number | null {
+  if (!trialEndsAt) return null;
+  const diff = new Date(trialEndsAt).getTime() - Date.now();
+  if (diff <= 0) return 0;
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
 function PlanCard({
@@ -65,7 +73,7 @@ function PlanCard({
           onClick={onUpgrade}
           disabled={isUpgrading}
         >
-          {isUpgrading ? "Redirecting..." : "Upgrade"}
+          {isUpgrading ? "Redirecting..." : "Subscribe"}
         </Button>
       )}
     </div>
@@ -104,10 +112,52 @@ export function BillingSection({ companyId }: { companyId: string }) {
   const subscription = subscriptionQuery.data;
   const plans = plansQuery.data ?? [];
   const currentPlanId = subscription?.planId ?? "free";
-  const isPaid = subscription && subscription.status !== "free" && subscription.status !== "canceled";
+  const isPaid = subscription && subscription.status === "active";
+  const isTrialing = subscription?.status === "trialing";
+  const isTrialExpired = subscription?.status === "trial_expired";
+  const isCanceled = subscription?.status === "canceled";
+  const isPastDue = subscription?.status === "past_due";
+  const daysLeft = trialDaysRemaining(subscription?.trialEndsAt);
+  const showUpgrade = !isPaid && !isPastDue;
 
   return (
     <div className="space-y-4">
+      {/* Trial expired banner */}
+      {isTrialExpired && (
+        <div className="rounded-md border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30 px-4 py-3">
+          <p className="text-sm font-medium text-red-800 dark:text-red-300">
+            Your 14-day free trial has ended.
+          </p>
+          <p className="text-xs text-red-700 dark:text-red-400 mt-1">
+            Subscribe to continue using Paperclip Cloud.
+          </p>
+        </div>
+      )}
+
+      {/* Past due banner */}
+      {isPastDue && (
+        <div className="rounded-md border border-yellow-300 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950/30 px-4 py-3">
+          <p className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+            Payment failed
+          </p>
+          <p className="text-xs text-yellow-700 dark:text-yellow-400 mt-1">
+            We couldn't process your last payment. Please update your payment method to avoid service interruption.
+          </p>
+        </div>
+      )}
+
+      {/* Canceled banner */}
+      {isCanceled && (
+        <div className="rounded-md border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30 px-4 py-3">
+          <p className="text-sm font-medium text-red-800 dark:text-red-300">
+            Subscription canceled
+          </p>
+          <p className="text-xs text-red-700 dark:text-red-400 mt-1">
+            Resubscribe to continue using Paperclip Cloud.
+          </p>
+        </div>
+      )}
+
       {/* Current plan info */}
       <div className="flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Current plan:</span>
@@ -117,7 +167,17 @@ export function BillingSection({ companyId }: { companyId: string }) {
         <StatusBadge status={subscription?.status ?? "free"} />
       </div>
 
-      {subscription?.currentPeriodEnd && (
+      {/* Trial countdown */}
+      {isTrialing && daysLeft !== null && (
+        <div className="text-xs text-muted-foreground">
+          {daysLeft === 0
+            ? "Your trial ends today"
+            : `${daysLeft} day${daysLeft !== 1 ? "s" : ""} left in your free trial`}
+        </div>
+      )}
+
+      {/* Renewal / cancellation info for paid plans */}
+      {isPaid && subscription?.currentPeriodEnd && (
         <div className="text-xs text-muted-foreground">
           {subscription.cancelAtPeriodEnd
             ? `Cancels on ${new Date(subscription.currentPeriodEnd).toLocaleDateString()}`
@@ -125,8 +185,8 @@ export function BillingSection({ companyId }: { companyId: string }) {
         </div>
       )}
 
-      {/* Manage billing for paid plans */}
-      {isPaid && (
+      {/* Manage billing for paid or past_due plans */}
+      {(isPaid || isPastDue) && (
         <div className="flex items-center gap-2">
           <Button
             size="sm"
@@ -147,19 +207,23 @@ export function BillingSection({ companyId }: { companyId: string }) {
       )}
 
       {/* Plan cards for upgrade */}
-      {plans.length > 0 && !isPaid && (
+      {plans.length > 0 && showUpgrade && (
         <div className="space-y-2">
-          <div className="text-xs text-muted-foreground">Available plans:</div>
+          <div className="text-xs text-muted-foreground">
+            {isTrialing || isTrialExpired || isCanceled ? "Subscribe now:" : "Available plans:"}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            {plans.map((plan) => (
-              <PlanCard
-                key={plan.id}
-                plan={plan}
-                isCurrent={plan.id === currentPlanId}
-                onUpgrade={() => checkoutMutation.mutate(plan.id)}
-                isUpgrading={checkoutMutation.isPending}
-              />
-            ))}
+            {plans
+              .filter((plan) => plan.monthlyPriceCents > 0)
+              .map((plan) => (
+                <PlanCard
+                  key={plan.id}
+                  plan={plan}
+                  isCurrent={plan.id === currentPlanId && !!isPaid}
+                  onUpgrade={() => checkoutMutation.mutate(plan.id)}
+                  isUpgrading={checkoutMutation.isPending}
+                />
+              ))}
           </div>
           {checkoutMutation.isError && (
             <span className="text-xs text-destructive">

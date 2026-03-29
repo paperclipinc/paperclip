@@ -14,8 +14,9 @@ export interface CompanySubscription {
   companyId: string;
   planId: string;
   plan: SubscriptionPlan;
-  status: "active" | "past_due" | "canceled" | "trialing" | "free";
+  status: "active" | "past_due" | "canceled" | "trialing" | "free" | "trial_expired";
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
+  trialEndsAt: string | null;
 }

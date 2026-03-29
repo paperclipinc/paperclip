@@ -12,6 +12,20 @@ export class ApiError extends Error {
   }
 }
 
+type PaymentRequiredListener = (error: ApiError) => void;
+let paymentRequiredListener: PaymentRequiredListener | null = null;
+
+/**
+ * Register a global listener for 402 Payment Required responses.
+ * Called once from the SubscriptionGate component.
+ */
+export function onPaymentRequired(listener: PaymentRequiredListener): () => void {
+  paymentRequiredListener = listener;
+  return () => {
+    if (paymentRequiredListener === listener) paymentRequiredListener = null;
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
   const body = init?.body;
@@ -26,11 +40,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
-    throw new ApiError(
+    const error = new ApiError(
       (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
       res.status,
       errorBody,
     );
+
+    if (res.status === 402 && paymentRequiredListener) {
+      paymentRequiredListener(error);
+    }
+
+    throw error;
   }
   if (res.status === 204) return undefined as T;
   return res.json();
