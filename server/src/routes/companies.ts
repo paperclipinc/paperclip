@@ -218,7 +218,10 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    // In cloud mode (Stripe configured), any authenticated user can create companies.
+    // In self-hosted mode, only instance admins can.
+    const isCloudMode = !!process.env.STRIPE_SECRET_KEY?.trim();
+    if (!isCloudMode && !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
 
