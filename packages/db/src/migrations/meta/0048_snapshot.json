@@ -1,6 +1,6 @@
 {
-  "id": "40d9164e-84a5-46a6-90b4-8076633cbeed",
-  "prevId": "8c3d76ae-691b-4b7d-8507-605f0c9f97fc",
+  "id": "8c3d76ae-691b-4b7d-8507-605f0c9f97fc",
+  "prevId": "ad7b426d-21f4-4c7a-8a1b-b4cb5e01d589",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8968,12 +8968,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "entity_type": {
           "name": "entity_type",
           "type": "text",
@@ -9125,19 +9119,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "plugin_entities_company_id_companies_id_fk": {
-          "name": "plugin_entities_company_id_companies_id_fk",
-          "tableFrom": "plugin_entities",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -9168,12 +9149,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "trigger": {
           "name": "trigger",
@@ -9294,19 +9269,6 @@
           "tableTo": "plugins",
           "columnsFrom": [
             "plugin_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "plugin_job_runs_company_id_companies_id_fk": {
-          "name": "plugin_job_runs_company_id_companies_id_fk",
-          "tableFrom": "plugin_job_runs",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
           ],
           "columnsTo": [
             "id"
@@ -9475,12 +9437,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "level": {
           "name": "level",
           "type": "text",
@@ -9553,19 +9509,6 @@
           "tableTo": "plugins",
           "columnsFrom": [
             "plugin_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "plugin_logs_company_id_companies_id_fk": {
-          "name": "plugin_logs_company_id_companies_id_fk",
-          "tableFrom": "plugin_logs",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
           ],
           "columnsTo": [
             "id"
@@ -9709,12 +9652,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "webhook_key": {
           "name": "webhook_key",
           "type": "text",
@@ -9833,19 +9770,6 @@
           "tableTo": "plugins",
           "columnsFrom": [
             "plugin_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "plugin_webhook_deliveries_company_id_companies_id_fk": {
-          "name": "plugin_webhook_deliveries_company_id_companies_id_fk",
-          "tableFrom": "plugin_webhook_deliveries",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
           ],
           "columnsTo": [
             "id"

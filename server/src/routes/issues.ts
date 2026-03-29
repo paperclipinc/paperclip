@@ -348,6 +348,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    assertCompanyAccess(req, issue.companyId);
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),

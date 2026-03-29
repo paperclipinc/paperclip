@@ -1,6 +1,6 @@
 {
-  "id": "ad7b426d-21f4-4c7a-8a1b-b4cb5e01d589",
-  "prevId": "74618717-0b4f-4640-9448-93386956c711",
+  "id": "74618717-0b4f-4640-9448-93386956c711",
+  "prevId": "a7a034eb-984f-4884-b6e1-87c453404b4e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2926,13 +2926,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "inference_mode": {
-          "name": "inference_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'byok'"
         },
         "brand_color": {
           "name": "brand_color",

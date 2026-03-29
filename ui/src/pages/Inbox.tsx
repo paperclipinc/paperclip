@@ -39,8 +39,8 @@ import {
   XCircle,
   X,
   RotateCcw,
-  Link2,
   UserPlus,
+  Link2,
 } from "lucide-react";
 import { PageTabBar } from "../components/PageTabBar";
 import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
@@ -616,6 +616,8 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
 
+  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
+
   const { data: connectionsData } = useQuery({
     queryKey: queryKeys.connections.list(selectedCompanyId!),
     queryFn: () => connectionsApi.list(selectedCompanyId!),
@@ -628,7 +630,6 @@ export function Inbox() {
     [connectionsData, dismissed],
   );
 
-  const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
   const unreadTouchedIssues = useMemo(
     () => touchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -935,6 +936,7 @@ export function Inbox() {
     !dismissed.has("alert:budget");
   const hasExpiredConnections = expiredConnections.length > 0;
   const hasAlerts = showAggregateAgentError || showBudgetAlert || hasExpiredConnections;
+  const hasJoinRequests = joinRequests.length > 0;
   const showWorkItemsSection = workItemsToRender.length > 0;
   const showAlertsSection = shouldShowInboxSection({
     tab,
