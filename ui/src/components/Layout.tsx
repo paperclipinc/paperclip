@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BookOpen, Moon, Settings, Sun } from "lucide-react";
-import { Link, Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import { Link, Outlet, useLocation, useNavigate, useParams } from "@/lib/router";
 import { CompanyRail } from "./CompanyRail";
 import { Sidebar } from "./Sidebar";
 import { InstanceSidebar } from "./InstanceSidebar";
@@ -12,13 +12,11 @@ import { NewIssueDialog } from "./NewIssueDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
-import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { useDialog } from "../context/DialogContext";
-import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -26,19 +24,12 @@ import { useTheme } from "../context/ThemeContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
   DEFAULT_INSTANCE_SETTINGS_PATH,
   normalizeRememberedInstanceSettingsPath,
 } from "../lib/instance-settings";
-import {
-  resetNavigationScroll,
-  SIDEBAR_SCROLL_RESET_STATE,
-  shouldResetScrollOnNavigation,
-} from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
-import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { Button } from "@/components/ui/button";
@@ -71,15 +62,11 @@ export function Layout() {
   const { companyPrefix } = useParams<{ companyPrefix: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  const navigationType = useNavigationType();
   const isInstanceSettingsRoute = location.pathname.startsWith("/instance/");
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
-  const previousPathname = useRef<string | null>(null);
-  const mainContentRef = useRef<HTMLElement | null>(null);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [instanceSettingsTarget, setInstanceSettingsTarget] = useState<string>(() => readRememberedInstanceSettingsPath());
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const nextTheme = theme === "dark" ? "light" : "dark";
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -98,10 +85,6 @@ export function Layout() {
     },
     refetchIntervalInBackground: true,
   });
-  const keyboardShortcutsEnabled = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.keyboardShortcuts === true;
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -154,24 +137,13 @@ export function Layout() {
   ]);
 
   const togglePanel = togglePanelVisible;
-  const openSearch = useCallback(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "k",
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    }));
-  }, []);
 
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
-    enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
-    onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
     onTogglePanel: togglePanel,
-    onShowShortcuts: () => setShortcutsOpen(true),
   });
 
   useEffect(() => {
@@ -286,34 +258,13 @@ export function Layout() {
     }
   }, [location.hash, location.pathname, location.search]);
 
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const mainContent = mainContentRef.current;
-    return scheduleMainContentFocus(mainContent);
-  }, [location.pathname]);
-
-  useEffect(() => {
-    const shouldResetScroll = shouldResetScrollOnNavigation({
-      previousPathname: previousPathname.current,
-      pathname: location.pathname,
-      navigationType,
-      state: location.state,
-    });
-
-    previousPathname.current = location.pathname;
-
-    if (!shouldResetScroll) return;
-    resetNavigationScroll(mainContentRef.current);
-  }, [location.pathname, navigationType]);
-
   return (
-    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
-      <div
+    <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
         isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
       )}
-      >
+    >
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -362,19 +313,20 @@ export function Layout() {
                     <TooltipContent>v{health.version}</TooltipContent>
                   </Tooltip>
                 )}
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                  <Link
-                    to={instanceSettingsTarget}
-                    state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
-                    onClick={() => {
-                      if (isMobile) setSidebarOpen(false);
-                    }}
-                  >
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
+                {health?.deploymentMode !== "authenticated" && (
+                  <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                    <Link
+                      to={instanceSettingsTarget}
+                      aria-label="Instance settings"
+                      title="Instance settings"
+                      onClick={() => {
+                        if (isMobile) setSidebarOpen(false);
+                      }}
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"
@@ -421,19 +373,20 @@ export function Layout() {
                     <TooltipContent>v{health.version}</TooltipContent>
                   </Tooltip>
                 )}
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
-                  <Link
-                    to={instanceSettingsTarget}
-                    state={SIDEBAR_SCROLL_RESET_STATE}
-                    aria-label="Instance settings"
-                    title="Instance settings"
-                    onClick={() => {
-                      if (isMobile) setSidebarOpen(false);
-                    }}
-                  >
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
+                {health?.deploymentMode !== "authenticated" && (
+                  <Button variant="ghost" size="icon-sm" className="text-muted-foreground shrink-0" asChild>
+                    <Link
+                      to={instanceSettingsTarget}
+                      aria-label="Instance settings"
+                      title="Instance settings"
+                      onClick={() => {
+                        if (isMobile) setSidebarOpen(false);
+                      }}
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="ghost"
@@ -461,10 +414,9 @@ export function Layout() {
           <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
             <main
               id="main-content"
-              ref={mainContentRef}
               tabIndex={-1}
               className={cn(
-                "flex-1 p-4 outline-none md:p-6",
+                "flex-1 p-4 md:p-6",
                 isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
               )}
             >
@@ -487,9 +439,7 @@ export function Layout() {
       <NewProjectDialog />
       <NewGoalDialog />
       <NewAgentDialog />
-      <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
-      </div>
-    </GeneralSettingsProvider>
+    </div>
   );
 }
