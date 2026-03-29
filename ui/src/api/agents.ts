@@ -8,7 +8,6 @@ import type {
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
-  AgentWakeupResponse,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
@@ -32,7 +31,6 @@ export interface DetectedAdapterModel {
   model: string;
   provider: string;
   source: string;
-  candidates?: string[];
 }
 
 export interface ClaudeLoginResult {
@@ -191,7 +189,7 @@ export const agentsApi = {
       idempotencyKey?: string | null;
     },
     companyId?: string,
-  ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   availableSkills: () =>
