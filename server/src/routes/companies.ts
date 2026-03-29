@@ -218,18 +218,17 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    // In cloud mode (Stripe configured), any authenticated user can create companies.
-    // In self-hosted mode, only instance admins can.
-    const isCloudMode = !!process.env.STRIPE_SECRET_KEY?.trim();
-    if (!isCloudMode && !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    // In authenticated mode (SaaS), any authenticated user can create companies.
+    // In local_trusted mode (self-hosted), only instance admins can.
+    const isAuthenticated = process.env.PAPERCLIP_DEPLOYMENT_MODE === "authenticated";
+    if (!isAuthenticated && !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
 
-    // Trial abuse protection: in cloud mode, require all existing companies
-    // to be on a paid subscription before allowing a new company (which gets
-    // its own 14-day trial). This prevents infinite trial cycling.
-    const isCloud = !!process.env.STRIPE_SECRET_KEY?.trim();
-    if (isCloud && req.actor.userId) {
+    // Trial abuse protection: in authenticated (SaaS) mode, require all existing
+    // companies to be on a paid subscription before allowing a new company (which
+    // gets its own 14-day trial). This prevents infinite trial cycling.
+    if (isAuthenticated && req.actor.userId) {
       const userSubs = await db
         .select({ status: companySubscriptions.status })
         .from(companySubscriptions)
