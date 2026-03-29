@@ -18,18 +18,20 @@ function parseOrigin(value: string | undefined) {
 
 function trustedOriginsForRequest(req: Request) {
   const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost || req.header("host")?.trim();
+  const host = req.header("host")?.trim();
   if (host) {
     origins.add(`http://${host}`.toLowerCase());
     origins.add(`https://${host}`.toLowerCase());
   }
-  // Behind some reverse proxies the Host / X-Forwarded-Host header may
-  // not match the public URL (for example when TLS terminates at the
-  // edge and the inbound Host is an internal service name). Trust the
-  // explicitly-configured PAPERCLIP_PUBLIC_URL when it's set.
-  const publicUrl = parseOrigin(process.env.PAPERCLIP_PUBLIC_URL?.trim());
-  if (publicUrl) origins.add(publicUrl);
+  // Trust origins from explicit config (covers reverse proxy setups where
+  // the Host header may differ from the public URL).
+  for (const envVar of ["PAPERCLIP_PUBLIC_URL", "PAPERCLIP_CORS_ORIGIN"]) {
+    const value = process.env[envVar]?.trim();
+    if (value) {
+      const parsed = parseOrigin(value);
+      if (parsed) origins.add(parsed);
+    }
+  }
   return origins;
 }
 

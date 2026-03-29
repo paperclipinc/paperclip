@@ -55,7 +55,7 @@ import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
-import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -246,7 +246,6 @@ function OnboardingRoutePage() {
 
 function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
-  const location = useLocation();
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
@@ -254,15 +253,7 @@ function CompanyRootRedirect() {
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
-    if (
-      shouldRedirectCompanylessRouteToOnboarding({
-        pathname: location.pathname,
-        hasCompanies: false,
-      })
-    ) {
-      return <Navigate to="/onboarding" replace />;
-    }
-    return <NoCompaniesStartPage />;
+    return <Navigate to="/onboarding" replace />;
   }
 
   return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
@@ -278,15 +269,7 @@ function UnprefixedBoardRedirect() {
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
-    if (
-      shouldRedirectCompanylessRouteToOnboarding({
-        pathname: location.pathname,
-        hasCompanies: false,
-      })
-    ) {
-      return <Navigate to="/onboarding" replace />;
-    }
-    return <NoCompaniesStartPage />;
+    return <Navigate to="/onboarding" replace />;
   }
 
   return (
@@ -294,24 +277,6 @@ function UnprefixedBoardRedirect() {
       to={`/${targetCompany.issuePrefix}${location.pathname}${location.search}${location.hash}`}
       replace
     />
-  );
-}
-
-function NoCompaniesStartPage() {
-  const { openOnboarding } = useDialog();
-
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Create your first company</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Get started by creating a company.
-        </p>
-        <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
-        </div>
-      </div>
-    </div>
   );
 }
 
