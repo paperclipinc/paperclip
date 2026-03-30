@@ -1,6 +1,7 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
+import { renderTemplate, asString } from "../utils.js";
 
 /** Shell-escape a string for use inside sh -c (single-quote wrapping). */
 function shellEscape(s: string): string {
@@ -8,23 +9,73 @@ function shellEscape(s: string): string {
 }
 
 /**
- * Build a fallback stdin prompt from the adapter context.
- * Used by CLIs that read their task from stdin (e.g., opencode run).
+ * Join non-empty prompt sections with double-newline separators.
+ * Mirrors joinPromptSections from adapter-utils.
  */
-function buildStdinPrompt(context: Record<string, unknown>): string | undefined {
-  const parts: string[] = [];
-  const issueTitle = context.issueTitle as string | undefined;
-  const issueDescription = context.issueDescription as string | undefined;
-  const paperclipPrompt = context.paperclipHeartbeatPrompt as string | undefined;
+function joinPromptSections(sections: Array<string | null | undefined>): string {
+  return sections
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter(Boolean)
+    .join("\n\n");
+}
 
-  if (paperclipPrompt) {
-    parts.push(paperclipPrompt);
-  } else {
-    if (issueTitle) parts.push(issueTitle);
-    if (issueDescription) parts.push(issueDescription);
-  }
+/**
+ * Build a rich prompt from the adapter context and config.
+ *
+ * Mirrors the local opencode adapter's prompt composition:
+ *   1. Bootstrap prompt (rendered from config.bootstrapPromptTemplate)
+ *   2. Session handoff markdown (from context.paperclipSessionHandoffMarkdown)
+ *   3. Heartbeat / main prompt (rendered from config.promptTemplate)
+ *
+ * Falls back to issueTitle + issueDescription when no templates are configured.
+ */
+function buildPrompt(
+  ctx: AdapterExecutionContext,
+): string | undefined {
+  const { agent, runId, config, context } = ctx;
 
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
+  const promptTemplate = asString(
+    config.promptTemplate,
+    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+  );
+  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+
+  const templateData = {
+    agentId: agent.id,
+    companyId: agent.companyId,
+    runId,
+    company: { id: agent.companyId },
+    agent,
+    run: { id: runId, source: "on_demand" },
+    context,
+  };
+
+  const renderedPrompt = renderTemplate(promptTemplate, templateData);
+  const renderedBootstrapPrompt =
+    bootstrapPromptTemplate.trim().length > 0
+      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+      : "";
+  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+
+  // Build issue context section from enriched heartbeat fields
+  const issueTitle = asString(context.issueTitle, "");
+  const issueDescription = asString(context.issueDescription, "");
+  const issueSection =
+    issueTitle || issueDescription
+      ? joinPromptSections([
+          issueTitle ? `## Current Task\n${issueTitle}` : null,
+          issueDescription || null,
+        ])
+      : "";
+
+  const prompt = joinPromptSections([
+    renderedBootstrapPrompt,
+    sessionHandoffNote,
+    issueSection,
+    renderedPrompt,
+  ]);
+
+  return prompt.length > 0 ? prompt : undefined;
 }
 
 /**
@@ -264,8 +315,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // Build the CLI command
-  // Build stdin prompt for CLIs that need it
-  const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildStdinPrompt(ctx.context);
+  // Build rich prompt for CLIs that need it (mirrors the local adapter's prompt composition)
+  const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildPrompt(ctx);
   const command = resolveRuntimeCommand(config.runtime, config.model, stdinPrompt);
 
   // Ensure agent home and workspace directories exist, then exec the CLI
