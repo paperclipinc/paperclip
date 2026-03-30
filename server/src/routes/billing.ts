@@ -32,6 +32,7 @@ export function billingRoutes(db: Db) {
         companyId: companySubscriptions.companyId,
         companyName: companies.name,
         issuePrefix: companies.issuePrefix,
+        companyStatus: companies.status,
       })
       .from(companySubscriptions)
       .innerJoin(
@@ -46,8 +47,9 @@ export function billingRoutes(db: Db) {
         ),
       );
 
+    // Exclude archived companies from the eligibility check
     const unpaidCompanies = userSubs
-      .filter((s) => s.status !== "active" && s.status !== "free")
+      .filter((s) => s.companyStatus !== "archived" && s.status !== "active" && s.status !== "free")
       .map((s) => ({
         companyId: s.companyId,
         companyName: s.companyName,
