@@ -446,10 +446,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const stdinPrompt = (ctx.context.prompt as string | undefined) ?? await buildPrompt(ctx);
   const command = resolveRuntimeCommand(config.runtime, config.model, stdinPrompt);
 
-  // Ensure agent home and workspace directories exist, then exec the CLI
+  // Ensure agent home and workspace directories exist, then exec the CLI.
+  // Inject an OpenCode runtime config that grants external_directory permission
+  // so the agent can run shell commands (curl for API calls) without approval prompts.
+  // This mirrors the local adapter's prepareOpenCodeRuntimeConfig behavior.
+  const opencodeConfigDir = `/home/agents/${agentId}/.config/opencode`;
   const setupAndRun = [
     `mkdir -p /home/agents/${agentId}`,
     `mkdir -p ${podCwd}`,
+    `mkdir -p ${opencodeConfigDir}`,
+    `echo '{"permission":{"external_directory":"allow"}}' > ${opencodeConfigDir}/opencode.json`,
+    `export XDG_CONFIG_HOME=/home/agents/${agentId}/.config`,
+    `export OPENCODE_DISABLE_PROJECT_CONFIG=true`,
     `cd ${podCwd}`,
     command.join(" "),
   ].join(" && ");
