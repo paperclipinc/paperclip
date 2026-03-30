@@ -2,6 +2,11 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.j
 import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
 
+/** Shell-escape a string for use inside sh -c (single-quote wrapping). */
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 /**
  * Extracts the result event from stream-json stdout output.
  * The CLI emits one JSON object per line; the result event has type "result".
@@ -76,13 +81,16 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
   return config.namespace;
 }
 
-function resolveRuntimeCommand(runtime: string, model: string): string[] {
+function resolveRuntimeCommand(runtime: string, model: string, prompt?: string): string[] {
   switch (runtime) {
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
-      return ["opencode"];
+      // opencode requires -p for non-interactive mode (no TTY in containers)
+      // Shell-escape the prompt since the command is passed to sh -c
+      return ["opencode",
+        ...(prompt ? ["-p", shellEscape(prompt)] : [])];
     case "gemini":
       return ["gemini",
         ...(model ? ["--model", model] : [])];
@@ -234,7 +242,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // Build the CLI command
-  const command = resolveRuntimeCommand(config.runtime, config.model);
+  const prompt = ctx.context.prompt as string | undefined;
+  const command = resolveRuntimeCommand(config.runtime, config.model, prompt);
 
   // Ensure agent home and workspace directories exist, then exec the CLI
   const setupAndRun = [
