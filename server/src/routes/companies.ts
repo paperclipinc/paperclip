@@ -1,7 +1,7 @@
 import express, { Router, type Request } from "express";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions, companyMemberships } from "@paperclipai/db";
+import { companySubscriptions, companyMemberships, companies as companiesTable } from "@paperclipai/db";
 import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
@@ -231,12 +231,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     // gets its own 14-day trial). This prevents infinite trial cycling.
     if (isAuthenticated && req.actor.userId) {
       const userSubs = await db
-        .select({ status: companySubscriptions.status })
+        .select({
+          subStatus: companySubscriptions.status,
+          companyStatus: companiesTable.status,
+        })
         .from(companySubscriptions)
         .innerJoin(
           companyMemberships,
           eq(companySubscriptions.companyId, companyMemberships.companyId),
         )
+        .innerJoin(companiesTable, eq(companySubscriptions.companyId, companiesTable.id))
         .where(
           and(
             eq(companyMemberships.principalId, req.actor.userId),
@@ -244,8 +248,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
           ),
         );
 
+      // Only consider non-archived companies for trial abuse check
       const hasUnpaid = userSubs.some(
-        (s) => s.status !== "active" && s.status !== "free",
+        (s) => s.companyStatus !== "archived" && s.subStatus !== "active" && s.subStatus !== "free",
       );
 
       if (hasUnpaid) {
