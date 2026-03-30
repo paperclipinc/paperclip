@@ -1419,6 +1419,25 @@ function grantsFromDefaults(
   return result;
 }
 
+export function humanJoinGrantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  const grants = grantsFromDefaults(defaultsPayload, "human");
+  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  return [
+    ...grants,
+    {
+      permissionKey: "tasks:assign",
+      scope: null
+    }
+  ];
+}
+
 export function agentJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): Array<{
@@ -2533,9 +2552,8 @@ export function accessRoutes(
           "member",
           "active"
         );
-        const grants = grantsFromDefaults(
+        const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
-          "human"
         );
         await access.setPrincipalGrants(
           companyId,
@@ -2708,9 +2726,8 @@ export function accessRoutes(
           "member",
           "active"
         );
-        const grants = grantsFromDefaults(
+        const grants = humanJoinGrantsFromDefaults(
           invite.defaultsPayload as Record<string, unknown> | null,
-          "human"
         );
         await access.setPrincipalGrants(
           companyId,
