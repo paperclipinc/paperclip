@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions, companyMemberships, companies } from "@paperclipai/db";
+import { companySubscriptions, companyMemberships } from "@paperclipai/db";
 import { stripeService } from "../services/stripe.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
@@ -26,20 +26,18 @@ export function billingRoutes(db: Db) {
       return;
     }
 
+    // Check if this user has ever had a company (including archived).
+    // One free trial per user, ever. Second+ companies require payment upfront.
     const userSubs = await db
       .select({
         status: companySubscriptions.status,
         companyId: companySubscriptions.companyId,
-        companyName: companies.name,
-        issuePrefix: companies.issuePrefix,
-        companyStatus: companies.status,
       })
       .from(companySubscriptions)
       .innerJoin(
         companyMemberships,
         eq(companySubscriptions.companyId, companyMemberships.companyId),
       )
-      .innerJoin(companies, eq(companySubscriptions.companyId, companies.id))
       .where(
         and(
           eq(companyMemberships.principalId, req.actor.userId),
@@ -47,20 +45,11 @@ export function billingRoutes(db: Db) {
         ),
       );
 
-    // Exclude archived companies from the eligibility check
-    const unpaidCompanies = userSubs
-      .filter((s) => s.companyStatus !== "archived" && s.status !== "active" && s.status !== "free")
-      .map((s) => ({
-        companyId: s.companyId,
-        companyName: s.companyName,
-        status: s.status,
-        issuePrefix: s.issuePrefix,
-      }));
+    const hasUsedTrial = userSubs.length > 0;
 
     res.json({
-      canCreateCompany: unpaidCompanies.length === 0,
-      reason: unpaidCompanies.length > 0 ? "UNPAID_COMPANIES" : undefined,
-      unpaidCompanies,
+      canCreateCompany: !hasUsedTrial,
+      reason: hasUsedTrial ? "TRIAL_USED" : undefined,
     });
   });
 
