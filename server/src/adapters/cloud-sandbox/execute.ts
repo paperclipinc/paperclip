@@ -473,8 +473,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
    * ({"response":"..."}) which spans multiple lines — that format is handled
    * after exec completes by parsing the full stdoutBuffer.
    */
+  let simpleResponseLogged = false;
+
   function handleStdout(data: string): void {
     stdoutBuffer += data;
+
+    // Try to parse the accumulated buffer as a single JSON response (opencode `-p -f json`).
+    // This format is pretty-printed across multiple lines and arrives as the final chunk.
+    // We parse eagerly so the response is logged BEFORE the run completes (enabling live UI).
+    if (!simpleResponseLogged) {
+      try {
+        const parsed = JSON.parse(stdoutBuffer.trim());
+        if (typeof parsed.response === "string" && parsed.response.trim()) {
+          simpleResponseLogged = true;
+          void ctx.onLog("stdout", parsed.response.trim() + "\n");
+        }
+      } catch { /* buffer not yet a complete JSON object — keep buffering */ }
+    }
+
     lineBuffer += data;
     const lines = lineBuffer.split("\n");
     lineBuffer = lines.pop() ?? ""; // keep incomplete line in buffer
@@ -594,8 +610,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const fullParsed = JSON.parse(stdoutBuffer.trim());
       if (typeof fullParsed.response === "string" && fullParsed.response.trim()) {
         simpleResponse = fullParsed.response.trim();
-        // Surface the response to the transcript
-        await ctx.onLog("stdout", simpleResponse + "\n");
+        // Only log if not already logged during streaming in handleStdout
+        if (!simpleResponseLogged) {
+          await ctx.onLog("stdout", simpleResponse + "\n");
+        }
       }
       if (typeof fullParsed.error === "string" && fullParsed.error.trim()) {
         cliError = fullParsed.error.trim();
