@@ -391,8 +391,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Per-exec env overrides — mirrors the local adapter's env setup so the
   // agent receives the same PAPERCLIP_* vars regardless of adapter type.
+  // PAPERCLIP_API_URL is set here (not just at pod level) to ensure the
+  // current server URL is always used even if the pod was created earlier.
   const execEnv: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agentId,
+    PAPERCLIP_COMPANY_ID: companyId,
+    PAPERCLIP_API_URL: process.env.PAPERCLIP_API_URL || "",
     PAPERCLIP_RUN_ID: ctx.runId,
     HOME: `/home/agents/${agentId}`,
   };
