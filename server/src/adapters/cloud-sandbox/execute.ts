@@ -8,6 +8,26 @@ function shellEscape(s: string): string {
 }
 
 /**
+ * Build a fallback stdin prompt from the adapter context.
+ * Used by CLIs that read their task from stdin (e.g., opencode run).
+ */
+function buildStdinPrompt(context: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  const issueTitle = context.issueTitle as string | undefined;
+  const issueDescription = context.issueDescription as string | undefined;
+  const paperclipPrompt = context.paperclipHeartbeatPrompt as string | undefined;
+
+  if (paperclipPrompt) {
+    parts.push(paperclipPrompt);
+  } else {
+    if (issueTitle) parts.push(issueTitle);
+    if (issueDescription) parts.push(issueDescription);
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/**
  * Extracts the result event from stream-json stdout output.
  * The CLI emits one JSON object per line; the result event has type "result".
  */
@@ -81,16 +101,16 @@ function resolveNamespace(config: ParsedConfig, companyId: string): string {
   return config.namespace;
 }
 
-function resolveRuntimeCommand(runtime: string, model: string, prompt?: string): string[] {
+function resolveRuntimeCommand(runtime: string, model: string): string[] {
   switch (runtime) {
     case "codex":
       return ["codex", "--full-auto",
         ...(model ? ["--model", model] : [])];
     case "opencode":
-      // opencode requires -p for non-interactive mode (no TTY in containers)
-      // Shell-escape the prompt since the command is passed to sh -c
-      return ["opencode",
-        ...(prompt ? ["-p", shellEscape(prompt)] : [])];
+      // opencode requires the "run" subcommand with --format json for
+      // non-interactive headless execution (no TTY in containers).
+      // The prompt is passed via stdin, same as the local adapter.
+      return ["opencode", "run", "--format", "json"];
     case "gemini":
       return ["gemini",
         ...(model ? ["--model", model] : [])];
@@ -242,8 +262,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   // Build the CLI command
-  const prompt = ctx.context.prompt as string | undefined;
-  const command = resolveRuntimeCommand(config.runtime, config.model, prompt);
+  const command = resolveRuntimeCommand(config.runtime, config.model);
 
   // Ensure agent home and workspace directories exist, then exec the CLI
   const setupAndRun = [
@@ -294,12 +313,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   try {
+    // Build stdin prompt for CLIs that need it (opencode reads from stdin)
+    const stdinPrompt = (ctx.context.prompt as string | undefined) ?? buildStdinPrompt(ctx.context);
+
     const result = await client.exec({
       podName: name,
       namespace,
       command: ["sh", "-c", setupAndRun],
       env: execEnv,
-      stdin: ctx.context.prompt as string | undefined,
+      stdin: stdinPrompt,
       onStdout: handleStdout,
       onStderr: (data) => { void ctx.onLog("stderr", data); },
       timeoutMs: config.timeoutSec * 1000,
