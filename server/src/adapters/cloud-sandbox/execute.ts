@@ -1,9 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import type { PersistenceOptions } from "./k8s-client.js";
 import { K8sClient } from "./k8s-client.js";
 import { renderTemplate, asString } from "../utils.js";
+import {
+  readPaperclipRuntimeSkillEntries,
+  resolvePaperclipDesiredSkillNames,
+} from "@paperclipai/adapter-utils/server-utils";
+
+const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 /** Shell-escape a string for use inside sh -c (single-quote wrapping). */
 export function shellEscape(s: string): string {
@@ -22,14 +29,54 @@ function joinPromptSections(sections: Array<string | null | undefined>): string 
 }
 
 /**
+ * Read all Paperclip skill SKILL.md files and their references.
+ * Local adapters inject these as symlinks into ~/.claude/skills/;
+ * for cloud sandbox we read the content and inject it into the prompt.
+ */
+async function loadSkillContents(config: Record<string, unknown>): Promise<string> {
+  const entries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = resolvePaperclipDesiredSkillNames(config, entries);
+  const desiredSet = new Set(desiredNames ?? entries.map((e) => e.key));
+  const selectedEntries = entries.filter((e) => desiredSet.has(e.key));
+
+  const sections: string[] = [];
+  for (const entry of selectedEntries) {
+    // Read the main SKILL.md
+    const skillMd = path.join(entry.source, "SKILL.md");
+    try {
+      const content = await fs.readFile(skillMd, "utf8");
+      sections.push(content.trim());
+    } catch {
+      continue; // Skill directory without SKILL.md — skip
+    }
+
+    // Read reference files (api-reference.md, etc.)
+    const refsDir = path.join(entry.source, "references");
+    try {
+      const refFiles = await fs.readdir(refsDir);
+      for (const refFile of refFiles.sort()) {
+        if (!refFile.endsWith(".md")) continue;
+        try {
+          const refContent = await fs.readFile(path.join(refsDir, refFile), "utf8");
+          sections.push(refContent.trim());
+        } catch { /* skip unreadable ref */ }
+      }
+    } catch { /* no references dir — fine */ }
+  }
+
+  return sections.join("\n\n");
+}
+
+/**
  * Build a rich prompt from the adapter context and config.
  *
  * Mirrors the local opencode adapter's prompt composition:
- *   1. Bootstrap prompt (rendered from config.bootstrapPromptTemplate)
- *   2. Session handoff markdown (from context.paperclipSessionHandoffMarkdown)
- *   3. Heartbeat / main prompt (rendered from config.promptTemplate)
- *
- * Falls back to issueTitle + issueDescription when no templates are configured.
+ *   1. Paperclip skills (SKILL.md + references — same as local adapters inject)
+ *   2. Agent instructions file (from instructions bundle)
+ *   3. Bootstrap prompt (rendered from config.bootstrapPromptTemplate)
+ *   4. Session handoff markdown (from context.paperclipSessionHandoffMarkdown)
+ *   5. Issue context (title + description)
+ *   6. Heartbeat / main prompt (rendered from config.promptTemplate)
  */
 export async function buildPrompt(
   ctx: AdapterExecutionContext,
@@ -79,6 +126,10 @@ export async function buildPrompt(
     }
   }
 
+  // Load Paperclip skills (SKILL.md + references) — same content local adapters
+  // inject via ~/.claude/skills/ symlinks, but delivered here via the prompt.
+  const skillContent = await loadSkillContents(config);
+
   // Build issue context section from enriched heartbeat fields
   const issueTitle = asString(context.issueTitle, "");
   const issueDescription = asString(context.issueDescription, "");
@@ -91,6 +142,7 @@ export async function buildPrompt(
       : "";
 
   const prompt = joinPromptSections([
+    skillContent,
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
