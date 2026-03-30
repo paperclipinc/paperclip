@@ -4,12 +4,6 @@ import { api } from "./client";
 export type CompanyEligibility = {
   canCreateCompany: boolean;
   reason?: string;
-  unpaidCompanies: Array<{
-    companyId: string;
-    companyName: string;
-    status: string;
-    issuePrefix: string;
-  }>;
 };
 
 export const billingApi = {
