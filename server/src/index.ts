@@ -604,6 +604,9 @@ export async function startServer(): Promise<StartedServer> {
       : runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
+  // Only set PAPERCLIP_API_URL if not already configured (e.g. via env in SaaS deployments).
+  // The default localhost URL is correct for local dev but wrong for hosted instances
+  // where agents need to reach the public URL.
   if (!process.env.PAPERCLIP_API_URL) {
     process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
   }
