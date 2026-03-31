@@ -2355,6 +2355,9 @@ export function agentRoutes(db: Db) {
       limitBytes: Number.isFinite(limitBytes) ? limitBytes : 256000,
     });
 
+    // Disable ETag caching - log content grows during runs and stale
+    // 304 responses from earlier empty/error states break the UI.
+    res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
   });
 
