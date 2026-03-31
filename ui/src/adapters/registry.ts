@@ -10,11 +10,22 @@ import { openClawGatewayUIAdapter } from "./openclaw-gateway";
 import { processUIAdapter } from "./process";
 import { httpUIAdapter } from "./http";
 
+/** Map cloud sandbox runtime names to their local adapter counterparts for transcript parsing. */
+const runtimeParserMap: Record<string, UIAdapterModule> = {
+  claude: claudeLocalUIAdapter,
+  codex: codexLocalUIAdapter,
+  opencode: openCodeLocalUIAdapter,
+  gemini: geminiLocalUIAdapter,
+  pi: piLocalUIAdapter,
+  hermes: hermesLocalUIAdapter,
+  cursor: cursorLocalUIAdapter,
+};
+
 /** Cloud sandbox adapter — config is handled by CloudSandboxFields in AgentConfigForm */
 const cloudSandboxUIAdapter: UIAdapterModule = {
   type: "cloud_sandbox",
   label: "Cloud Sandbox",
-  parseStdoutLine: (_line, _ts) => [],
+  parseStdoutLine: claudeLocalUIAdapter.parseStdoutLine,
   ConfigFields: () => null,
   buildAdapterConfig: () => ({ runtime: "claude" }),
 };
@@ -39,6 +50,11 @@ const adaptersByType = new Map<string, UIAdapterModule>(
 
 export function getUIAdapter(type: string): UIAdapterModule {
   return adaptersByType.get(type) ?? processUIAdapter;
+}
+
+/** Get the parser for a cloud sandbox runtime (e.g. "claude", "codex", "opencode"). */
+export function getCloudSandboxRuntimeParser(runtime: string): UIAdapterModule {
+  return runtimeParserMap[runtime] ?? claudeLocalUIAdapter;
 }
 
 export function listUIAdapters(): UIAdapterModule[] {
