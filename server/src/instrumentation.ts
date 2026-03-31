@@ -12,7 +12,7 @@ if (endpoint) {
       [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
       [ATTR_SERVICE_VERSION]: process.env.OTEL_SERVICE_VERSION || "unknown",
     }),
-    traceExporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces` }),
+    traceExporter: new OTLPTraceExporter({ url: endpoint }),
     instrumentations: [
       getNodeAutoInstrumentations({
         "@opentelemetry/instrumentation-fs": { enabled: false },
