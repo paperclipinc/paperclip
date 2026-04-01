@@ -597,12 +597,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let simpleResponse: string | null = null;
 
   // First try: parse as JSONL (one JSON object per line)
+  let resultEvent: Record<string, unknown> | null = null;
   for (const line of stdoutBuffer.split("\n")) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
-      if (parsed.type === "result" && parsed.is_error) {
-        cliError = parsed.result || null;
+      if (parsed.type === "result") {
+        resultEvent = parsed;
+        if (parsed.is_error) {
+          cliError = parsed.result || null;
+        }
       } else if (parsed.error === "authentication_failed" && parsed.message?.content) {
         const text = parsed.message.content.find((c: { type: string; text?: string }) => c.type === "text");
         if (text?.text) cliError = text.text;
@@ -643,10 +647,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Update last-exec annotation for idle reaper
   void client.updateLastExecAnnotation(name, namespace);
 
+  // Extract usage from the result event (Claude Code stream-json, codex, etc.)
+  const usage = resultEvent?.usage as Record<string, unknown> | undefined;
+  const modelUsage = resultEvent?.modelUsage as Record<string, Record<string, unknown>> | undefined;
+  const firstModel = modelUsage ? Object.keys(modelUsage)[0] : undefined;
+  const modelData = firstModel && modelUsage ? modelUsage[firstModel] : undefined;
+
   return {
     exitCode,
     signal: null,
     timedOut,
     errorMessage: timedOut ? `Execution timed out after ${config.timeoutSec}s` : cliError,
+    usage: usage ? {
+      inputTokens: Number(usage.input_tokens ?? 0) + Number(usage.cache_read_input_tokens ?? 0),
+      outputTokens: Number(usage.output_tokens ?? 0),
+      cachedInputTokens: Number(usage.cache_read_input_tokens ?? 0),
+    } : undefined,
+    costUsd: typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined,
+    model: firstModel ?? null,
+    provider: "anthropic",
+    billingType: "api" as const,
+    resultJson: resultEvent ? { ...resultEvent } : undefined,
+    summary: typeof resultEvent?.result === "string" ? resultEvent.result : undefined,
   };
 }
