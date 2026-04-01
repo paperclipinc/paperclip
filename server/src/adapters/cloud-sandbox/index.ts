@@ -1,11 +1,14 @@
 import type { ServerAdapterModule } from "../types.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
+import { listSkills, syncSkills } from "./skills.js";
 
 export const cloudSandboxAdapter: ServerAdapterModule = {
   type: "cloud_sandbox",
   execute,
   testEnvironment,
+  listSkills,
+  syncSkills,
   supportsLocalAgentJwt: true,
   models: [],
   agentConfigurationDoc: `# cloud_sandbox agent configuration
