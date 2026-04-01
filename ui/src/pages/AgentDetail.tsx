@@ -1035,7 +1035,7 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
-          sandboxRuntime={typeof (agent as Record<string, unknown>).adapterConfig === "object" ? ((agent as Record<string, unknown>).adapterConfig as Record<string, unknown>)?.runtime as string ?? undefined : undefined}
+          sandboxRuntime={typeof agent.adapterConfig?.runtime === "string" ? agent.adapterConfig.runtime : undefined}
         />
       )}
 
@@ -3296,7 +3296,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, sandboxRuntime 
       )}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={run} adapterType={adapterType} sandboxRuntime={sandboxRuntime} />
       <ScrollToBottom />
     </div>
   );
@@ -3304,7 +3304,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, sandboxRuntime 
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+function LogViewer({ run, adapterType, sandboxRuntime }: { run: HeartbeatRun; adapterType: string; sandboxRuntime?: string }) {
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
   const [loading, setLoading] = useState(true);
