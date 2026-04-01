@@ -27,7 +27,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
-import { getUIAdapter, buildTranscript } from "../adapters";
+import { getUIAdapter, getCloudSandboxRuntimeParser, buildTranscript } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -1035,6 +1035,7 @@ export function AgentDetail() {
           agentRouteId={canonicalAgentRef}
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
+          sandboxRuntime={typeof (agent as Record<string, unknown>).adapterConfig === "object" ? ((agent as Record<string, unknown>).adapterConfig as Record<string, unknown>)?.runtime as string ?? undefined : undefined}
         />
       )}
 
@@ -2814,6 +2815,7 @@ function RunsTab({
   agentRouteId,
   selectedRunId,
   adapterType,
+  sandboxRuntime,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -2821,6 +2823,7 @@ function RunsTab({
   agentRouteId: string;
   selectedRunId: string | null;
   adapterType: string;
+  sandboxRuntime?: string;
 }) {
   const { isMobile } = useSidebar();
 
@@ -2849,7 +2852,7 @@ function RunsTab({
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to runs
           </Link>
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} sandboxRuntime={sandboxRuntime} />
         </div>
       );
     }
@@ -2880,7 +2883,7 @@ function RunsTab({
       {/* Right: run detail — natural height, page scrolls */}
       {selectedRun && (
         <div className="flex-1 min-w-0 pl-4">
-          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+          <RunDetail key={selectedRun.id} run={selectedRun} agentRouteId={agentRouteId} adapterType={adapterType} sandboxRuntime={sandboxRuntime} />
         </div>
       )}
     </div>
@@ -2889,7 +2892,7 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+function RunDetail({ run: initialRun, agentRouteId, adapterType, sandboxRuntime }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; sandboxRuntime?: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: hydratedRun } = useQuery({
@@ -3671,7 +3674,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return redactPathValue(asRecord(evt?.payload ?? null), censorUsernameInLogs);
   }, [censorUsernameInLogs, events]);
 
-  const adapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const adapter = useMemo(() => {
+    if (adapterType === "cloud_sandbox" && sandboxRuntime) {
+      return getCloudSandboxRuntimeParser(sandboxRuntime);
+    }
+    return getUIAdapter(adapterType);
+  }, [adapterType, sandboxRuntime]);
   const transcript = useMemo(
     () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
     [adapter, censorUsernameInLogs, logLines],
