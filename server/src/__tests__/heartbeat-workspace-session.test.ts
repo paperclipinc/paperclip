@@ -6,6 +6,7 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  deriveTaskKeyWithHeartbeatFallback,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -328,6 +329,34 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("deriveTaskKeyWithHeartbeatFallback", () => {
+  it("returns explicit taskKey when present", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
+  });
+
+  it("returns explicit issueId when no taskKey", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ issueId: "issue-456" }, null)).toBe("issue-456");
+  });
+
+  it("returns __heartbeat__ for timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer" }, null)).toBe("__heartbeat__");
+  });
+
+  it("prefers explicit key over heartbeat fallback even on timer wakes", () => {
+    expect(
+      deriveTaskKeyWithHeartbeatFallback({ wakeSource: "timer", taskKey: "issue-789" }, null),
+    ).toBe("issue-789");
+  });
+
+  it("returns null for non-timer wakes with no explicit key", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({ wakeSource: "on_demand" }, null)).toBeNull();
+  });
+
+  it("returns null for empty context", () => {
+    expect(deriveTaskKeyWithHeartbeatFallback({}, null)).toBeNull();
+  });
+});
+
 describe("buildExplicitResumeSessionOverride", () => {
   it("reuses saved task session params when they belong to the selected failed run", () => {
     const result = buildExplicitResumeSessionOverride({
@@ -382,8 +411,8 @@ describe("buildExplicitResumeSessionOverride", () => {
 describe("formatRuntimeWorkspaceWarningLog", () => {
   it("emits informational workspace warnings on stdout", () => {
     expect(formatRuntimeWorkspaceWarningLog("Using fallback workspace")).toEqual({
-      stream: "stdout",
-      chunk: "[paperclip] Using fallback workspace\n",
+      stream: "system",
+      chunk: "Using fallback workspace\n",
     });
   });
 });
