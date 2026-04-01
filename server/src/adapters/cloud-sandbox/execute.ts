@@ -540,23 +540,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           continue;
         }
 
-        // Claude Code stream-json format
-        if (eventType === "assistant" && event.message?.content) {
-          for (const block of event.message.content) {
-            if (block.type === "text" && block.text) {
-              void ctx.onLog("stdout", block.text + "\n");
-            } else if (block.type === "tool_use") {
-              void ctx.onLog("stdout", `[tool: ${block.name}]\n`);
-            }
-          }
-          continue;
-        }
-        if (eventType === "result") {
-          if (event.is_error && event.result) {
-            // Error result is handled separately via cliError extraction
-          } else if (event.result) {
-            void ctx.onLog("stdout", event.result + "\n");
-          }
+        // Claude Code stream-json format — pass through the raw JSONL
+        // event so the UI parser can reconstruct rich transcripts with
+        // thinking blocks, tool calls with arguments, and usage data.
+        if (eventType === "assistant" || eventType === "user" || eventType === "result" || (eventType === "system" && event.subtype === "init")) {
+          void ctx.onLog("stdout", line + "\n");
           continue;
         }
 
