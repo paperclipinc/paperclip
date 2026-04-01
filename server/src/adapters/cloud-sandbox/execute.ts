@@ -525,30 +525,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const event = JSON.parse(line);
         const eventType = typeof event.type === "string" ? event.type : "";
 
-        // opencode JSONL format (type: "text", "step_finish", "tool_use", "error")
-        if (eventType === "text") {
-          const text = event.part?.text;
-          if (typeof text === "string" && text.trim()) {
-            void ctx.onLog("stdout", text + "\n");
-          }
-          continue;
-        }
-        if (eventType === "error") {
-          const errText = typeof event.error === "string" ? event.error
-            : event.error?.message ?? event.message ?? "";
-          if (errText) void ctx.onLog("stderr", `[opencode] ${errText}\n`);
-          continue;
-        }
-
-        // Claude Code stream-json format — pass through the raw JSONL
-        // event so the UI parser can reconstruct rich transcripts with
-        // thinking blocks, tool calls with arguments, and usage data.
-        if (eventType === "assistant" || eventType === "user" || eventType === "result" || (eventType === "system" && event.subtype === "init")) {
+        // Pass through all structured JSONL events so the UI parser
+        // can reconstruct rich transcripts for any runtime.
+        // Each runtime's parser knows which event types to handle.
+        if (eventType) {
           void ctx.onLog("stdout", line + "\n");
           continue;
         }
-
-        // Skip known non-content events (step_finish, tool_use status, init, etc.)
       } catch {
         // Line is not valid JSON on its own. It may be a fragment of a
         // pretty-printed JSON object (e.g. opencode `-p -f json` output).
@@ -597,20 +580,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let simpleResponse: string | null = null;
 
   // First try: parse as JSONL (one JSON object per line)
+  // Look for result/completion events from any runtime
   let resultEvent: Record<string, unknown> | null = null;
   for (const line of stdoutBuffer.split("\n")) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
-      if (parsed.type === "result") {
+      const eventType = typeof parsed.type === "string" ? parsed.type : "";
+      // Claude/Gemini/Cursor: type: "result"
+      if (eventType === "result") {
         resultEvent = parsed;
-        if (parsed.is_error) {
-          cliError = parsed.result || null;
-        }
-      } else if (parsed.error === "authentication_failed" && parsed.message?.content) {
+        if (parsed.is_error) cliError = parsed.result || null;
+      }
+      // Codex: type: "turn.completed" or "turn.failed"
+      else if (eventType === "turn.completed" || eventType === "turn.failed") {
+        resultEvent = parsed;
+        if (parsed.is_error || eventType === "turn.failed") cliError = parsed.result || null;
+      }
+      // OpenCode: type: "step_finish"
+      else if (eventType === "step_finish") {
+        resultEvent = parsed;
+      }
+      // Pi: type: "agent_end"
+      else if (eventType === "agent_end") {
+        resultEvent = parsed;
+      }
+      // Error events
+      else if (parsed.error === "authentication_failed" && parsed.message?.content) {
         const text = parsed.message.content.find((c: { type: string; text?: string }) => c.type === "text");
         if (text?.text) cliError = text.text;
-      } else if (parsed.type === "error") {
+      } else if (eventType === "error") {
         const errText = typeof parsed.error === "string" ? parsed.error
           : parsed.error?.message ?? parsed.message ?? null;
         if (errText && !cliError) cliError = errText;
@@ -647,27 +646,81 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Update last-exec annotation for idle reaper
   void client.updateLastExecAnnotation(name, namespace);
 
-  // Extract usage from the result event (Claude Code stream-json, codex, etc.)
-  const usage = resultEvent?.usage as Record<string, unknown> | undefined;
-  const modelUsage = resultEvent?.modelUsage as Record<string, Record<string, unknown>> | undefined;
-  const firstModel = modelUsage ? Object.keys(modelUsage)[0] : undefined;
-  const modelData = firstModel && modelUsage ? modelUsage[firstModel] : undefined;
+  // Extract usage from the result event — handles all runtimes:
+  // Claude/Cursor: usage.{input_tokens, output_tokens, cache_read_input_tokens}
+  // Codex: usage.{input_tokens, output_tokens, cached_input_tokens}
+  // OpenCode: part.tokens.{input, output, reasoning, cache.read}, part.cost
+  // Gemini: usage.{input_tokens|inputTokens|promptTokenCount, ...}
+  // Pi: messages[-1].usage.{inputTokens|input, outputTokens|output, cacheRead, cost.total|costUsd}
+  let extractedUsage: { inputTokens: number; outputTokens: number; cachedInputTokens: number } | undefined;
+  let extractedCost: number | undefined;
+  let extractedModel: string | null = null;
+  let extractedSummary: string | undefined;
+
+  if (resultEvent) {
+    const eventType = resultEvent.type as string;
+
+    // OpenCode: nested in part.tokens / part.cost
+    if (eventType === "step_finish" && resultEvent.part) {
+      const part = resultEvent.part as Record<string, unknown>;
+      const tokens = part.tokens as Record<string, unknown> | undefined;
+      if (tokens) {
+        const cache = tokens.cache as Record<string, unknown> | undefined;
+        extractedUsage = {
+          inputTokens: Number(tokens.input ?? 0),
+          outputTokens: Number(tokens.output ?? 0) + Number(tokens.reasoning ?? 0),
+          cachedInputTokens: Number(cache?.read ?? 0),
+        };
+      }
+      if (typeof part.cost === "number") extractedCost = part.cost;
+    }
+    // Pi: nested in messages[-1].usage
+    else if (eventType === "agent_end" && Array.isArray(resultEvent.messages)) {
+      const msgs = resultEvent.messages as Array<Record<string, unknown>>;
+      const lastMsg = msgs[msgs.length - 1];
+      const u = lastMsg?.usage as Record<string, unknown> | undefined;
+      if (u) {
+        extractedUsage = {
+          inputTokens: Number(u.inputTokens ?? u.input ?? 0),
+          outputTokens: Number(u.outputTokens ?? u.output ?? 0),
+          cachedInputTokens: Number(u.cacheRead ?? u.cachedInputTokens ?? 0),
+        };
+        const cost = u.cost as Record<string, unknown> | undefined;
+        extractedCost = Number(cost?.total ?? u.costUsd ?? 0) || undefined;
+      }
+    }
+    // Claude/Codex/Gemini/Cursor: usage at top level
+    else {
+      const u = resultEvent.usage as Record<string, unknown> | undefined;
+      if (u) {
+        extractedUsage = {
+          inputTokens: Number(u.input_tokens ?? u.inputTokens ?? u.promptTokenCount ?? 0),
+          outputTokens: Number(u.output_tokens ?? u.outputTokens ?? u.candidatesTokenCount ?? 0),
+          cachedInputTokens: Number(u.cache_read_input_tokens ?? u.cached_input_tokens ?? u.cachedInputTokens ?? u.cachedContentTokenCount ?? 0),
+        };
+      }
+      extractedCost = Number(resultEvent.total_cost_usd ?? resultEvent.cost_usd ?? resultEvent.cost ?? 0) || undefined;
+    }
+
+    // Model name from modelUsage keys or top-level
+    const modelUsage = resultEvent.modelUsage as Record<string, unknown> | undefined;
+    if (modelUsage) extractedModel = Object.keys(modelUsage)[0] ?? null;
+    if (!extractedModel && typeof resultEvent.model === "string") extractedModel = resultEvent.model;
+
+    // Summary text
+    extractedSummary = typeof resultEvent.result === "string" ? resultEvent.result : undefined;
+  }
 
   return {
     exitCode,
     signal: null,
     timedOut,
     errorMessage: timedOut ? `Execution timed out after ${config.timeoutSec}s` : cliError,
-    usage: usage ? {
-      inputTokens: Number(usage.input_tokens ?? 0) + Number(usage.cache_read_input_tokens ?? 0),
-      outputTokens: Number(usage.output_tokens ?? 0),
-      cachedInputTokens: Number(usage.cache_read_input_tokens ?? 0),
-    } : undefined,
-    costUsd: typeof resultEvent?.total_cost_usd === "number" ? resultEvent.total_cost_usd : undefined,
-    model: firstModel ?? null,
-    provider: "anthropic",
+    usage: extractedUsage,
+    costUsd: extractedCost,
+    model: extractedModel,
     billingType: "api" as const,
     resultJson: resultEvent ? { ...resultEvent } : undefined,
-    summary: typeof resultEvent?.result === "string" ? resultEvent.result : undefined,
+    summary: extractedSummary,
   };
 }
