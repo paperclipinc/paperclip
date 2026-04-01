@@ -384,7 +384,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Buffer stdout by lines to handle partial JSON chunks
     let stdoutBuffer = "";
-    const bufferedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+    const bufferedOnLog = async (stream: "stdout" | "stderr" | "system", chunk: string) => {
       if (stream === "stderr") {
         // Pass stderr through immediately (not JSONL)
         await onLog(stream, chunk);
