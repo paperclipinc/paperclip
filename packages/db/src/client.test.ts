@@ -179,7 +179,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
-        const smoothSentinelsHash = await migrationHash("0046_smooth_sentinels.sql");
+        const smoothSentinelsHash = await migrationHash("0051_smooth_sentinels.sql");
 
         await sql.unsafe(
           `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${smoothSentinelsHash}'`,
