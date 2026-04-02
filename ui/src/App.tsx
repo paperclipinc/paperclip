@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Layout } from "./components/Layout";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { authApi } from "./api/auth";
@@ -224,7 +225,8 @@ function OnboardingRoutePage() {
       : "Get started by creating a company and your first agent.";
 
   return (
-    <div className="mx-auto max-w-xl py-10">
+    <div className="relative mx-auto max-w-xl py-10">
+      <ThemeToggle className="absolute top-4 right-4 text-muted-foreground" />
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>

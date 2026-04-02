@@ -3,6 +3,7 @@ import { useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export function VerifyEmailPage() {
   const [searchParams] = useSearchParams();
@@ -41,6 +42,7 @@ export function VerifyEmailPage() {
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-background">
+      <ThemeToggle className="absolute top-4 right-4 z-10 text-muted-foreground" />
       <div className="w-full max-w-md px-8">
         <div className="flex items-center gap-2 mb-8">
           <Sparkles className="h-4 w-4 text-muted-foreground" />
