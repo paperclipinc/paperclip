@@ -61,7 +61,57 @@ pnpm install
 pnpm dev
 ```
 
-Refer to the upstream [documentation](https://paperclip.ing/docs) and [development guide](doc/DEVELOPING.md) for detailed setup instructions.
+See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+
+<br/>
+
+## Roadmap
+
+- ✅ Plugin system (e.g. add a knowledge base, custom tracing, queues, etc)
+- ✅ Get OpenClaw / claw-style agent employees
+- ✅ companies.sh - import and export entire organizations
+- ✅ Easy AGENTS.md configurations
+- ✅ Skills Manager
+- ✅ Scheduled Routines
+- ✅ Better Budgeting
+- ⚪ Artifacts & Deployments
+- ⚪ CEO Chat
+- ⚪ MAXIMIZER MODE
+- ⚪ Multiple Human Users
+- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud deployments
+- ⚪ Desktop App
+
+<br/>
+
+## Community & Plugins
+
+Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
+
+## Telemetry
+
+Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
+
+Telemetry is **enabled by default** and can be disabled with any of the following:
+
+| Method | How |
+|---|---|
+| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1` |
+| Standard convention | `DO_NOT_TRACK=1` |
+| CI environments | Automatically disabled when `CI=true` |
+| Config file | Set `telemetry.enabled: false` in your Paperclip config |
+
+## Contributing
+
+We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
+
+<br/>
+
+## Community
+
+- [Discord](https://discord.gg/m4HZY7xNG3) — Join the community
+- [GitHub Issues](https://github.com/paperclipai/paperclip/issues) — bugs and feature requests
+- [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) — ideas and RFC
 
 <br/>
 
