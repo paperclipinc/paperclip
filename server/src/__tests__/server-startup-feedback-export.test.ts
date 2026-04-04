@@ -9,7 +9,14 @@ const {
   fakeServer,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
-  const createDbMock = vi.fn(() => ({}) as never);
+  const chainable: Record<string, unknown> = {};
+  const chainFn = vi.fn(() => chainable);
+  Object.assign(chainable, {
+    select: chainFn, from: chainFn, where: chainFn, set: chainFn,
+    values: chainFn, insert: chainFn, update: chainFn,
+    then: (fn: (rows: never[]) => unknown) => Promise.resolve(fn([])),
+  });
+  const createDbMock = vi.fn(() => chainable as never);
   const detectPortMock = vi.fn(async (port: number) => port);
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
@@ -133,6 +140,15 @@ vi.mock("../services/index.js", () => ({
   routineService: vi.fn(() => ({
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   })),
+  startConnectionRefreshJob: vi.fn(),
+}));
+
+vi.mock("../services/plan-seed.js", () => ({
+  ensureSubscriptionPlans: vi.fn(async () => undefined),
+}));
+
+vi.mock("../services/trial-notifications.js", () => ({
+  sendTrialExpiryWarnings: vi.fn(async () => undefined),
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -165,7 +181,8 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.BETTER_AUTH_SECRET = "test-secret";
+    process.env.BETTER_AUTH_SECRET = "test-secret-that-is-at-least-32-chars-long";
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-jwt-secret";
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
