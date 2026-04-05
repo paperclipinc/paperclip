@@ -7,12 +7,14 @@ import {
   updateProjectSchema,
   updateProjectWorkspaceSchema,
 } from "@paperclipai/shared";
+import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict } from "../errors.js";
 import { assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 import { planLimits } from "../middleware/plan-limits.js";
 import { startRuntimeServicesForWorkspaceControl, stopRuntimeServicesForProjectWorkspace } from "../services/workspace-runtime.js";
+import { getTelemetryClient } from "../telemetry.js";
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -109,6 +111,10 @@ export function projectRoutes(db: Db) {
         workspaceId: createdWorkspaceId,
       },
     });
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      trackProjectCreated(telemetryClient);
+    }
     res.status(201).json(hydratedProject ?? project);
   });
 
