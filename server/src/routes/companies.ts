@@ -1,15 +1,21 @@
 import express, { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { companyMemberships, accountSubscriptions, companySubscriptions } from "@paperclipai/db";
+import { eq, and, inArray } from "drizzle-orm";
 import {
+  DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   createCompanySchema,
+  feedbackTargetTypeSchema,
+  feedbackTraceStatusSchema,
+  feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden, paymentRequired } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -17,6 +23,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  feedbackService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -29,6 +36,20 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
+  const feedback = feedbackService(db);
+
+  function parseBooleanQuery(value: unknown) {
+    return value === true || value === "true" || value === "1";
+  }
+
+  function parseDateQuery(value: unknown, field: string) {
+    if (typeof value !== "string" || value.trim().length === 0) return undefined;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      throw badRequest(`Invalid ${field} query value`);
+    }
+    return parsed;
+  }
 
   // Company import/export payloads can inline full portable packages, so
   // these routes need a higher body-size limit than the global 1 MB default.
@@ -107,6 +128,34 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  router.get("/:companyId/feedback-traces", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const targetTypeRaw = typeof req.query.targetType === "string" ? req.query.targetType : undefined;
+    const voteRaw = typeof req.query.vote === "string" ? req.query.vote : undefined;
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : undefined;
+    const issueId = typeof req.query.issueId === "string" && req.query.issueId.trim().length > 0 ? req.query.issueId : undefined;
+    const projectId = typeof req.query.projectId === "string" && req.query.projectId.trim().length > 0
+      ? req.query.projectId
+      : undefined;
+
+    const traces = await feedback.listFeedbackTraces({
+      companyId,
+      issueId,
+      projectId,
+      targetType: targetTypeRaw ? feedbackTargetTypeSchema.parse(targetTypeRaw) : undefined,
+      vote: voteRaw ? feedbackVoteValueSchema.parse(voteRaw) : undefined,
+      status: statusRaw ? feedbackTraceStatusSchema.parse(statusRaw) : undefined,
+      from: parseDateQuery(req.query.from, "from"),
+      to: parseDateQuery(req.query.to, "to"),
+      sharedOnly: parseBooleanQuery(req.query.sharedOnly),
+      includePayload: parseBooleanQuery(req.query.includePayload),
+    });
+    res.json(traces);
   });
 
   router.post("/:companyId/export", largeBody, validate(companyPortabilityExportSchema), async (req, res) => {
@@ -224,8 +273,40 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       throw forbidden("Instance admin required");
     }
 
-    const company = await svc.create(req.body);
     const userId = req.actor.userId ?? "local-board";
+
+    // Check if this user has used their free trial (has existing companies).
+    // If so, the new company gets an instantly-expired trial so the subscription
+    // guard blocks writes until the user subscribes. Unlimited users are exempt.
+    let instantExpireTrial = false;
+    if (isAuthenticated && req.actor.userId) {
+      const existingCompanies = await db
+        .select({ companyId: companyMemberships.companyId })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.principalId, req.actor.userId),
+          eq(companyMemberships.principalType, "user"),
+        ))
+        .limit(1);
+
+      if (existingCompanies.length > 0) {
+        const acctSub = await db
+          .select({ status: accountSubscriptions.status })
+          .from(accountSubscriptions)
+          .where(and(
+            eq(accountSubscriptions.userId, req.actor.userId),
+            inArray(accountSubscriptions.status, ["active", "past_due"]),
+          ))
+          .limit(1);
+
+        // Only give instant-expire trial if no Unlimited subscription
+        if (acctSub.length === 0) {
+          instantExpireTrial = true;
+        }
+      }
+    }
+
+    const company = await svc.create(req.body);
     await access.ensureMembership(company.id, "user", userId, "owner", "active");
     // Grant all permissions to the company creator
     await access.setPrincipalGrants(
@@ -256,6 +337,20 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         req.actor.userId ?? "board",
       );
     }
+    // If user has used their trial and doesn't have Unlimited,
+    // expire the trial immediately so the subscription guard blocks writes.
+    // The user must subscribe before they can use this company.
+    if (instantExpireTrial) {
+      await db
+        .update(companySubscriptions)
+        .set({
+          trialEndsAt: new Date(),
+          status: "trial_expired",
+          updatedAt: new Date(),
+        })
+        .where(eq(companySubscriptions.companyId, company.id));
+    }
+
     res.status(201).json(company);
   });
 
@@ -264,6 +359,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
 
     const actor = getActorInfo(req);
+    const existingCompany = await svc.getById(companyId);
+    if (!existingCompany) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
     let body: Record<string, unknown>;
 
     if (req.actor.type === "agent") {
@@ -280,6 +380,18 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     } else {
       assertBoard(req);
       body = updateCompanySchema.parse(req.body);
+
+      if (body.feedbackDataSharingEnabled === true && !existingCompany.feedbackDataSharingEnabled) {
+        body = {
+          ...body,
+          feedbackDataSharingConsentAt: new Date(),
+          feedbackDataSharingConsentByUserId: req.actor.userId ?? "local-board",
+          feedbackDataSharingTermsVersion:
+            typeof body.feedbackDataSharingTermsVersion === "string" && body.feedbackDataSharingTermsVersion.length > 0
+              ? body.feedbackDataSharingTermsVersion
+              : DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+        };
+      }
     }
 
     const company = await svc.update(companyId, body);

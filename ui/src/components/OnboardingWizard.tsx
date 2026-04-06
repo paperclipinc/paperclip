@@ -103,6 +103,7 @@ export function OnboardingWizard() {
   const location = useLocation();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
   const [routeDismissed, setRouteDismissed] = useState(false);
+  const [showPaymentGate, setShowPaymentGate] = useState(false);
 
   const routeOnboardingOptions =
     companyPrefix && companiesLoading
@@ -399,6 +400,7 @@ export function OnboardingWizard() {
     setCompanyGoal("");
     setBudgetAmount("");
     setShowBudget(false);
+    setShowPaymentGate(false);
     setAgentName("CEO");
     setAdapterType("claude_local");
     setModel("");
@@ -548,7 +550,7 @@ export function OnboardingWizard() {
       setStep(2);
     } catch (err) {
       if (err instanceof ApiError && err.status === 402) {
-        // Refetch eligibility to show the subscribe gate instead of raw error
+        // Refetch eligibility so the payment gate appears
         await queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
       } else {
         setError(err instanceof Error ? err.message : "Failed to create company");
@@ -816,8 +818,6 @@ export function OnboardingWizard() {
       open={effectiveOnboardingOpen}
       onOpenChange={(open) => {
         if (!open) {
-          // Don't allow dismissing during the payment gate
-          if (eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && step === 3) return;
           setRouteDismissed(true);
           handleClose();
         }
@@ -829,9 +829,9 @@ export function OnboardingWizard() {
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
         <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Top-left: X for returning users (hidden during payment gate), sign-out for everyone */}
+          {/* Top-left: X for returning users, sign-out for everyone */}
           <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-            {companies.length > 0 && !(eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && step === 3) && (
+            {companies.length > 0 && (
               <button
                 onClick={handleClose}
                 className="rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
