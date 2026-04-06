@@ -70,7 +70,7 @@ export function getAdapterProvider(adapterType: string): ByokProvider | null {
  *  Ordered as a 2x2 grid: Codex + Gemini (top), Pi + OpenCode (bottom). */
 export const CLOUD_RUNTIME_OPTIONS = [
   { value: "claude", label: "Claude Code", recommended: true },
-  { value: "codex", label: "Codex", recommended: false },
+  { value: "codex", label: "Codex", recommended: true },
   { value: "gemini", label: "Gemini CLI", recommended: false },
   { value: "pi", label: "Pi", recommended: false },
   { value: "opencode", label: "OpenCode", recommended: false },

@@ -137,7 +137,7 @@ export function OnboardingWizard() {
 
   // Step 2 (agent)
   const [agentName, setAgentName] = useState("CEO");
-  const [adapterType, setAdapterType] = useState<AdapterType>("codex_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>("claude_local");
   const [model, setModel] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
@@ -400,7 +400,7 @@ export function OnboardingWizard() {
     setBudgetAmount("");
     setShowBudget(false);
     setAgentName("CEO");
-    setAdapterType("codex_local");
+    setAdapterType("claude_local");
     setModel("");
     setCommand("");
     setArgs("");
