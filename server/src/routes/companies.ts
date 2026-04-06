@@ -1,7 +1,6 @@
 import express, { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, accountSubscriptions, companySubscriptions } from "@paperclipai/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { companyMemberships } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -15,7 +14,7 @@ import {
   updateCompanySchema,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
-import { badRequest, forbidden, paymentRequired } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -274,38 +273,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
 
     const userId = req.actor.userId ?? "local-board";
-
-    // Check if this user has used their free trial (has existing companies).
-    // If so, the new company gets an instantly-expired trial so the subscription
-    // guard blocks writes until the user subscribes. Unlimited users are exempt.
-    let instantExpireTrial = false;
-    if (isAuthenticated && req.actor.userId) {
-      const existingCompanies = await db
-        .select({ companyId: companyMemberships.companyId })
-        .from(companyMemberships)
-        .where(and(
-          eq(companyMemberships.principalId, req.actor.userId),
-          eq(companyMemberships.principalType, "user"),
-        ))
-        .limit(1);
-
-      if (existingCompanies.length > 0) {
-        const acctSub = await db
-          .select({ status: accountSubscriptions.status })
-          .from(accountSubscriptions)
-          .where(and(
-            eq(accountSubscriptions.userId, req.actor.userId),
-            inArray(accountSubscriptions.status, ["active", "past_due"]),
-          ))
-          .limit(1);
-
-        // Only give instant-expire trial if no Unlimited subscription
-        if (acctSub.length === 0) {
-          instantExpireTrial = true;
-        }
-      }
-    }
-
     const company = await svc.create(req.body);
     await access.ensureMembership(company.id, "user", userId, "owner", "active");
     // Grant all permissions to the company creator
@@ -337,20 +304,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         req.actor.userId ?? "board",
       );
     }
-    // If user has used their trial and doesn't have Unlimited,
-    // expire the trial immediately so the subscription guard blocks writes.
-    // The user must subscribe before they can use this company.
-    if (instantExpireTrial) {
-      await db
-        .update(companySubscriptions)
-        .set({
-          trialEndsAt: new Date(),
-          status: "trial_expired",
-          updatedAt: new Date(),
-        })
-        .where(eq(companySubscriptions.companyId, company.id));
-    }
-
     res.status(201).json(company);
   });
 
