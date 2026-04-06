@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companySubscriptions, agents, heartbeatRuns, agentWakeupRequests } from "@paperclipai/db";
+import { accountSubscriptions, companyMemberships, companySubscriptions, agents, heartbeatRuns, agentWakeupRequests } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { logger } from "./logger.js";
 
@@ -9,6 +9,28 @@ export type SubscriptionStatus = {
   trialEndsAt: Date | null;
   canWrite: boolean;
 };
+
+/**
+ * Checks if ANY member of a company has an active account-level subscription
+ * (Unlimited plan). If so, the company is covered and doesn't need its own
+ * company-level subscription.
+ */
+async function isCompanyCoveredByAccountSubscription(db: Db, companyId: string): Promise<boolean> {
+  const result = await db
+    .select({ id: accountSubscriptions.id })
+    .from(accountSubscriptions)
+    .innerJoin(companyMemberships, and(
+      eq(companyMemberships.principalId, accountSubscriptions.userId),
+      eq(companyMemberships.principalType, "user"),
+    ))
+    .where(and(
+      eq(companyMemberships.companyId, companyId),
+      inArray(accountSubscriptions.status, ["active", "past_due"]),
+    ))
+    .limit(1);
+
+  return result.length > 0;
+}
 
 /**
  * Look up the subscription status for a company. Returns null if no
@@ -20,6 +42,12 @@ export async function getSubscriptionStatus(
   db: Db,
   companyId: string,
 ): Promise<SubscriptionStatus | null> {
+  // Check if the company is covered by an account-level subscription (Unlimited plan)
+  const coveredByAccount = await isCompanyCoveredByAccountSubscription(db, companyId);
+  if (coveredByAccount) {
+    return { status: "active", trialEndsAt: null, canWrite: true };
+  }
+
   const sub = await db
     .select({
       status: companySubscriptions.status,

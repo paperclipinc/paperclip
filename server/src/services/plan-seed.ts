@@ -1,12 +1,12 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { subscriptionPlans } from "@paperclipai/db";
+import { subscriptionPlans, companySubscriptions } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 /**
  * Ensure subscription plans exist in the database.
  * Idempotent — safe to call on every server startup.
- * Only seeds the cloud plan when Stripe is configured (i.e. cloud deployment).
+ * Only seeds paid plans when Stripe is configured (i.e. cloud deployment).
  */
 export async function ensureSubscriptionPlans(db: Db): Promise<void> {
   // Always ensure the free plan exists (used by self-hosted and as fallback)
@@ -23,27 +23,40 @@ export async function ensureSubscriptionPlans(db: Db): Promise<void> {
     maxProjects: null,
     features: null,
     sortOrder: 0,
+    scope: "company",
     active: true,
   });
 
-  // Only seed the cloud plan when Stripe is configured
+  // Only seed paid plans when Stripe is configured
   const stripeKey = process.env.STRIPE_SECRET_KEY?.trim();
   if (!stripeKey) return;
+
+  // Migrate legacy "cloud" plan references to "pro"
+  const legacyCloud = await db
+    .select({ id: subscriptionPlans.id })
+    .from(subscriptionPlans)
+    .where(eq(subscriptionPlans.id, "cloud"))
+    .then((rows) => rows[0] ?? null);
+  if (legacyCloud) {
+    await db.update(companySubscriptions).set({ planId: "pro" }).where(eq(companySubscriptions.planId, "cloud"));
+    await db.delete(subscriptionPlans).where(eq(subscriptionPlans.id, "cloud"));
+    logger.info("Migrated legacy 'cloud' plan to 'pro'");
+  }
 
   const stripePriceId = process.env.STRIPE_PRICE_ID?.trim();
   if (!stripePriceId) {
     logger.warn(
       "STRIPE_SECRET_KEY is set but STRIPE_PRICE_ID is missing. " +
-        "The cloud plan will not be purchasable until this is configured.",
+        "The Pro plan will not be purchasable until this is configured.",
     );
   }
 
   await upsertPlan(db, {
-    id: "cloud",
-    name: "Cloud",
+    id: "pro",
+    name: "Pro",
     monthlyPriceCents: 1500,
     stripePriceId: stripePriceId ?? null,
-    maxAgents: null, // unlimited
+    maxAgents: null,
     maxCompanies: null,
     maxMonthlyCostCents: null,
     maxStorageBytes: null,
@@ -51,6 +64,32 @@ export async function ensureSubscriptionPlans(db: Db): Promise<void> {
     maxProjects: null,
     features: null,
     sortOrder: 1,
+    scope: "company",
+    active: true,
+  });
+
+  const unlimitedPriceId = process.env.STRIPE_UNLIMITED_PRICE_ID?.trim();
+  if (!unlimitedPriceId) {
+    logger.warn(
+      "STRIPE_UNLIMITED_PRICE_ID is missing. " +
+        "The Unlimited plan will not be purchasable until this is configured.",
+    );
+  }
+
+  await upsertPlan(db, {
+    id: "unlimited",
+    name: "Unlimited",
+    monthlyPriceCents: 5000,
+    stripePriceId: unlimitedPriceId ?? null,
+    maxAgents: null,
+    maxCompanies: null,
+    maxMonthlyCostCents: null,
+    maxStorageBytes: null,
+    maxIssues: null,
+    maxProjects: null,
+    features: null,
+    sortOrder: 2,
+    scope: "account",
     active: true,
   });
 
@@ -82,6 +121,7 @@ async function upsertPlan(
         maxProjects: plan.maxProjects,
         features: plan.features,
         sortOrder: plan.sortOrder,
+        scope: plan.scope,
         active: plan.active,
         updatedAt: new Date(),
       })

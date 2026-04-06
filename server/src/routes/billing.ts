@@ -26,6 +26,15 @@ export function billingRoutes(db: Db) {
       return;
     }
 
+    const userId = req.actor.userId;
+
+    // Check for account-level unlimited subscription
+    const accountSub = await stripe.getAccountSubscription(userId);
+    if (accountSub && (accountSub.status === "active" || accountSub.status === "past_due")) {
+      res.json({ canCreateCompany: true, hasUnlimited: true });
+      return;
+    }
+
     // Check if this user has ever had a company (including archived).
     // One free trial per user, ever. Second+ companies require payment upfront.
     const userSubs = await db
@@ -51,6 +60,39 @@ export function billingRoutes(db: Db) {
       canCreateCompany: !hasUsedTrial,
       reason: hasUsedTrial ? "TRIAL_USED" : undefined,
     });
+  });
+
+  router.get("/billing/account-subscription", async (req, res) => {
+    assertBoard(req);
+    const userId = req.actor.userId!;
+    const sub = await stripe.getAccountSubscription(userId);
+    res.json(sub);
+  });
+
+  router.post("/billing/account/checkout", async (req, res) => {
+    assertBoard(req);
+    const userId = req.actor.userId!;
+    const { planId, successPath, cancelPath } = req.body as {
+      planId: string;
+      successPath?: string;
+      cancelPath?: string;
+    };
+
+    const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() ?? req.headers.origin ?? "https://paperclip.inc";
+    const successUrl = `${publicUrl}${successPath ?? "/account/settings?billing=success"}`;
+    const cancelUrl = `${publicUrl}${cancelPath ?? "/account/settings?billing=canceled"}`;
+
+    const url = await stripe.createAccountCheckoutSession(userId, planId, successUrl, cancelUrl);
+    res.json({ url });
+  });
+
+  router.post("/billing/account/portal", async (req, res) => {
+    assertBoard(req);
+    const userId = req.actor.userId!;
+    const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() ?? req.headers.origin ?? "https://paperclip.inc";
+    const returnUrl = `${publicUrl}/account/settings`;
+    const url = await stripe.createAccountPortalSession(userId, returnUrl);
+    res.json({ url });
   });
 
   router.get("/companies/:companyId/subscription", async (req, res) => {

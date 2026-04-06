@@ -351,6 +351,7 @@ export type {
   ProviderQuotaResult,
   SubscriptionPlan,
   CompanySubscription,
+  AccountSubscription,
 } from "./types/index.js";
 
 export {

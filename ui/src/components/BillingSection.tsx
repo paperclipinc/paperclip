@@ -16,11 +16,16 @@ function StatusBadge({ status }: { status: string }) {
     canceled: "bg-red-500/10 text-red-700 dark:text-red-400",
     trial_expired: "bg-red-500/10 text-red-700 dark:text-red-400",
     free: "bg-muted text-muted-foreground",
+    covered_by_account: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
   };
   const color = colorMap[status] ?? colorMap.free;
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>
-      {status === "trial_expired" ? "trial expired" : status}
+      {status === "trial_expired"
+        ? "trial expired"
+        : status === "covered_by_account"
+          ? "covered by Unlimited"
+          : status}
     </span>
   );
 }
@@ -80,6 +85,47 @@ export function PlanCard({
   );
 }
 
+function AccountPlanCard({
+  plan,
+  onUpgrade,
+  isUpgrading,
+}: {
+  plan: SubscriptionPlan;
+  onUpgrade: () => void;
+  isUpgrading: boolean;
+}) {
+  return (
+    <div className="rounded-md border-2 border-purple-400 dark:border-purple-600 px-4 py-3 space-y-2 relative">
+      <span className="absolute -top-2.5 right-3 rounded-full bg-purple-600 px-2 py-0.5 text-[10px] font-semibold text-white">
+        Best value
+      </span>
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">{plan.name}</span>
+        <span className="text-sm font-semibold">
+          {formatCents(plan.monthlyPriceCents)}/mo flat
+        </span>
+      </div>
+      <div className="space-y-1 text-xs text-muted-foreground">
+        <div>All your companies covered under one subscription</div>
+        {plan.maxAgents !== null && (
+          <div>Up to {plan.maxAgents} agent{plan.maxAgents !== 1 ? "s" : ""} per company</div>
+        )}
+        {plan.maxAgents === null && <div>Unlimited agents per company</div>}
+        {plan.maxMonthlyCostCents !== null && (
+          <div>Cost cap: {formatCents(plan.maxMonthlyCostCents)}/mo</div>
+        )}
+      </div>
+      <Button
+        size="sm"
+        onClick={onUpgrade}
+        disabled={isUpgrading}
+      >
+        {isUpgrading ? "Redirecting..." : "Go Unlimited"}
+      </Button>
+    </div>
+  );
+}
+
 export function BillingSection({ companyId }: { companyId: string }) {
   const subscriptionQuery = useQuery({
     queryKey: queryKeys.billing.subscription(companyId),
@@ -89,6 +135,11 @@ export function BillingSection({ companyId }: { companyId: string }) {
   const plansQuery = useQuery({
     queryKey: queryKeys.billing.plans,
     queryFn: () => billingApi.listPlans(),
+  });
+
+  const accountSubscriptionQuery = useQuery({
+    queryKey: queryKeys.billing.accountSubscription,
+    queryFn: () => billingApi.getAccountSubscription(),
   });
 
   const checkoutMutation = useMutation({
@@ -105,23 +156,82 @@ export function BillingSection({ companyId }: { companyId: string }) {
     },
   });
 
-  if (subscriptionQuery.isLoading || plansQuery.isLoading) {
+  const accountCheckoutMutation = useMutation({
+    mutationFn: (planId: string) => billingApi.createAccountCheckoutSession(planId),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+
+  const accountPortalMutation = useMutation({
+    mutationFn: () => billingApi.createAccountPortalSession(),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+
+  if (subscriptionQuery.isLoading || plansQuery.isLoading || accountSubscriptionQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading billing info...</div>;
   }
 
   const subscription = subscriptionQuery.data;
   const plans = plansQuery.data ?? [];
+  const accountSubscription = accountSubscriptionQuery.data;
   const currentPlanId = subscription?.planId ?? "free";
   const isPaid = subscription && subscription.status === "active";
   const isTrialing = subscription?.status === "trialing";
   const isTrialExpired = subscription?.status === "trial_expired";
   const isCanceled = subscription?.status === "canceled";
   const isPastDue = subscription?.status === "past_due";
+  const isCoveredByAccount = subscription?.status === "covered_by_account";
+  const hasActiveAccountSub = accountSubscription && (accountSubscription.status === "active" || accountSubscription.status === "past_due");
   const daysLeft = trialDaysRemaining(subscription?.trialEndsAt);
-  const showUpgrade = !isPaid && !isPastDue;
+  const showUpgrade = !isPaid && !isPastDue && !isCoveredByAccount && !hasActiveAccountSub;
 
   return (
     <div className="space-y-4">
+      {/* Account-level Unlimited banner */}
+      {hasActiveAccountSub && (
+        <div className="rounded-md border border-purple-300 bg-purple-50 dark:border-purple-800 dark:bg-purple-950/30 px-4 py-3">
+          <p className="text-sm font-medium text-purple-800 dark:text-purple-300">
+            Unlimited plan — all your companies are covered under one subscription
+          </p>
+          {accountSubscription.currentPeriodEnd && (
+            <p className="text-xs text-purple-700 dark:text-purple-400 mt-1">
+              {accountSubscription.cancelAtPeriodEnd
+                ? `Cancels on ${new Date(accountSubscription.currentPeriodEnd).toLocaleDateString()}`
+                : `Renews on ${new Date(accountSubscription.currentPeriodEnd).toLocaleDateString()}`}
+            </p>
+          )}
+          <div className="flex items-center gap-2 mt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => accountPortalMutation.mutate()}
+              disabled={accountPortalMutation.isPending}
+            >
+              {accountPortalMutation.isPending ? "Opening..." : "Manage account billing"}
+            </Button>
+            {accountPortalMutation.isError && (
+              <span className="text-xs text-destructive">
+                {accountPortalMutation.error instanceof Error
+                  ? accountPortalMutation.error.message
+                  : "Failed to open billing portal"}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Covered by account banner (when company status is covered_by_account) */}
+      {isCoveredByAccount && !hasActiveAccountSub && (
+        <div className="rounded-md border border-purple-300 bg-purple-50 dark:border-purple-800 dark:bg-purple-950/30 px-4 py-3">
+          <p className="text-sm font-medium text-purple-800 dark:text-purple-300">
+            This company is covered by your Unlimited plan
+          </p>
+        </div>
+      )}
+
       {/* Trial expired banner */}
       {isTrialExpired && (
         <div className="rounded-md border border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/30 px-4 py-3">
@@ -162,7 +272,9 @@ export function BillingSection({ companyId }: { companyId: string }) {
       <div className="flex items-center gap-2">
         <span className="text-sm text-muted-foreground">Current plan:</span>
         <span className="text-sm font-medium">
-          {subscription?.plan?.name ?? "Free"}
+          {isCoveredByAccount
+            ? "Covered by your Unlimited plan"
+            : subscription?.plan?.name ?? "Free"}
         </span>
         <StatusBadge status={subscription?.status ?? "free"} />
       </div>
@@ -176,8 +288,8 @@ export function BillingSection({ companyId }: { companyId: string }) {
         </div>
       )}
 
-      {/* Renewal / cancellation info for paid plans */}
-      {isPaid && subscription?.currentPeriodEnd && (
+      {/* Renewal / cancellation info for paid company plans */}
+      {isPaid && subscription?.currentPeriodEnd && !hasActiveAccountSub && (
         <div className="text-xs text-muted-foreground">
           {subscription.cancelAtPeriodEnd
             ? `Cancels on ${new Date(subscription.currentPeriodEnd).toLocaleDateString()}`
@@ -185,8 +297,8 @@ export function BillingSection({ companyId }: { companyId: string }) {
         </div>
       )}
 
-      {/* Manage billing for paid or past_due plans */}
-      {(isPaid || isPastDue) && (
+      {/* Manage billing for paid or past_due company plans (only if not on account sub) */}
+      {(isPaid || isPastDue) && !hasActiveAccountSub && (
         <div className="flex items-center gap-2">
           <Button
             size="sm"
@@ -214,7 +326,7 @@ export function BillingSection({ companyId }: { companyId: string }) {
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {plans
-              .filter((plan) => plan.monthlyPriceCents > 0)
+              .filter((plan) => plan.monthlyPriceCents > 0 && plan.scope === "company")
               .map((plan) => (
                 <PlanCard
                   key={plan.id}
@@ -224,11 +336,28 @@ export function BillingSection({ companyId }: { companyId: string }) {
                   isUpgrading={checkoutMutation.isPending}
                 />
               ))}
+            {plans
+              .filter((plan) => plan.scope === "account")
+              .map((plan) => (
+                <AccountPlanCard
+                  key={plan.id}
+                  plan={plan}
+                  onUpgrade={() => accountCheckoutMutation.mutate(plan.id)}
+                  isUpgrading={accountCheckoutMutation.isPending}
+                />
+              ))}
           </div>
           {checkoutMutation.isError && (
             <span className="text-xs text-destructive">
               {checkoutMutation.error instanceof Error
                 ? checkoutMutation.error.message
+                : "Failed to start checkout"}
+            </span>
+          )}
+          {accountCheckoutMutation.isError && (
+            <span className="text-xs text-destructive">
+              {accountCheckoutMutation.error instanceof Error
+                ? accountCheckoutMutation.error.message
                 : "Failed to start checkout"}
             </span>
           )}
