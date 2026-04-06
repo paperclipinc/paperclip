@@ -601,9 +601,12 @@ export function OnboardingWizard() {
           }
         }
 
-        if (isLocalAdapter) {
-          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-          if (!result) return;
+        if (isLocalAdapter && !adapterEnvResult) {
+          const result = await runAdapterEnvironmentTest();
+          if (!result) {
+            setLoading(false);
+            return;
+          }
         }
       }
 
