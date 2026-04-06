@@ -63,6 +63,6 @@ export { pluginEntities } from "./plugin_entities.js";
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
-export { subscriptionPlans, companySubscriptions } from "./subscriptions.js";
+export { subscriptionPlans, companySubscriptions, accountSubscriptions } from "./subscriptions.js";
 export { connections } from "./connections.js";
 export { auditEvents } from "./audit_events.js";

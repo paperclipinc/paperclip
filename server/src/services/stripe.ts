@@ -4,13 +4,14 @@ import { eq, and, asc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companySubscriptions,
+  accountSubscriptions,
   subscriptionPlans,
   companies,
   companyMemberships,
   authUsers,
   agents,
 } from "@paperclipai/db";
-import type { SubscriptionPlan, CompanySubscription } from "@paperclipai/shared";
+import type { SubscriptionPlan, CompanySubscription, AccountSubscription } from "@paperclipai/shared";
 
 let _stripe: Stripe | null = null;
 
@@ -122,6 +123,7 @@ function toPlanDto(row: typeof subscriptionPlans.$inferSelect): SubscriptionPlan
     maxMonthlyCostCents: row.maxMonthlyCostCents,
     features: parseFeatures(row.features),
     sortOrder: row.sortOrder,
+    scope: row.scope as "company" | "account",
   };
 }
 
@@ -289,38 +291,264 @@ export function stripeService(db: Db) {
       return session.url;
     },
 
+    async getAccountSubscription(userId: string): Promise<AccountSubscription | null> {
+      const rows = await db
+        .select({ sub: accountSubscriptions, plan: subscriptionPlans })
+        .from(accountSubscriptions)
+        .innerJoin(subscriptionPlans, eq(accountSubscriptions.planId, subscriptionPlans.id))
+        .where(eq(accountSubscriptions.userId, userId));
+
+      const row = rows[0];
+      if (!row) return null;
+
+      return {
+        id: row.sub.id,
+        userId: row.sub.userId,
+        planId: row.sub.planId,
+        plan: toPlanDto(row.plan),
+        status: row.sub.status as AccountSubscription["status"],
+        currentPeriodStart: row.sub.currentPeriodStart?.toISOString() ?? null,
+        currentPeriodEnd: row.sub.currentPeriodEnd?.toISOString() ?? null,
+        cancelAtPeriodEnd: row.sub.cancelAtPeriodEnd,
+      };
+    },
+
+    async getOrCreateAccountCustomer(userId: string, userName: string, userEmail: string): Promise<string> {
+      const existing = await db
+        .select({ stripeCustomerId: accountSubscriptions.stripeCustomerId })
+        .from(accountSubscriptions)
+        .where(eq(accountSubscriptions.userId, userId))
+        .then((rows) => rows[0] ?? null);
+
+      if (existing?.stripeCustomerId) return existing.stripeCustomerId;
+
+      const stripe = getStripe();
+      if (!stripe) throw new Error("Stripe is not configured");
+
+      const customer = await stripe.customers.create({ name: userName, email: userEmail });
+
+      const existingRow = await db
+        .select({ id: accountSubscriptions.id })
+        .from(accountSubscriptions)
+        .where(eq(accountSubscriptions.userId, userId))
+        .then((rows) => rows[0] ?? null);
+
+      if (existingRow) {
+        await db
+          .update(accountSubscriptions)
+          .set({ stripeCustomerId: customer.id, updatedAt: new Date() })
+          .where(eq(accountSubscriptions.userId, userId));
+      } else {
+        await db.insert(accountSubscriptions).values({
+          userId,
+          planId: "unlimited",
+          stripeCustomerId: customer.id,
+          status: "free",
+        });
+      }
+
+      return customer.id;
+    },
+
+    async createAccountCheckoutSession(
+      userId: string,
+      planId: string,
+      successUrl: string,
+      cancelUrl: string,
+    ): Promise<string> {
+      const stripe = getStripe();
+      if (!stripe) throw new Error("Stripe is not configured");
+
+      const plan = await db
+        .select()
+        .from(subscriptionPlans)
+        .where(and(eq(subscriptionPlans.id, planId), eq(subscriptionPlans.active, true), eq(subscriptionPlans.scope, "account")))
+        .then((rows) => rows[0] ?? null);
+
+      if (!plan || !plan.stripePriceId) {
+        throw new Error("Plan not found or not available for purchase");
+      }
+
+      const user = await db
+        .select({ name: authUsers.name, email: authUsers.email })
+        .from(authUsers)
+        .where(eq(authUsers.id, userId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!user) throw new Error("User not found");
+
+      const customerId = await this.getOrCreateAccountCustomer(userId, user.name, user.email);
+
+      const session = await stripe.checkout.sessions.create({
+        customer: customerId,
+        mode: "subscription",
+        line_items: [{ price: plan.stripePriceId, quantity: 1 }],
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          userId,
+          planId,
+          subscriptionScope: "account",
+        },
+      });
+
+      if (!session.url) throw new Error("Failed to create checkout session");
+      return session.url;
+    },
+
+    async createAccountPortalSession(userId: string, returnUrl: string): Promise<string> {
+      const stripe = getStripe();
+      if (!stripe) throw new Error("Stripe is not configured");
+
+      const sub = await db
+        .select({ stripeCustomerId: accountSubscriptions.stripeCustomerId })
+        .from(accountSubscriptions)
+        .where(eq(accountSubscriptions.userId, userId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!sub?.stripeCustomerId) {
+        throw new Error("No account billing found");
+      }
+
+      const session = await stripe.billingPortal.sessions.create({
+        customer: sub.stripeCustomerId,
+        return_url: returnUrl,
+      });
+
+      return session.url;
+    },
+
+    async upgradeToUnlimited(userId: string): Promise<void> {
+      const stripe = getStripe();
+
+      // Find all companies where this user is a member
+      const memberCompanies = await db
+        .select({ companyId: companyMemberships.companyId })
+        .from(companyMemberships)
+        .where(and(eq(companyMemberships.principalId, userId), eq(companyMemberships.principalType, "user")));
+
+      for (const { companyId } of memberCompanies) {
+        const sub = await db
+          .select({
+            stripeSubscriptionId: companySubscriptions.stripeSubscriptionId,
+            status: companySubscriptions.status,
+          })
+          .from(companySubscriptions)
+          .where(eq(companySubscriptions.companyId, companyId))
+          .then((rows) => rows[0] ?? null);
+
+        if (!sub) continue;
+
+        // Cancel active Stripe subscription with proration
+        if (sub.stripeSubscriptionId && stripe && sub.status !== "canceled" && sub.status !== "covered_by_account") {
+          try {
+            await stripe.subscriptions.cancel(sub.stripeSubscriptionId, { prorate: true });
+          } catch (err) {
+            console.warn(`[stripe] Failed to cancel company subscription for ${companyId}: ${err}`);
+          }
+        }
+
+        // Mark company subscription as covered by account
+        await db
+          .update(companySubscriptions)
+          .set({
+            status: "covered_by_account",
+            stripeSubscriptionId: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(companySubscriptions.companyId, companyId));
+
+        // Resume any system-paused agents in this company
+        await resumeSystemPausedAgents(db, companyId);
+      }
+
+      console.info(`[stripe] Upgraded user ${userId} to Unlimited, covered ${memberCompanies.length} company/companies`);
+    },
+
     async handleWebhookEvent(event: Stripe.Event): Promise<void> {
       switch (event.type) {
         case "checkout.session.completed": {
           const session = event.data.object as Stripe.Checkout.Session;
-          const companyId = session.metadata?.companyId;
-          const planId = session.metadata?.planId;
-          if (!companyId || !planId) break;
+          const subscriptionScope = session.metadata?.subscriptionScope;
 
-          const stripeSubscriptionId =
-            typeof session.subscription === "string"
-              ? session.subscription
-              : session.subscription?.id ?? null;
+          if (subscriptionScope === "account") {
+            // Account-level checkout (Unlimited plan)
+            const userId = session.metadata?.userId;
+            const planId = session.metadata?.planId;
+            if (!userId || !planId) break;
 
-          await db
-            .update(companySubscriptions)
-            .set({
-              planId,
-              stripeSubscriptionId,
-              status: "active",
-              trialEndsAt: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(companySubscriptions.companyId, companyId));
+            const stripeSubscriptionId =
+              typeof session.subscription === "string"
+                ? session.subscription
+                : session.subscription?.id ?? null;
 
-          // Resume agents that were paused by the system (subscription expiry)
-          await resumeSystemPausedAgents(db, companyId);
+            await db
+              .update(accountSubscriptions)
+              .set({
+                planId,
+                stripeSubscriptionId,
+                status: "active",
+                updatedAt: new Date(),
+              })
+              .where(eq(accountSubscriptions.userId, userId));
+
+            // Cancel individual company subscriptions
+            await this.upgradeToUnlimited(userId);
+          } else {
+            // Company-level checkout (Pro plan)
+            const companyId = session.metadata?.companyId;
+            const planId = session.metadata?.planId;
+            if (!companyId || !planId) break;
+
+            const stripeSubscriptionId =
+              typeof session.subscription === "string"
+                ? session.subscription
+                : session.subscription?.id ?? null;
+
+            await db
+              .update(companySubscriptions)
+              .set({
+                planId,
+                stripeSubscriptionId,
+                status: "active",
+                trialEndsAt: null,
+                updatedAt: new Date(),
+              })
+              .where(eq(companySubscriptions.companyId, companyId));
+
+            await resumeSystemPausedAgents(db, companyId);
+          }
           break;
         }
 
         case "customer.subscription.updated": {
           const sub = event.data.object as Stripe.Subscription;
           const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+
+          // Check if this is an account-level subscription
+          const accountSubUpdated = await db
+            .select({ userId: accountSubscriptions.userId })
+            .from(accountSubscriptions)
+            .where(eq(accountSubscriptions.stripeCustomerId, customerId))
+            .then((rows) => rows[0] ?? null);
+
+          if (accountSubUpdated) {
+            // Update account subscription instead
+            await db
+              .update(accountSubscriptions)
+              .set({
+                status: sub.status === "active" ? "active"
+                  : sub.status === "past_due" ? "past_due"
+                  : sub.status === "canceled" ? "canceled"
+                  : sub.status,
+                currentPeriodStart: new Date(sub.current_period_start * 1000),
+                currentPeriodEnd: new Date(sub.current_period_end * 1000),
+                cancelAtPeriodEnd: sub.cancel_at_period_end,
+                updatedAt: new Date(),
+              })
+              .where(eq(accountSubscriptions.stripeCustomerId, customerId));
+            break;
+          }
 
           await db
             .update(companySubscriptions)
@@ -342,6 +570,43 @@ export function stripeService(db: Db) {
         case "customer.subscription.deleted": {
           const sub = event.data.object as Stripe.Subscription;
           const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+
+          // Check if this is an account-level subscription
+          const accountSubDeleted = await db
+            .select({ userId: accountSubscriptions.userId })
+            .from(accountSubscriptions)
+            .where(eq(accountSubscriptions.stripeCustomerId, customerId))
+            .then((rows) => rows[0] ?? null);
+
+          if (accountSubDeleted) {
+            // Update account subscription
+            await db
+              .update(accountSubscriptions)
+              .set({
+                status: "canceled",
+                stripeSubscriptionId: null,
+                cancelAtPeriodEnd: false,
+                updatedAt: new Date(),
+              })
+              .where(eq(accountSubscriptions.stripeCustomerId, customerId));
+
+            // Revert all covered companies back to trial_expired
+            const coveredCompanies = await db
+              .select({ companyId: companyMemberships.companyId })
+              .from(companyMemberships)
+              .where(and(eq(companyMemberships.principalId, accountSubDeleted.userId), eq(companyMemberships.principalType, "user")));
+
+            for (const { companyId } of coveredCompanies) {
+              await db
+                .update(companySubscriptions)
+                .set({
+                  status: "trial_expired",
+                  updatedAt: new Date(),
+                })
+                .where(and(eq(companySubscriptions.companyId, companyId), eq(companySubscriptions.status, "covered_by_account")));
+            }
+            break;
+          }
 
           // Keep the current plan (don't revert to "free" in cloud mode)
           // so the user can easily resubscribe from the billing page.
@@ -369,6 +634,25 @@ export function stripeService(db: Db) {
           const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
           if (!customerId) break;
 
+          // Check if this is an account-level subscription
+          const accountSubFailed = await db
+            .select({ userId: accountSubscriptions.userId })
+            .from(accountSubscriptions)
+            .where(eq(accountSubscriptions.stripeCustomerId, customerId))
+            .then((rows) => rows[0] ?? null);
+
+          if (accountSubFailed) {
+            // Update account subscription instead
+            await db
+              .update(accountSubscriptions)
+              .set({
+                status: "past_due",
+                updatedAt: new Date(),
+              })
+              .where(eq(accountSubscriptions.stripeCustomerId, customerId));
+            break;
+          }
+
           await db
             .update(companySubscriptions)
             .set({
@@ -390,6 +674,35 @@ export function stripeService(db: Db) {
           const invoice = event.data.object as Stripe.Invoice;
           const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
           if (!customerId) break;
+
+          // Check if this is an account-level subscription
+          const accountSubPaid = await db
+            .select({ userId: accountSubscriptions.userId })
+            .from(accountSubscriptions)
+            .where(eq(accountSubscriptions.stripeCustomerId, customerId))
+            .then((rows) => rows[0] ?? null);
+
+          if (accountSubPaid) {
+            // Update account subscription instead
+            await db
+              .update(accountSubscriptions)
+              .set({
+                status: "active",
+                updatedAt: new Date(),
+              })
+              .where(eq(accountSubscriptions.stripeCustomerId, customerId));
+
+            // Resume agents in ALL companies the user is a member of
+            const memberCompanies = await db
+              .select({ companyId: companyMemberships.companyId })
+              .from(companyMemberships)
+              .where(and(eq(companyMemberships.principalId, accountSubPaid.userId), eq(companyMemberships.principalType, "user")));
+
+            for (const { companyId } of memberCompanies) {
+              await resumeSystemPausedAgents(db, companyId);
+            }
+            break;
+          }
 
           await db
             .update(companySubscriptions)

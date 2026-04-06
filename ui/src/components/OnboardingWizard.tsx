@@ -184,6 +184,17 @@ export function OnboardingWizard() {
     },
   });
 
+  const inlineAccountCheckoutMutation = useMutation({
+    mutationFn: (planId: string) =>
+      billingApi.createAccountCheckoutSession(planId, {
+        successPath: "/onboarding?billing=success",
+        cancelPath: "/onboarding?billing=canceled",
+      }),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+
   // Step 3 (task + launch)
   const [taskTitle, setTaskTitle] = useState(
     "Hire your first engineer and create a hiring plan"
@@ -1733,30 +1744,56 @@ export function OnboardingWizard() {
                     // Check if this company needs payment before launch.
                     // The eligibility query tells us if the user has already
                     // used a trial — if so, this new company needs a subscription.
-                    const needsPayment = eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany;
-                    const paidPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0);
+                    // Users with an Unlimited account plan skip the payment gate.
+                    const hasUnlimited = eligibilityQuery.data?.hasUnlimited === true;
+                    const needsPayment = eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && !hasUnlimited;
+                    const companyPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0 && p.scope === "company");
+                    const accountPlan = plansQuery.data?.find((p) => p.scope === "account");
 
-                    if (needsPayment && paidPlan && createdCompanyId) {
+                    if (needsPayment && createdCompanyId) {
                       return (
-                        <Button
-                          size="sm"
-                          disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending}
-                          onClick={() => {
-                            inlineCheckoutMutation.mutate({
-                              companyId: createdCompanyId,
-                              planId: paidPlan.id,
-                            });
-                          }}
-                        >
-                          {inlineCheckoutMutation.isPending ? (
-                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                          ) : (
-                            <CreditCard className="h-3.5 w-3.5 mr-1" />
+                        <div className="flex items-center gap-2">
+                          {companyPlan && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
+                              onClick={() => {
+                                inlineCheckoutMutation.mutate({
+                                  companyId: createdCompanyId,
+                                  planId: companyPlan.id,
+                                });
+                              }}
+                            >
+                              {inlineCheckoutMutation.isPending ? (
+                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                              ) : (
+                                <CreditCard className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              {inlineCheckoutMutation.isPending
+                                ? "Redirecting..."
+                                : `Subscribe Pro — $${(companyPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
+                            </Button>
                           )}
-                          {inlineCheckoutMutation.isPending
-                            ? "Redirecting..."
-                            : `Subscribe & Launch — $${(paidPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
-                        </Button>
+                          {accountPlan && (
+                            <Button
+                              size="sm"
+                              disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
+                              onClick={() => {
+                                inlineAccountCheckoutMutation.mutate(accountPlan.id);
+                              }}
+                            >
+                              {inlineAccountCheckoutMutation.isPending ? (
+                                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3.5 w-3.5 mr-1" />
+                              )}
+                              {inlineAccountCheckoutMutation.isPending
+                                ? "Redirecting..."
+                                : `Go Unlimited — $${(accountPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
+                            </Button>
+                          )}
+                        </div>
                       );
                     }
 

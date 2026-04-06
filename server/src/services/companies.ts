@@ -203,9 +203,9 @@ export function companyService(db: Db) {
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
 
-      // Provision subscription: cloud (trial) or self-hosted (free)
+      // Provision subscription: pro (trial) or self-hosted (free)
       const isCloud = !!process.env.STRIPE_SECRET_KEY?.trim();
-      const planId = isCloud ? "cloud" : "free";
+      const planId = isCloud ? "pro" : "free";
 
       // Only provision if the plan exists in the database
       const plan = await db
