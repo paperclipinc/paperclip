@@ -435,6 +435,13 @@
       "when": 1774994400000,
       "tag": "0061_subscription_trial",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775609400000,
+      "tag": "0054_account_subscriptions",
+      "breakpoints": true
     }
   ]
 }
