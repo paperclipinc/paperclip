@@ -548,15 +548,7 @@ export function OnboardingWizard() {
         }
       }
 
-      // Check if trial was instantly expired (2nd+ company without subscription).
-      // If so, skip agent config and go straight to the payment step.
-      const sub = await billingApi.getSubscription(company.id);
-      if (sub && sub.status === "trial_expired") {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
-        setStep(3);
-      } else {
-        setStep(2);
-      }
+      setStep(2);
     } catch (err) {
       if (err instanceof ApiError && err.status === 402) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.billing.eligibility });
@@ -1619,28 +1611,13 @@ export function OnboardingWizard() {
                 <div key={3} className="animate-in fade-in slide-in-from-bottom-2 duration-300 space-y-5">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
-                      {eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && !eligibilityQuery.data.hasUnlimited ? (
-                        <CreditCard className="h-5 w-5 text-muted-foreground" />
-                      ) : (
-                        <Rocket className="h-5 w-5 text-muted-foreground" />
-                      )}
+                      <Rocket className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      {eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && !eligibilityQuery.data.hasUnlimited ? (
-                        <>
-                          <h3 className="font-medium">Subscribe to continue</h3>
-                          <p className="text-xs text-muted-foreground">
-                            Your free trial has been used. Choose a plan to activate this company.
-                          </p>
-                        </>
-                      ) : (
-                        <>
-                          <h3 className="font-medium">Give it something to do</h3>
-                          <p className="text-xs text-muted-foreground">
-                            Define a first task, then launch your company.
-                          </p>
-                        </>
-                      )}
+                      <h3 className="font-medium">Give it something to do</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Define a first task, then launch your company.
+                      </p>
                     </div>
                   </div>
                   <div>
@@ -1767,10 +1744,6 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 3 && (() => {
-                    // Check if this company needs payment before launch.
-                    // The eligibility query tells us if the user has already
-                    // used a trial — if so, this new company needs a subscription.
-                    // Users with an Unlimited account plan skip the payment gate.
                     const hasUnlimited = eligibilityQuery.data?.hasUnlimited === true;
                     const needsPayment = eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && !hasUnlimited;
                     const companyPlan = plansQuery.data?.find((p) => p.monthlyPriceCents > 0 && p.scope === "company");
@@ -1782,8 +1755,7 @@ export function OnboardingWizard() {
                           {companyPlan && (
                             <Button
                               size="sm"
-                              variant="outline"
-                              disabled={loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
+                              disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
                               onClick={() => {
                                 inlineCheckoutMutation.mutate({
                                   companyId: createdCompanyId,
@@ -1798,13 +1770,14 @@ export function OnboardingWizard() {
                               )}
                               {inlineCheckoutMutation.isPending
                                 ? "Redirecting..."
-                                : `Subscribe Pro — $${(companyPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
+                                : `Subscribe & Launch — $${(companyPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
                             </Button>
                           )}
                           {accountPlan && (
                             <Button
                               size="sm"
-                              disabled={loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
+                              variant="outline"
+                              disabled={!taskTitle.trim() || loading || inlineCheckoutMutation.isPending || inlineAccountCheckoutMutation.isPending}
                               onClick={() => {
                                 inlineAccountCheckoutMutation.mutate(accountPlan.id);
                               }}
@@ -1816,7 +1789,7 @@ export function OnboardingWizard() {
                               )}
                               {inlineAccountCheckoutMutation.isPending
                                 ? "Redirecting..."
-                                : `Go Unlimited — $${(accountPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
+                                : `Unlimited — $${(accountPlan.monthlyPriceCents / 100).toFixed(0)}/mo`}
                             </Button>
                           )}
                         </div>
