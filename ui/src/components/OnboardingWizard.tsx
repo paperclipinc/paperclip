@@ -816,6 +816,8 @@ export function OnboardingWizard() {
       open={effectiveOnboardingOpen}
       onOpenChange={(open) => {
         if (!open) {
+          // Don't allow dismissing during the payment gate
+          if (eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && step === 3) return;
           setRouteDismissed(true);
           handleClose();
         }
@@ -827,9 +829,9 @@ export function OnboardingWizard() {
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
         <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Top-left: X for returning users, sign-out for everyone */}
+          {/* Top-left: X for returning users (hidden during payment gate), sign-out for everyone */}
           <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-            {companies.length > 0 && (
+            {companies.length > 0 && !(eligibilityQuery.data && !eligibilityQuery.data.canCreateCompany && step === 3) && (
               <button
                 onClick={handleClose}
                 className="rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
