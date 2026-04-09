@@ -40,11 +40,10 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
-import { CommentThread } from "../components/CommentThread";
+import { IssueChatThread } from "../components/IssueChatThread";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssueProperties } from "../components/IssueProperties";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
-import { LiveRunWidget } from "../components/LiveRunWidget";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal } from "../components/ImageGalleryModal";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -80,6 +79,7 @@ import {
   type ActivityEvent,
   type Agent,
   type FeedbackVote,
+  type FeedbackVoteValue,
   type Issue,
   type IssueAttachment,
   type IssueComment,
@@ -93,6 +93,11 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   queueState?: "queued";
   queueTargetRunId?: string | null;
 };
+
+const ACTIVE_ISSUE_RUN_POLL_INTERVAL_MS = 3000;
+const IDLE_ISSUE_RUN_POLL_INTERVAL_MS = 30000;
+const ACTIVE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 5000;
+const IDLE_ISSUE_TIMELINE_POLL_INTERVAL_MS = 30000;
 
 const ACTION_LABELS: Record<string, string> = {
   "issue.created": "created the issue",
@@ -300,7 +305,7 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState("comments");
+  const [detailTab, setDetailTab] = useState("chat");
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
     action: "approve" | "reject";
@@ -339,13 +344,6 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
 
-  const { data: linkedRuns } = useQuery({
-    queryKey: queryKeys.issues.runs(issueId!),
-    queryFn: () => activityApi.runsForIssue(issueId!),
-    enabled: !!issueId,
-    refetchInterval: 5000,
-  });
-
   const { data: linkedApprovals } = useQuery({
     queryKey: queryKeys.issues.approvals(issueId!),
     queryFn: () => issuesApi.listApprovals(issueId!),
@@ -362,17 +360,33 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: (query) => {
+      const data = query.state.data as Array<unknown> | undefined;
+      return data && data.length > 0
+        ? ACTIVE_ISSUE_RUN_POLL_INTERVAL_MS
+        : IDLE_ISSUE_RUN_POLL_INTERVAL_MS;
+    },
   });
 
   const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled: !!issueId,
-    refetchInterval: 3000,
+    refetchInterval: (query) =>
+      query.state.data
+        ? ACTIVE_ISSUE_RUN_POLL_INTERVAL_MS
+        : IDLE_ISSUE_RUN_POLL_INTERVAL_MS,
   });
 
   const hasLiveRuns = (liveRuns ?? []).length > 0 || !!activeRun;
+  const { data: linkedRuns } = useQuery({
+    queryKey: queryKeys.issues.runs(issueId!),
+    queryFn: () => activityApi.runsForIssue(issueId!),
+    enabled: !!issueId,
+    refetchInterval: hasLiveRuns
+      ? ACTIVE_ISSUE_TIMELINE_POLL_INTERVAL_MS
+      : IDLE_ISSUE_TIMELINE_POLL_INTERVAL_MS,
+  });
   const runningIssueRun = useMemo(
     () => (
       activeRun?.status === "running"
@@ -610,15 +624,6 @@ export function IssueDetail() {
     });
   }, [activity, threadComments, linkedRuns, runningIssueRun]);
 
-  const queuedComments = useMemo(
-    () => commentsWithRunMeta.filter((comment) => comment.queueState === "queued"),
-    [commentsWithRunMeta],
-  );
-
-  const timelineComments = useMemo(
-    () => commentsWithRunMeta.filter((comment) => comment.queueState !== "queued"),
-    [commentsWithRunMeta],
-  );
   const timelineEvents = useMemo(
     () => extractIssueTimelineEvents(activity),
     [activity],
@@ -1042,6 +1047,53 @@ export function IssueDetail() {
       });
     },
   });
+
+  const handleInterruptQueued = useCallback(
+    async (runId: string) => {
+      await interruptQueuedComment.mutateAsync(runId);
+    },
+    [interruptQueuedComment.mutateAsync],
+  );
+
+  const handleCommentImageUpload = useCallback(
+    async (file: File) => {
+      const attachment = await uploadAttachment.mutateAsync(file);
+      return attachment.contentPath;
+    },
+    [uploadAttachment.mutateAsync],
+  );
+
+  const handleCommentAttachImage = useCallback(
+    async (file: File) => {
+      await uploadAttachment.mutateAsync(file);
+    },
+    [uploadAttachment.mutateAsync],
+  );
+
+  const handleCommentAdd = useCallback(
+    async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
+      if (reassignment) {
+        await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+        return;
+      }
+      await addComment.mutateAsync({ body, reopen });
+    },
+    [addComment.mutateAsync, addCommentAndReassign.mutateAsync],
+  );
+
+  const handleCommentVote = useCallback(
+    async (commentId: string, vote: FeedbackVoteValue, options?: { reason?: string; allowSharing?: boolean }) => {
+      await feedbackVoteMutation.mutateAsync({
+        targetType: "issue_comment",
+        targetId: commentId,
+        vote,
+        reason: options?.reason,
+        allowSharing: options?.allowSharing,
+        sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+      });
+    },
+    [feedbackVoteMutation.mutateAsync, feedbackDataSharingPreference],
+  );
 
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
@@ -1713,9 +1765,9 @@ export function IssueDetail() {
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
         <TabsList variant="line" className="w-full justify-start gap-1">
-          <TabsTrigger value="comments" className="gap-1.5">
+          <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
-            Comments
+            Chat
           </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
@@ -1728,25 +1780,18 @@ export function IssueDetail() {
           ))}
         </TabsList>
 
-        <TabsContent value="comments">
-          <CommentThread
-            comments={timelineComments}
-            queuedComments={queuedComments}
-            linkedApprovals={linkedApprovals}
+        <TabsContent value="chat">
+          <IssueChatThread
+            comments={commentsWithRunMeta}
             feedbackVotes={feedbackVotes}
             feedbackDataSharingPreference={feedbackDataSharingPreference}
             feedbackTermsUrl={FEEDBACK_TERMS_URL}
             linkedRuns={timelineRuns}
             timelineEvents={timelineEvents}
+            liveRuns={liveRuns}
+            activeRun={activeRun}
             companyId={issue.companyId}
             projectId={issue.projectId}
-            onApproveApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "approve" });
-            }}
-            onRejectApproval={async (approvalId) => {
-              await approvalDecision.mutateAsync({ approvalId, action: "reject" });
-            }}
-            pendingApprovalAction={pendingApprovalAction}
             issueStatus={issue.status}
             agentMap={agentMap}
             currentUserId={currentUserId}
@@ -1756,36 +1801,18 @@ export function IssueDetail() {
             currentAssigneeValue={actualAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentionOptions}
-            onInterruptQueued={async (runId) => {
-              await interruptQueuedComment.mutateAsync(runId);
-            }}
-            interruptingQueuedRunId={interruptQueuedComment.isPending ? runningIssueRun?.id ?? null : null}
+            onInterruptQueued={handleInterruptQueued}
+            interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
             composerDisabledReason={commentComposerDisabledReason}
-            onVote={async (commentId, vote, options) => {
-              await feedbackVoteMutation.mutateAsync({
-                targetType: "issue_comment",
-                targetId: commentId,
-                vote,
-                reason: options?.reason,
-                allowSharing: options?.allowSharing,
-                sharingPreferenceAtSubmit: feedbackDataSharingPreference,
-              });
-            }}
-            onAdd={async (body, reopen, reassignment) => {
-              if (reassignment) {
-                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
-                return;
-              }
-              await addComment.mutateAsync({ body, reopen });
-            }}
-            imageUploadHandler={async (file) => {
-              const attachment = await uploadAttachment.mutateAsync(file);
-              return attachment.contentPath;
-            }}
-            onAttachImage={async (file) => {
-              await uploadAttachment.mutateAsync(file);
-            }}
-            liveRunSlot={<LiveRunWidget issueId={issueId!} companyId={issue.companyId} />}
+            onVote={handleCommentVote}
+            onAdd={handleCommentAdd}
+            imageUploadHandler={handleCommentImageUpload}
+            onAttachImage={handleCommentAttachImage}
+            onCancelRun={runningIssueRun
+              ? async () => {
+                  await interruptQueuedComment.mutateAsync(runningIssueRun.id);
+                }
+              : undefined}
           />
         </TabsContent>
 

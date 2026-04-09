@@ -1,18 +1,20 @@
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
+import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime } from "../lib/utils";
 import { ExternalLink, Square } from "lucide-react";
 import { Identity } from "./Identity";
+import { RunChatSurface } from "./RunChatSurface";
 import { StatusBadge } from "./StatusBadge";
-import { RunTranscriptView } from "./transcript/RunTranscriptView";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
 interface LiveRunWidgetProps {
   issueId: string;
   companyId?: string | null;
+  liveRunsData?: LiveRunForIssue[];
+  activeRunData?: ActiveRunForIssue | null;
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -24,23 +26,33 @@ function isRunActive(status: string): boolean {
   return status === "queued" || status === "running";
 }
 
-export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
+export function LiveRunWidget({
+  issueId,
+  companyId,
+  liveRunsData,
+  activeRunData,
+}: LiveRunWidgetProps) {
   const queryClient = useQueryClient();
   const [cancellingRunIds, setCancellingRunIds] = useState(new Set<string>());
+  const shouldFetchLiveRuns = liveRunsData === undefined;
+  const shouldFetchActiveRun = activeRunData === undefined;
 
-  const { data: liveRuns } = useQuery({
+  const { data: fetchedLiveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
-    enabled: !!issueId,
+    enabled: !!issueId && shouldFetchLiveRuns,
     refetchInterval: 3000,
   });
 
-  const { data: activeRun } = useQuery({
+  const { data: fetchedActiveRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
-    enabled: !!issueId,
+    enabled: !!issueId && shouldFetchActiveRun,
     refetchInterval: 3000,
   });
+
+  const liveRuns = liveRunsData ?? fetchedLiveRuns;
+  const activeRun = activeRunData ?? fetchedActiveRun;
 
   const runs = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -93,7 +105,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
           Live Runs
         </div>
         <div className="mt-1 text-xs text-muted-foreground">
-          Streamed with the same transcript UI used on the full run detail page.
+          Uses the shared chat-style run surface from issue activity.
         </div>
       </div>
 
@@ -142,13 +154,11 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
               </div>
 
               <div className="max-h-[320px] overflow-y-auto pr-1">
-                <RunTranscriptView
-                  entries={transcript}
-                  density="compact"
-                  limit={8}
-                  streaming={isActive}
-                  collapseStdout
-                  emptyMessage={hasOutputForRun(run.id) ? "Waiting for transcript parsing..." : "Waiting for run output..."}
+                <RunChatSurface
+                  run={run}
+                  transcript={transcript}
+                  hasOutput={hasOutputForRun(run.id)}
+                  companyId={companyId}
                 />
               </div>
             </section>
