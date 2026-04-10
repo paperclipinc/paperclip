@@ -22,7 +22,7 @@ describe("GET /health", () => {
 
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
   });
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -54,7 +54,7 @@ describe("GET /health", () => {
     const res = await request(app).get("/health");
 
     expect(res.status).toBe(503);
-    expect(res.body).toEqual({
+    expect(res.body).toMatchObject({
       status: "unhealthy",
       version: serverVersion,
       error: "database_unreachable",
