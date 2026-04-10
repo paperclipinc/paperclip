@@ -35,6 +35,19 @@ export function healthRoutes(
   // Public, no auth required — includes deploymentMode so the UI knows
   // whether to redirect to /auth before the user has a session.
   router.get("/", async (_req, res) => {
+    if (db) {
+      try {
+        await db.execute(sql`SELECT 1`);
+      } catch {
+        res.status(503).json({
+          status: "unhealthy",
+          version: serverVersion,
+          error: "database_unreachable",
+        });
+        return;
+      }
+    }
+
     res.json({
       status: "ok",
       version: serverVersion,
