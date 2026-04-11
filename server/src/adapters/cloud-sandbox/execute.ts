@@ -247,17 +247,33 @@ export function resolveRuntimeCommand(runtime: string, model: string, stdinPromp
         "--permission-mode", "bypassPermissions",
         ...(model ? ["--model", model] : [])];
     case "codex":
-      return ["codex", "--full-auto",
-        ...(model ? ["--model", model] : [])];
+      // Non-interactive mode: `codex exec` is the headless subcommand and reads
+      // the prompt from stdin via the trailing `-`. Bare `codex` launches the
+      // REPL which requires a TTY and fails inside k8s exec with
+      // "Error: stdin is not a terminal". Matches the codex-local adapter
+      // (packages/adapters/codex-local/src/server/codex-args.ts).
+      return ["codex", "exec", "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        ...(model ? ["--model", model] : []),
+        "-"];
     case "opencode":
       // Go-based opencode: -p for non-interactive, -q to suppress spinner, -f json for output.
       if (stdinPrompt) {
         return ["opencode", "-p", shellEscape(stdinPrompt), "-f", "json", "-q"];
       }
       return ["opencode", "-p", shellEscape("Complete your assigned tasks."), "-f", "json", "-q"];
-    case "gemini":
-      return ["gemini",
-        ...(model ? ["--model", model] : [])];
+    case "gemini": {
+      // --prompt is non-interactive mode; --approval-mode yolo auto-approves
+      // tool calls (without it shell tools like run_shell_command are not
+      // registered); --sandbox=none disables gemini's own sandbox since the
+      // k8s pod already provides isolation. Matches the gemini-local adapter.
+      const promptArg = shellEscape(stdinPrompt ?? "Complete your assigned tasks.");
+      return ["gemini", "--output-format", "stream-json",
+        "--approval-mode", "yolo",
+        "--sandbox=none",
+        ...(model ? ["--model", model] : []),
+        "--prompt", promptArg];
+    }
     case "pi":
       return ["pi-pods",
         ...(model ? ["--model", model] : [])];

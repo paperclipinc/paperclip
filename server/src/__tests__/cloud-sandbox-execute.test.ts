@@ -189,9 +189,44 @@ describe("resolveRuntimeCommand", () => {
     ]);
   });
 
-  it("builds codex command with model", () => {
-    const cmd = resolveRuntimeCommand("codex", "gpt-4o");
-    expect(cmd).toEqual(["codex", "--full-auto", "--model", "gpt-4o"]);
+  it("builds codex command with the non-interactive exec subcommand and stdin marker", () => {
+    const cmd = resolveRuntimeCommand("codex", "gpt-5.4");
+    expect(cmd).toEqual([
+      "codex", "exec", "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model", "gpt-5.4",
+      "-",
+    ]);
+  });
+
+  it("omits --model from codex command when model is empty", () => {
+    const cmd = resolveRuntimeCommand("codex", "");
+    expect(cmd).toEqual([
+      "codex", "exec", "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-",
+    ]);
+  });
+
+  it("builds gemini command with non-interactive --prompt, yolo approvals and sandbox disabled", () => {
+    const cmd = resolveRuntimeCommand("gemini", "gemini-2.5-pro", "Do the work");
+    expect(cmd).toEqual([
+      "gemini", "--output-format", "stream-json",
+      "--approval-mode", "yolo",
+      "--sandbox=none",
+      "--model", "gemini-2.5-pro",
+      "--prompt", "'Do the work'",
+    ]);
+  });
+
+  it("falls back to a default gemini prompt when none is provided", () => {
+    const cmd = resolveRuntimeCommand("gemini", "", undefined);
+    expect(cmd).toEqual([
+      "gemini", "--output-format", "stream-json",
+      "--approval-mode", "yolo",
+      "--sandbox=none",
+      "--prompt", "'Complete your assigned tasks.'",
+    ]);
   });
 
   it("handles multi-line prompt with shell escaping", () => {
