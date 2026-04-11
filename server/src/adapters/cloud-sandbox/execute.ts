@@ -267,12 +267,20 @@ export function resolveRuntimeCommand(runtime: string, model: string, stdinPromp
       // tool calls (without it shell tools like run_shell_command are not
       // registered); --sandbox=none disables gemini's own sandbox since the
       // k8s pod already provides isolation. Matches the gemini-local adapter.
-      const promptArg = shellEscape(stdinPrompt ?? "Complete your assigned tasks.");
+      //
+      // We must use the `--prompt=<value>` form (single token with `=`) rather
+      // than `--prompt <value>` (two tokens). Gemini's yargs-based parser
+      // treats the argument after `--prompt` as a new flag if it starts with
+      // `-`, which breaks on any prompt whose first non-whitespace character
+      // is `-` (common in skill markdown: `- item one`). With `=`, yargs takes
+      // everything after `=` as the literal value regardless of its first
+      // character.
+      const promptBody = stdinPrompt ?? "Complete your assigned tasks.";
       return ["gemini", "--output-format", "stream-json",
         "--approval-mode", "yolo",
         "--sandbox=none",
         ...(model ? ["--model", model] : []),
-        "--prompt", promptArg];
+        `--prompt=${shellEscape(promptBody)}`];
     }
     case "pi":
       return ["pi-pods",
