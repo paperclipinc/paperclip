@@ -215,7 +215,7 @@ describe("resolveRuntimeCommand", () => {
       "--approval-mode", "yolo",
       "--sandbox=none",
       "--model", "gemini-2.5-pro",
-      "--prompt", "'Do the work'",
+      "--prompt='Do the work'",
     ]);
   });
 
@@ -225,8 +225,20 @@ describe("resolveRuntimeCommand", () => {
       "gemini", "--output-format", "stream-json",
       "--approval-mode", "yolo",
       "--sandbox=none",
-      "--prompt", "'Complete your assigned tasks.'",
+      "--prompt='Complete your assigned tasks.'",
     ]);
+  });
+
+  it("uses --prompt=value (not --prompt value) so prompts starting with a dash aren't misparsed as flags", () => {
+    // gemini's yargs-based CLI emits `Not enough arguments following: prompt`
+    // when the token after `--prompt` begins with `-` (e.g. markdown list
+    // items like `- item`). The `--prompt=` form forces the parser to take
+    // everything after `=` as the value regardless of its first character.
+    const cmd = resolveRuntimeCommand("gemini", "", "- bullet one\n- bullet two");
+    const promptArg = cmd[cmd.length - 1];
+    expect(promptArg.startsWith("--prompt=")).toBe(true);
+    // Sanity: no standalone `--prompt` token before the value.
+    expect(cmd).not.toContain("--prompt");
   });
 
   it("handles multi-line prompt with shell escaping", () => {
