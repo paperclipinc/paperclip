@@ -656,6 +656,16 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
     void heartbeat
       .reapOrphanedRuns()
       .then(() => heartbeat.resumeQueuedRuns())
+      .then(async () => {
+        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+        if (
+          reconciled.dispatchRequeued > 0 ||
+          reconciled.continuationRequeued > 0 ||
+          reconciled.escalated > 0
+        ) {
+          logger.warn({ ...reconciled }, "startup stranded-issue reconciliation changed assigned issue state");
+        }
+      })
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
@@ -688,6 +698,16 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
         await heartbeat
           .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
           .then(() => heartbeat.resumeQueuedRuns())
+          .then(async () => {
+            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+            if (
+              reconciled.dispatchRequeued > 0 ||
+              reconciled.continuationRequeued > 0 ||
+              reconciled.escalated > 0
+            ) {
+              logger.warn({ ...reconciled }, "periodic stranded-issue reconciliation changed assigned issue state");
+            }
+          })
           .catch((err) => {
             logger.error({ err }, "periodic heartbeat recovery failed");
           });

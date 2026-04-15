@@ -104,7 +104,7 @@ function UserMenu() {
 }
 
 export function BreadcrumbBar() {
-  const { breadcrumbs } = useBreadcrumbs();
+  const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
   const { toggleSidebar, isMobile } = useSidebar();
   const { selectedCompanyId, selectedCompany } = useCompany();
 
@@ -117,6 +117,14 @@ export function BreadcrumbBar() {
   );
 
   const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+
+  if (isMobile && mobileToolbar) {
+    return (
+      <div className="border-b border-border px-2 h-12 shrink-0 flex items-center">
+        {mobileToolbar}
+      </div>
+    );
+  }
 
   if (breadcrumbs.length === 0) {
     return (
