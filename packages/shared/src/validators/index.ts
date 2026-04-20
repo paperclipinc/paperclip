@@ -134,6 +134,7 @@ export {
 
 export {
   createIssueSchema,
+  createChildIssueSchema,
   createIssueLabelSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
@@ -148,6 +149,7 @@ export {
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   type CreateIssue,
+  type CreateChildIssue,
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueExecutionWorkspaceSettings,
@@ -265,6 +267,7 @@ export {
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
+  archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
@@ -282,6 +285,7 @@ export {
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
+  type ArchiveCompanyMember,
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
   type UpdateUserCompanyAccess,
