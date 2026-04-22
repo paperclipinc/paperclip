@@ -8,6 +8,7 @@ import {
   updateExecutionWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
@@ -357,14 +358,14 @@ export function executionWorkspaceRoutes(db: Db) {
           runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
         }
 
-        const currentDesiredState: "running" | "stopped" =
+        const currentDesiredState: WorkspaceRuntimeDesiredState =
           existing.config?.desiredState
           ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
             ? "running"
             : "stopped");
         const nextRuntimeState: {
-          desiredState: "running" | "stopped";
-          serviceStates: Record<string, "running" | "stopped"> | null | undefined;
+          desiredState: WorkspaceRuntimeDesiredState;
+          serviceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
         } = selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
           ? {
               desiredState: currentDesiredState,

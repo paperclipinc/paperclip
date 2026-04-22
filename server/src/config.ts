@@ -65,6 +65,7 @@ export interface Config {
   emailVerificationRequired: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
+  databaseMigrationUrl: string | undefined;
   embeddedPostgresDataDir: string;
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
@@ -339,6 +340,7 @@ export function loadConfig(): Config {
     emailVerificationRequired,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),

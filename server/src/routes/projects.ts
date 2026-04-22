@@ -10,6 +10,7 @@ import {
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, secretService, workspaceOperationService } from "../services/index.js";
@@ -488,14 +489,14 @@ export function projectRoutes(db: Db) {
           runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (workspace.runtimeServices?.length ?? 1) - 1) : 0;
         }
 
-        const currentDesiredState: "running" | "stopped" =
+        const currentDesiredState: WorkspaceRuntimeDesiredState =
           workspace.runtimeConfig?.desiredState
           ?? ((workspace.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
             ? "running"
             : "stopped");
         const nextRuntimeState: {
-          desiredState: "running" | "stopped";
-          serviceStates: Record<string, "running" | "stopped"> | null | undefined;
+          desiredState: WorkspaceRuntimeDesiredState;
+          serviceStates: WorkspaceRuntimeServiceStateMap | null | undefined;
         } = selectedRuntimeServiceId && (selectedServiceIndex === undefined || selectedServiceIndex === null)
           ? {
               desiredState: currentDesiredState,
