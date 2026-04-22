@@ -2035,6 +2035,37 @@ describe("realizeExecutionWorkspace", () => {
 });
 
 describe("ensureRuntimeServicesForRun", () => {
+  it("leaves manual runtime services untouched during agent runs", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-manual-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    const services = await ensureRuntimeServicesForRun({
+      runId: "run-manual",
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      issue: null,
+      workspace,
+      config: {
+        desiredState: "manual",
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command: "node -e \"throw new Error('should not start')\"",
+              port: { type: "auto" },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services).toEqual([]);
+  });
+
   it("reuses shared runtime services across runs and starts a new service after release", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -2601,6 +2632,41 @@ describe("buildWorkspaceRuntimeDesiredStatePatch", () => {
       serviceStates: {
         "0": "running",
         "1": "stopped",
+      },
+    });
+  });
+
+  it("preserves manual service state when manually starting or stopping services", () => {
+    const baseInput = {
+      config: {
+        workspaceRuntime: {
+          services: [
+            { name: "web", command: "pnpm dev" },
+          ],
+        },
+      },
+      currentDesiredState: "manual" as const,
+      currentServiceStates: null,
+      serviceIndex: 0,
+    };
+
+    expect(buildWorkspaceRuntimeDesiredStatePatch({
+      ...baseInput,
+      action: "start",
+    })).toEqual({
+      desiredState: "manual",
+      serviceStates: {
+        "0": "manual",
+      },
+    });
+
+    expect(buildWorkspaceRuntimeDesiredStatePatch({
+      ...baseInput,
+      action: "stop",
+    })).toEqual({
+      desiredState: "manual",
+      serviceStates: {
+        "0": "manual",
       },
     });
   });

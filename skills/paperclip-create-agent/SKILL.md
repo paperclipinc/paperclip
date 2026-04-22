@@ -54,6 +54,9 @@ curl -sS "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configura
 Reference:
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
 
+Agent-specific templates:
+`skills/paperclip-create-agent/references/agents/`
+
 6. Discover allowed agent icons and pick one that matches the role.
 
 ```sh
@@ -140,7 +143,7 @@ Before sending a hire request:
 
 - if the role needs skills, make sure they already exist in the company library or install them first using the Paperclip company-skills workflow
 - Reuse proven config patterns from related agents where possible.
-- Reuse a proven instruction template when the role matches one in `skills/paperclip-create-agent/references/agent-instruction-templates.md`; update placeholders and remove irrelevant guidance before submitting the hire.
+- Reuse a proven instruction template when the role matches one in `skills/paperclip-create-agent/references/agent-instruction-templates.md` or `skills/paperclip-create-agent/references/agents/`; update placeholders and remove irrelevant guidance before submitting the hire.
 - Set a concrete `icon` from `/llms/agent-icons.txt` so the new hire is identifiable in org and task views.
 - Avoid secrets in plain text unless required by adapter behavior.
 - Ensure reporting line is correct and in-company.
@@ -151,5 +154,8 @@ Before sending a hire request:
 For endpoint payload shapes and full examples, read:
 `skills/paperclip-create-agent/references/api-reference.md`
 
-For reusable `AGENTS.md` starting points, read:
+For the reusable `AGENTS.md` starting point index, read:
 `skills/paperclip-create-agent/references/agent-instruction-templates.md`
+
+For the individual agent templates, read:
+`skills/paperclip-create-agent/references/agents/`

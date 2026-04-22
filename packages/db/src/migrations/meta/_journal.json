@@ -463,6 +463,48 @@
       "when": 1776542245004,
       "tag": "0065_wealthy_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1776542246000,
+      "tag": "0066_plugin_database_namespaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1776717606743,
+      "tag": "0067_orange_annihilus",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1776785165389,
+      "tag": "0068_lively_thor_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1776780000000,
+      "tag": "0069_routine_run_dispatch_fingerprint",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1776780001000,
+      "tag": "0070_issue_thread_interactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1776780002000,
+      "tag": "0071_issue_thread_interaction_idempotency",
+      "breakpoints": true
     }
   ]
 }

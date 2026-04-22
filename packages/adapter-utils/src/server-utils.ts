@@ -16,6 +16,11 @@ export interface RunProcessResult {
   startedAt: string | null;
 }
 
+export interface TerminalResultCleanupOptions {
+  hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
+  graceMs?: number;
+}
+
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
@@ -29,6 +34,10 @@ interface SpawnTarget {
 
 type ChildProcessWithEvents = ChildProcess & {
   on(event: "error", listener: (err: Error) => void): ChildProcess;
+  on(
+    event: "exit",
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): ChildProcess;
   on(
     event: "close",
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
@@ -60,6 +69,7 @@ function signalRunningProcess(
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -73,6 +83,10 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products with a clear next action.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
+  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
@@ -303,10 +317,21 @@ type PaperclipWakeChildIssueSummary = {
   summary: string | null;
 };
 
+type PaperclipWakeBlockerSummary = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  dependencyBlockedInteraction: boolean;
+  unresolvedBlockerIssueIds: string[];
+  unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
@@ -399,6 +424,17 @@ function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeC
   return { id, identifier, title, status, priority, summary };
 }
 
+function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBlockerSummary | null {
+  const blocker = parseObject(value);
+  const id = asString(blocker.id, "").trim() || null;
+  const identifier = asString(blocker.identifier, "").trim() || null;
+  const title = asString(blocker.title, "").trim() || null;
+  const status = asString(blocker.status, "").trim() || null;
+  const priority = asString(blocker.priority, "").trim() || null;
+  if (!id && !identifier && !title && !status) return null;
+  return { id, identifier, title, status, priority };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -464,8 +500,18 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
         .filter((entry): entry is PaperclipWakeChildIssueSummary => Boolean(entry))
     : [];
+  const unresolvedBlockerIssueIds = Array.isArray(payload.unresolvedBlockerIssueIds)
+    ? payload.unresolvedBlockerIssueIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const unresolvedBlockerSummaries = Array.isArray(payload.unresolvedBlockerSummaries)
+    ? payload.unresolvedBlockerSummaries
+        .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
+        .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
+    : [];
 
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -473,6 +519,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
+    unresolvedBlockerIssueIds,
+    unresolvedBlockerSummaries,
     executionStage,
     continuationSummary,
     livenessContinuation,
@@ -552,6 +601,18 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (normalized.dependencyBlockedInteraction) {
+    lines.push("- dependency-blocked interaction: yes");
+    lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
+    if (normalized.unresolvedBlockerSummaries.length > 0) {
+      const blockers = normalized.unresolvedBlockerSummaries
+        .map((blocker) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)
+        .join("; ");
+      lines.push(`- unresolved blockers: ${blockers}`);
+    } else if (normalized.unresolvedBlockerIssueIds.length > 0) {
+      lines.push(`- unresolved blocker issue ids: ${normalized.unresolvedBlockerIssueIds.join(", ")}`);
+    }
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
@@ -1237,6 +1298,7 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr" | "system", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+    terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
   },
 ): Promise<RunProcessResult> {
@@ -1286,11 +1348,60 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        let terminalResultSeen = false;
+        let terminalCleanupStarted = false;
+        let terminalCleanupTimer: NodeJS.Timeout | null = null;
+        let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let terminalResultStdoutScanOffset = 0;
+        let terminalResultStderrScanOffset = 0;
+
+        const clearTerminalCleanupTimers = () => {
+          if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
+          if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
+          terminalCleanupTimer = null;
+          terminalCleanupKillTimer = null;
+        };
+
+        const maybeArmTerminalResultCleanup = () => {
+          const terminalCleanup = opts.terminalResultCleanup;
+          if (!terminalCleanup || terminalCleanupStarted || timedOut) return;
+          if (!terminalResultSeen) {
+            const stdoutStart = Math.max(0, terminalResultStdoutScanOffset - TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+            const stderrStart = Math.max(0, terminalResultStderrScanOffset - TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+            const scanOutput = {
+              stdout: stdout.slice(stdoutStart),
+              stderr: stderr.slice(stderrStart),
+            };
+            terminalResultStdoutScanOffset = stdout.length;
+            terminalResultStderrScanOffset = stderr.length;
+            if (scanOutput.stdout.length === 0 && scanOutput.stderr.length === 0) return;
+            try {
+              terminalResultSeen = terminalCleanup.hasTerminalResult(scanOutput);
+            } catch (err) {
+              onLogError(err, runId, "failed to inspect terminal adapter output");
+            }
+          }
+          if (!terminalResultSeen) return;
+
+          if (terminalCleanupTimer) return;
+          const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
+          terminalCleanupTimer = setTimeout(() => {
+            terminalCleanupTimer = null;
+            if (terminalCleanupStarted || timedOut) return;
+            terminalCleanupStarted = true;
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            terminalCleanupKillTimer = setTimeout(() => {
+              terminalCleanupKillTimer = null;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, graceMs);
+        };
 
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -1304,10 +1415,14 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
-            .finally(() => resumeReadable(readable));
+            .finally(() => {
+              maybeArmTerminalResultCleanup();
+              resumeReadable(readable);
+            });
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
@@ -1316,10 +1431,14 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
-            .finally(() => resumeReadable(readable));
+            .finally(() => {
+              maybeArmTerminalResultCleanup();
+              resumeReadable(readable);
+            });
         });
 
         const stdin = child.stdin;
@@ -1333,6 +1452,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
@@ -1343,8 +1463,13 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
+        child.on("exit", () => {
+          maybeArmTerminalResultCleanup();
+        });
+
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             resolve({
