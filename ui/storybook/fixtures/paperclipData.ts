@@ -45,6 +45,7 @@ export const storybookCompanies: Company[] = [
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-01T09:00:00.000Z"),
+    inferenceMode: "managed",
     updatedAt: now,
   },
   {
@@ -67,6 +68,7 @@ export const storybookCompanies: Company[] = [
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-03T09:00:00.000Z"),
+    inferenceMode: "managed",
     updatedAt: recent(10),
   },
   {
@@ -89,6 +91,7 @@ export const storybookCompanies: Company[] = [
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-05T09:00:00.000Z"),
+    inferenceMode: "managed",
     updatedAt: recent(240),
   },
 ];
@@ -1233,6 +1236,7 @@ export const storybookSidebarBadges: SidebarBadges = {
   approvals: 2,
   failedRuns: 1,
   joinRequests: 1,
+  expiredConnections: 0,
 };
 
 export const storybookDashboardSummary: DashboardSummary = {
