@@ -193,20 +193,9 @@ export async function createApp(
     credentials: true,
   }));
 
-  // Rate limiting (after security headers, before auth)
-  const { createGlobalRateLimit, createAuthRateLimit, createWebhookRateLimit } =
-    await import("./middleware/rate-limit.js");
-  const globalLimiter = await createGlobalRateLimit();
-  app.use(globalLimiter);
-
-  // Stricter rate limit for auth write endpoints only (sign-in, sign-up, password reset).
-  // Read-only endpoints like get-session and OAuth callbacks use the global limiter.
-  const authLimiter = await createAuthRateLimit();
-  app.use("/api/auth/sign-in", authLimiter);
-  app.use("/api/auth/sign-up", authLimiter);
-  app.use("/api/auth/forget-password", authLimiter);
-  app.use("/api/auth/reset-password", authLimiter);
-  app.use("/api/auth/change-password", authLimiter);
+  // Rate limiting moved to Traefik ingress (cloud/gitops paperclip middlewares.yaml).
+  // Per-user/per-tenant limits would need auth context and live here; today's
+  // limits are IP-based and run before requests reach the pod.
 
   // Mount Stripe webhook route before auth middleware (needs raw body for signature verification)
   if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET) {
