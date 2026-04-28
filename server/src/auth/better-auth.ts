@@ -63,7 +63,7 @@ function headersFromExpressRequest(req: Request): Headers {
   return headersFromNodeHeaders(req.headers);
 }
 
-export function deriveAuthTrustedOrigins(config: Config): string[] {
+export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const trustedOrigins = new Set<string>();
 
@@ -75,11 +75,17 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
     }
   }
   if (config.deploymentMode === "authenticated") {
+    const port = opts?.listenPort ?? config.port;
+    const needsPortVariants = port !== 80 && port !== 443;
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
       trustedOrigins.add(`https://${trimmed}`);
       trustedOrigins.add(`http://${trimmed}`);
+      if (needsPortVariants) {
+        trustedOrigins.add(`https://${trimmed}:${port}`);
+        trustedOrigins.add(`http://${trimmed}:${port}`);
+      }
     }
   }
 
@@ -87,23 +93,19 @@ export function deriveAuthTrustedOrigins(config: Config): string[] {
 }
 
 function generateAppleClientSecret(teamId: string, keyId: string, clientId: string, rawPrivateKey: string): string {
-  // Normalize PEM: 1Password and K8s secrets often strip newlines
   const pem = rawPrivateKey.trim();
   const body = pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
   const privateKey = `-----BEGIN PRIVATE KEY-----\n${body.match(/.{1,64}/g)?.join("\n")}\n-----END PRIVATE KEY-----`;
   // Apple client secrets are ES256 JWTs valid for max 6 months.
-  // We generate a fresh one at startup so there's nothing to rotate.
   const header = { alg: "ES256", kid: keyId, typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     iss: teamId,
     iat: now,
-    exp: now + 86400 * 180, // 6 months (Apple maximum)
+    exp: now + 86400 * 180,
     aud: "https://appleid.apple.com",
     sub: clientId,
   };
-  // Use Node.js crypto to sign the JWT (no external dependencies)
-  // createSign imported at top level
   const segments = [
     Buffer.from(JSON.stringify(header)).toString("base64url"),
     Buffer.from(JSON.stringify(payload)).toString("base64url"),
@@ -130,15 +132,13 @@ export function createBetterAuthInstance(
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
-  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
-
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL ?? baseUrl;
   const isHttpOnly = publicUrl ? publicUrl.startsWith("http://") : false;
 
   const authConfig = {
     baseURL: baseUrl,
     secret,
-    trustedOrigins: effectiveTrustedOrigins,
+    trustedOrigins,
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {

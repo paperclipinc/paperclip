@@ -48,9 +48,11 @@ import {
   companySkills,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { environmentService } from "./environments.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
+  const environmentsSvc = environmentService(db);
 
   const companySelection = {
     id: companies.id,
@@ -211,7 +213,6 @@ export function companyService(db: Db) {
       const isCloud = !!process.env.STRIPE_SECRET_KEY?.trim();
       const planId = isCloud ? "pro" : "free";
 
-      // Only provision if the plan exists in the database
       const plan = await db
         .select({ id: subscriptionPlans.id })
         .from(subscriptionPlans)
@@ -234,6 +235,7 @@ export function companyService(db: Db) {
         });
       }
 
+      await environmentsSvc.ensureLocalEnvironment(created.id);
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

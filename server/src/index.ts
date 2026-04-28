@@ -39,6 +39,8 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { ensureSubscriptionPlans } from "./services/plan-seed.js";
 import { sendTrialExpiryWarnings } from "./services/trial-notifications.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -193,7 +195,8 @@ export async function startServer(): Promise<StartedServer> {
     if (!rawUrl) return undefined;
     try {
       const parsed = new URL(rawUrl);
-      if (!isLoopbackHost(parsed.hostname)) return rawUrl;
+      // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
+      if (!parsed.port) return rawUrl;
       parsed.port = String(port);
       return parsed.toString();
     } catch {
@@ -485,6 +488,12 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn("BETTER_AUTH_SECRET is shorter than 32 characters — consider using a stronger secret");
     }
   }
+
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+  }
   
   let authReady = config.deploymentMode === "local_trusted";
   let emailEnabled = false;
@@ -507,7 +516,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
     const { createEmailSender } = await import("./auth/email.js");
-    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config);
+    const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
       .map((value) => value.trim())
@@ -544,16 +553,9 @@ export async function startServer(): Promise<StartedServer> {
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
   }
-  
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
-    config.port = listenPort;
-  }
+
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
     config.embeddedPostgresPort = resolvedEmbeddedPostgresPort;
-  }
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
   maybePersistWorktreeRuntimePorts({
     serverPort: listenPort,
@@ -625,6 +627,7 @@ export async function startServer(): Promise<StartedServer> {
       databaseBackupInFlight = false;
     }
   };
+  const pluginWorkerManager = createPluginWorkerManager();
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -656,6 +659,7 @@ export async function startServer(): Promise<StartedServer> {
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,
+    pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -665,23 +669,29 @@ export async function startServer(): Promise<StartedServer> {
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiHost =
-    runtimeListenHost === "0.0.0.0" || runtimeListenHost === "::"
-      ? "localhost"
-      : runtimeListenHost;
+  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
+    allowedHostnames: config.allowedHostnames,
+    bindHost: runtimeListenHost,
+    port: listenPort,
+  });
+  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  // Only set PAPERCLIP_API_URL if not already configured (e.g. via env in SaaS deployments).
-  // The default localhost URL is correct for local dev but wrong for hosted instances
-  // where agents need to reach the public URL.
-  if (!process.env.PAPERCLIP_API_URL) {
-    process.env.PAPERCLIP_API_URL = `http://${runtimeApiHost}:${listenPort}`;
-  }
+  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
+  process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -727,8 +737,8 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
 }
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any);
-    const routines = routineService(db as any);
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
@@ -740,6 +750,7 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
+          reconciled.assignmentDispatched > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.escalated > 0
@@ -754,6 +765,12 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
         const reconciled = await heartbeat.reconcileIssueGraphLiveness();
         if (reconciled.escalationsCreated > 0) {
           logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
+        }
+      })
+      .then(async () => {
+        const scanned = await heartbeat.scanSilentActiveRuns();
+        if (scanned.created > 0 || scanned.escalated > 0) {
+          logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
       })
       .catch((err) => {
@@ -784,7 +801,8 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
           });
   
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-        // persisted queued work is still being driven forward.
+        // persisted queued work is still being driven forward. SaaS keeps this
+        // inside the scheduler lock so only one replica reaps per tick.
         await heartbeat
           .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
           .then(() => heartbeat.promoteDueScheduledRetries())
@@ -793,6 +811,7 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
             const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
             if (
               promotion.promoted > 0 ||
+              reconciled.assignmentDispatched > 0 ||
               reconciled.dispatchRequeued > 0 ||
               reconciled.continuationRequeued > 0 ||
               reconciled.escalated > 0
@@ -807,6 +826,12 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
             const reconciled = await heartbeat.reconcileIssueGraphLiveness();
             if (reconciled.escalationsCreated > 0) {
               logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+            }
+          })
+          .then(async () => {
+            const scanned = await heartbeat.scanSilentActiveRuns();
+            if (scanned.created > 0 || scanned.escalated > 0) {
+              logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
             }
           })
           .catch((err) => {
@@ -904,7 +929,7 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
           deploymentMode: config.deploymentMode,
         deploymentExposure: config.deploymentExposure,
         authReady,
-        requestedPort: config.port,
+        requestedPort: requestedListenPort,
         listenPort,
         uiMode,
         db: startupDbInfo,
@@ -969,7 +994,7 @@ async function withSchedulerLock(db: any, fn: () => Promise<void>) {
     server,
     host: config.host,
     listenPort,
-    apiUrl: process.env.PAPERCLIP_API_URL!,
+    apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
 }
