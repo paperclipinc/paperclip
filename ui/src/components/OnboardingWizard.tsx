@@ -626,20 +626,6 @@ export function OnboardingWizard() {
             );
             return;
           }
-          if (adapterModelsError) {
-            setError(
-              adapterModelsError instanceof Error
-                ? adapterModelsError.message
-                : "Failed to load OpenCode models."
-            );
-            return;
-          }
-          if (adapterModelsLoading || adapterModelsFetching) {
-            setError(
-              "OpenCode models are still loading. Please wait and try again."
-            );
-            return;
-          }
           const discoveredModels = adapterModels ?? [];
           if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
             setError(

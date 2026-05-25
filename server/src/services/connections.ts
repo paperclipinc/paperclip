@@ -322,6 +322,7 @@ export function connectionService(db: Db) {
         .insert(companySecrets)
         .values({
           companyId,
+          key: secretName,
           name: secretName,
           provider: (process.env.PAPERCLIP_SECRETS_PROVIDER as string) ?? "local_encrypted",
           latestVersion: 1,
@@ -336,6 +337,7 @@ export function connectionService(db: Db) {
         version: 1,
         material: prepared.material,
         valueSha256: prepared.valueSha256,
+        fingerprintSha256: prepared.valueSha256,
         createdByUserId: userId,
       });
 
@@ -469,6 +471,7 @@ export function connectionService(db: Db) {
         version: nextVersion,
         material: prepared.material,
         valueSha256: prepared.valueSha256,
+        fingerprintSha256: prepared.valueSha256,
       });
 
       await tx

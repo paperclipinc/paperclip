@@ -1,6 +1,7 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
+  INFERENCE_MODES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   DEPLOYMENT_MODES,
@@ -131,6 +132,7 @@ export {
   PLUGIN_EVENT_TYPES,
   PLUGIN_BRIDGE_ERROR_CODES,
   type CompanyStatus,
+  type InferenceMode,
   type DeploymentMode,
   type DeploymentExposure,
   type BindMode,
@@ -1154,3 +1156,27 @@ export type {
   EnvironmentProviderCapability,
   EnvironmentSupportStatus,
 } from "./environment-support.js";
+
+export type {
+  Connection,
+  ConnectionWithProvider,
+  ConnectionStatus,
+  OAuthProviderCategory,
+  OAuthProviderDefinition,
+} from "./types/connection.js";
+
+export { BUILTIN_OAUTH_PROVIDERS, getProviderCatalog } from "./types/connection-providers.js";
+
+export type {
+  SubscriptionPlan,
+  CompanySubscription,
+  AccountSubscription,
+} from "./types/subscription.js";
+
+export {
+  envBindingConnectionRefSchema,
+} from "./validators/secret.js";
+
+export type {
+  EnvConnectionRefBinding,
+} from "./types/secrets.js";

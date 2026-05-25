@@ -300,6 +300,15 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
+export type {
+  ConnectionStatus,
+  OAuthProviderCategory,
+  OAuthProviderDefinition,
+  Connection,
+  ConnectionWithProvider,
+} from "./connection.js";
+export { BUILTIN_OAUTH_PROVIDERS, getProviderCatalog } from "./connection-providers.js";
+export type { SubscriptionPlan, CompanySubscription, AccountSubscription } from "./subscription.js";
 export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {

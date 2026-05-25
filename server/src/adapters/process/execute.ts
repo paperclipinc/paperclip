@@ -49,7 +49,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env,
     timeoutSec,
     graceSec,
-    onLog,
+    onLog: (stream, chunk) => onLog(stream === "system" ? "stdout" : stream, chunk),
   });
 
   if (proc.timedOut) {

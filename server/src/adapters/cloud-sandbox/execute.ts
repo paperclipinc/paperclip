@@ -503,7 +503,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     command.join(" "),
   ].join(" && ");
 
-  await ctx.onLog("system", `Executing in sandbox pod ${name}\n`);
+  await ctx.onLog("stdout", `Executing in sandbox pod ${name}\n`);
 
   let exitCode = -1;
   let timedOut = false;

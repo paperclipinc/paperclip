@@ -44,6 +44,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 67_500,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: true,
+    inferenceMode: "byok" as const,
     feedbackDataSharingEnabled: true,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -67,6 +68,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 39_500,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: false,
+    inferenceMode: "byok" as const,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -90,6 +92,7 @@ export const storybookCompanies: Company[] = [
     spentMonthlyCents: 91_200,
     attachmentMaxBytes: 10 * 1024 * 1024,
     requireBoardApprovalForNewAgents: true,
+    inferenceMode: "byok" as const,
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
@@ -1252,6 +1255,7 @@ export const storybookSidebarBadges: SidebarBadges = {
   approvals: 2,
   failedRuns: 1,
   joinRequests: 1,
+  expiredConnections: 0,
 };
 
 export const storybookDashboardSummary: DashboardSummary = {

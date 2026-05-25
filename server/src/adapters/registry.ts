@@ -213,37 +213,6 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
   };
 }
 
-function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
-  const config =
-    ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
-      ? (ctx.config as Record<string, unknown>)
-      : null;
-  const agent =
-    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
-      ? (ctx.agent as Record<string, unknown>)
-      : null;
-  const agentAdapterConfig =
-    agent?.adapterConfig && typeof agent.adapterConfig === "object"
-      ? (agent.adapterConfig as Record<string, unknown>)
-      : null;
-
-  const configCommand =
-    typeof config?.command === "string" && config.command.length > 0 ? config.command : undefined;
-  const agentCommand =
-    typeof agentAdapterConfig?.command === "string" && agentAdapterConfig.command.length > 0
-      ? agentAdapterConfig.command
-      : undefined;
-
-  if (config && !config.hermesCommand && configCommand) {
-    config.hermesCommand = configCommand;
-  }
-  if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
-    agentAdapterConfig.hermesCommand = agentCommand;
-  }
-
-  return ctx;
-}
-
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const result: AdapterModel[] = [];
