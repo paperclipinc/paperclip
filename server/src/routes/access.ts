@@ -55,6 +55,7 @@ import {
 } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
+import { collectReachableInterfaceHosts } from "../runtime-api.js";
 import {
   accessService,
   agentService,
@@ -68,10 +69,7 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
-import {
-  agentJoinGrantsFromDefaults,
-  humanJoinGrantsFromDefaults,
-} from "../services/invite-grants.js";
+import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
@@ -88,6 +86,8 @@ function hashToken(token: string) {
 }
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";
+const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
@@ -98,7 +98,12 @@ type MemberGrantPayload = {
 };
 
 function createInviteToken() {
-  return `${INVITE_TOKEN_PREFIX}${randomBytes(24).toString("hex")}`;
+  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
+  let suffix = "";
+  for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
+    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
+  }
+  return `${INVITE_TOKEN_PREFIX}${suffix}`;
 }
 
 function createClaimSecret() {
@@ -137,6 +142,7 @@ function readSkillMarkdown(skillName: string): string | null {
     normalized !== "paperclip" &&
     normalized !== "paperclip-create-agent" &&
     normalized !== "paperclip-create-plugin" &&
+    normalized !== "paperclip-converting-plans-to-tasks" &&
     normalized !== "para-memory-files"
   )
     return null;
@@ -1495,6 +1501,11 @@ function buildOnboardingConnectionCandidates(input: {
     candidates.add(`${protocol}//host.docker.internal${port}`);
   }
 
+  for (const host of collectReachableInterfaceHosts()) {
+    const formattedHost = host.includes(":") && !host.startsWith("[") && !host.endsWith("]") ? `[${host}]` : host;
+    candidates.add(`${protocol}//${formattedHost}${port}`);
+  }
+
   return Array.from(candidates);
 }
 
@@ -1543,16 +1554,17 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an OpenClaw Gateway agent, save your one-time claim secret, wait for board approval, then claim your API key. Save the claim response token to ~/.openclaw/workspace/paperclip-claimed-api-key.json and load PAPERCLIP_API_KEY from that file before starting heartbeat loops. You MUST submit adapterType='openclaw_gateway', set agentDefaultsPayload.url to your ws:// or wss:// OpenClaw gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token (or legacy x-openclaw-auth).",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
       inviteMessage: extractInviteMessage(invite),
-      recommendedAdapterType: "openclaw_gateway",
+      recommendedAdapterType: null,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
-        adapterType: "Use 'openclaw_gateway' for OpenClaw Gateway agents",
+        adapterType:
+          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Adapter config for OpenClaw gateway. MUST include url (ws:// or wss://) and headers.x-openclaw-token (or legacy x-openclaw-auth). Optional fields: paperclipApiUrl, waitTimeoutMs, sessionKeyStrategy, sessionKey, role, scopes, disableDeviceAuth, devicePrivateKeyPem."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1589,7 +1601,7 @@ function buildInviteOnboardingManifest(
         name: "paperclip",
         path: skillPath,
         url: skillUrl,
-        installPath: "~/.openclaw/skills/paperclip/SKILL.md"
+        installPath: "runtime-specific Paperclip skill location"
       }
     }
   };
@@ -1640,7 +1652,7 @@ export function buildInviteOnboardingTextDocument(
   };
 
   appendBlock(`
-    # Paperclip OpenClaw Gateway Onboarding
+    # Paperclip Agent Onboarding
 
     This document is meant to be readable by both humans and agents.
 
@@ -1664,62 +1676,30 @@ export function buildInviteOnboardingTextDocument(
   appendBlock(`
     ## Step 0
 
-    Get the OpenClaw gateway auth token (THIS MUST BE SENT)
-    Token lives in:
+    Decide which Paperclip adapter type matches your runtime.
 
-    ~/.openclaw/openclaw.json -> gateway.auth.token
-    Extract:
-
-    TOKEN="$(node -p 'require(process.env.HOME+\"/.openclaw/openclaw.json\").gateway.auth.token')"
-    test -n "$TOKEN" || (echo "Missing TOKEN" && exit 1)
-    test "\${#TOKEN}" -ge 16 || (echo "Gateway token unexpectedly short (\${#TOKEN})" && exit 1)
-
-    3) IMPORTANT: Don't accidentally drop the token when generating JSON
-    If you build JSON with Node, pass the token explicitly (argv), don't rely on an un-exported env var.
-
-    Safe payload build looks sort of like this (substitute where necessary):
-
-    BODY="$(node -e '
-      const token = process.argv[1];
-      if (!token) process.exit(2);
-      const body = {
-        requestType: "agent",
-        agentName: "OpenClaw",
-        adapterType: "openclaw_gateway",
-        capabilities: "OpenClaw agent adapter",
-        agentDefaultsPayload: {
-          url: "ws://127.0.0.1:18789",
-          paperclipApiUrl: "http://host.docker.internal:3100",
-          headers: { "x-openclaw-token": token },
-          waitTimeoutMs: 120000,
-          sessionKeyStrategy: "issue",
-          role: "operator",
-          scopes: ["operator.admin"]
-        }
-      };
-      process.stdout.write(JSON.stringify(body));
-    ' "$TOKEN")"
+    Use adapterType only when there is a matching Paperclip adapter. Put runtime-specific settings in agentDefaultsPayload.
 
     ## Step 1: Submit agent join request
     ${onboarding.registrationEndpoint.method} ${
     onboarding.registrationEndpoint.url
   }
 
-    IMPORTANT: You MUST include agentDefaultsPayload.headers.x-openclaw-token with your gateway token.
-    Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred.
-    Use adapterType "openclaw_gateway" and a ws:// or wss:// gateway URL.
-    Pairing mode requirement:
-    - Keep device auth enabled (recommended). If devicePrivateKeyPem is omitted, Paperclip generates and persists one during join so pairing approvals are stable.
-    - You may set disableDeviceAuth=true only for special environments that cannot support pairing.
-    - First run may return "pairing required" once; approve the pending pairing request in OpenClaw, then retry.
-    Do NOT use /v1/responses or /hooks/* in this gateway join flow.
-
     Body (JSON):
+    {
+      "requestType": "agent",
+      "agentName": "My Agent",
+      "adapterType": "adapter_type_for_this_runtime",
+      "capabilities": "Short summary of what this agent can do",
+      "agentDefaultsPayload": {}
+    }
+
+    OpenClaw Gateway payload example:
     {
       "requestType": "agent",
       "agentName": "My OpenClaw Agent",
       "adapterType": "openclaw_gateway",
-      "capabilities": "Optional summary",
+      "capabilities": "OpenClaw gateway agent",
       "agentDefaultsPayload": {
         "url": "wss://your-openclaw-gateway.example",
         "paperclipApiUrl": "https://paperclip-hostname-your-agent-can-reach:3100",
@@ -1730,6 +1710,8 @@ export function buildInviteOnboardingTextDocument(
         "scopes": ["operator.admin"]
       }
     }
+
+    For OpenClaw Gateway, include agentDefaultsPayload.headers.x-openclaw-token with your gateway token. Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred. Do NOT use /v1/responses or /hooks/* in this gateway join flow.
 
     Expected response includes:
     - request id
@@ -1749,35 +1731,18 @@ export function buildInviteOnboardingTextDocument(
       "claimSecret": "<one-time-claim-secret>"
     }
 
-    On successful claim, save the full JSON response to:
-
-    - ~/.openclaw/workspace/paperclip-claimed-api-key.json
-    chmod 600 ~/.openclaw/workspace/paperclip-claimed-api-key.json
-
-    And set the PAPERCLIP_API_KEY and PAPERCLIP_API_URL in your environment variables as specified here:
-    https://docs.openclaw.ai/help/environment
-
-    e.g. 
-
-    {
-      env: {
-        PAPERCLIP_API_KEY: "...",
-        PAPERCLIP_API_URL: "...",
-      },
-    }
-
-    Then set PAPERCLIP_API_KEY and PAPERCLIP_API_URL from the saved token field for every heartbeat run.
+    On successful claim, save the full JSON response somewhere private for your runtime and set PAPERCLIP_API_KEY and PAPERCLIP_API_URL for future Paperclip API calls.
 
     Important:
     - claim secrets expire
     - claim secrets are single-use
     - claim fails before board approval
 
-    ## Step 4: Install Paperclip skill in OpenClaw
+    ## Step 4: Install Paperclip skill
     GET ${onboarding.skill.url}
     Install path: ${onboarding.skill.installPath}
 
-    Be sure to prepend your PAPERCLIP_API_URL to the top of your skill and note the path to your PAPERCLIP_API_URL
+    Use your runtime's normal skill or instruction installation path.
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -1990,6 +1955,60 @@ async function resolveAcceptedInviteJoinRequest(
       requestEmailSnapshot: actorEmail,
     },
   );
+}
+
+function grantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  key: "human" | "agent"
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
+  const scoped = defaultsPayload[key];
+  if (!scoped || typeof scoped !== "object") return [];
+  const grants = (scoped as Record<string, unknown>).grants;
+  if (!Array.isArray(grants)) return [];
+  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
+  const result: Array<{
+    permissionKey: (typeof PERMISSION_KEYS)[number];
+    scope: Record<string, unknown> | null;
+  }> = [];
+  for (const item of grants) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.permissionKey !== "string") continue;
+    if (!validPermissionKeys.has(record.permissionKey)) continue;
+    result.push({
+      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
+      scope:
+        record.scope &&
+        typeof record.scope === "object" &&
+        !Array.isArray(record.scope)
+          ? (record.scope as Record<string, unknown>)
+          : null
+    });
+  }
+  return result;
+}
+
+export function agentJoinGrantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  return [
+    ...grants,
+    {
+      permissionKey: "tasks:assign",
+      scope: null
+    }
+  ];
 }
 
 type JoinRequestManagerCandidate = {
@@ -2212,11 +2231,14 @@ export function setInviteResolutionNetworkForTest(
     : defaultInviteResolutionNetwork;
 }
 
-async function lookupInviteResolutionHostname(hostname: string) {
+async function lookupInviteResolutionHostname(
+  hostname: string,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
+) {
   let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
-      inviteResolutionNetwork.lookup(hostname),
+      network.lookup(hostname),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
           () =>
@@ -2238,7 +2260,8 @@ async function lookupInviteResolutionHostname(hostname: string) {
 }
 
 async function resolveInviteResolutionTarget(
-  url: URL
+  url: URL,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
 ): Promise<ResolvedInviteResolutionTarget> {
   const hostname = hostnameForResolution(url);
   if (parseIpv4Address(hostname)) {
@@ -2270,7 +2293,7 @@ async function resolveInviteResolutionTarget(
       tlsServername: undefined,
     };
   }
-  const results = await lookupInviteResolutionHostname(hostname);
+  const results = await lookupInviteResolutionHostname(hostname, network);
   if (results.length === 0) {
     throw badRequest("url hostname did not resolve to any addresses");
   }
@@ -2296,11 +2319,12 @@ async function resolveInviteResolutionTarget(
 
 async function probeInviteResolutionTarget(
   target: ResolvedInviteResolutionTarget,
-  timeoutMs: number
+  timeoutMs: number,
+  network: InviteResolutionNetwork = inviteResolutionNetwork
 ): Promise<InviteResolutionProbe> {
   const startedAt = Date.now();
   try {
-    const response = await inviteResolutionNetwork.requestHead(target, timeoutMs);
+    const response = await network.requestHead(target, timeoutMs);
     const durationMs = Date.now() - startedAt;
     if (
       response.httpStatus !== null &&
@@ -2363,12 +2387,16 @@ export function accessRoutes(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
   }
 ) {
   const router = Router();
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
+    ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
+    : inviteResolutionNetwork;
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -2550,6 +2578,7 @@ export function accessRoutes(
       userId: req.actor.userId,
       isInstanceAdmin: accessSnapshot.isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
+      memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
     });
@@ -2794,6 +2823,10 @@ export function accessRoutes(
         {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
+        },
+        {
+          name: "paperclip-converting-plans-to-tasks",
+          path: "/api/skills/paperclip-converting-plans-to-tasks"
         }
       ]
     });
@@ -3117,8 +3150,8 @@ export function accessRoutes(
     const timeoutMs = Number.isFinite(parsedTimeoutMs)
       ? Math.max(1000, Math.min(15000, Math.floor(parsedTimeoutMs)))
       : 5000;
-    const resolvedTarget = await resolveInviteResolutionTarget(target);
-    const probe = await probeInviteResolutionTarget(resolvedTarget, timeoutMs);
+    const resolvedTarget = await resolveInviteResolutionTarget(target, routeInviteResolutionNetwork);
+    const probe = await probeInviteResolutionTarget(resolvedTarget, timeoutMs, routeInviteResolutionNetwork);
     res.json({
       inviteId: invite.id,
       testResolutionPath: `/api/invites/${token}/test-resolution`,
@@ -3324,7 +3357,7 @@ export function accessRoutes(
               }
             )
           : null;
-      let created = !inviteAlreadyAccepted
+      const created = !inviteAlreadyAccepted
         ? existingHumanJoinRequest
           ? await db.transaction(async (tx) => {
               await tx
@@ -3511,43 +3544,6 @@ export function accessRoutes(
         }
       }
 
-      // Auto-approve human join requests — the inviter already made the decision.
-      let autoApproved = false;
-      if (requestType === "human" && !inviteAlreadyAccepted && created.requestingUserId) {
-        const autoApproveRole = resolveHumanInviteRole(
-          invite.defaultsPayload as Record<string, unknown> | null,
-        );
-        await access.ensureMembership(
-          companyId,
-          "user",
-          created.requestingUserId,
-          autoApproveRole,
-          "active"
-        );
-        const grants = humanJoinGrantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null,
-          autoApproveRole,
-        );
-        await access.setPrincipalGrants(
-          companyId,
-          "user",
-          created.requestingUserId,
-          grants,
-          invite.invitedByUserId ?? null
-        );
-        await db
-          .update(joinRequests)
-          .set({
-            status: "approved",
-            approvedByUserId: invite.invitedByUserId ?? "system",
-            approvedAt: new Date(),
-            updatedAt: new Date()
-          })
-          .where(eq(joinRequests.id, created.id));
-        created = { ...created, status: "approved" as const, approvedAt: new Date() };
-        autoApproved = true;
-      }
-
       await logActivity(db, {
         companyId,
         actorType: req.actor.type === "agent" ? "agent" : "user",
@@ -3556,18 +3552,15 @@ export function accessRoutes(
             ? req.actor.agentId ?? "invite-agent"
             : req.actor.userId ??
               (requestType === "agent" ? "invite-anon" : "board"),
-        action: autoApproved
-          ? "join.auto_approved"
-          : inviteAlreadyAccepted
-            ? "join.request_replayed"
-            : "join.requested",
+        action: inviteAlreadyAccepted
+          ? "join.request_replayed"
+          : "join.requested",
         entityType: "join_request",
         entityId: created.id,
         details: {
           requestType,
-          requestIp: created.requestIp,
+          requestIp: requestIp(req),
           inviteReplay: inviteAlreadyAccepted,
-          autoApproved,
           reusedExistingJoinRequest:
             Boolean(existingHumanJoinRequest) && !inviteAlreadyAccepted
         }

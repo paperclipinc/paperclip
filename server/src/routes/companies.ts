@@ -1,6 +1,6 @@
-import express, { Router, type Request } from "express";
+import { randomUUID } from "node:crypto";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -12,7 +12,6 @@ import {
   feedbackVoteValueSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
-  PERMISSION_KEYS,
 } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -27,6 +26,7 @@ import {
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -36,6 +36,8 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const access = accessService(db);
   const budgets = budgetService(db);
   const feedback = feedbackService(db);
+  const importJobs = new Map<string, ImportJobRecord>();
+  const importJobTerminalRetentionMs = 5 * 60 * 1000;
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
@@ -49,10 +51,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     return parsed;
   }
-
-  // Company import/export payloads can inline full portable packages, so
-  // these routes need a higher body-size limit than the global 1 MB default.
-  const largeBody = express.json({ limit: "10mb" });
 
   function assertImportTargetAccess(
     req: Request,
@@ -168,59 +166,79 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(traces);
   });
 
-  router.post("/:companyId/export", largeBody, validate(companyPortabilityExportSchema), async (req, res) => {
+  router.post("/:companyId/export", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManagePortability(req, companyId, "exports");
     const result = await portability.exportBundle(companyId, req.body);
     res.json(result);
   });
 
-  router.post("/import/preview", largeBody, validate(companyPortabilityPreviewSchema), async (req, res) => {
+  router.post("/import/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     assertBoard(req);
     assertImportTargetAccess(req, req.body.target);
     const preview = await portability.previewImport(req.body);
     res.json(preview);
   });
 
-  router.post("/import", largeBody, validate(companyPortabilityImportSchema), async (req, res) => {
+  router.get("/import/jobs/:jobId", async (req, res) => {
+    assertCloudTenantCaller(req);
+    cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
+    const job = importJobs.get(req.params.jobId as string);
+    if (!job || job.cloudTenantKey !== cloudTenantRequestKey(req)) {
+      res.status(404).json({ error: "Import job not found" });
+      return;
+    }
+    res.json(importJobResponse(job));
+  });
+
+  router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
     assertBoard(req);
-    assertImportTargetAccess(req, req.body.target);
+    const rawImportBody: unknown = req.body;
     const actor = getActorInfo(req);
-    const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
-    await logActivity(db, {
-      companyId: result.company.id,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      action: "company.imported",
-      entityType: "company",
-      entityId: result.company.id,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      details: {
-        include: req.body.include ?? null,
-        agentCount: result.agents.length,
-        warningCount: result.warnings.length,
-        companyAction: result.company.action,
-      },
-    });
+    const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
+    if (req.header("x-paperclip-cloud-async-import") === "1") {
+      assertCloudTenantCaller(req);
+      cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
+      const job = createImportJob(cloudTenantRequestKey(req));
+      importJobs.set(job.id, job);
+      const operation = async () => {
+        const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+        assertImportTargetAccess(req, importBody.target);
+        const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
+        const result = await portability.importBundle(importBody, boardUserId);
+        await logImportedCompanyActivity(db, activity, result);
+        return result;
+      };
+      res.status(202).json(importJobAcceptedResponse(job));
+      setImmediate(() => {
+        void runImportJob(job, operation);
+      });
+      return;
+    }
+
+    const importBody = companyPortabilityImportSchema.parse(rawImportBody);
+    assertImportTargetAccess(req, importBody.target);
+    const activity = importedCompanyActivityContext(actor, importBody.include ?? null);
+    const result = await portability.importBundle(importBody, boardUserId);
+    await logImportedCompanyActivity(db, activity, result);
     res.json(result);
   });
 
-  router.post("/:companyId/exports/preview", largeBody, validate(companyPortabilityExportSchema), async (req, res) => {
+  router.post("/:companyId/exports/preview", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManagePortability(req, companyId, "exports");
     const preview = await portability.previewExport(companyId, req.body);
     res.json(preview);
   });
 
-  router.post("/:companyId/exports", largeBody, validate(companyPortabilityExportSchema), async (req, res) => {
+  router.post("/:companyId/exports", validate(companyPortabilityExportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManagePortability(req, companyId, "exports");
     const result = await portability.exportBundle(companyId, req.body);
     res.json(result);
   });
 
-  router.post("/:companyId/imports/preview", largeBody, validate(companyPortabilityPreviewSchema), async (req, res) => {
+  router.post("/:companyId/imports/preview", validate(companyPortabilityPreviewSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManagePortability(req, companyId, "imports");
     if (req.body.target.mode === "existing_company" && req.body.target.companyId !== companyId) {
@@ -236,7 +254,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(preview);
   });
 
-  router.post("/:companyId/imports/apply", largeBody, validate(companyPortabilityImportSchema), async (req, res) => {
+  router.post("/:companyId/imports/apply", validate(companyPortabilityImportSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanManagePortability(req, companyId, "imports");
     if (req.body.target.mode === "existing_company" && req.body.target.companyId !== companyId) {
@@ -272,23 +290,17 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/", validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    // In authenticated mode (SaaS), any authenticated user can create companies.
-    // In local_trusted mode (self-hosted), only instance admins can.
-    const isAuthenticated = process.env.PAPERCLIP_DEPLOYMENT_MODE === "authenticated";
-    if (!isAuthenticated && !(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
-
-    const userId = req.actor.userId ?? "local-board";
     const company = await svc.create(req.body);
-    await access.ensureMembership(company.id, "user", userId, "owner", "active");
-    // Grant all permissions to the company creator
-    await access.setPrincipalGrants(
+    const ownerPrincipalId = req.actor.userId ?? "local-board";
+    await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
+    await access.ensureRoleDefaultGrants(
       company.id,
-      "user",
-      userId,
-      PERMISSION_KEYS.map((key) => ({ permissionKey: key })),
-      userId,
+      ownerPrincipalId,
+      "owner",
+      req.actor.userId ?? null,
     );
     await logActivity(db, {
       companyId: company.id,
@@ -417,29 +429,179 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   });
 
   router.delete("/:companyId", async (req, res) => {
-    // Hard delete requires instance admin — regular company members may only archive
-    assertInstanceAdmin(req);
+    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-
-    // Archive first to stop schedulers from spawning new work
-    await svc.archive(companyId);
-
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.deleted",
-      entityType: "company",
-      entityId: companyId,
-    });
     res.json({ ok: true });
   });
 
   return router;
+}
+
+type CompanyImportResult = {
+  company: { id: string; action: unknown };
+  agents: unknown[];
+  warnings: unknown[];
+};
+
+interface ImportJobRecord {
+  id: string;
+  cloudTenantKey: string;
+  status: "running" | "succeeded" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  error?: { message: string };
+  result?: {
+    companyId: string;
+    agentCount: number;
+    warningCount: number;
+    companyAction: unknown;
+  };
+}
+
+interface ImportedCompanyActivityContext {
+  actorType: "user" | "agent";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  include: unknown;
+}
+
+function assertCloudTenantCaller(req: Request) {
+  if (req.actor.source !== "cloud_tenant") {
+    throw forbidden("Trusted Cloud tenant access required");
+  }
+}
+
+function cloudTenantRequestKey(req: Request) {
+  return [
+    req.actor.userId ?? "",
+    req.header("x-paperclip-cloud-stack-id")?.trim() ?? "",
+    req.header("x-paperclip-cloud-paperclip-company-id")?.trim() ?? "",
+  ].join(":");
+}
+
+function createImportJob(cloudTenantKey: string): ImportJobRecord {
+  const now = new Date().toISOString();
+  return {
+    id: `tenant-import-${randomUUID()}`,
+    cloudTenantKey,
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+async function runImportJob(
+  job: ImportJobRecord,
+  operation: () => Promise<CompanyImportResult>,
+) {
+  try {
+    const result = await operation();
+    const now = new Date().toISOString();
+    job.status = "succeeded";
+    job.updatedAt = now;
+    job.completedAt = now;
+    job.result = {
+      companyId: result.company.id,
+      agentCount: result.agents.length,
+      warningCount: result.warnings.length,
+      companyAction: result.company.action,
+    };
+  } catch (error) {
+    const now = new Date().toISOString();
+    job.status = "failed";
+    job.updatedAt = now;
+    job.completedAt = now;
+    job.error = { message: errorMessage(error) };
+  }
+}
+
+function importedCompanyActivityContext(
+  actor: ReturnType<typeof getActorInfo>,
+  include: unknown,
+): ImportedCompanyActivityContext {
+  return {
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    include,
+  };
+}
+
+async function logImportedCompanyActivity(
+  db: Db,
+  activity: ImportedCompanyActivityContext,
+  result: CompanyImportResult,
+) {
+  await logActivity(db, {
+    companyId: result.company.id,
+    actorType: activity.actorType,
+    actorId: activity.actorId,
+    action: "company.imported",
+    entityType: "company",
+    entityId: result.company.id,
+    agentId: activity.agentId,
+    runId: activity.runId,
+    details: {
+      include: activity.include,
+      agentCount: result.agents.length,
+      warningCount: result.warnings.length,
+      companyAction: result.company.action,
+    },
+  });
+}
+
+function importJobAcceptedResponse(job: ImportJobRecord) {
+  return {
+    job: {
+      id: job.id,
+      status: job.status,
+    },
+    statusUrl: `/api/companies/import/jobs/${encodeURIComponent(job.id)}`,
+    retryAfterMs: 1000,
+  };
+}
+
+function importJobResponse(job: ImportJobRecord) {
+  const isTerminal = job.status === "succeeded" || job.status === "failed";
+  const response: Record<string, unknown> = {
+    job: {
+      id: job.id,
+      status: job.status,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+      ...(job.error ? { error: job.error } : {}),
+      ...(job.result ? { result: job.result } : {}),
+    },
+    ...(isTerminal ? {} : { retryAfterMs: 1000 }),
+  };
+  if (job.error?.message) {
+    response.error = job.error.message;
+    response.message = job.error.message;
+    response.reason = job.error.message;
+  }
+  return response;
+}
+
+function cleanupTerminalImportJobs(importJobs: Map<string, ImportJobRecord>, terminalRetentionMs: number) {
+  const now = Date.now();
+  for (const [jobId, job] of importJobs) {
+    if (job.status === "running" || !job.completedAt) continue;
+    if (now - Date.parse(job.completedAt) > terminalRetentionMs) {
+      importJobs.delete(jobId);
+    }
+  }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error && error.message.trim() ? error.message : String(error);
 }

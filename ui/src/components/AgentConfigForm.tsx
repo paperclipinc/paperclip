@@ -5,10 +5,13 @@ import type {
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
+  Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import {
@@ -17,26 +20,15 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import {
-  Code,
-  Eye,
-  EyeOff,
-  FolderOpen,
-  Gem,
-  Heart,
-  ChevronDown,
-  MousePointer2,
-  Sparkles,
-  Terminal,
-  X,
-} from "lucide-react";
-import { cn } from "../lib/utils";
+import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -50,6 +42,7 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -57,24 +50,14 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
-import {
-  CLOUD_MODELS,
-  CLOUD_RUNTIME_OPTIONS,
-  getAdapterProvider,
-  inferProviderFromEnv,
-  PROVIDER_ENV_KEY,
-  PROVIDER_KEY_LABELS,
-  PROVIDER_KEY_PLACEHOLDERS,
-} from "../lib/cloud-models";
-import type { ByokProvider } from "../lib/cloud-models";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
-import { healthApi } from "../api/health";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
+import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
 
 /* ---- Create mode values ---- */
 
@@ -90,6 +73,12 @@ type AgentConfigFormProps = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
+  onTestActionChange?: (test: (() => void) | null) => void;
+  onTestActionStateChange?: (state: { disabled: boolean; pending: boolean }) => void;
+  onTestFeedbackChange?: (feedback: {
+    errorMessage: string | null;
+    result: AdapterEnvironmentTestResult | null;
+  }) => void;
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
@@ -131,7 +120,8 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     o.adapterType !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
-    Object.keys(o.runtime).length > 0
+    Object.keys(o.runtime).length > 0 ||
+    o.modelProfiles?.cheap !== undefined
   );
 }
 
@@ -187,6 +177,19 @@ const claudeThinkingEffortOptions = [
   { id: "high", label: "High" },
 ] as const;
 
+const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
+const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
+const MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC = 1;
+const MAX_TURN_CONTINUATION_MAX_DELAY_SEC = 300;
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function clampDelayMsFromSeconds(value: number) {
+  return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
+}
+
 
 /* ---- Form ---- */
 
@@ -194,21 +197,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
-  const { selectedCompanyId, selectedCompany } = useCompany();
-  const queryClient = useQueryClient();
-
-  // Detect cloud sandbox mode from health features (cached from App-level fetch)
-  const { data: healthData } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => healthApi.get(),
-    staleTime: Infinity,
-  });
-  const cloudSandboxEnabled = healthData?.features?.cloudSandboxEnabled ?? false;
-
-  const showAdapterTypeField = cloudSandboxEnabled ? false : (props.showAdapterTypeField ?? true);
+  const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
+  const showInlineAdapterTestEnvironmentButton =
+    showAdapterTestEnvironmentButton && !props.onTestActionChange;
+  const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
+  const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
 
   // Sync disabled adapter types from server so dropdown filters them out
   const disabledTypes = useDisabledAdaptersSync();
@@ -218,7 +215,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
+  const { data: environments = [] } = useQuery<Environment[]>({
+    queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
+    queryFn: () => environmentsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && environmentsEnabled,
+  });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to create secrets");
@@ -253,15 +261,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
+  type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
+
   /** Read effective value: overlay if dirty, else original */
-  function eff<T>(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, original: T): T {
+  function eff<T>(group: RecordOverlayGroup, field: string, original: T): T {
     const o = overlay[group];
     if (field in o) return o[field] as T;
     return original;
   }
 
   /** Mark field dirty in overlay */
-  function mark(group: keyof Omit<AgentConfigOverlay, "adapterType">, field: string, value: unknown) {
+  function mark(group: RecordOverlayGroup, field: string, value: unknown) {
     setOverlay((prev) => ({
       ...prev,
       [group]: { ...prev[group], [field]: value },
@@ -300,34 +310,72 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
 
-  // When cloud sandbox is enabled, lock adapter type to cloud_sandbox
-  const rawAdapterType = isCreate
+  const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
-  const adapterType = cloudSandboxEnabled ? "cloud_sandbox" : rawAdapterType;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
-  const isHermesLocal = adapterType === "hermes_local";
-
+  
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const supportedEnvironmentDrivers = useMemo(
+    () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
+    [adapterType],
+  );
+  const val = isCreate ? props.values : null;
+  const set = isCreate
+    ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
+    : null;
+  const currentDefaultEnvironmentId = isCreate
+    ? val!.defaultEnvironmentId ?? ""
+    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
+  const currentDefaultEnvironment = useMemo(
+    () => environments.find((environment) => environment.id === currentDefaultEnvironmentId) ?? null,
+    [currentDefaultEnvironmentId, environments],
+  );
+  const runnableEnvironments = useMemo(
+    () => environments.filter((environment) => {
+      if (!supportedEnvironmentDrivers.has(environment.driver)) return false;
+      if (environment.driver !== "sandbox") return true;
+      const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
+      return provider !== null && provider !== "fake";
+    }),
+    [environments, supportedEnvironmentDrivers],
+  );
 
   // Fetch adapter models for the effective adapter type
+  const modelQueryKey = selectedCompanyId
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
     error: fetchedModelsError,
   } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-models", adapterType],
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType),
+    queryKey: modelQueryKey,
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
+      environmentId: currentDefaultEnvironmentId || null,
+    }),
     enabled: Boolean(selectedCompanyId),
   });
-  const models = fetchedModels ?? externalModels ?? [];
+  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const rawModels = fetchedModels ?? externalModels ?? [];
   const adapterCommandField =
     adapterType === "hermes_local" ? "hermesCommand" : "command";
+  const acpxAgent =
+    adapterType === "acpx_local"
+      ? isCreate
+        ? String(val!.adapterSchemaValues?.agent ?? "claude")
+        : eff("adapterConfig", "agent", String(config.agent ?? "claude"))
+      : "";
+  const models = useMemo(
+    () => adapterType === "acpx_local"
+      ? filterAcpxModelsByAgent(rawModels, acpxAgent)
+      : rawModels,
+    [adapterType, rawModels, acpxAgent],
+  );
   const {
     data: detectedModelData,
     refetch: refetchDetectedModel,
@@ -341,7 +389,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal),
+    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
@@ -370,13 +418,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
+  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
-  // Create mode helpers
-  const val = isCreate ? props.values : null;
-  const set = isCreate
-    ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
-    : null;
+  // Cheap model profile state — only relevant when the adapter advertises
+  // `supportsModelProfiles`. Defaults are sourced from the adapter's
+  // /model-profiles endpoint so the UI does not encode adapter-specific
+  // cheap defaults.
+  const supportsModelProfiles = adapterCaps.supportsModelProfiles;
+  const { data: adapterCheapProfileDefinitions } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.agents.adapterModelProfiles(selectedCompanyId, adapterType)
+      : ["agents", "none", "adapter-model-profiles", adapterType],
+    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
+    enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
+  });
+  const adapterCheapDefault = useMemo(() => {
+    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
+  }, [adapterCheapProfileDefinitions]);
+  const adapterCheapDefaultModel = useMemo(() => {
+    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
+    const value = (adapterConfig as Record<string, unknown>).model;
+    return typeof value === "string" ? value : "";
+  }, [adapterCheapDefault]);
 
   function buildAdapterConfigForTest(): Record<string, unknown> {
     if (isCreate) {
@@ -405,31 +469,94 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
         adapterConfig: buildAdapterConfigForTest(),
+        environmentId: currentDefaultEnvironmentId || null,
       });
     },
   });
+  const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId;
+  const triggerTestEnvironment = useCallback(() => {
+    if (testEnvironmentDisabled) return;
+    testEnvironment.mutate();
+  }, [testEnvironment.mutate, testEnvironmentDisabled]);
+
+  useEffect(() => {
+    if (!showAdapterTestEnvironmentButton || !props.onTestActionChange) return;
+    props.onTestActionChange(triggerTestEnvironment);
+    return () => {
+      props.onTestActionChange?.(null);
+    };
+  }, [showAdapterTestEnvironmentButton, props.onTestActionChange, triggerTestEnvironment]);
+
+  useEffect(() => {
+    if (!showAdapterTestEnvironmentButton || !props.onTestActionStateChange) return;
+    props.onTestActionStateChange({
+      disabled: testEnvironmentDisabled,
+      pending: testEnvironment.isPending,
+    });
+    return () => {
+      props.onTestActionStateChange?.({ disabled: true, pending: false });
+    };
+  }, [
+    showAdapterTestEnvironmentButton,
+    props.onTestActionStateChange,
+    testEnvironmentDisabled,
+    testEnvironment.isPending,
+  ]);
+
+  useEffect(() => {
+    if (!props.onTestFeedbackChange) return;
+    props.onTestFeedbackChange({
+      errorMessage: testEnvironment.error instanceof Error
+        ? testEnvironment.error.message
+        : testEnvironment.error
+          ? "Environment test failed"
+          : null,
+      result: testEnvironment.data ?? null,
+    });
+    return () => {
+      props.onTestFeedbackChange?.({ errorMessage: null, result: null });
+    };
+  }, [props.onTestFeedbackChange, testEnvironment.data, testEnvironment.error]);
 
   // Current model for display
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
 
+  async function handleRefreshModels() {
+    if (!selectedCompanyId) return;
+    setRefreshingModels(true);
+    setRefreshModelsError(null);
+    try {
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      queryClient.setQueryData(modelQueryKey, refreshed);
+    } catch (error) {
+      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
+
   const thinkingEffortKey =
     adapterType === "codex_local"
       ? "modelReasoningEffort"
-      : adapterType === "cursor"
-        ? "mode"
-        : adapterType === "opencode_local"
-          ? "variant"
-          : "effort";
+      : adapterType === "acpx_local" && acpxAgent === "codex"
+        ? "modelReasoningEffort"
+        : adapterType === "cursor"
+          ? "mode"
+          : adapterType === "opencode_local"
+            ? "variant"
+            : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
       ? codexThinkingEffortOptions
-      : adapterType === "cursor"
-        ? cursorModeOptions
-        : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : claudeThinkingEffortOptions;
+      : adapterType === "acpx_local" && acpxAgent === "codex"
+        ? codexThinkingEffortOptions
+        : adapterType === "cursor"
+          ? cursorModeOptions
+          : adapterType === "opencode_local"
+            ? openCodeThinkingEffortOptions
+            : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -438,15 +565,84 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           "modelReasoningEffort",
           String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
         )
-      : adapterType === "cursor"
-        ? eff("adapterConfig", "mode", String(config.mode ?? ""))
-      : adapterType === "opencode_local"
-        ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-      : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local";
+      : adapterType === "acpx_local" && acpxAgent === "codex"
+        ? eff(
+            "adapterConfig",
+            "modelReasoningEffort",
+            String(config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? ""),
+          )
+        : adapterType === "cursor"
+          ? eff("adapterConfig", "mode", String(config.mode ?? ""))
+          : adapterType === "opencode_local"
+            ? eff("adapterConfig", "variant", String(config.variant ?? ""))
+            : eff("adapterConfig", "effort", String(config.effort ?? ""));
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
+  // Cheap profile read/write helpers. Edit-mode values come from
+  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
+  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
+  const cheapProfileFromAgent = useMemo(() => {
+    const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
+    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
+    const cheapAdapterConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
+    return {
+      enabled: cheap.enabled !== false,
+      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
+    };
+  }, [runtimeConfig]);
+  const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
+  const currentCheapEnabled = isCreate
+    ? val!.cheapModelEnabled ?? false
+    : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
+  const currentCheapModel = isCreate
+    ? val!.cheapModel ?? ""
+    : (() => {
+        const overlayModel = (cheapOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
+        if (typeof overlayModel === "string") return overlayModel;
+        return cheapProfileFromAgent.model;
+      })();
+
+  function setCheapEnabled(next: boolean) {
+    if (isCreate) {
+      set!({ cheapModelEnabled: next });
+      return;
+    }
+    setOverlay((prev) => ({
+      ...prev,
+      modelProfiles: {
+        cheap: {
+          ...(prev.modelProfiles?.cheap ?? {}),
+          enabled: next,
+        },
+      },
+    }));
+  }
+
+  function setCheapModel(next: string) {
+    if (isCreate) {
+      set!({ cheapModel: next });
+      return;
+    }
+    setOverlay((prev) => {
+      const existing = prev.modelProfiles?.cheap ?? {};
+      const nextAdapterConfig = {
+        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
+        model: next || undefined,
+      };
+      return {
+        ...prev,
+        modelProfiles: {
+          cheap: {
+            ...existing,
+            adapterConfig: nextAdapterConfig,
+          },
+        },
+      };
+    });
+  }
+
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -467,6 +663,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       heartbeat: mergedHeartbeat,
     };
   }, [isCreate, overlay.heartbeat, runtimeConfig, val]);
+  const effectiveHeartbeat = asObject(effectiveRuntimeConfig.heartbeat);
+  const maxTurnContinuation = asObject(effectiveHeartbeat.maxTurnContinuation);
+  const maxTurnContinuationEnabled = asBoolean(maxTurnContinuation.enabled, true);
+  const maxTurnContinuationMaxAttempts = clampInteger(
+    asFiniteNumber(maxTurnContinuation.maxAttempts, MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS),
+    0,
+    MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP,
+  );
+  const maxTurnContinuationDelaySec = clampInteger(
+    asFiniteNumber(maxTurnContinuation.delayMs, MAX_TURN_CONTINUATION_DEFAULT_DELAY_SEC * 1000) / 1000,
+    0,
+    MAX_TURN_CONTINUATION_MAX_DELAY_SEC,
+  );
+
+  function updateMaxTurnContinuation(patch: Record<string, unknown>) {
+    mark("heartbeat", "maxTurnContinuation", {
+      ...maxTurnContinuation,
+      ...patch,
+    });
+  }
+
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -563,6 +780,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
+      {/* ---- Execution ---- */}
+      {environmentsEnabled ? (
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field
+              label="Default environment"
+              hint="Agent-level default execution target. Project and issue settings can still override this."
+            >
+              <select
+                className={inputClass}
+                value={currentDefaultEnvironmentId}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  if (isCreate) {
+                    set!({ defaultEnvironmentId: nextValue });
+                    return;
+                  }
+                  mark("identity", "defaultEnvironmentId", nextValue || null);
+                }}
+              >
+                <option value="">Company default (Local)</option>
+                {runnableEnvironments.map((environment) => (
+                  <option key={environment.id} value={environment.id}>
+                    {environment.name} · {environment.driver}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </div>
+      ) : null}
+
       {/* ---- Adapter ---- */}
       <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
@@ -570,16 +823,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium">Adapter</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
-          {showAdapterTestEnvironmentButton && (
+          {showInlineAdapterTestEnvironmentButton && (
             <Button
               type="button"
               variant="outline"
               size="sm"
               className="h-7 px-2.5 text-xs"
-              onClick={() => testEnvironment.mutate()}
-              disabled={testEnvironment.isPending || !selectedCompanyId}
+              onClick={triggerTestEnvironment}
+              disabled={testEnvironmentDisabled}
             >
-              {testEnvironment.isPending ? "Testing..." : "Test environment"}
+              {testEnvironment.isPending ? "Testing..." : "Test"}
             </Button>
           )}
         </div>
@@ -603,7 +856,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
-                      nextValues.model = "";
+                      nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                     }
                     set!(nextValues);
                   } else {
@@ -612,15 +865,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
+                      modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
                           t === "codex_local"
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "opencode_local"
+                              ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
-                            : "",
+                              : "",
                         effort: "",
                         modelReasoningEffort: "",
                         variant: "",
@@ -639,7 +895,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {testEnvironment.error && (
+          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testEnvironment.error instanceof Error
                 ? testEnvironment.error.message
@@ -647,7 +903,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -676,47 +932,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Prompt template (create mode only — edit mode shows this in Identity) */}
-          {isLocal && isCreate && (
-            <>
-              <Field label="Prompt Template" hint={help.promptTemplate}>
-                <MarkdownEditor
-                  value={val!.promptTemplate}
-                  onChange={(v) => set!({ promptTemplate: v })}
-                  placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                  contentClassName="min-h-[88px] text-sm font-mono"
-                  imageUploadHandler={async (file) => {
-                    const namespace = "agents/drafts/prompt-template";
-                    const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                    return asset.contentPath;
-                  }}
-                />
-              </Field>
-              <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                Prompt template is replayed on every heartbeat. Prefer small task framing and variables like <code>{"{{ context.* }}"}</code> or <code>{"{{ run.* }}"}</code>; avoid repeating stable instructions here.
-              </div>
-            </>
-          )}
-
           {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
-
-          {/* ---- Cloud Sandbox: runtime / provider / model / API key ---- */}
-          {adapterType === "cloud_sandbox" && (
-            <CloudSandboxFields
-              isCreate={isCreate}
-              config={config}
-              eff={eff}
-              mark={mark}
-              val={val}
-              set={set}
-              cards={cards}
-              availableSecrets={availableSecrets}
-              onCreateSecret={async (name, value) => {
-                const created = await createSecret.mutateAsync({ name, value });
-                return created;
-              }}
-            />
-          )}
         </div>
 
       </div>
@@ -764,6 +980,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+              {supportsModelProfiles && (
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+              )}
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -780,19 +999,49 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
-                onDetectModel={async () => {
-                  const result = await refetchDetectedModel();
-                  return result.data?.model ?? null;
-                }}
+                onDetectModel={adapterType === "opencode_local"
+                  ? undefined
+                  : async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }}
+                onRefreshModels={
+                  adapterType === "codex_local" || adapterType === "acpx_local"
+                    ? handleRefreshModels
+                    : undefined
+                }
+                refreshingModels={refreshingModels}
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
-              {fetchedModelsError && (
+              {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
-                  {fetchedModelsError instanceof Error
-                    ? fetchedModelsError.message
-                    : "Failed to load adapter models."}
+                  {refreshModelsError
+                    ?? (fetchedModelsError instanceof Error
+                      ? fetchedModelsError.message
+                      : "Failed to load adapter models.")}
                 </p>
+              )}
+              {adapterType === "opencode_local"
+                && currentDefaultEnvironment
+                && currentDefaultEnvironment.driver !== "local" && (
+                <p className="text-xs text-muted-foreground">
+                  Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
+                </p>
+              )}
+
+              {supportsModelProfiles && (
+                <CheapModelSection
+                  enabled={currentCheapEnabled}
+                  model={currentCheapModel}
+                  models={models}
+                  adapterType={adapterType}
+                  adapterDefaultModel={adapterCheapDefaultModel}
+                  onEnabledChange={setCheapEnabled}
+                  onModelChange={setCheapModel}
+                  open={cheapModelOpen}
+                  onOpenChange={setCheapModelOpen}
+                />
               )}
 
               {showThinkingEffort && (
@@ -1004,6 +1253,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
+              <div className="rounded-md border border-border/70 px-3 py-2">
+                <ToggleField
+                  label="Continue after max-turn stop"
+                  hint={help.maxTurnContinuationEnabled}
+                  checked={maxTurnContinuationEnabled}
+                  onChange={(v) => updateMaxTurnContinuation({ enabled: v })}
+                />
+                {maxTurnContinuationEnabled ? (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <Field label="Continuation attempts" hint={help.maxTurnContinuationMaxAttempts}>
+                      <DraftNumberInput
+                        value={maxTurnContinuationMaxAttempts}
+                        onCommit={(v) =>
+                          updateMaxTurnContinuation({
+                            maxAttempts: clampInteger(v, 0, MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP),
+                          })}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                    <Field label="Continuation delay (sec)" hint={help.maxTurnContinuationDelaySec}>
+                      <DraftNumberInput
+                        value={maxTurnContinuationDelaySec}
+                        onCommit={(v) =>
+                          updateMaxTurnContinuation({
+                            delayMs: clampDelayMsFromSeconds(v),
+                          })}
+                        immediate
+                        className={inputClass}
+                      />
+                    </Field>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </CollapsibleSection>
           </div>
@@ -1014,7 +1297,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
 }
 
-function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
+export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
   const statusLabel =
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
   const statusClass =
@@ -1049,299 +1332,6 @@ function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestRe
   );
 }
 
-/* ---- Cloud Sandbox config fields ---- */
-
-/** Icon lookup for runtime cards */
-const RUNTIME_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  claude: Sparkles,
-  codex: Code,
-  gemini: Gem,
-  cursor: MousePointer2,
-  pi: Terminal,
-  opencode: OpenCodeLogoIcon,
-};
-
-function CloudSandboxFields({
-  isCreate,
-  config,
-  eff,
-  mark,
-  val,
-  set,
-  cards: _cards,
-  availableSecrets,
-  onCreateSecret,
-}: {
-  isCreate: boolean;
-  config: Record<string, unknown>;
-  eff: <T>(group: "adapterConfig", field: string, original: T) => T;
-  mark: (group: "adapterConfig", field: string, value: unknown) => void;
-  val: CreateConfigValues | null;
-  set: ((patch: Partial<CreateConfigValues>) => void) | null;
-  cards: boolean;
-  availableSecrets: CompanySecret[];
-  onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
-}) {
-  const { selectedCompany } = useCompany();
-  const isByok = selectedCompany?.inferenceMode === "byok";
-
-  // --- Derive current runtime ---
-  const currentRuntime: string = isCreate
-    ? (val as Record<string, unknown> | null)?.runtime as string ?? "claude"
-    : eff("adapterConfig", "runtime", String(config.runtime ?? "claude"));
-
-  // --- Derive current provider ---
-  const fixedProvider = getAdapterProvider(currentRuntime);
-  const isMultiProvider = fixedProvider === null;
-
-  // For edit mode, infer provider from env keys if available
-  const configEnv = config.env as Record<string, unknown> | undefined;
-  const inferredProvider = inferProviderFromEnv(
-    isCreate ? undefined : eff("adapterConfig", "env", configEnv) as Record<string, unknown> | undefined,
-  );
-  const [localProvider, setLocalProvider] = useState<ByokProvider>(
-    fixedProvider ?? inferredProvider ?? "anthropic",
-  );
-  const activeProvider: ByokProvider = fixedProvider ?? localProvider;
-
-  // --- Derive current model ---
-  const currentModel: string = isCreate
-    ? val?.model ?? ""
-    : eff("adapterConfig", "model", String(config.model ?? ""));
-
-  const cloudModelList = CLOUD_MODELS[activeProvider] ?? [];
-
-  // --- API key visibility ---
-  const [keyVisible, setKeyVisible] = useState(false);
-  // Track the plain-text key entered by the user before it's sealed
-  const [pendingKeyValue, setPendingKeyValue] = useState("");
-
-  // --- Resolve existing secret ref for the active provider env key ---
-  const envKeyName = PROVIDER_ENV_KEY[activeProvider];
-  const existingEnvBindings = (isCreate ? undefined : eff("adapterConfig", "env", configEnv)) as
-    | Record<string, unknown>
-    | undefined;
-  const existingBinding = existingEnvBindings?.[envKeyName] as
-    | { type?: string; secretId?: string }
-    | undefined;
-  const hasExistingSecret =
-    existingBinding?.type === "secret_ref" && Boolean(existingBinding?.secretId);
-  const matchedSecret = hasExistingSecret
-    ? availableSecrets.find((s) => s.id === existingBinding!.secretId!)
-    : null;
-
-  /** Persist runtime + clear model when switching runtime */
-  function handleRuntimeChange(runtime: string) {
-    if (isCreate && set) {
-      set({ ...(val as Partial<CreateConfigValues>), runtime, model: "" } as Partial<CreateConfigValues>);
-    } else {
-      // When runtime changes the provider may change, so clear env too
-      mark("adapterConfig", "runtime", runtime);
-      mark("adapterConfig", "model", "");
-      mark("adapterConfig", "env", undefined);
-    }
-    const nextFixed = getAdapterProvider(runtime);
-    if (nextFixed) {
-      setLocalProvider(nextFixed);
-    }
-  }
-
-  function handleProviderChange(provider: ByokProvider) {
-    setLocalProvider(provider);
-    // Clear model & env when provider changes
-    if (isCreate && set) {
-      set({ model: "" } as Partial<CreateConfigValues>);
-    } else {
-      mark("adapterConfig", "model", "");
-      mark("adapterConfig", "env", undefined);
-    }
-    setPendingKeyValue("");
-  }
-
-  function handleModelChange(modelId: string) {
-    if (isCreate && set) {
-      set({ model: modelId } as Partial<CreateConfigValues>);
-    } else {
-      mark("adapterConfig", "model", modelId || undefined);
-    }
-  }
-
-  async function handleSealKey() {
-    if (!pendingKeyValue.trim()) return;
-    const secret = await onCreateSecret(envKeyName, pendingKeyValue.trim());
-    const nextEnv = {
-      ...(existingEnvBindings ?? {}),
-      [envKeyName]: { type: "secret_ref" as const, secretId: secret.id },
-    };
-    mark("adapterConfig", "env", nextEnv);
-    setPendingKeyValue("");
-  }
-
-  function handleSecretSelect(secretId: string) {
-    if (!secretId) return;
-    const nextEnv = {
-      ...(existingEnvBindings ?? {}),
-      [envKeyName]: { type: "secret_ref" as const, secretId },
-    };
-    mark("adapterConfig", "env", nextEnv);
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Runtime picker */}
-      <Field label="Runtime" hint="The coding agent runtime used inside the cloud sandbox.">
-        <div className="grid grid-cols-3 gap-2">
-          {CLOUD_RUNTIME_OPTIONS.map((opt) => {
-            const Icon = RUNTIME_ICONS[opt.value] ?? Terminal;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                className={cn(
-                  "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors",
-                  currentRuntime === opt.value
-                    ? "border-foreground bg-accent"
-                    : "border-border hover:bg-accent/50",
-                )}
-                onClick={() => handleRuntimeChange(opt.value)}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="font-medium">{opt.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </Field>
-
-      {/* Provider selector (multi-provider runtimes only) */}
-      {isMultiProvider && (
-        <Field label="Provider" hint="The inference provider used by this runtime.">
-          <div className="flex flex-wrap gap-1.5">
-            {(
-              [
-                { value: "anthropic" as const, label: "Anthropic" },
-                { value: "openai" as const, label: "OpenAI" },
-                { value: "google" as const, label: "Google" },
-                { value: "openrouter" as const, label: "OpenRouter" },
-              ] as const
-            ).map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                className={cn(
-                  "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-                  activeProvider === opt.value
-                    ? "border-foreground bg-accent"
-                    : "border-border hover:bg-accent/50",
-                )}
-                onClick={() => handleProviderChange(opt.value)}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </Field>
-      )}
-
-      {/* Model dropdown */}
-      <Field label="Model" hint="The model to use for inference. Leave as Default to use the runtime's default.">
-        <select
-          className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-          value={currentModel}
-          onChange={(e) => handleModelChange(e.target.value)}
-        >
-          <option value="">Default</option>
-          {cloudModelList.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-
-      {/* API key (BYOK only) */}
-      {isByok && (
-        <Field
-          label={PROVIDER_KEY_LABELS[activeProvider] ?? "API key"}
-          hint="Your API key for inference. Stored as a sealed secret."
-        >
-          {hasExistingSecret ? (
-            <div className="flex items-center gap-2">
-              <div className="flex-1 rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground font-mono">
-                {matchedSecret ? matchedSecret.name : "Secret configured"}
-              </div>
-              <button
-                type="button"
-                className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 transition-colors"
-                onClick={() => {
-                  // Clear existing binding to allow entering a new key
-                  const nextEnv = { ...(existingEnvBindings ?? {}) };
-                  delete (nextEnv as Record<string, unknown>)[envKeyName];
-                  mark("adapterConfig", "env", Object.keys(nextEnv).length > 0 ? nextEnv : undefined);
-                }}
-              >
-                Change
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="relative">
-                <input
-                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 pr-9 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                  type={keyVisible ? "text" : "password"}
-                  placeholder={PROVIDER_KEY_PLACEHOLDERS[activeProvider] ?? "..."}
-                  value={pendingKeyValue}
-                  onChange={(e) => setPendingKeyValue(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => setKeyVisible((v) => !v)}
-                >
-                  {keyVisible ? (
-                    <EyeOff className="h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              </div>
-              {pendingKeyValue.trim() && (
-                <button
-                  type="button"
-                  className="rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-accent/50 transition-colors"
-                  onClick={() => void handleSealKey()}
-                >
-                  Save as secret
-                </button>
-              )}
-              {/* Or pick from existing secrets */}
-              {availableSecrets.length > 0 && (
-                <div>
-                  <label className="text-[11px] text-muted-foreground mb-0.5 block">
-                    Or use an existing secret:
-                  </label>
-                  <select
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-                    value=""
-                    onChange={(e) => handleSecretSelect(e.target.value)}
-                  >
-                    <option value="">Select secret...</option>
-                    {availableSecrets.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </div>
-          )}
-        </Field>
-      )}
-    </div>
-  );
-}
-
 /* ---- Internal sub-components ---- */
 
 function AdapterTypeDropdown({
@@ -1354,6 +1344,7 @@ function AdapterTypeDropdown({
   disabledTypes: Set<string>;
 }) {
   const [open, setOpen] = useState(false);
+  const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(
     () =>
       listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
@@ -1366,9 +1357,10 @@ function AdapterTypeDropdown({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
             {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span>{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+            <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+            {selectedDisplay.experimental && <ExperimentalBadge />}
           </span>
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
@@ -1395,6 +1387,7 @@ function AdapterTypeDropdown({
             <span className="inline-flex items-center gap-1.5">
               {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
               <span>{item.label}</span>
+              {item.experimental && <ExperimentalBadge />}
             </span>
             {item.comingSoon && (
               <span className="text-[10px] text-muted-foreground">Coming soon</span>
@@ -1403,6 +1396,14 @@ function AdapterTypeDropdown({
         ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ExperimentalBadge() {
+  return (
+    <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-200">
+      Experimental
+    </span>
   );
 }
 
@@ -1419,8 +1420,11 @@ function ModelDropdown({
   detectedModel,
   detectedModelCandidates,
   onDetectModel,
+  onRefreshModels,
+  refreshingModels,
   detectModelLabel,
   emptyDetectHint,
+  defaultLabel,
 }: {
   models: AdapterModel[];
   value: string;
@@ -1434,8 +1438,11 @@ function ModelDropdown({
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
+  onRefreshModels?: () => Promise<void>;
+  refreshingModels?: boolean;
   detectModelLabel?: string;
   emptyDetectHint?: string;
+  defaultLabel?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [detectingModel, setDetectingModel] = useState(false);
@@ -1522,7 +1529,8 @@ function ModelDropdown({
             <span className={cn(!value && "text-muted-foreground")}>
               {selected
                 ? selected.label
-                : value || (allowDefault ? "Default" : required ? "Select model (required)" : "Select model")}
+                : value
+                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
             </span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
@@ -1563,6 +1571,24 @@ function ModelDropdown({
                 <path d="M3 3v5h5" />
               </svg>
               {detectingModel ? "Detecting..." : detectedModel ? (detectModelLabel?.replace(/^Detect\b/, "Re-detect") ?? "Re-detect from config") : (detectModelLabel ?? "Detect from config")}
+            </button>
+          )}
+          {onRefreshModels && !modelSearch.trim() && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
+              onClick={() => {
+                void onRefreshModels();
+              }}
+              disabled={refreshingModels}
+            >
+              <svg aria-hidden="true" focusable="false" className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 12a9 9 0 0 1 15.28-6.36L21 8" />
+                <path d="M21 3v5h-5" />
+                <path d="M21 12a9 9 0 0 1-15.28 6.36L3 16" />
+                <path d="M8 16H3v5" />
+              </svg>
+              {refreshingModels ? "Refreshing..." : "Refresh models"}
             </button>
           )}
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
@@ -1697,6 +1723,72 @@ function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
+  );
+}
+
+function CheapModelSection({
+  enabled,
+  model,
+  models,
+  adapterType,
+  adapterDefaultModel,
+  onEnabledChange,
+  onModelChange,
+  open,
+  onOpenChange,
+}: {
+  enabled: boolean;
+  model: string;
+  models: AdapterModel[];
+  adapterType: string;
+  adapterDefaultModel: string;
+  onEnabledChange: (next: boolean) => void;
+  onModelChange: (next: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const placeholderHint = adapterDefaultModel
+    ? `Adapter default · ${adapterDefaultModel}`
+    : "No adapter default — choose a cheaper model";
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Cheap model</div>
+          <p className="text-xs text-muted-foreground">
+            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
+          </p>
+        </div>
+        <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
+      </div>
+      {enabled ? (
+        <ModelDropdown
+          models={models}
+          value={model}
+          onChange={onModelChange}
+          open={open}
+          onOpenChange={onOpenChange}
+          allowDefault
+          required={false}
+          groupByProvider={adapterType === "opencode_local"}
+          creatable
+          detectedModel={null}
+          detectedModelCandidates={[]}
+          emptyDetectHint={placeholderHint}
+          defaultLabel={placeholderHint}
+        />
+      ) : null}
+      {enabled && !model && adapterDefaultModel ? (
+        <p className="text-[11px] text-muted-foreground">
+          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
+        </p>
+      ) : null}
+      {enabled && !model && !adapterDefaultModel ? (
+        <p className="text-[11px] text-amber-500">
+          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
