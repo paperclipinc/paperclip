@@ -666,6 +666,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return;
       }
 
+      const effectiveStream: "stdout" | "stderr" = stream === "system" ? "stdout" : stream;
+
       // Buffer stdout and emit only complete lines
       stdoutBuffer += chunk;
       const lines = stdoutBuffer.split("\n");
@@ -675,7 +677,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // Emit complete lines
       for (const line of lines) {
         if (line) {
-          await onLog(stream, line + "\n");
+          await onLog(effectiveStream, line + "\n");
         }
       }
     };
