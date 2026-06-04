@@ -59,8 +59,8 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor!.companyIds).toHaveLength(1);
     expect(actor!.memberships).toHaveLength(1);
-    expect(actor!.memberships[0]!.companyId).toBe(actor!.companyIds[0]);
-    expect(actor!.memberships[0]!.membershipRole).toBe("owner");
+    expect(actor?.memberships?.[0]?.companyId).toBe(actor?.companyIds?.[0]);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("owner");
     expect(actor!.source).toBe("cloud_tenant");
   });
 
@@ -77,5 +77,15 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).toBeNull();
+  });
+
+  it("maps a non-owner stack role through to the membership without elevating", async () => {
+    const { db } = createFakeDb({ companyId: "company-y", membershipRole: "member", status: "active" });
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(actor!.isInstanceAdmin).toBe(false);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
   });
 });
