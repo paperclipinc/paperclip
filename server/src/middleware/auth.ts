@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -280,6 +281,17 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       membershipRole,
       status: "active",
     });
+
+  // Seed the company-role permission grants the authorization engine reads
+  // (idempotent — insertMissing). Without this the cloud_tenant owner has a
+  // membership but no grants, so every assertCompanyPermission check (e.g.
+  // joins:approve on the dashboard's pending-approvals widget) 403s.
+  await ensureHumanRoleDefaultGrants(db, {
+    companyId,
+    principalId: userId,
+    membershipRole: membership.membershipRole,
+    grantedByUserId: userId,
+  });
 
   return {
     type: "board",
