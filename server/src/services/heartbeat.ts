@@ -3982,7 +3982,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
       warnings.push(
-        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted. Using fallback workspace "${cwd}" for this run.`,
+        `Saved session workspace "${sessionCwd}" points at a system temp root and was rejected as untrusted (likely persisted from a previous remote-target run). Using fallback workspace "${cwd}" for this run.`,
       );
     } else if (sessionCwd) {
       warnings.push(
