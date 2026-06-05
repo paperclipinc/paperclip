@@ -309,6 +309,29 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   };
 }
 
+// Lightweight cloud_tenant auth for contexts that only have raw Node headers and
+// cannot run the Express actor middleware (e.g. WebSocket upgrades). Validates the
+// trusted gateway token and derives the company id from the stack id exactly like
+// resolveCloudTenantActor. Returns null when this is not a (valid) cloud_tenant call.
+export function resolveCloudTenantWsAuth(
+  headers: Record<string, string | string[] | undefined>,
+): { userId: string; companyId: string } | null {
+  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+  if (!expectedToken) return null;
+  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
+  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
+  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
+  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
+  if (!userId || !stackId) return null;
+  return { userId, companyId: cloudTenantCompanyId(stackId) };
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
 function requiredCloudHeader(req: Request, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
