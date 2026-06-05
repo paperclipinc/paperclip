@@ -56,8 +56,11 @@ export function resolveSeedPrincipal(
  * instanceUserRoles row exist for the given principal.
  *
  * Mirrors the upsert pattern in server/src/index.ts:ensureLocalTrustedBoardPrincipal.
- * Safe to run repeatedly (e.g. on every boot of a shared/cloud deployment):
- * running it twice yields exactly one instance_admin row for the principal.
+ * Both inserts use ON CONFLICT DO NOTHING so the writes are idempotent at the
+ * DB level, not just at the read/check level. This makes the seed safe to run
+ * from the operator's init container on every StatefulSet replica concurrently:
+ * two replicas racing on a shared HA pool yield exactly one admin and one role
+ * row, and neither insert throws on a concurrent duplicate.
  *
  * Does NOT create company memberships: instance_admin bypasses company
  * scoping via authz, so no membership rows are required.
@@ -79,15 +82,22 @@ export async function ensureInstanceAdmin(
 
   let createdUser = false;
   if (!existingUser) {
-    await db.insert(authUsers).values({
-      id: principal.userId,
-      name: principal.name,
-      email: principal.email,
-      emailVerified: true,
-      image: null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    // ON CONFLICT DO NOTHING on the primary key keeps this race-safe when the
+    // operator runs the seed init container on multiple StatefulSet replicas
+    // concurrently against a shared HA pool: a duplicate insert is a no-op
+    // instead of a duplicate-key error that would crash the init container.
+    await db
+      .insert(authUsers)
+      .values({
+        id: principal.userId,
+        name: principal.name,
+        email: principal.email,
+        emailVerified: true,
+        image: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing({ target: authUsers.id });
     createdUser = true;
   }
 
@@ -104,10 +114,18 @@ export async function ensureInstanceAdmin(
 
   let createdRole = false;
   if (!existingRole) {
-    await db.insert(instanceUserRoles).values({
-      userId: principal.userId,
-      role: INSTANCE_ADMIN_ROLE,
-    });
+    // ON CONFLICT DO NOTHING on the unique (user_id, role) index
+    // (instance_user_roles_user_role_unique_idx) keeps concurrent replica
+    // seeds from racing on the same role row and failing the init container.
+    await db
+      .insert(instanceUserRoles)
+      .values({
+        userId: principal.userId,
+        role: INSTANCE_ADMIN_ROLE,
+      })
+      .onConflictDoNothing({
+        target: [instanceUserRoles.userId, instanceUserRoles.role],
+      });
     createdRole = true;
   }
 
