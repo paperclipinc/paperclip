@@ -328,6 +328,7 @@ export type {
   AgentSkillEntry,
   AgentSkillSnapshot,
   AgentSkillSyncRequest,
+  InstanceExecutionMode,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
