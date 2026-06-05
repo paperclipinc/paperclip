@@ -199,7 +199,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
-async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -235,17 +235,6 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
         emailVerified: true,
         updatedAt: now,
       },
-    });
-
-  await db
-    .insert(instanceUserRoles)
-    .values({
-      userId,
-      role: "instance_admin",
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: [instanceUserRoles.userId, instanceUserRoles.role],
     });
 
   await db
@@ -303,7 +292,7 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       membershipRole: membership.membershipRole,
       status: membership.status,
     }],
-    isInstanceAdmin: true,
+    isInstanceAdmin: false,
     source: "cloud_tenant",
   };
 }
