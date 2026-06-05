@@ -123,6 +123,33 @@ describeEmbeddedPostgres("ensureInstanceAdmin", () => {
     expect(await countAdminRoles(principal.userId)).toBe(1);
   });
 
+  it("never throws when run twice (DB-level ON CONFLICT DO NOTHING)", async () => {
+    await expect(ensureInstanceAdmin(db, principal)).resolves.toBeDefined();
+    await expect(ensureInstanceAdmin(db, principal)).resolves.toBeDefined();
+  });
+
+  it("is race-safe: two near-concurrent seeds yield exactly one admin", async () => {
+    // Simulates the operator running the seed init container on two
+    // StatefulSet replicas at once against a shared HA pool. Without
+    // ON CONFLICT DO NOTHING the loser of the insert race throws a
+    // duplicate-key error and crashes its init container.
+    const [a, b] = await Promise.all([
+      ensureInstanceAdmin(db, principal),
+      ensureInstanceAdmin(db, principal),
+    ]);
+
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+
+    const users = await db
+      .select()
+      .from(authUsers)
+      .where(eq(authUsers.id, principal.userId));
+    expect(users).toHaveLength(1);
+
+    expect(await countAdminRoles(principal.userId)).toBe(1);
+  });
+
   it("backfills the role when the user already exists but has no role", async () => {
     const now = new Date();
     await db.insert(authUsers).values({
