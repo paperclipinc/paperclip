@@ -19,7 +19,7 @@ import {
   type KubernetesLeaseMetadata,
 } from "./types.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
-import { getAdapterDefaults } from "./adapter-defaults.js";
+import { getAdapterDefaults, buildAdapterEnv } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
@@ -62,24 +62,6 @@ function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: stri
   // to get a friendlier slug (e.g. "acme-corp") instead of the UUID-derived one.
   const slug = config.companySlug ?? deriveCompanySlug(companyId);
   return deriveNamespaceName(config.namespacePrefix, slug);
-}
-
-/**
- * Reads adapter env keys (e.g. ANTHROPIC_API_KEY) from the current process
- * environment. The plugin worker runs inside paperclip-server's pod, which has
- * these vars injected at deploy time.
- *
- * M4b approach: env vars sourced from process.env at acquire time.
- * TODO: future milestones may thread per-run secrets differently (e.g. via
- * a secret store reference on the environment config).
- */
-function extractAdapterEnvFromProcess(envKeys: string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const k of envKeys) {
-    const v = process.env[k];
-    if (v) out[k] = v;
-  }
-  return out;
 }
 
 function generateBootstrapToken(): string {
@@ -136,7 +118,7 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
-    const adapterDefaults = getAdapterDefaults(cfg.adapterType);
+    const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
       if (cfg.egressAllowCidrs.length === 0) {
@@ -212,7 +194,7 @@ const plugin = definePlugin({
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
     // it in paperclip-server logs even if they missed the validation step.
-    const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType);
+    const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType, config.adapters);
     const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
     if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
       if (config.egressAllowCidrs.length === 0) {
@@ -234,7 +216,7 @@ const plugin = definePlugin({
 
     // Ensure the tenant namespace and all its RBAC / network policy resources
     // exist before we try to create the Job.
-    const adapterDefaults = getAdapterDefaults(config.adapterType);
+    const adapterDefaults = getAdapterDefaults(config.adapterType, config.adapters);
 
     await ensureTenant(clients, {
       namespace,
@@ -299,9 +281,9 @@ const plugin = definePlugin({
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
 
-    // M4b: adapter env vars are sourced from the plugin worker's own process
-    // environment (paperclip-server pod has them injected at deploy time).
-    const adapterEnv = extractAdapterEnvFromProcess(adapterDefaults.envKeys);
+    // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
+    // the process-env secrets named by envKeys override it.
+    const adapterEnv = buildAdapterEnv(adapterDefaults);
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
