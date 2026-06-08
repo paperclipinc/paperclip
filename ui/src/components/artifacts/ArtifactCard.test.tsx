@@ -168,7 +168,6 @@ describe("ArtifactCard", () => {
     }
   });
 
-
   it("renders a falling-back video placeholder when no content path exists", () => {
     const markup = renderToStaticMarkup(
       <ArtifactCard artifact={makeArtifact({ mediaKind: "video", contentPath: null })} />,

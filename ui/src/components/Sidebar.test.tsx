@@ -92,7 +92,6 @@ vi.mock("./SidebarProjects", () => ({
   SidebarProjects: () => <div data-testid="sidebar-projects">Projects collapsible</div>,
 }));
 
-
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
     await Promise.resolve();

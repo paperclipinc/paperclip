@@ -373,7 +373,6 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
   });
 });
 
-
 describe("stripHostWorkspaceProvisionForLowTrustSandbox", () => {
   it("removes only the host-side provision command for sandbox-backed low-trust runs", () => {
     const config = {

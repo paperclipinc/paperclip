@@ -94,7 +94,6 @@ describe("artifactsApi.list", () => {
     expect(result.nextCursor).toBe("next");
   });
 
-
   it("returns the envelope shape from the backend", async () => {
     const artifact = sampleArtifact();
     mockApi.get.mockResolvedValue({ artifacts: [artifact], nextCursor: "next" });
