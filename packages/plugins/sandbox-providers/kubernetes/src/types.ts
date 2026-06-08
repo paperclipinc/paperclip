@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { adapterRegistrySchema } from "@paperclipai/shared";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
@@ -44,6 +45,13 @@ export const kubernetesProviderConfigSchema = z
       .refine((v) => KNOWN_ADAPTER_TYPES.has(v), {
         message: "adapterType must be one of the known adapter types",
       }),
+
+    /**
+     * Optional declarative adapter registry. When present it is authoritative
+     * for runtime image / envKeys / allowFqdns / probe / defaultEnv resolution
+     * (replace semantics). Absent = built-in defaults.
+     */
+    adapters: adapterRegistrySchema.optional(),
 
     /**
      * The sandbox backend to use.
