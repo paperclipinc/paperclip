@@ -47,17 +47,19 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Build + push base + opencode + pi (multi-arch)
+      - name: Build + push base + opencode + pi (linux/amd64)
         id: bake
         run: |
           # Scope: cloud agent execution currently ships opencode + pi only. We
           # build just those two harness images (+ their base) to keep the
           # publish fast and avoid failing on harnesses we do not deploy yet.
+          # Platforms come from the bake HCL (linux/amd64; our cluster is amd64).
+          # Use --push rather than a "*.push" --set so the wildcard does not hit
+          # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
             -f docker/agent-runtime/buildx-bake.hcl \
             base opencode pi \
-            --set "*.platforms=linux/amd64,linux/arm64" \
-            --set "*.push=true" \
+            --push \
             --metadata-file=bake-metadata.json
           # Extract digests for cosign signing
           BASE_DIGEST=$(jq -r '."base"."containerimage.digest"' bake-metadata.json)
