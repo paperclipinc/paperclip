@@ -1,4 +1,4 @@
-import type { AdapterRegistryEntry } from "@paperclipai/shared";
+import type { AdapterRegistryEntry } from "./adapter-registry.js";
 
 export interface AdapterDefaults {
   runtimeImage: string;

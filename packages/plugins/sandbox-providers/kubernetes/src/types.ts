@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { adapterRegistrySchema } from "@paperclipai/shared";
+import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;

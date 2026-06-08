@@ -5,7 +5,7 @@ import {
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
-import type { AdapterRegistryEntry } from "@paperclipai/shared";
+import type { AdapterRegistryEntry } from "../../src/adapter-registry.js";
 
 describe("adapter-defaults (built-in)", () => {
   it("returns defaults for claude_local", () => {
