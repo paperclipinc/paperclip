@@ -17,6 +17,9 @@ target "claude" {
   dockerfile = "docker/agent-runtime/Dockerfile.claude"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-claude:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -27,6 +30,9 @@ target "codex" {
   dockerfile = "docker/agent-runtime/Dockerfile.codex"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-codex:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -37,6 +43,9 @@ target "gemini" {
   dockerfile = "docker/agent-runtime/Dockerfile.gemini"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-gemini:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -47,6 +56,9 @@ target "acpx" {
   dockerfile = "docker/agent-runtime/Dockerfile.acpx"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-acpx:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -57,6 +69,9 @@ target "opencode" {
   dockerfile = "docker/agent-runtime/Dockerfile.opencode"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-opencode:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -67,6 +82,9 @@ target "pi" {
   dockerfile = "docker/agent-runtime/Dockerfile.pi"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-pi:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
@@ -77,6 +95,9 @@ target "hermes" {
   dockerfile = "docker/agent-runtime/Dockerfile.hermes"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-hermes:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
   }
