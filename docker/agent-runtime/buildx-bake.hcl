@@ -8,14 +8,14 @@ variable "REGISTRY" { default = "ghcr.io/paperclipinc" }
 target "base" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.base"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-base:${VERSION}"]
 }
 
 target "claude" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.claude"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-claude:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -25,7 +25,7 @@ target "claude" {
 target "codex" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.codex"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-codex:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -35,7 +35,7 @@ target "codex" {
 target "gemini" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.gemini"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-gemini:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -45,7 +45,7 @@ target "gemini" {
 target "acpx" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.acpx"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-acpx:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -55,7 +55,7 @@ target "acpx" {
 target "opencode" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.opencode"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-opencode:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -65,7 +65,7 @@ target "opencode" {
 target "pi" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.pi"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-pi:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
@@ -75,7 +75,7 @@ target "pi" {
 target "hermes" {
   context = "."
   dockerfile = "docker/agent-runtime/Dockerfile.hermes"
-  platforms = ["linux/amd64", "linux/arm64"]
+  platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-hermes:${VERSION}"]
   contexts = {
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
