@@ -86,6 +86,24 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "vm" })),
     ).toThrow(/PAPERCLIP_EXECUTION_MODE/);
   });
+
+  it("attaches the declared adapter registry to the kubernetes config", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_ADAPTERS: JSON.stringify([
+          { adapterType: "opencode_local", runtimeImage: "img", envKeys: ["ANTHROPIC_API_KEY"], allowFqdns: [], probeCommand: ["opencode", "--version"], defaultEnv: { ANTHROPIC_BASE_URL: "http://bifrost:8080" } },
+        ]),
+      }),
+    );
+    expect(parsed?.kubernetesConfig.adapters).toHaveLength(1);
+    expect(parsed?.kubernetesConfig.adapters?.[0].adapterType).toBe("opencode_local");
+  });
+
+  it("leaves adapters undefined when PAPERCLIP_ADAPTERS is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.kubernetesConfig.adapters).toBeUndefined();
+  });
 });
 
 describe("applyExecutionPolicyBootstrap", () => {

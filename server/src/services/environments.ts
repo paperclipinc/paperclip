@@ -47,6 +47,7 @@ export interface KubernetesEnvironmentConfigInput {
   namespacePrefix?: string;
   imageRegistry?: string;
   adapterType?: string;
+  adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
   [key: string]: unknown;
 }
 
