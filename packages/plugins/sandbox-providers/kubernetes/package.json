@@ -50,6 +50,7 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.0.0",
+    "@paperclipai/shared": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {
