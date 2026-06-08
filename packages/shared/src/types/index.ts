@@ -129,6 +129,7 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  ClearAgentErrorResponse,
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
