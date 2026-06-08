@@ -22,6 +22,7 @@ import type { InstanceExecutionMode } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { environmentService, type KubernetesEnvironmentConfigInput } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { parseAdapterRegistryEnv } from "./adapter-registry-bootstrap.js";
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 
@@ -107,6 +108,9 @@ export function parseExecutionPolicyBootstrapEnv(
 
   const egressAllowCidrs = parseList(env.PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS);
   if (egressAllowCidrs) kubernetesConfig.egressAllowCidrs = egressAllowCidrs;
+
+  const adapters = parseAdapterRegistryEnv(env);
+  if (adapters) kubernetesConfig.adapters = adapters;
 
   return { executionMode: "kubernetes", kubernetesConfig };
 }

@@ -39,6 +39,10 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import {
+  parseAdapterRegistryEnv,
+  reconcileAdapterAvailability,
+} from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -877,6 +881,12 @@ export async function startServer(): Promise<StartedServer> {
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
   await waitForExternalAdapters();
+
+  // Reconcile the agent-creation picker to the declaratively-configured adapter
+  // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
+  // known-adapter list is complete. Fail loud on misconfig (a declared adapter
+  // with no implementation), consistent with the execution-policy bootstrap.
+  reconcileAdapterAvailability(parseAdapterRegistryEnv());
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

@@ -1,8 +1,12 @@
+import type { AdapterRegistryEntry } from "./adapter-registry.js";
+
 export interface AdapterDefaults {
   runtimeImage: string;
   envKeys: string[];
   allowFqdns: string[];
   probeCommand: string[];
+  /** Non-secret env injected as the base layer for the Job (process-env wins on top). */
+  defaultEnv?: Record<string, string>;
 }
 
 const REGISTRY: Record<string, AdapterDefaults> = {
@@ -52,10 +56,61 @@ const REGISTRY: Record<string, AdapterDefaults> = {
 
 export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
 
-export function getAdapterDefaults(adapterType: string): AdapterDefaults {
+function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
+  // Only runtimeImage is strictly required. The array fields are optional and
+  // default to []: the operator emits them with `omitempty`, so a genuinely
+  // empty allowFqdns/envKeys/probeCommand arrives as undefined, which is valid
+  // (no extra egress / no forwarded secrets / no probe), NOT an error.
+  if (!entry.runtimeImage) {
+    throw new Error(
+      `Adapter "${entry.adapterType}" is missing required runtime field: runtimeImage`,
+    );
+  }
+  return {
+    runtimeImage: entry.runtimeImage,
+    envKeys: entry.envKeys ?? [],
+    allowFqdns: entry.allowFqdns ?? [],
+    probeCommand: entry.probeCommand ?? [],
+    defaultEnv: entry.defaultEnv,
+  };
+}
+
+/**
+ * Resolve the runtime defaults for an adapter. When a `registry` is supplied it
+ * is authoritative (replace semantics): the type MUST be present and complete,
+ * else this throws. With no registry, falls back to the built-in REGISTRY.
+ */
+export function getAdapterDefaults(
+  adapterType: string,
+  registry?: readonly AdapterRegistryEntry[],
+): AdapterDefaults {
+  if (registry && registry.length > 0) {
+    const entry = registry.find((e) => e.adapterType === adapterType);
+    if (!entry) {
+      throw new Error(`Adapter "${adapterType}" is not in the configured adapter registry`);
+    }
+    return fromRegistryEntry(entry);
+  }
   const defaults = REGISTRY[adapterType];
   if (!defaults) {
     throw new Error(`Unknown adapter type: ${adapterType}`);
   }
   return defaults;
+}
+
+/**
+ * Build the per-run env for the Job: the non-secret `defaultEnv` is the base
+ * and the process-env values (the secret API keys named by `envKeys`) override
+ * it. Pure for testability.
+ */
+export function buildAdapterEnv(
+  defaults: AdapterDefaults,
+  processEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const out: Record<string, string> = { ...(defaults.defaultEnv ?? {}) };
+  for (const k of defaults.envKeys) {
+    const v = processEnv[k];
+    if (v) out[k] = v;
+  }
+  return out;
 }
