@@ -186,6 +186,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
+import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
@@ -8064,7 +8065,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (isExecutionForcedToKubernetes(executionPolicy)) {
-      const kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      let kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+      if (!kubernetesEnvironment) {
+        // Companies created after the startup execution-policy bootstrap (e.g.
+        // tenants provisioned on first auth) have no managed Kubernetes
+        // environment yet. When the instance is forced onto Kubernetes,
+        // provision it on demand then re-find, instead of refusing the run.
+        const bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        if (bootstrap) {
+          await environmentsSvc.ensureKubernetesEnvironment(
+            agent.companyId,
+            bootstrap.kubernetesConfig,
+          );
+          kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+        }
+      }
       if (!kubernetesEnvironment) {
         throw new Error(
           "Instance execution policy requires the Kubernetes sandbox provider " +
