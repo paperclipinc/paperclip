@@ -47,6 +47,14 @@ export interface KubernetesEnvironmentConfigInput {
   namespacePrefix?: string;
   imageRegistry?: string;
   adapterType?: string;
+  /**
+   * Sandbox lease RPC timeout in milliseconds. Read at lease time by
+   * `resolvePluginSandboxRpcTimeoutMs` to extend the worker-manager call
+   * timeout when acquiring a lease may take minutes (e.g. a cold node
+   * scale-up on an autoscale-to-zero pool). Stored verbatim in the
+   * environment config and validated by the sandbox config schema.
+   */
+  timeoutMs?: number;
   adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
   [key: string]: unknown;
 }

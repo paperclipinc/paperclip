@@ -104,6 +104,34 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
     expect(parsed?.kubernetesConfig.adapters).toBeUndefined();
   });
+
+  it("reads PAPERCLIP_K8S_RPC_TIMEOUT_MS into kubernetesConfig.timeoutMs", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_RPC_TIMEOUT_MS: "600000",
+      }),
+    );
+    expect(parsed?.kubernetesConfig.timeoutMs).toBe(600000);
+  });
+
+  it("omits timeoutMs when PAPERCLIP_K8S_RPC_TIMEOUT_MS is absent", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
+  });
+
+  it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
+    expect(() =>
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_RPC_TIMEOUT_MS: "0" }),
+      ),
+    ).toThrow(/PAPERCLIP_K8S_RPC_TIMEOUT_MS/);
+    expect(() =>
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_RPC_TIMEOUT_MS: "abc" }),
+      ),
+    ).toThrow(/PAPERCLIP_K8S_RPC_TIMEOUT_MS/);
+  });
 });
 
 describe("applyExecutionPolicyBootstrap", () => {

@@ -39,6 +39,19 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function parsePositiveIntMs(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `PAPERCLIP_K8S_RPC_TIMEOUT_MS must be a positive integer of milliseconds (got "${value}").`,
+    );
+  }
+  return parsed;
+}
+
 function parseList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   const items = value
@@ -99,6 +112,9 @@ export function parseExecutionPolicyBootstrapEnv(
 
   const imageRegistry = env.PAPERCLIP_K8S_IMAGE_REGISTRY?.trim();
   if (imageRegistry) kubernetesConfig.imageRegistry = imageRegistry;
+
+  const rpcTimeoutMs = parsePositiveIntMs(env.PAPERCLIP_K8S_RPC_TIMEOUT_MS);
+  if (rpcTimeoutMs !== undefined) kubernetesConfig.timeoutMs = rpcTimeoutMs;
 
   const adapterType = env.PAPERCLIP_K8S_ADAPTER_TYPE?.trim();
   if (adapterType) kubernetesConfig.adapterType = adapterType;
