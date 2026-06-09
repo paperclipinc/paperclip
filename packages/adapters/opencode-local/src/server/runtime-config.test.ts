@@ -157,6 +157,20 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "anthropic/tensorix/deepseek/deepseek-chat-v3.1" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { small_model?: string };
+    expect(runtimeConfig.small_model).toBe("anthropic/tensorix/deepseek/deepseek-chat-v3.1");
+    await prepared.cleanup();
+  });
+
   it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
