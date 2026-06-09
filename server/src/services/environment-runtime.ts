@@ -890,26 +890,15 @@ function createPluginEnvironmentDriver(
         throw new Error(`Expected plugin environment config for driver "${input.environment.driver}".`);
       }
       const { plugin } = await resolvePluginDriver(parsed.config);
-      // Acquiring a lease can provision real infrastructure (e.g. the kubernetes
-      // sandbox provider creates a pod, which may require a cold node scale-up on
-      // an autoscale-to-zero pool: minutes, not seconds). The default 30s RPC
-      // timeout is far too short for that, so allow up to 10 minutes here (capped
-      // by the worker manager's MAX_RPC_TIMEOUT_MS).
-      const ACQUIRE_LEASE_TIMEOUT_MS = 10 * 60 * 1000;
-      const providerLease = await workerManager.call(
-        plugin.id,
-        "environmentAcquireLease",
-        {
-          driverKey: parsed.config.driverKey,
-          companyId: input.companyId,
-          environmentId: input.environment.id,
-          issueId: input.issueId,
-          config: parsed.config.driverConfig,
-          runId: input.heartbeatRunId ?? randomUUID(),
-          workspaceMode: input.executionWorkspaceMode ?? undefined,
-        },
-        ACQUIRE_LEASE_TIMEOUT_MS,
-      );
+      const providerLease = await workerManager.call(plugin.id, "environmentAcquireLease", {
+        driverKey: parsed.config.driverKey,
+        companyId: input.companyId,
+        environmentId: input.environment.id,
+        issueId: input.issueId,
+        config: parsed.config.driverConfig,
+        runId: input.heartbeatRunId ?? randomUUID(),
+        workspaceMode: input.executionWorkspaceMode ?? undefined,
+      });
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
