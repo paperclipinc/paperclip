@@ -99,6 +99,26 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("reads PAPERCLIP_OPENCODE_PROVIDERS from process.env when absent from the run env", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "tensorix/x": {} } } };
+    process.env.PAPERCLIP_OPENCODE_PROVIDERS = JSON.stringify(providers);
+    try {
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(runtimeConfig).toMatchObject({ provider: providers });
+      await prepared.cleanup();
+    } finally {
+      delete process.env.PAPERCLIP_OPENCODE_PROVIDERS;
+    }
+  });
+
   it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
