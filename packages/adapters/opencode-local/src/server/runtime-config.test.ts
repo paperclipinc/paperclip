@@ -65,6 +65,126 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const providers = {
+      bifrost: {
+        npm: "@ai-sdk/openai-compatible",
+        name: "Bifrost EU",
+        options: {
+          baseURL: "http://bifrost.bifrost.svc.cluster.local:8080/v1",
+          apiKey: "{env:ANTHROPIC_API_KEY}",
+        },
+        models: { "tensorix/deepseek/deepseek-chat-v3.1": { name: "DeepSeek v3.1" } },
+      },
+    };
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers),
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).toMatchObject({
+      permission: { read: "allow", external_directory: "allow" },
+      provider: providers,
+    });
+    expect(prepared.notes.some((n) => n.includes("bifrost"))).toBe(true);
+    await prepared.cleanup();
+  });
+
+  it("reads PAPERCLIP_OPENCODE_PROVIDERS from process.env when absent from the run env", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "tensorix/x": {} } } };
+    process.env.PAPERCLIP_OPENCODE_PROVIDERS = JSON.stringify(providers);
+    try {
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(runtimeConfig).toMatchObject({ provider: providers });
+      await prepared.cleanup();
+    } finally {
+      delete process.env.PAPERCLIP_OPENCODE_PROVIDERS;
+    }
+  });
+
+  it("expands {env:VAR} placeholders in custom providers using the run/process env (bakes the literal vk)", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const providers = {
+      bifrost: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "http://bifrost/v1", apiKey: "{env:ANTHROPIC_API_KEY}" },
+        models: { "tensorix/x": {} },
+      },
+    };
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers), ANTHROPIC_API_KEY: "sk-bf-REALVK" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { provider: { bifrost: { options: { apiKey: string } } } };
+    // The {env:...} placeholder must be replaced with the literal value, so OpenCode
+    // does not depend on its sandboxed process env carrying the key.
+    expect(runtimeConfig.provider.bifrost.options.apiKey).toBe("sk-bf-REALVK");
+    await prepared.cleanup();
+  });
+
+  it("leaves an unresolvable {env:VAR} placeholder intact", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const providers = { bifrost: { options: { apiKey: "{env:DEFINITELY_UNSET_VAR_XYZ}" }, models: { "x/y": {} } } };
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers) },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { provider: { bifrost: { options: { apiKey: string } } } };
+    expect(runtimeConfig.provider.bifrost.options.apiKey).toBe("{env:DEFINITELY_UNSET_VAR_XYZ}");
+    await prepared.cleanup();
+  });
+
+  it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "anthropic/tensorix/deepseek/deepseek-chat-v3.1" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { small_model?: string };
+    expect(runtimeConfig.small_model).toBe("anthropic/tensorix/deepseek/deepseek-chat-v3.1");
+    await prepared.cleanup();
+  });
+
+  it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: "not json" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.provider).toBeUndefined();
+    await prepared.cleanup();
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
