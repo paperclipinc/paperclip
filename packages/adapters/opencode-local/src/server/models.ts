@@ -175,7 +175,7 @@ export async function discoverOpenCodeModelsCached(input: {
   return models;
 }
 
-function isTruthyEnvFlag(value: string | undefined): boolean {
+export function isTruthyEnvFlag(value: string | undefined): boolean {
   if (value === undefined) return false;
   const v = value.trim().toLowerCase();
   return v === "true" || v === "1" || v === "yes";
