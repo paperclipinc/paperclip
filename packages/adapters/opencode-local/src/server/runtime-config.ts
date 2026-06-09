@@ -108,7 +108,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // gateway model (e.g. an EU LLM gateway exposing OpenAI-compatible /v1) requires a
   // custom provider with an explicit models map. We accept it as config (not
   // hard-coded) so the gateway URL, key env, and model list stay declarative.
-  const gatewayProviders = parseProviderConfig(input.env.PAPERCLIP_OPENCODE_PROVIDERS);
+  const gatewayProviders = parseProviderConfig(
+    input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+  );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
   const nextProvider = gatewayProviders
     ? { ...existingProvider, ...gatewayProviders }
