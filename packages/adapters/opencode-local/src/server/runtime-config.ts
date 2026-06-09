@@ -21,7 +21,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseProviderConfig(raw: unknown): Record<string, unknown> | null {
+// Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
+// gateway provider secrets (e.g. the LLM-gateway virtual key) into opencode.json
+// SERVER-SIDE, where the value is reliably present. OpenCode's own {env:...}
+// resolution happens inside the (possibly sandboxed) run process, whose env
+// plumbing is not guaranteed to carry the key to OpenCode's spawned server -- so
+// we resolve it here. Unresolvable placeholders are left intact for OpenCode to try.
+function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | undefined): T {
+  if (typeof value === "string") {
+    return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+      const resolved = resolve(name);
+      return resolved !== undefined && resolved.length > 0 ? resolved : match;
+    }) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => expandEnvPlaceholders(entry, resolve)) as unknown as T;
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = expandEnvPlaceholders(entry, resolve);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function parseProviderConfig(
+  raw: unknown,
+  resolveEnv: (name: string) => string | undefined,
+): Record<string, unknown> | null {
   if (typeof raw !== "string" || raw.trim().length === 0) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -29,7 +58,7 @@ function parseProviderConfig(raw: unknown): Record<string, unknown> | null {
     // Only keep provider entries that are themselves objects.
     const providers: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(parsed)) {
-      if (isPlainObject(value)) providers[key] = value;
+      if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
     }
     return Object.keys(providers).length > 0 ? providers : null;
   } catch {
@@ -108,8 +137,10 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // gateway model (e.g. an EU LLM gateway exposing OpenAI-compatible /v1) requires a
   // custom provider with an explicit models map. We accept it as config (not
   // hard-coded) so the gateway URL, key env, and model list stay declarative.
+  const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
   const gatewayProviders = parseProviderConfig(
     input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+    resolveEnv,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
   const nextProvider = gatewayProviders
