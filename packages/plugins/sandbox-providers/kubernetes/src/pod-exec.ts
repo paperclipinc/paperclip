@@ -29,8 +29,28 @@ type WebSocketLike = { close(): void };
 
 // Single-quote a string for safe interpolation into a sh -c script. Wraps in
 // '...' and escapes any embedded single quotes via '\'' (close, escape, reopen).
-function shQuote(segment: string): string {
+export function shQuote(segment: string): string {
   return `'${segment.replace(/'/g, "'\\''")}'`;
+}
+
+// Wrap a command so the given env vars are exported before it runs. The Kubernetes
+// exec API has no env field, so the only way to give an exec'd process additional
+// env is to run it under a shell that exports the vars and then `exec`s the real
+// command. PATH is deliberately skipped (the caller's PATH is the orchestrator's,
+// not the sandbox image's, and overriding it would break command resolution), and
+// only valid shell identifiers are exported. Returns the original command unchanged
+// when there is nothing to apply.
+export function wrapCommandWithEnv(
+  command: string[],
+  env: Record<string, string> | undefined | null,
+): string[] {
+  const entries = Object.entries(env && typeof env === "object" ? env : {}).filter(
+    ([key, value]) =>
+      typeof value === "string" && key !== "PATH" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key),
+  );
+  if (entries.length === 0) return command;
+  const exports = entries.map(([k, v]) => `export ${k}=${shQuote(v)};`).join(" ");
+  return ["/bin/sh", "-c", `${exports} exec ${command.map(shQuote).join(" ")}`];
 }
 
 export async function execInPod(

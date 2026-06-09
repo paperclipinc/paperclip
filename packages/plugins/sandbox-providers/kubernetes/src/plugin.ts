@@ -31,7 +31,7 @@ import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
-import { execInPod } from "./pod-exec.js";
+import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -558,12 +558,19 @@ const plugin = definePlugin({
         // decision.action === "passthrough" — fall through to normal exec
       }
 
-      const execCommand =
+      const baseExecCommand =
         command.length > 0 && args.length > 0
           ? [command, ...args]
           : command.length > 0
             ? ["/bin/sh", "-lc", command]
             : ["/bin/sh", "-l"];
+
+      // Apply the caller-provided run env (params.env) to the in-pod process. Without
+      // this the adapter's runtime env (e.g. XDG_CONFIG_HOME pointing at the shipped
+      // OpenCode config, plus helper settings like small_model/provider routing) never
+      // reaches the harness, which falls back to its in-image HOME config -> wrong or
+      // partial behaviour.
+      const execCommand = wrapCommandWithEnv(baseExecCommand, params.env);
 
       let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
