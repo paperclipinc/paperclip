@@ -7,6 +7,9 @@ on:
       - "main"
     tags:
       - "v*"
+  # Manual fallback: occasionally a push event fails to trigger this workflow,
+  # leaving main unbuilt. workflow_dispatch lets an operator force a build.
+  workflow_dispatch:
 
 permissions:
   contents: read
