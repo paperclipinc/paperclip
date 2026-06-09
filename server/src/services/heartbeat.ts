@@ -533,9 +533,8 @@ export function extractMentionedSkillIdsFromSources(
   for (const source of sources) {
     if (typeof source !== "string" || source.length === 0) continue;
     for (const skillId of extractSkillMentionIds(source)) {
-      if (isUuidLike(skillId)) {
-        mentionedIds.add(skillId);
-      }
+      if (!isUuidLike(skillId)) continue;
+      mentionedIds.add(skillId);
     }
   }
   return [...mentionedIds];
@@ -7959,18 +7958,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
-    const acceptedPlanWakeRouting = parseObject(context.acceptedPlanWakeRouting);
-    const acceptedPlanContinuationForTask =
-      isAcceptedPlanContinuationWakeContext(context, issueRef?.workMode) &&
-      Object.keys(acceptedPlanWakeRouting).length === 0;
-    const acceptedPlanCommentsForTask =
-      acceptedPlanContinuationForTask && Array.isArray(paperclipWakePayload?.comments)
-        ? paperclipWakePayload.comments.map((comment) => ({
-            id: readNonEmptyString(comment.id),
-            authorType: readNonEmptyString(comment.authorType),
-            body: readNonEmptyString(comment.body),
-          }))
-        : null;
     const taskMarkdown = buildPaperclipTaskMarkdown({
       issue: issueRef
         ? {
@@ -7986,8 +7973,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),
       },
-      acceptedPlanComments: acceptedPlanCommentsForTask,
-      acceptedPlanContinuation: acceptedPlanContinuationForTask,
+      acceptedPlanContinuation:
+        readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
+        && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
     });
     if (issueRef) {
       context.paperclipIssue = {
@@ -8067,10 +8055,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (isExecutionForcedToKubernetes(executionPolicy)) {
       let kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
       if (!kubernetesEnvironment) {
-        // Companies created after the startup execution-policy bootstrap (e.g.
-        // tenants provisioned on first auth) have no managed Kubernetes
-        // environment yet. When the instance is forced onto Kubernetes,
-        // provision it on demand then re-find, instead of refusing the run.
         const bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
         if (bootstrap) {
           await environmentsSvc.ensureKubernetesEnvironment(
