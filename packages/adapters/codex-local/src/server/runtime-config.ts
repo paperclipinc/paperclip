@@ -85,17 +85,17 @@ function parseCodexProvidersConfig(
   } catch {
     // Surface the misconfiguration instead of silently dropping the provider
     // config; an unparseable value would otherwise be undiagnosable.
-    notes.push("PAPERCLIP_CODEX_PROVIDERS contains invalid JSON; custom model providers ignored.");
+    notes.push("PAPERCLIP_CODEX_PROVIDERS contains invalid JSON; custom providers ignored.");
     return null;
   }
   if (!isPlainObject(parsed)) {
-    notes.push("PAPERCLIP_CODEX_PROVIDERS is not a JSON object; custom model providers ignored.");
+    notes.push("PAPERCLIP_CODEX_PROVIDERS is set but is not a JSON object; custom providers ignored.");
     return null;
   }
   const rawProviders = parsed.providers;
   if (!isPlainObject(rawProviders)) {
     notes.push(
-      'PAPERCLIP_CODEX_PROVIDERS has no "providers" object; custom model providers ignored.',
+      'PAPERCLIP_CODEX_PROVIDERS has no "providers" object; custom providers ignored.',
     );
     return null;
   }
@@ -113,8 +113,10 @@ function parseCodexProvidersConfig(
   if (Object.keys(providers).length === 0) {
     notes.push(
       `PAPERCLIP_CODEX_PROVIDERS "providers" contains no usable entries${
-        skipped.length > 0 ? ` (skipped non-object or empty-name provider(s): ${skipped.join(", ")})` : ""
-      }; custom model providers ignored.`,
+        skipped.length > 0
+          ? ` (skipped provider(s) with empty names or non-object values: ${skipped.join(", ")})`
+          : ""
+      }; custom providers ignored.`,
     );
     return null;
   }

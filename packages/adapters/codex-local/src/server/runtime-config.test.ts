@@ -230,7 +230,7 @@ describe("prepareCodexRuntimeConfig", () => {
       [JSON.stringify(["providers"]), "is not a JSON object"],
       [JSON.stringify({ no_providers: true }), 'has no "providers" object'],
       [JSON.stringify({ providers: {} }), "contains no usable entries"],
-      [JSON.stringify({ providers: { gw: "nope" } }), "skipped non-object or empty-name provider(s): gw"],
+      [JSON.stringify({ providers: { gw: "nope" } }), "skipped provider(s) with empty names or non-object values: gw"],
     ];
     for (const [raw, noteFragment] of cases) {
       const prepared = await prepareCodexRuntimeConfig({
@@ -239,7 +239,7 @@ describe("prepareCodexRuntimeConfig", () => {
       });
       expect(prepared.notes).toHaveLength(1);
       expect(prepared.notes[0]).toContain(noteFragment);
-      expect(prepared.notes[0]).toContain("custom model providers ignored");
+      expect(prepared.notes[0]).toContain("custom providers ignored");
       expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
       await prepared.cleanup();
     }
