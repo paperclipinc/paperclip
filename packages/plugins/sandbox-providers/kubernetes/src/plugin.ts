@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
@@ -10,6 +11,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -32,6 +34,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
+import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -96,6 +99,14 @@ function getOrCreateUploadInterceptor(leaseId: string): FastUploadInterceptor {
 // On worker restart this resets, which is fine: the first exec on each
 // lease then re-confirms readiness from scratch.
 const readySandboxesByLease = new Set<string>();
+
+// How long onEnvironmentResumeLease waits for an existing Sandbox pod to
+// report Ready before declaring the lease non-resumable. Deliberately short:
+// this is a liveness check on an already-provisioned pod, not a fresh
+// provision — if the pod isn't (almost) up, falling back to acquireLease is
+// faster and more reliable than waiting.
+const RESUME_READY_TIMEOUT_MS = 30_000;
+const RESUME_READY_POLL_MS = 1_000;
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -327,6 +338,78 @@ const plugin = definePlugin({
     };
   },
 
+  async onEnvironmentResumeLease(
+    params: PluginEnvironmentResumeLeaseParams,
+  ): Promise<PluginEnvironmentLease> {
+    const config = kubernetesProviderConfigSchema.parse(params.config);
+    const namespace =
+      typeof params.leaseMetadata?.namespace === "string"
+        ? params.leaseMetadata.namespace
+        : deriveTenantNamespace(config, params.companyId);
+    const leaseBackend =
+      typeof params.leaseMetadata?.backend === "string"
+        ? (params.leaseMetadata.backend as "sandbox-cr" | "job")
+        : config.backend;
+    // acquireLease names the per-run Secret `${jobName}-env` and uses jobName
+    // as the providerLeaseId, so the suffix fallback reconstructs it exactly.
+    const secretName =
+      typeof params.leaseMetadata?.secretName === "string"
+        ? params.leaseMetadata.secretName
+        : `${params.providerLeaseId}-env`;
+
+    const kc = createKubeConfig({
+      inCluster: config.inCluster,
+      kubeconfig: config.kubeconfig,
+    });
+    const clients = makeKubeClients(kc);
+
+    const check = await checkLeaseResumable(clients, {
+      namespace,
+      name: params.providerLeaseId,
+      backend: leaseBackend,
+      readyTimeoutMs: RESUME_READY_TIMEOUT_MS,
+      pollMs: RESUME_READY_POLL_MS,
+    });
+
+    if (!check.resumable) {
+      // Kubernetes pods are NOT restartable the way Daytona sandboxes are: a
+      // stopped Daytona sandbox can be started again by ID, but a k8s pod that
+      // is gone or terminally failed can never be revived in place. Gone = not
+      // resumable, by design. Returning providerLeaseId: null tells the server
+      // the lease expired so it falls back to a fresh acquireLease.
+      return {
+        providerLeaseId: null,
+        metadata: { expired: true, reason: check.reason },
+      };
+    }
+
+    // A resumed lease starts with clean per-lease state: drop any stale upload
+    // interceptor buffers a previous run on this lease may have left behind.
+    uploadInterceptorsByLease.delete(params.providerLeaseId);
+    if (leaseBackend === "sandbox-cr") {
+      // We just observed the Sandbox pod Ready, so the first exec on the
+      // resumed lease can skip its readiness poll.
+      readySandboxesByLease.add(params.providerLeaseId);
+    }
+
+    const leaseMetadata: KubernetesLeaseMetadata = {
+      namespace,
+      jobName: params.providerLeaseId,
+      podName: check.podName,
+      secretName,
+      phase: check.phase,
+      backend: leaseBackend,
+    };
+
+    return {
+      providerLeaseId: params.providerLeaseId,
+      metadata: {
+        ...leaseMetadata,
+        resumedLease: true,
+      } as unknown as Record<string, unknown>,
+    };
+  },
+
   async onEnvironmentRealizeWorkspace(
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
@@ -383,6 +466,51 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+  },
+
+  async onEnvironmentDestroyLease(
+    params: PluginEnvironmentDestroyLeaseParams,
+  ): Promise<void> {
+    if (!params.providerLeaseId) return;
+    const config = kubernetesProviderConfigSchema.parse(params.config);
+    const namespace =
+      typeof params.leaseMetadata?.namespace === "string"
+        ? params.leaseMetadata.namespace
+        : deriveTenantNamespace(config, params.companyId);
+    const leaseBackend =
+      typeof params.leaseMetadata?.backend === "string"
+        ? (params.leaseMetadata.backend as "sandbox-cr" | "job")
+        : config.backend;
+    const secretName =
+      typeof params.leaseMetadata?.secretName === "string"
+        ? params.leaseMetadata.secretName
+        : `${params.providerLeaseId}-env`;
+    const podName =
+      typeof params.leaseMetadata?.podName === "string" &&
+      params.leaseMetadata.podName.length > 0
+        ? params.leaseMetadata.podName
+        : null;
+
+    // Clear per-lease in-memory state up front, regardless of what the
+    // cluster says — the lease is dead either way.
+    uploadInterceptorsByLease.delete(params.providerLeaseId);
+    readySandboxesByLease.delete(params.providerLeaseId);
+
+    const kc = createKubeConfig({
+      inCluster: config.inCluster,
+      kubeconfig: config.kubeconfig,
+    });
+    const clients = makeKubeClients(kc);
+
+    // Forcibly delete everything acquireLease created (Sandbox CR / Job, pod,
+    // per-run Secret). 404s are success — destroy must be idempotent.
+    await destroyLeaseResources(clients, {
+      namespace,
+      name: params.providerLeaseId,
+      backend: leaseBackend,
+      podName,
+      secretName,
+    });
   },
 
   async onEnvironmentExecute(
