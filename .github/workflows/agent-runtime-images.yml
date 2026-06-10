@@ -47,27 +47,32 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Build + push base + opencode + pi (linux/amd64)
+      - name: Build + push base + opencode + pi + codex + gemini (linux/amd64)
         id: bake
         run: |
-          # Scope: cloud agent execution currently ships opencode + pi only. We
-          # build just those two harness images (+ their base) to keep the
-          # publish fast and avoid failing on harnesses we do not deploy yet.
+          # Scope: the harness images cloud agent execution ships (opencode + pi
+          # proven e2e; codex + gemini in bring-up). claude/acpx/hermes stay out
+          # (claude_local is curated out of the cloud registry; the others are
+          # not deployed yet).
           # Platforms come from the bake HCL (linux/amd64; our cluster is amd64).
           # Use --push rather than a "*.push" --set so the wildcard does not hit
           # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
             -f docker/agent-runtime/buildx-bake.hcl \
-            base opencode pi \
+            base opencode pi codex gemini \
             --push \
             --metadata-file=bake-metadata.json
           # Extract digests for cosign signing
           BASE_DIGEST=$(jq -r '."base"."containerimage.digest"' bake-metadata.json)
           OPENCODE_DIGEST=$(jq -r '."opencode"."containerimage.digest"' bake-metadata.json)
           PI_DIGEST=$(jq -r '."pi"."containerimage.digest"' bake-metadata.json)
+          CODEX_DIGEST=$(jq -r '."codex"."containerimage.digest"' bake-metadata.json)
+          GEMINI_DIGEST=$(jq -r '."gemini"."containerimage.digest"' bake-metadata.json)
           echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "opencode_digest=$OPENCODE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "pi_digest=$PI_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "codex_digest=$CODEX_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "gemini_digest=$GEMINI_DIGEST" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
@@ -83,3 +88,11 @@ jobs:
       - name: Cosign sign pi
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-pi@${{ steps.bake.outputs.pi_digest }}"
+
+      - name: Cosign sign codex
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-codex@${{ steps.bake.outputs.codex_digest }}"
+
+      - name: Cosign sign gemini
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-gemini@${{ steps.bake.outputs.gemini_digest }}"
