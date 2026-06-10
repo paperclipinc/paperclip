@@ -4,15 +4,18 @@ import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { resolveCloudTenantActor } from "./auth.js";
 
-// Minimal fake Drizzle Db: records every table passed to .insert() and supports the
-// chained call shapes used by resolveCloudTenantActor (values / onConflictDo* /
-// returning().then()). The chain is awaitable so directly-awaited inserts resolve.
+// Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
+// supports the chained call shapes used by resolveCloudTenantActor (values /
+// onConflictDo* / returning().then() / delete().where()). The chain is awaitable so
+// directly-awaited statements resolve.
 function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: "owner", status: "active" }) {
   const insertedTables: unknown[] = [];
+  const deletedTables: unknown[] = [];
   const chain: Record<string, unknown> = {};
   chain.values = () => chain;
   chain.onConflictDoUpdate = () => chain;
   chain.onConflictDoNothing = () => chain;
+  chain.where = () => chain;
   chain.returning = async () => [membershipRow];
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(undefined).then(resolve);
   const db = {
@@ -20,8 +23,12 @@ function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: 
       insertedTables.push(table);
       return chain;
     },
+    delete: (table: unknown) => {
+      deletedTables.push(table);
+      return chain;
+    },
   } as unknown as Db;
-  return { db, insertedTables };
+  return { db, insertedTables, deletedTables };
 }
 
 function fakeReq(headers: Record<string, string>): Request {
@@ -62,6 +69,13 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor?.memberships?.[0]?.companyId).toBe(actor?.companyIds?.[0]);
     expect(actor?.memberships?.[0]?.membershipRole).toBe("owner");
     expect(actor!.source).toBe("cloud_tenant");
+  });
+
+  it("purges stale instance_admin rows left by pre-hardening deployments", async () => {
+    const { db, deletedTables } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor).not.toBeNull();
+    expect(deletedTables).toContain(instanceUserRoles);
   });
 
   it("still upserts the user, company, and membership", async () => {

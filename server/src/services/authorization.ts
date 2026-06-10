@@ -625,7 +625,13 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
-      if (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId)) {
+      // cloud_tenant actors are company-scoped by contract and must never be
+      // elevated — not even via stale instance_admin rows left behind by
+      // deployments that ran the pre-hardening cloud_tenant path.
+      if (
+        input.actor.source !== "cloud_tenant" &&
+        (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
+      ) {
         return allow({
           action: input.action,
           reason: "allow_instance_admin",

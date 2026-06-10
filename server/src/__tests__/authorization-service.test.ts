@@ -355,6 +355,48 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("never elevates cloud_tenant actors through stale instance_admin rows", async () => {
+    const tenantCompany = await createCompany(db, "CloudTenantStale");
+    const otherCompany = await createCompany(db, "CloudTenantOther");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, otherCompany.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: tenantCompany.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    // Stale grant left behind by a pre-hardening cloud_tenant deployment.
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "board",
+        userId,
+        companyIds: [tenantCompany.id],
+        isInstanceAdmin: false,
+        source: "cloud_tenant",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_instance_admin");
+
+    // Control: the instanceUserRoles lookup still elevates non-cloud_tenant
+    // board actors, so the carve-out is scoped to the tenant contract only.
+    const sessionDecision = await authorizationService(db).decide({
+      actor: { type: "board", userId, companyIds: [tenantCompany.id], source: "session" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+    expect(sessionDecision).toMatchObject({ allowed: true, reason: "allow_instance_admin" });
+  });
+
   it("denies simple-mode assignment to a target agent from another company", async () => {
     const sourceCompany = await createCompany(db, "AssignmentSource");
     const targetCompany = await createCompany(db, "AssignmentTarget");
