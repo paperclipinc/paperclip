@@ -99,6 +99,19 @@ export function getAdapterDefaults(
 }
 
 /**
+ * Resolve the adapter type for a single run: prefer the run's adapter (the agent's,
+ * from the lease params) so one environment can serve mixed harnesses; fall back to
+ * the environment's configured default adapter when the run does not specify one.
+ */
+export function resolveRunAdapterType(
+  runAdapterType: string | null | undefined,
+  configAdapterType: string,
+): string {
+  const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
+  return trimmed.length > 0 ? trimmed : configAdapterType;
+}
+
+/**
  * Build the per-run env for the Job: the non-secret `defaultEnv` is the base
  * and the process-env values (the secret API keys named by `envKeys`) override
  * it. Pure for testability.

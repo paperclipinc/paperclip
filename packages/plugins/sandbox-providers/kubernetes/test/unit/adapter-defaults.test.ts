@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   getAdapterDefaults,
   buildAdapterEnv,
+  resolveRunAdapterType,
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
@@ -130,5 +131,19 @@ describe("buildAdapterEnv", () => {
       probeCommand: ["x"],
     };
     expect(buildAdapterEnv(defaults, {})).toEqual({});
+  });
+});
+
+describe("resolveRunAdapterType", () => {
+  it("prefers the run/agent adapter when provided (mixed-harness env)", () => {
+    expect(resolveRunAdapterType("pi_local", "opencode_local")).toBe("pi_local");
+  });
+  it("falls back to the environment default when the run adapter is missing/blank", () => {
+    expect(resolveRunAdapterType(undefined, "opencode_local")).toBe("opencode_local");
+    expect(resolveRunAdapterType(null, "opencode_local")).toBe("opencode_local");
+    expect(resolveRunAdapterType("   ", "opencode_local")).toBe("opencode_local");
+  });
+  it("trims the run adapter", () => {
+    expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
   });
 });

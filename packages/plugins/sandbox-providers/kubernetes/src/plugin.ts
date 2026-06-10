@@ -19,7 +19,7 @@ import {
   type KubernetesLeaseMetadata,
 } from "./types.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
-import { getAdapterDefaults, buildAdapterEnv } from "./adapter-defaults.js";
+import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
@@ -191,10 +191,17 @@ const plugin = definePlugin({
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
 
+    // The adapter for THIS run is the agent's adapter (params.adapterType) when
+    // supplied, so one environment can serve mixed harnesses; otherwise fall back
+    // to the environment's configured default adapter. getAdapterDefaults validates
+    // it is a registered adapter (throws otherwise), so a curated-out adapter fails
+    // the lease as before.
+    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
+
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
     // it in paperclip-server logs even if they missed the validation step.
-    const adapterDefaultsForWarn = getAdapterDefaults(config.adapterType, config.adapters);
+    const adapterDefaultsForWarn = getAdapterDefaults(effectiveAdapterType, config.adapters);
     const totalFqdnsForWarn = [...adapterDefaultsForWarn.allowFqdns, ...config.egressAllowFqdns];
     if (config.egressMode === "standard" && totalFqdnsForWarn.length > 0) {
       if (config.egressAllowCidrs.length === 0) {
@@ -216,7 +223,7 @@ const plugin = definePlugin({
 
     // Ensure the tenant namespace and all its RBAC / network policy resources
     // exist before we try to create the Job.
-    const adapterDefaults = getAdapterDefaults(config.adapterType, config.adapters);
+    const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
 
     await ensureTenant(clients, {
       namespace,
@@ -238,7 +245,7 @@ const plugin = definePlugin({
       runId: params.runId,
       agentId: params.runId,
       companyId: params.companyId,
-      adapterType: config.adapterType,
+      adapterType: effectiveAdapterType,
     });
 
     const image = resolveImage(
@@ -255,7 +262,7 @@ const plugin = definePlugin({
       ? buildSandboxCrManifest({
           namespace,
           sandboxName: jobName,
-          adapterType: config.adapterType,
+          adapterType: effectiveAdapterType,
           image,
           envSecretName: secretName,
           serviceAccountName: TENANT_SERVICE_ACCOUNT,
@@ -267,7 +274,7 @@ const plugin = definePlugin({
       : buildJobManifest({
           namespace,
           jobName,
-          adapterType: config.adapterType,
+          adapterType: effectiveAdapterType,
           image,
           envSecretName: secretName,
           serviceAccountName: TENANT_SERVICE_ACCOUNT,
