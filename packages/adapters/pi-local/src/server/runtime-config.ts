@@ -115,11 +115,18 @@ export async function preparePiRuntimeConfig(input: {
   }
 
   const agentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-config-"));
-  await fs.writeFile(
-    path.join(agentConfigDir, "models.json"),
-    `${JSON.stringify({ providers }, null, 2)}\n`,
-    "utf8",
-  );
+  try {
+    await fs.writeFile(
+      path.join(agentConfigDir, "models.json"),
+      `${JSON.stringify({ providers }, null, 2)}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    // Never leak the temp dir when the write fails (e.g. disk-full): the
+    // caller only receives the cleanup handle on success.
+    await fs.rm(agentConfigDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
 
   return {
     env: {
