@@ -384,7 +384,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // is provided. Both settings schema generations are written (legacy
       // selectedAuthType + current security.auth.selectedType). An existing
       // settings.json (user-shipped via workspace) is left untouched.
-      if (remoteHomeDir && (env.GEMINI_API_KEY || env.GOOGLE_API_KEY)) {
+      // Key presence check spans the run env AND the host process env: in the
+      // managed sandbox path the key never enters the adapter's run env -- it
+      // reaches the agent pod via the provider's per-run secret (envKeys
+      // passthrough from the host env), so the host env is the signal here.
+      const hasGeminiApiKey = Boolean(
+        env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
+        process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+      );
+      if (remoteHomeDir && hasGeminiApiKey) {
         const remoteSettingsPath = path.posix.join(remoteHomeDir, ".gemini", "settings.json");
         const authSettingsJson = JSON.stringify({
           selectedAuthType: "gemini-api-key",
