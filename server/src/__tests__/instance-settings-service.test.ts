@@ -7,6 +7,7 @@ describe("instance settings service", () => {
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -15,7 +16,9 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
+      enableStreamlinedLeftNavigation: false,
       enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,

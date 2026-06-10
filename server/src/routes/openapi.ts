@@ -35,6 +35,8 @@ import {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companyArtifactsQuerySchema,
+  companyArtifactsResponseSchema,
   // Routine
   createRoutineSchema,
   updateRoutineSchema,
@@ -124,6 +126,8 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileResourceQuerySchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -416,8 +420,20 @@ const responses = {
     description: "Not found",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  conflict: {
+    description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  unprocessable: {
+    description: "Unprocessable entity",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   serverError: {
     description: "Internal server error",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  tooManyRequests: {
+    description: "Too many requests",
     content: { "application/json": { schema: ErrorSchema } },
   },
 };
@@ -556,6 +572,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "GET /api/issues/{issueId}/file-resources/content",
+  "GET /api/issues/{issueId}/file-resources/list",
+  "GET /api/issues/{issueId}/file-resources/resolve",
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
@@ -593,6 +612,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/issues/{id}/documents/{key}/annotations",
   "POST /api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
   "POST /api/issues/{id}/work-products",
+  "POST /api/issues/{id}/low-trust/promotions",
   "POST /api/issues/{id}/approvals",
   "POST /api/companies/{companyId}/issues",
   "POST /api/issues/{id}/children",
@@ -785,6 +805,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/artifacts",
+  tags: ["companies"],
+  summary: "List company artifacts",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: companyArtifactsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Company artifact projection",
+      content: {
+        "application/json": {
+          schema: companyArtifactsResponseSchema,
+        },
+      },
+    },
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}",
   tags: ["companies"],
@@ -870,6 +912,24 @@ registry.registerPath({
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+// ─── Teams Catalog ──────────────────────────────────────────────────────────
+
+for (const route of [
+  ["get", "/api/teams/catalog", "List catalog teams"],
+  ["get", "/api/teams/catalog/{catalogId}/files", "Get catalog team file"],
+  ["get", "/api/teams/catalog/{catalogId}", "Get catalog team"],
+  ["get", "/api/companies/{companyId}/teams/catalog/installed", "List installed catalog teams"],
+  ["post", "/api/companies/{companyId}/teams/catalog/{catalogId}/preview", "Preview catalog team install"],
+  ["post", "/api/companies/{companyId}/teams/catalog/{catalogId}/install", "Install catalog team"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["teams"],
+    summary: route[2],
+  });
+}
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
@@ -1198,6 +1258,15 @@ registry.registerPath({
   summary: "Resume an agent",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/clear-error",
+  tags: ["agents"],
+  summary: "Clear an agent error",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -1576,6 +1645,60 @@ registry.registerPath({
   summary: "Get a feedback trace bundle",
   request: { params: z.object({ traceId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/list",
+  tags: ["issues"],
+  summary: "List workspace files for an issue",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileListQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/resolve",
+  tags: ["issues"],
+  summary: "Resolve an issue workspace file",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/content",
+  tags: ["issues"],
+  summary: "Read issue workspace file content",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
 });
 
 registry.registerPath({
@@ -4218,6 +4341,20 @@ registerCurrentRoute({
   summary: "Add a document annotation comment",
   body: createDocumentAnnotationCommentSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/low-trust/promotions",
+  tags: ["issues"],
+  summary: "Promote quarantined low-trust output",
+  body: z.object({
+    sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
+    sourceArtifactId: z.string().uuid(),
+    title: z.string().trim().min(1).max(200),
+    summary: z.string().trim().min(1).max(8_000),
+  }),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 registerCurrentRoute({
