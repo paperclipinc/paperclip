@@ -76,23 +76,40 @@ function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | 
 function parseCodexProvidersConfig(
   raw: unknown,
   resolveEnv: (name: string) => string | undefined,
+  notes: string[],
 ): ParsedCodexProvidersConfig | null {
   if (typeof raw !== "string" || raw.trim().length === 0) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
+    // Surface the misconfiguration instead of silently dropping the provider
+    // config; an unparseable value would otherwise be undiagnosable.
+    notes.push("PAPERCLIP_CODEX_PROVIDERS contains invalid JSON; custom model providers ignored.");
     return null;
   }
-  if (!isPlainObject(parsed)) return null;
+  if (!isPlainObject(parsed)) {
+    notes.push("PAPERCLIP_CODEX_PROVIDERS is not a JSON object; custom model providers ignored.");
+    return null;
+  }
   const rawProviders = parsed.providers;
-  if (!isPlainObject(rawProviders)) return null;
+  if (!isPlainObject(rawProviders)) {
+    notes.push(
+      'PAPERCLIP_CODEX_PROVIDERS has no "providers" object; custom model providers ignored.',
+    );
+    return null;
+  }
   const providers: Record<string, Record<string, unknown>> = {};
   for (const [key, value] of Object.entries(rawProviders)) {
     if (key.trim().length === 0 || !isPlainObject(value)) continue;
     providers[key] = expandEnvPlaceholders(value, resolveEnv);
   }
-  if (Object.keys(providers).length === 0) return null;
+  if (Object.keys(providers).length === 0) {
+    notes.push(
+      'PAPERCLIP_CODEX_PROVIDERS "providers" contains no usable entries; custom model providers ignored.',
+    );
+    return null;
+  }
   const modelProvider =
     typeof parsed.model_provider === "string" && parsed.model_provider.trim().length > 0
       ? parsed.model_provider.trim()
@@ -284,9 +301,11 @@ export async function prepareCodexRuntimeConfig(input: {
   codexHome: string | null;
 }): Promise<PreparedCodexRuntimeConfig> {
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
+  const notes: string[] = [];
   const parsed = parseCodexProvidersConfig(
     input.env.PAPERCLIP_CODEX_PROVIDERS ?? process.env.PAPERCLIP_CODEX_PROVIDERS,
     resolveEnv,
+    notes,
   );
 
   if (!parsed) {
@@ -298,16 +317,19 @@ export async function prepareCodexRuntimeConfig(input: {
         const stripped = stripManagedCodexProviderBlocks(existing);
         if (stripped !== existing) {
           await fs.writeFile(configTomlPath, stripped, "utf8");
+          const reason =
+            notes.length === 0 ? " (PAPERCLIP_CODEX_PROVIDERS is no longer set)" : "";
           return {
             notes: [
-              `Removed stale Paperclip-managed model provider blocks from "${configTomlPath}" (PAPERCLIP_CODEX_PROVIDERS is no longer set).`,
+              ...notes,
+              `Removed stale Paperclip-managed model provider blocks from "${configTomlPath}"${reason}.`,
             ],
             cleanup: async () => {},
           };
         }
       }
     }
-    return { notes: [], cleanup: async () => {} };
+    return { notes, cleanup: async () => {} };
   }
 
   if (!input.codexHome) {

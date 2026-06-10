@@ -223,13 +223,36 @@ describe("prepareCodexRuntimeConfig", () => {
     }
   });
 
-  it("ignores malformed PAPERCLIP_CODEX_PROVIDERS without touching config.toml", async () => {
+  it("surfaces a note for malformed PAPERCLIP_CODEX_PROVIDERS without touching config.toml", async () => {
     const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
-    for (const raw of ["not json", JSON.stringify({ providers: { gw: "nope" } }), JSON.stringify({ no_providers: true })]) {
+    const cases: Array<[raw: string, noteFragment: string]> = [
+      ["not json", "contains invalid JSON"],
+      [JSON.stringify(["providers"]), "is not a JSON object"],
+      [JSON.stringify({ no_providers: true }), 'has no "providers" object'],
+      [JSON.stringify({ providers: { gw: "nope" } }), "contains no usable entries"],
+    ];
+    for (const [raw, noteFragment] of cases) {
       const prepared = await prepareCodexRuntimeConfig({
         env: { PAPERCLIP_CODEX_PROVIDERS: raw },
         codexHome: home,
       });
+      expect(prepared.notes).toHaveLength(1);
+      expect(prepared.notes[0]).toContain(noteFragment);
+      expect(prepared.notes[0]).toContain("custom model providers ignored");
+      expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
+      await prepared.cleanup();
+    }
+  });
+
+  it("stays silent when PAPERCLIP_CODEX_PROVIDERS is unset or empty", async () => {
+    const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
+    const envs: Array<Record<string, string>> = [
+      {},
+      { PAPERCLIP_CODEX_PROVIDERS: "" },
+      { PAPERCLIP_CODEX_PROVIDERS: "  " },
+    ];
+    for (const env of envs) {
+      const prepared = await prepareCodexRuntimeConfig({ env, codexHome: home });
       expect(prepared.notes).toEqual([]);
       expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
       await prepared.cleanup();
