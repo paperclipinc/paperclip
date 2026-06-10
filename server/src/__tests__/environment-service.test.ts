@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -270,6 +270,34 @@ describeEmbeddedPostgres("environmentService leases", () => {
       .from(environments)
       .where(eq(environments.companyId, companyId));
     expect(rows.filter((row) => row.driver === "sandbox")).toHaveLength(1);
+  });
+
+  it("deduplicates concurrent managed Kubernetes environment creation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No partial unique index covers sandbox drivers yet, so dedup is
+    // post-insert convergence (prefer the oldest row, delete the loser).
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" }),
+      ),
+    );
+
+    expect(new Set(results.map((environment) => environment.id)).size).toBe(1);
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {

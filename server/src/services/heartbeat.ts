@@ -8031,13 +8031,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (isExecutionForcedToKubernetes(executionPolicy)) {
       let kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
       if (!kubernetesEnvironment) {
-        const bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        // Lazy recovery for companies created after the startup bootstrap ran
+        // (the boot hook only provisions environments for companies that exist
+        // at boot). Re-derive the managed-env config from the bootstrap env.
+        // If the process env no longer forces Kubernetes (rollback / config
+        // drift relative to the persisted executionMode setting), skip the
+        // provisioning gracefully: the guard below still refuses local
+        // fallback with the explicit error, instead of crashing here on
+        // undefined config.
+        let bootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> = null;
+        let bootstrapSkipReason: string | null = null;
+        try {
+          bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+          if (!bootstrap) {
+            bootstrapSkipReason =
+              'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
+          }
+        } catch (err) {
+          bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        }
         if (bootstrap) {
           await environmentsSvc.ensureKubernetesEnvironment(
             agent.companyId,
             bootstrap.kubernetesConfig,
           );
           kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+        } else {
+          logger.warn(
+            {
+              runId: run.id,
+              agentId: agent.id,
+              companyId: agent.companyId,
+              reason: bootstrapSkipReason,
+            },
+            "executionMode=kubernetes is persisted but the bootstrap env cannot provision a managed Kubernetes environment; skipping lazy provisioning for this company (the run will fail with the explicit no-managed-environment error)",
+          );
         }
       }
       if (!kubernetesEnvironment) {
