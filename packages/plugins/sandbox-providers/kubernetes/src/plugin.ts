@@ -50,8 +50,8 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota defaults applied to every tenant namespace (M4b; tunable via
-// config in a future milestone).
+// Resource quota defaults applied to every tenant namespace (tunable via
+// config in a future iteration).
 const DEFAULT_RESOURCE_QUOTA = {
   pods: "20",
   requestsCpu: "10",
@@ -68,9 +68,10 @@ function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: stri
 }
 
 function generateBootstrapToken(): string {
-  // TODO: paperclip-server's actual callback auth scheme is separate and is
-  // out of M4b scope. This per-run random token is stored in the per-run
-  // Secret and consumed by paperclip-agent-shim for initial registration.
+  // TODO: tighten once the agent runtime shim (companion images PR) lands its
+  // callback auth scheme; paperclip-server's callback auth is out of scope for
+  // this plugin. For now this per-run random token is stored in the per-run
+  // Secret and read by the runtime image entrypoint for initial registration.
   return randomBytes(32).toString("hex");
 }
 
@@ -197,7 +198,11 @@ const plugin = definePlugin({
   },
 
   async onEnvironmentAcquireLease(
-    params: PluginEnvironmentAcquireLeaseParams,
+    // `adapterType` is an optional per-run hint the server may pass once the
+    // SDK lease params grow that field (companion server-integration PR). The
+    // plugin works without it: absent means "use the environment's configured
+    // default adapter", so it stays compatible with the current SDK.
+    params: PluginEnvironmentAcquireLeaseParams & { adapterType?: string },
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
@@ -308,7 +313,7 @@ const plugin = definePlugin({
     // For sandbox-cr backend, the Sandbox CR owns the Secret.
     // NOTE: For sandbox-cr, if the Secret outlives the Sandbox due to a cluster
     // quirk, the release() call will still clean it up via namespace GC or
-    // explicit delete in a future milestone.
+    // explicit delete in a future iteration.
     await createPerRunSecret(clients, {
       namespace,
       secretName,
@@ -566,6 +571,11 @@ const plugin = definePlugin({
       // declaration for rationale.
       const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
 
+      // The caller's timeout is a budget for the WHOLE execute call: readiness
+      // wait + exec must share it, or the first exec on a fresh lease could
+      // block for up to twice the requested timeout.
+      const executeStartedAt = Date.now();
+
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
@@ -707,6 +717,14 @@ const plugin = definePlugin({
       // partial behaviour.
       const execCommand = wrapCommandWithEnv(baseExecCommand, params.env);
 
+      // Remaining share of the caller's budget after the readiness wait (floor
+      // of 5s so an exec attempt is still made when readiness consumed most of
+      // it; the watchdog then bounds it tightly).
+      const remainingTimeoutMs = Math.max(
+        5_000,
+        effectiveTimeoutMs - (Date.now() - executeStartedAt),
+      );
+
       let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
         execResult = await execInPod(
@@ -716,7 +734,7 @@ const plugin = definePlugin({
           "agent",
           execCommand,
           typeof params.stdin === "string" ? params.stdin : undefined,
-          effectiveTimeoutMs,
+          remainingTimeoutMs,
         );
       } catch (err) {
         // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
