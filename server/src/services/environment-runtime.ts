@@ -497,6 +497,14 @@ function createSandboxEnvironmentDriver(
             // a well-formed identifier.
             runId: input.heartbeatRunId ?? randomUUID(),
             workspaceMode: input.executionWorkspaceMode ?? undefined,
+            // The agent's harness for THIS run, so the plugin picks the matching
+            // runtime image (per-run adapter, mixed-harness environments).
+            // NOTE: environment-runtime.ts has TWO drivers calling
+            // environmentAcquireLease; this plugin-sandbox one is the HEARTBEAT
+            // path. Omitting adapterType here silently falls back to the
+            // environment's default adapter image (a pi agent then runs in the
+            // opencode image and the harness binary is missing at exec time).
+            adapterType: input.adapterType ?? undefined,
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
