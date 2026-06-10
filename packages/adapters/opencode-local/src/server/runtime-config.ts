@@ -68,10 +68,18 @@ function parseProviderConfig(
     );
     return null;
   }
-  // Only keep provider entries that are themselves objects.
+  // Only keep provider entries that are themselves objects; surface the ones
+  // we drop so a malformed entry is just as diagnosable as malformed JSON.
   const providers: Record<string, unknown> = {};
+  const skipped: string[] = [];
   for (const [key, value] of Object.entries(parsed)) {
     if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+    else skipped.push(key);
+  }
+  if (skipped.length > 0) {
+    notes.push(
+      `PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`,
+    );
   }
   return Object.keys(providers).length > 0 ? providers : null;
 }
