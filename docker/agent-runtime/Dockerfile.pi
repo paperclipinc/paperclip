@@ -7,8 +7,7 @@ USER root
 # @mariozechner/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
 # is used by SANDBOX_INSTALL_COMMAND in pi-local/src/index.ts.
 RUN npm install -g @mariozechner/pi-coding-agent@latest \
-    && chown -R 1000:1000 /usr/lib/node_modules \
-    || true
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 

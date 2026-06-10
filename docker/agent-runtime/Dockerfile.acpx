@@ -6,8 +6,7 @@ USER root
 # acpx is the ACPX wrapper that bridges to claude / codex backends.
 # Verified npm package name: "acpx" (bin 'acpx' → dist/cli.js).
 RUN npm install -g acpx@latest \
-    && chown -R 1000:1000 /usr/lib/node_modules \
-    || true
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 

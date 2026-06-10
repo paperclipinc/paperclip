@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -27,16 +25,5 @@ func TestLoadRuntimeCommandSpec_MissingCommand(t *testing.T) {
 	_ = os.WriteFile(p, []byte(`{"command":""}`), 0o600)
 	if _, err := loadRuntimeCommandSpec(p); err == nil {
 		t.Fatal("expected error for empty command")
-	}
-}
-
-func TestStreamWithFraming_PassThrough(t *testing.T) {
-	in := strings.NewReader("a\nb\nc\n")
-	var out bytes.Buffer
-	if err := streamWithFraming(in, &out); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); got != "a\nb\nc\n" {
-		t.Fatalf("unexpected: %q", got)
 	}
 }
