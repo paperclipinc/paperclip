@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  isClaudePoisonedPreviousMessageIdError,
+  isClaudeUnknownSessionError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -91,6 +93,93 @@ describe("isClaudeTransientUpstreamError", () => {
     expect(
       isClaudeTransientUpstreamError({
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
+      }),
+    ).toBe(false);
+  });
+
+  it("does not classify poisoned previous_message_id errors as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "API Error: 400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)",
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudePoisonedPreviousMessageIdError", () => {
+  it("detects the previous_message_id 400 error in the result field", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        subtype: "success",
+        is_error: true,
+        result: "API Error: 400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the error in the errors array", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        is_error: true,
+        result: "",
+        errors: [{ message: "400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        is_error: true,
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for empty parsed result", () => {
+    expect(isClaudePoisonedPreviousMessageIdError({})).toBe(false);
+  });
+});
+
+describe("isClaudeUnknownSessionError", () => {
+  it("detects the legacy 'no conversation found' message", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Error: No conversation found with session id 1234",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects 'session ... not found' style errors", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        errors: [{ message: "Session abc123 not found" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("detects '--resume requires a valid session' validation error from non-UUID input", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        errors: [
+          {
+            message:
+              'Error: --resume requires a valid session ID or session title when used with --print. Usage: claude -p --resume <session-id|title>. Provided value "ses_268c2d0a5ffemYbEaeG7c86Uvo" is not a UUID and does not match any session title.',
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated error text", () => {
+    expect(
+      isClaudeUnknownSessionError({
+        result: "Some other failure",
+        errors: [{ message: "Network timeout" }],
       }),
     ).toBe(false);
   });
