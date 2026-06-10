@@ -45,6 +45,7 @@ import {
   isCodexUnknownSessionError,
 } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -348,6 +349,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
+  // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
+  // target, so both local and sandboxed Codex processes pick up the routing.
+  // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
+  const envConfigStrings = Object.fromEntries(
+    Object.entries(envConfig).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
+    env: envConfigStrings,
+    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+  });
+  for (const note of preparedRuntimeConfig.notes) {
+    await onLog("stdout", `[paperclip] ${note}\n`);
+  }
   // Inject skills into the same CODEX_HOME that Codex will actually run with
   // (managed home in the default case, or an explicit override from adapter config).
   const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
@@ -658,6 +675,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
     );
   }
+  if (preparedRuntimeConfig.notes.length > 0) {
+    commandNotes.unshift(...preparedRuntimeConfig.notes);
+  }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const prompt = joinPromptSections([
@@ -853,5 +873,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       await restoreRemoteWorkspace();
     }
+    // Restore the managed config.toml so PAPERCLIP_CODEX_PROVIDERS changes
+    // (or removal) between runs never leave stale provider routing behind.
+    // If a run dies before reaching this, the next prepareCodexRuntimeConfig
+    // strips the stale managed blocks.
+    await preparedRuntimeConfig.cleanup();
   }
 }
