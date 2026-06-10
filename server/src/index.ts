@@ -897,8 +897,14 @@ export async function startServer(): Promise<StartedServer> {
   // Reconcile the agent-creation picker to the declaratively-configured adapter
   // set (PAPERCLIP_ADAPTERS). Must run after external adapters are loaded so the
   // known-adapter list is complete. Fail loud on misconfig (a declared adapter
-  // with no implementation), consistent with the execution-policy bootstrap.
-  reconcileAdapterAvailability(parseAdapterRegistryEnv());
+  // with no implementation), consistent with the execution-policy bootstrap:
+  // log the structured error, then rethrow to fail startup.
+  try {
+    reconcileAdapterAvailability(parseAdapterRegistryEnv());
+  } catch (err) {
+    logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
+    throw err;
+  }
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

@@ -368,10 +368,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Only applies in create mode and only once the K8s environment is loaded; if
   // none is available the UI surfaces a notice instead of silently selecting it.
   useEffect(() => {
-    if (!isCreate || !forcedKubernetes || !kubernetesEnvironment) return;
+    if (!isCreate || !set || !forcedKubernetes || !kubernetesEnvironment) return;
     if (currentDefaultEnvironmentId === kubernetesEnvironment.id) return;
-    set!({ defaultEnvironmentId: kubernetesEnvironment.id });
-  }, [isCreate, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]); // eslint-disable-line react-hooks/exhaustive-deps
+    set({ defaultEnvironmentId: kubernetesEnvironment.id });
+  }, [isCreate, set, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]);
 
   const runnableEnvironments = useMemo(
     () => environments.filter((environment) => {
