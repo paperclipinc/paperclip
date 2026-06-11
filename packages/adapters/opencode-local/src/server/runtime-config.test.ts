@@ -171,7 +171,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
-  it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block", async () => {
+  it("ignores malformed PAPERCLIP_OPENCODE_PROVIDERS without writing a provider block and surfaces a note", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: "not json" },
@@ -182,6 +182,70 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
     expect(runtimeConfig.provider).toBeUndefined();
+    expect(prepared.notes).toContain(
+      "PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.",
+    );
+    await prepared.cleanup();
+  });
+
+  it("surfaces a note when PAPERCLIP_OPENCODE_PROVIDERS is valid JSON but not an object", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_PROVIDERS: "[1,2,3]" },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.provider).toBeUndefined();
+    expect(prepared.notes).toContain(
+      "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
+    );
+    await prepared.cleanup();
+  });
+
+  it("surfaces skipped provider entries with non-object values and keeps the usable ones", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+          bifrost: "http://gateway.example/v1",
+          usable: { options: { baseURL: "http://gateway.example/v1" } },
+        }),
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { provider?: Record<string, unknown> };
+    expect(runtimeConfig.provider?.usable).toBeDefined();
+    expect(runtimeConfig.provider?.bifrost).toBeUndefined();
+    expect(prepared.notes).toContain(
+      "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
+    );
+    await prepared.cleanup();
+  });
+
+  it("surfaces skipped provider entries when no usable entries remain", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: {
+        XDG_CONFIG_HOME: configHome,
+        PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({ bifrost: "http://gateway.example/v1" }),
+      },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.provider).toBeUndefined();
+    expect(prepared.notes).toContain(
+      "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
+    );
     await prepared.cleanup();
   });
 

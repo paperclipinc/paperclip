@@ -135,6 +135,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/kubernetes",
+    "name": "@paperclipai/plugin-kubernetes",
+    "publishFromCi": false
+  },
+  {
     "dir": "ui",
     "name": "@paperclipai/ui",
     "publishFromCi": true

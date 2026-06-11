@@ -51,8 +51,9 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -355,18 +356,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
-        env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      const managedRemoteHomeDir =
+        managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+          ? preparedExecutionTargetRuntime.runtimeRootDir
+          : null;
+      if (managedRemoteHomeDir) {
+        env.HOME = managedRemoteHomeDir;
       }
-      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-        ? preparedExecutionTargetRuntime.runtimeRootDir
-        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
-            cwd,
-            env,
-            timeoutSec,
-            graceSec,
-            onLog,
-          });
+      const remoteHomeDir =
+        managedRemoteHomeDir ??
+        (await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+          cwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onLog,
+        }));
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
         remoteSkillsDir = path.posix.join(remoteHomeDir, ".gemini", "skills");
         await runAdapterExecutionTargetShellCommand(
@@ -395,8 +400,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
         process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
       );
-      if (managedHome && remoteHomeDir && hasGeminiApiKey) {
-        const remoteSettingsPath = path.posix.join(remoteHomeDir, ".gemini", "settings.json");
+      if (managedRemoteHomeDir && hasGeminiApiKey) {
+        const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
         const authSettingsJson = JSON.stringify({
           selectedAuthType: "gemini-api-key",
           security: { auth: { selectedType: "gemini-api-key" } },
@@ -601,6 +606,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
       return {
@@ -608,7 +614,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
+        errorCode: authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : networkUnavailable
+            ? "gemini_network_unavailable"
+            : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -664,6 +674,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "gemini_auth_required"
         : failed && clearSessionForTurnLimit
         ? "max_turns_exhausted"
+        : failed && networkUnavailable
+        ? "gemini_network_unavailable"
         : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
@@ -687,7 +699,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+      isGeminiSessionUnrecoverableError(initial.proc.stdout, initial.proc.stderr)
     ) {
       await onLog(
         "stdout",
