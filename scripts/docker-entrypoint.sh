@@ -5,11 +5,16 @@ set -e
 PUID=${USER_UID:-1000}
 PGID=${USER_GID:-1000}
 
-# If already running as the target user AND group, skip privilege management
-# and gosu. Both UID and GID must match: a mismatched GID would otherwise
-# silently skip the groupmod + chown remap below and leave the process
-# unable to write to volumes owned by the expected GID.
-if [ "$(id -u)" = "$PUID" ] && [ "$(id -g)" = "$PGID" ]; then
+# Without root we can neither remap the node user (usermod/groupmod/chown)
+# nor switch users (gosu needs CAP_SETUID/CAP_SETGID), so exec directly.
+# This covers Kubernetes restricted PodSecurity (runAsNonRoot + runAsUser)
+# as well as platforms that assign arbitrary UIDs (e.g. OpenShift); for the
+# latter a UID/GID mismatch is unfixable here, so warn instead of letting
+# usermod fail cryptically and keep volume-permission issues diagnosable.
+if [ "$(id -u)" -ne 0 ]; then
+    if [ "$(id -u)" -ne "$PUID" ] || [ "$(id -g)" -ne "$PGID" ]; then
+        echo "docker-entrypoint.sh: running unprivileged as $(id -u):$(id -g); cannot remap to requested ${PUID}:${PGID}" >&2
+    fi
     exec "$@"
 fi
 
