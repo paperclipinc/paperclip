@@ -2136,6 +2136,49 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
   return false;
 }
 
+const SESSION_CONFIGURED_MODEL_KEY = "__paperclipConfiguredModel";
+
+function readConfiguredModelFromAdapterConfig(
+  adapterConfig: Record<string, unknown> | null | undefined,
+) {
+  return readNonEmptyString(adapterConfig?.model);
+}
+
+function attachConfiguredModelToSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+  configuredModel: string | null,
+) {
+  if (!configuredModel) return sessionParams ?? null;
+  const next = { ...(sessionParams ?? {}) };
+  next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
+  return next;
+}
+
+function readConfiguredModelFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  return readNonEmptyString(sessionParams?.[SESSION_CONFIGURED_MODEL_KEY]);
+}
+
+export function shouldResetTaskSessionForModelChange(input: {
+  configuredModel: string | null;
+  taskSessionParams: Record<string, unknown> | null | undefined;
+}) {
+  const { configuredModel, taskSessionParams } = input;
+  if (!configuredModel || !taskSessionParams) return false;
+  const sessionModel = readConfiguredModelFromSessionParams(taskSessionParams);
+  return !!sessionModel && sessionModel !== configuredModel;
+}
+
+export function stripConfiguredModelFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const next = { ...sessionParams };
+  delete next[SESSION_CONFIGURED_MODEL_KEY];
+  return next;
+}
+
 function shouldAutoCheckoutIssueForWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null;
@@ -2917,7 +2960,7 @@ function getAdapterSessionCodec(adapterType: string) {
   return adapter.sessionCodec ?? defaultSessionCodec;
 }
 
-function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
+export function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
   if (!params) return null;
   return Object.keys(params).length > 0 ? params : null;
 }
@@ -5610,6 +5653,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
+            checkoutRunId: null,
             executionRunId: retryRun.id,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
             executionLockedAt: now,
@@ -7546,6 +7590,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function sweepStaleIssueLocks() {
+    return recovery.sweepStaleIssueLocks();
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -7893,11 +7941,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
     });
+    const config = parseObject(agent.adapterConfig);
+    const configuredModel = readConfiguredModelFromAdapterConfig(config);
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
-    const resetTaskSession = shouldResetTaskSessionForWake(context);
-    const sessionResetReason = describeSessionResetReason(context);
+    const taskSessionDecodedParams = normalizeSessionParams(
+      sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+    );
+    const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
+      configuredModel,
+      taskSessionParams: taskSessionDecodedParams,
+    });
+    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
+    const wakeSessionResetReason = describeSessionResetReason(context);
+    const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
+    const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
+      ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
+      : null;
+    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
+      .filter((value): value is string => Boolean(value))
+      .join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
@@ -7915,9 +7979,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null) ??
       normalizeResumeParamsForAdapter(
         agent.adapterType,
-        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+        stripConfiguredModelFromSessionParams(
+          sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+        ),
       );
-    const config = parseObject(agent.adapterConfig);
     const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -8086,13 +8151,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (isExecutionForcedToKubernetes(executionPolicy)) {
       let kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
       if (!kubernetesEnvironment) {
-        const bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        // Lazy recovery for companies created after the startup bootstrap ran
+        // (the boot hook only provisions environments for companies that exist
+        // at boot). Re-derive the managed-env config from the bootstrap env.
+        // If the process env no longer forces Kubernetes (rollback / config
+        // drift relative to the persisted executionMode setting), skip the
+        // provisioning gracefully: the guard below still refuses local
+        // fallback with the explicit error, instead of crashing here on
+        // undefined config.
+        let bootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> = null;
+        let bootstrapSkipReason: string | null = null;
+        try {
+          bootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+          if (!bootstrap) {
+            bootstrapSkipReason =
+              'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
+          }
+        } catch (err) {
+          bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        }
         if (bootstrap) {
           await environmentsSvc.ensureKubernetesEnvironment(
             agent.companyId,
             bootstrap.kubernetesConfig,
           );
           kubernetesEnvironment = await environmentsSvc.findKubernetesEnvironment(agent.companyId);
+        } else {
+          logger.warn(
+            {
+              runId: run.id,
+              agentId: agent.id,
+              companyId: agent.companyId,
+              reason: bootstrapSkipReason,
+            },
+            "executionMode=kubernetes is persisted but the bootstrap env cannot provision a managed Kubernetes environment; skipping lazy provisioning for this company (the run will fail with the explicit no-managed-environment error)",
+          );
         }
       }
       if (!kubernetesEnvironment) {
@@ -8615,7 +8710,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
-    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+    let runtimeSessionParamsForAdapter = normalizeSessionParams(
+      stripConfiguredModelFromSessionParams(runtimeSessionParams),
+    );
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
@@ -9284,7 +9381,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: nextSessionState.params,
+              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -9367,7 +9464,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: previousSessionParams,
+            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
@@ -9507,16 +9604,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
-      if (issue.executionRunId === run.id) {
+      // Clear lock columns that point at the terminating run. checkoutRunId is
+      // cleared here in addition to executionRunId so the issue self-heals even
+      // if its assignee or status changed between checkout and termination —
+      // adoptStaleCheckoutRun's narrow WHERE clause cannot cover those paths.
+      if (issue.executionRunId === run.id || issue.checkoutRunId === run.id) {
         await tx
           .update(issues)
           .set({
+            checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
             updatedAt: new Date(),
           })
-          .where(eq(issues.id, issue.id));
+          .where(
+            and(
+              eq(issues.id, issue.id),
+              or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+            ),
+          );
       }
 
       if (
@@ -11226,6 +11333,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    sweepStaleIssueLocks,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 

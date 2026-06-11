@@ -55,6 +55,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -988,6 +989,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "unknown"
           : isClaudePoisonedPreviousMessageIdError(initial.parsed)
           ? "poisoned"
+          : isClaudeImageProcessingError(initial.parsed)
+          ? "image"
           : null
         : null;
 
@@ -995,6 +998,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const reason =
         sessionErrorKind === "poisoned"
           ? "returned a poisoned message-id"
+          : sessionErrorKind === "image"
+          ? "contains an unprocessable image"
           : "is unavailable";
       await onLog(
         "stdout",

@@ -223,17 +223,122 @@ describe("prepareCodexRuntimeConfig", () => {
     }
   });
 
-  it("ignores malformed PAPERCLIP_CODEX_PROVIDERS without touching config.toml", async () => {
+  it("surfaces a note for malformed PAPERCLIP_CODEX_PROVIDERS without touching config.toml", async () => {
     const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
-    for (const raw of ["not json", JSON.stringify({ providers: { gw: "nope" } }), JSON.stringify({ no_providers: true })]) {
+    const cases: Array<[raw: string, noteFragment: string]> = [
+      ["not json", "contains invalid JSON"],
+      [JSON.stringify(["providers"]), "is not a JSON object"],
+      [JSON.stringify({ no_providers: true }), 'has no "providers" object'],
+      [JSON.stringify({ providers: {} }), "contains no usable entries"],
+      [JSON.stringify({ providers: { gw: "nope" } }), "skipped provider(s) with empty names or non-object values: gw"],
+    ];
+    for (const [raw, noteFragment] of cases) {
       const prepared = await prepareCodexRuntimeConfig({
         env: { PAPERCLIP_CODEX_PROVIDERS: raw },
         codexHome: home,
       });
+      expect(prepared.notes).toHaveLength(1);
+      expect(prepared.notes[0]).toContain(noteFragment);
+      expect(prepared.notes[0]).toContain("custom providers ignored");
+      expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
+      await prepared.cleanup();
+    }
+  });
+
+  it("stays silent when PAPERCLIP_CODEX_PROVIDERS is unset or empty", async () => {
+    const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
+    const envs: Array<Record<string, string>> = [
+      {},
+      { PAPERCLIP_CODEX_PROVIDERS: "" },
+      { PAPERCLIP_CODEX_PROVIDERS: "  " },
+    ];
+    for (const env of envs) {
+      const prepared = await prepareCodexRuntimeConfig({ env, codexHome: home });
       expect(prepared.notes).toEqual([]);
       expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
       await prepared.cleanup();
     }
+  });
+
+  it("surfaces skipped non-object provider entries while merging the usable ones", async () => {
+    const home = await makeCodexHome();
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: {
+            bad: "http://gateway.example/v1",
+            good: { base_url: "http://gateway.example/v1", env_key: "OPENAI_API_KEY" },
+          },
+          model_provider: "good",
+        }),
+      },
+      codexHome: home,
+    });
+
+    const content = await readConfigToml(home);
+    expect(content).toContain("[model_providers.good]");
+    expect(content).not.toContain("[model_providers.bad]");
+    expect(
+      prepared.notes.some((n) => n.includes("skipped provider(s) with empty names or non-object values: bad")),
+    ).toBe(true);
+    expect(prepared.notes.some((n) => n.includes("Merged 1 custom Codex model provider(s)"))).toBe(true);
+    await prepared.cleanup();
+  });
+
+  it("escapes DEL (U+007F) in emitted TOML strings", async () => {
+    const del = String.fromCharCode(0x7f);
+    const home = await makeCodexHome();
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: { gw: { base_url: "http://gw.example/v1", name: `del${del}name` } },
+        }),
+      },
+      codexHome: home,
+    });
+
+    const content = await readConfigToml(home);
+    expect(content).not.toContain(del);
+    expect(content).toContain("u007fname");
+    await prepared.cleanup();
+  });
+
+  it("restores user provider sections from the pre-run backup after an interrupted run", async () => {
+    const userConfig = [
+      'model = "gpt-5.1-codex"',
+      "",
+      "[model_providers.bifrost]",
+      'base_url = "http://user.example/v1"',
+      "",
+    ].join("\n");
+    const home = await makeCodexHome(userConfig);
+    // Simulate a crash: the merge excises the user's same-name provider
+    // section (the managed definition must win), and cleanup() never runs.
+    await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    expect(await readConfigToml(home)).toContain('env_key = "OPENAI_API_KEY"');
+
+    const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
+    expect(prepared.notes.some((n) => n.includes("backup"))).toBe(true);
+    expect(await readConfigToml(home)).toBe(userConfig);
+    await expect(fs.access(path.join(home, "config.toml.paperclip-backup"))).rejects.toThrow();
+    await prepared.cleanup();
+  });
+
+  it("removes the pre-run backup on cleanup", async () => {
+    const home = await makeCodexHome('approval_policy = "never"\n');
+    const prepared = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    const backupPath = path.join(home, "config.toml.paperclip-backup");
+    expect(await fs.readFile(backupPath, "utf8")).toBe('approval_policy = "never"\n');
+
+    await prepared.cleanup();
+    expect(await readConfigToml(home)).toBe('approval_policy = "never"\n');
+    await expect(fs.access(backupPath)).rejects.toThrow();
   });
 
   it("skips the merge and surfaces a note when CODEX_HOME is explicitly configured", async () => {
@@ -289,5 +394,23 @@ describe("prepareCodexRuntimeConfig", () => {
     expect(content).not.toContain("bifrost");
     expect(content.split("model_provider =").length).toBe(2);
     await second.cleanup();
+  });
+
+  it("rejects the block when model_provider names a filtered or missing provider", async () => {
+    const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: { good: { base_url: "https://gateway.example/v1" }, bad: "not-an-object" },
+          model_provider: "bad",
+        }),
+      },
+      codexHome: home,
+    });
+    expect(prepared.notes).toContain(
+      'PAPERCLIP_CODEX_PROVIDERS: model_provider "bad" does not match any usable provider entry; custom providers ignored.',
+    );
+    const content = await readConfigToml(home);
+    expect(content).toBe("model = \"gpt-5.1-codex\"\n");
   });
 });

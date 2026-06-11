@@ -5,6 +5,8 @@ import path from "node:path";
 type PreparedPiRuntimeConfig = {
   env: Record<string, string>;
   notes: string[];
+  /** The managed agent-config dir, or null when no provider config was written. */
+  agentConfigDir: string | null;
   cleanup: () => Promise<void>;
 };
 
@@ -17,7 +19,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // SERVER-SIDE, where the value is reliably present. Pi resolves a provider apiKey
 // by trying it as an env var name first, then as a literal -- but the (possibly
 // sandboxed) run process env plumbing is not guaranteed to carry the key, so we
-// resolve it here. Unresolvable placeholders are left intact.
+// resolve it here. Unresolvable placeholders are left intact; an env var set to
+// an empty string counts as unresolvable (the placeholder stays for Pi to try).
 function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | undefined): T {
   if (typeof value === "string") {
     return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
@@ -38,22 +41,49 @@ function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | 
   return value;
 }
 
+type ParsedProviderConfig = {
+  providers: Record<string, unknown> | null;
+  warning: string | null;
+};
+
 function parseProviderConfig(
   raw: unknown,
   resolveEnv: (name: string) => string | undefined,
-): Record<string, unknown> | null {
-  if (typeof raw !== "string" || raw.trim().length === 0) return null;
+): ParsedProviderConfig {
+  // Unset/empty (or an empty JSON object) is the normal "feature off" case: no warning.
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return { providers: null, warning: null };
+  }
+  // A SET but unusable value is a misconfiguration; surface it so the run does
+  // not proceed silently unconfigured and fail later with an opaque
+  // model-not-found error pointing nowhere near the env var.
   try {
     const parsed = JSON.parse(raw);
-    if (!isPlainObject(parsed)) return null;
-    // Only keep provider entries that are themselves objects.
+    if (!isPlainObject(parsed)) {
+      return {
+        providers: null,
+        warning: "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom providers ignored.",
+      };
+    }
+    // Only keep provider entries that are themselves objects; surface the ones
+    // we drop so a malformed entry is just as diagnosable as malformed JSON.
     const providers: Record<string, unknown> = {};
+    const skipped: string[] = [];
     for (const [key, value] of Object.entries(parsed)) {
       if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+      else skipped.push(key);
     }
-    return Object.keys(providers).length > 0 ? providers : null;
+    return {
+      providers: Object.keys(providers).length > 0 ? providers : null,
+      warning: skipped.length > 0
+        ? `PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`
+        : null,
+    };
   } catch {
-    return null;
+    return {
+      providers: null,
+      warning: "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
+    };
   }
 }
 
@@ -78,24 +108,32 @@ export async function preparePiRuntimeConfig(input: {
   env: Record<string, string>;
 }): Promise<PreparedPiRuntimeConfig> {
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
-  const providers = parseProviderConfig(
+  const { providers, warning } = parseProviderConfig(
     input.env.PAPERCLIP_PI_PROVIDERS ?? process.env.PAPERCLIP_PI_PROVIDERS,
     resolveEnv,
   );
   if (!providers) {
     return {
       env: input.env,
-      notes: [],
+      notes: warning ? [warning] : [],
+      agentConfigDir: null,
       cleanup: async () => {},
     };
   }
 
   const agentConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-config-"));
-  await fs.writeFile(
-    path.join(agentConfigDir, "models.json"),
-    `${JSON.stringify({ providers }, null, 2)}\n`,
-    "utf8",
-  );
+  try {
+    await fs.writeFile(
+      path.join(agentConfigDir, "models.json"),
+      `${JSON.stringify({ providers }, null, 2)}\n`,
+      "utf8",
+    );
+  } catch (err) {
+    // Never leak the temp dir when the write fails (e.g. disk-full): the
+    // caller only receives the cleanup handle on success.
+    await fs.rm(agentConfigDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
 
   return {
     env: {
@@ -103,8 +141,10 @@ export async function preparePiRuntimeConfig(input: {
       PI_CODING_AGENT_DIR: agentConfigDir,
     },
     notes: [
+      ...(warning ? [warning] : []),
       `Injected ${Object.keys(providers).length} custom Pi provider(s) from PAPERCLIP_PI_PROVIDERS into a managed models.json: ${Object.keys(providers).join(", ")}.`,
     ],
+    agentConfigDir,
     cleanup: async () => {
       await fs.rm(agentConfigDir, { recursive: true, force: true });
     },

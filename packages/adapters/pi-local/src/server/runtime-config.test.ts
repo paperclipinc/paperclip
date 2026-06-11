@@ -142,13 +142,83 @@ describe("preparePiRuntimeConfig", () => {
       env: { PAPERCLIP_PI_PROVIDERS: "not json" },
     });
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
-    expect(prepared.notes).toEqual([]);
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
+    ]);
     await prepared.cleanup();
   });
 
-  it("ignores provider entries that are not objects", async () => {
+  it("ignores provider entries that are not objects and names them in the note", async () => {
     const prepared = await preparePiRuntimeConfig({
       env: { PAPERCLIP_PI_PROVIDERS: JSON.stringify({ tensorix: "nope" }) },
+    });
+    expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(prepared.agentConfigDir).toBeNull();
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: tensorix.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("surfaces skipped non-object entries while keeping the usable ones", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: {
+        PAPERCLIP_PI_PROVIDERS: JSON.stringify({
+          bad: "http://gw/v1",
+          tensorix: { baseUrl: "http://gw/anthropic", apiKey: "k", api: "anthropic-messages", models: [] },
+        }),
+      },
+    });
+    const agentConfigDir = prepared.env.PI_CODING_AGENT_DIR;
+    cleanupPaths.add(agentConfigDir);
+    expect(prepared.agentConfigDir).toBe(agentConfigDir);
+    const modelsJson = (await readModelsJson(agentConfigDir)) as {
+      providers: Record<string, unknown>;
+    };
+    expect(modelsJson.providers.tensorix).toBeDefined();
+    expect(modelsJson.providers.bad).toBeUndefined();
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: bad.",
+      "Injected 1 custom Pi provider(s) from PAPERCLIP_PI_PROVIDERS into a managed models.json: tensorix.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("surfaces a note when PAPERCLIP_PI_PROVIDERS contains invalid JSON", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: { PAPERCLIP_PI_PROVIDERS: "{not json" },
+    });
+    expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("surfaces a note when PAPERCLIP_PI_PROVIDERS is not a JSON object", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: { PAPERCLIP_PI_PROVIDERS: "[1,2]" },
+    });
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom providers ignored.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("surfaces the skipped entries when no provider objects remain", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: { PAPERCLIP_PI_PROVIDERS: '{"a": 1}' },
+    });
+    expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: a.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("stays silent when PAPERCLIP_PI_PROVIDERS is an empty object", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: { PAPERCLIP_PI_PROVIDERS: "{}" },
     });
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.notes).toEqual([]);
