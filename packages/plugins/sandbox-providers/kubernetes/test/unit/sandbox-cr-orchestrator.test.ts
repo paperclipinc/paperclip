@@ -101,11 +101,12 @@ describe("findPodForSandbox", () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready", "pc-abc-pod-xyz"));
     const clients = {
       custom: { getNamespacedCustomObject: get },
-      core: { listNamespacedPod: vi.fn() },
+      core: { readNamespacedPod: vi.fn(), listNamespacedPod: vi.fn() },
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
     expect(podName).toBe("pc-abc-pod-xyz");
-    // Should NOT have called listNamespacedPod (primary path succeeded)
+    // Primary path succeeded: neither the exact-name GET nor the label list runs.
+    expect(clients.core.readNamespacedPod).not.toHaveBeenCalled();
     expect(clients.core.listNamespacedPod).not.toHaveBeenCalled();
   });
 
@@ -165,6 +166,20 @@ describe("findPodForSandbox", () => {
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
     expect(podName).toBeNull();
+  });
+
+  it("propagates non-404 errors from the exact-name pod GET instead of falling through", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi.fn().mockRejectedValue({ code: 403, message: "forbidden" });
+    const list = vi.fn();
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read, listNamespacedPod: list },
+    };
+    await expect(findPodForSandbox(clients as never, "ns", "pc-abc")).rejects.toMatchObject({
+      code: 403,
+    });
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("returns null when no pod is found in fallback", async () => {
