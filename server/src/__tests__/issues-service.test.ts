@@ -379,7 +379,6 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       .resolves.toEqual([]);
   });
 
-
   it("returns issues an agent participated in across the supported signals", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

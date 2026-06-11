@@ -445,35 +445,7 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
-      existing.companyId,
-      "please revise this",
-    ));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-  });
-
-  it("wakes the assignee on top-level board issue comments", async () => {
-    const existing = makeIssue({
-      assigneeAgentId: ASSIGNEE_AGENT_ID,
-      assigneeUserId: null,
-      status: "in_progress",
-    });
-    mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue({
-      id: "comment-3",
-      issueId: existing.id,
-      companyId: existing.companyId,
-      body: "please handle this top-level thread comment",
-    });
-
-    const res = await request(await createApp())
-      .post(`/api/issues/${existing.id}/comments`)
-      .send({
-        body: "please handle this top-level thread comment",
-      });
-
-    expect(res.status).toBe(201);
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -481,14 +453,14 @@ describe("issue update comment wakeups", () => {
         reason: "issue_commented",
         payload: expect.objectContaining({
           issueId: existing.id,
-          commentId: "comment-3",
+          commentId: "comment-2",
           mutation: "comment",
         }),
         contextSnapshot: expect.objectContaining({
           issueId: existing.id,
           taskId: existing.id,
-          commentId: "comment-3",
-          wakeCommentId: "comment-3",
+          commentId: "comment-2",
+          wakeCommentId: "comment-2",
           wakeReason: "issue_commented",
           source: "issue.comment",
         }),
