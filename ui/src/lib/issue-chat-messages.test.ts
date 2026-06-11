@@ -358,7 +358,6 @@ describe("buildIssueChatMessages", () => {
     expect(plain?.metadata?.custom).toMatchObject({ runOperatorInterrupted: false });
   });
 
-
   it("redacts deleted comment bodies while preserving tombstone metadata", () => {
     const messages = buildIssueChatMessages({
       comments: [

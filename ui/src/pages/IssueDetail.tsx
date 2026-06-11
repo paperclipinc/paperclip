@@ -3035,7 +3035,6 @@ export function IssueDetail() {
     };
   }, [fileViewerEnabled]);
 
-
   const promotedOutputAttachmentIds = useMemo(() => getPromotedOutputAttachmentIds(workProducts), [workProducts]);
   const attachmentList = useMemo(
     () => (attachments ?? []).filter((attachment) => !promotedOutputAttachmentIds.has(attachment.id)),

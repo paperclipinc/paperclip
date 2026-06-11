@@ -300,7 +300,6 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
-
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
