@@ -109,8 +109,26 @@ describe("findPodForSandbox", () => {
     expect(clients.core.listNamespacedPod).not.toHaveBeenCalled();
   });
 
+  it("resolves the pod by EXACT NAME when the controller names it after the sandbox (v0.4.x: pods carry only agents.x-k8s.io/sandbox-name-hash, never the full-name label)", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Ready")); // no podName in status
+    const read = vi.fn().mockResolvedValue({
+      metadata: { name: "pc-abc", labels: { "agents.x-k8s.io/sandbox-name-hash": "1a2b3c" } },
+      status: { phase: "Running" },
+    });
+    const list = vi.fn().mockResolvedValue({ items: [] }); // full-name label selector matches nothing on v0.4.x
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read, listNamespacedPod: list },
+    };
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    expect(read).toHaveBeenCalledWith({ namespace: "ns", name: "pc-abc" });
+    expect(podName).toBe("pc-abc");
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it("falls back to pod listing scoped by the unique sandbox-name label", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Pending")); // no podName
+    const read = vi.fn().mockRejectedValue({ code: 404 }); // no exact-name pod
     const list = vi.fn().mockResolvedValue({
       items: [
         {
@@ -121,7 +139,7 @@ describe("findPodForSandbox", () => {
     });
     const clients = {
       custom: { getNamespacedCustomObject: get },
-      core: { listNamespacedPod: list },
+      core: { readNamespacedPod: read, listNamespacedPod: list },
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
     expect(list).toHaveBeenCalledWith(
@@ -143,7 +161,7 @@ describe("findPodForSandbox", () => {
     });
     const clients = {
       custom: { getNamespacedCustomObject: get },
-      core: { listNamespacedPod: list },
+      core: { readNamespacedPod: vi.fn().mockRejectedValue({ code: 404 }), listNamespacedPod: list },
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
     expect(podName).toBeNull();
@@ -154,7 +172,7 @@ describe("findPodForSandbox", () => {
     const list = vi.fn().mockResolvedValue({ items: [] });
     const clients = {
       custom: { getNamespacedCustomObject: get },
-      core: { listNamespacedPod: list },
+      core: { readNamespacedPod: vi.fn().mockRejectedValue({ code: 404 }), listNamespacedPod: list },
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
     expect(podName).toBeNull();
