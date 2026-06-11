@@ -701,6 +701,13 @@
       "when": 1781111100000,
       "tag": "0099_plugin_webhook_delivery_dedup",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781111100001,
+      "tag": "0100_scheduler_leader",
+      "breakpoints": true
     }
   ]
 }
