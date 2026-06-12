@@ -238,6 +238,15 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       },
     });
 
+  // Earlier cloud_tenant builds granted every tenant user `instance_admin`.
+  // Stale rows from those deployments would still elevate this user through
+  // the BetterAuth session path, board API keys, and the authorization
+  // service's own instanceUserRoles lookup — so actively purge them on every
+  // trusted-header authentication instead of merely no longer inserting them.
+  await db
+    .delete(instanceUserRoles)
+    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+
   await db
     .insert(companies)
     .values({
