@@ -78,6 +78,9 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  // The Skills Store renders its own secondary (category) sidebar, so the main
+  // app nav collapses to its rail throughout the /skills section (PAP-10879).
+  const isSkillsRoute = /(^|\/)skills(\/|$)/.test(location.pathname);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -148,10 +151,11 @@ export function Layout() {
   // is active, but does NOT mutate the persisted preference. Clearing the force
   // on cleanup restores the user's expanded/collapsed choice when navigating
   // off the takeover route (PAP-10694).
+  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
   useLayoutEffect(() => {
-    setForceCollapsed(hasSecondarySidebar);
+    setForceCollapsed(forceRailCollapsed);
     return () => setForceCollapsed(false);
-  }, [hasSecondarySidebar, setForceCollapsed]);
+  }, [forceRailCollapsed, setForceCollapsed]);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -536,7 +540,12 @@ export function Layout() {
               tabIndex={-1}
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
-                isMobile ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]" : "overflow-auto",
+                // Reserve the scrollbar gutter on desktop so pages whose height
+                // changes (e.g. switching skill-detail tabs) don't widen/shift
+                // when the vertical scrollbar appears or disappears (PAP-10907).
+                isMobile
+                  ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]"
+                  : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >
               {hasUnknownCompanyPrefix ? (

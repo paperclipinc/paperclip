@@ -16,6 +16,7 @@ import {
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  type AgentDesiredSkillEntry,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
@@ -64,6 +65,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -1282,16 +1284,33 @@ export function agentRoutes(
 
   function buildUnsupportedSkillSnapshot(
     adapterType: string,
-    desiredSkills: string[] = [],
+    desiredSkillEntries: AgentDesiredSkillEntry[] = [],
   ): AgentSkillSnapshot {
+    const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     return {
       adapterType,
       supported: false,
       mode: "unsupported",
       desiredSkills,
+      desiredSkillEntries,
       entries: [],
       warnings: ["This adapter does not implement skill sync yet."],
     };
+  }
+
+  function normalizeDesiredSkillSelections(
+    requestedDesiredSkills: Array<string | AgentDesiredSkillEntry> | undefined,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (!requestedDesiredSkills) return undefined;
+    const out = new Map<string, AgentDesiredSkillEntry>();
+    for (const value of requestedDesiredSkills) {
+      const entry = typeof value === "string"
+        ? { key: value.trim(), versionId: null }
+        : { key: value.key.trim(), versionId: value.versionId ?? null };
+      if (!entry.key || out.has(entry.key)) continue;
+      out.set(entry.key, entry);
+    }
+    return Array.from(out.values());
   }
 
   // Legacy hardcoded set — used as fallback when adapter module does not
@@ -1319,9 +1338,11 @@ export function agentRoutes(
       materializeMissing?: boolean;
     } = {},
   ) {
+    const preference = readPaperclipSkillSyncPreference(config);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: options.materializeMissing
         ?? shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
     });
     return {
       ...config,
@@ -1333,31 +1354,39 @@ export function agentRoutes(
     companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
-    requestedDesiredSkills: string[] | undefined,
+    requestedDesiredSkills: AgentDesiredSkillEntry[] | undefined,
   ) {
     if (!requestedDesiredSkills) {
       return {
         adapterConfig,
         desiredSkills: null as string[] | null,
+        desiredSkillEntries: null as AgentDesiredSkillEntry[] | null,
         runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
       };
     }
 
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
+    const resolvedRequestedSkillEntries = await companySkills.resolveRequestedSkillEntries(
       companyId,
       requestedDesiredSkills,
     );
+    const resolvedRequestedSkills = resolvedRequestedSkillEntries.map((entry) => entry.key);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
     const requiredSkills = runtimeSkillEntries
       .filter((entry) => entry.required)
       .map((entry) => entry.key);
-    const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
+    const desiredSkillEntries = [
+      ...requiredSkills.map((key) => ({ key, versionId: null })),
+      ...resolvedRequestedSkillEntries,
+    ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+    const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
     return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
+      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkillEntries),
       desiredSkills,
+      desiredSkillEntries,
       runtimeSkillEntries,
     };
   }
@@ -1574,9 +1603,14 @@ export function agentRoutes(
       );
       const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
         materializeMissing: false,
+        versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
       });
       const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+      const desiredSkillEntries = [
+        ...requiredSkills.map((key) => ({ key, versionId: null })),
+        ...preference.desiredSkillEntries,
+      ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries));
       return;
     }
 
@@ -1611,16 +1645,11 @@ export function agentRoutes(
       }
       await assertCanUpdateAgent(req, agent);
 
-      const requestedSkills = Array.from(
-        new Set(
-          (req.body.desiredSkills as string[])
-            .map((value) => value.trim())
-            .filter(Boolean),
-        ),
-      );
+      const requestedSkills = normalizeDesiredSkillSelections(req.body.desiredSkills);
       const {
         adapterConfig: nextAdapterConfig,
         desiredSkills,
+        desiredSkillEntries,
         runtimeSkillEntries,
       } = await resolveDesiredSkillAssignment(
         agent.companyId,
@@ -1628,7 +1657,7 @@ export function agentRoutes(
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
       );
-      if (!desiredSkills || !runtimeSkillEntries) {
+      if (!desiredSkills || !desiredSkillEntries || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
       }
       const actor = getActorInfo(req);
@@ -1669,7 +1698,7 @@ export function agentRoutes(
               adapterType: updated.adapterType,
               config: runtimeSkillConfig,
             })
-          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkillEntries);
 
       await logActivity(db, {
         companyId: updated.companyId,
@@ -1683,6 +1712,7 @@ export function agentRoutes(
         details: {
           adapterType: updated.adapterType,
           desiredSkills,
+          desiredSkillEntries,
           mode: snapshot.mode,
           supported: snapshot.supported,
           entryCount: snapshot.entries.length,
@@ -2093,7 +2123,7 @@ export function agentRoutes(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -2279,7 +2309,7 @@ export function agentRoutes(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
