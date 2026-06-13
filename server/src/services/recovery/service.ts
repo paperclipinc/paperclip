@@ -582,22 +582,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(run || deferredWake);
   }
 
-  async function hasPendingWakeInteraction(companyId: string, issueId: string) {
-    return db
-      .select({ id: issueThreadInteractions.id })
-      .from(issueThreadInteractions)
-      .where(
-        and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.issueId, issueId),
-          eq(issueThreadInteractions.status, "pending"),
-          inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
-        ),
-      )
-      .limit(1)
-      .then((rows) => Boolean(rows[0]));
-  }
-
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -2683,11 +2667,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
-        result.skipped += 1;
-        continue;
-      }
-
-      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }

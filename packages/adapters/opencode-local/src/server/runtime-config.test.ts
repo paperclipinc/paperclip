@@ -72,10 +72,10 @@ describe("prepareOpenCodeRuntimeConfig", () => {
         npm: "@ai-sdk/openai-compatible",
         name: "Bifrost EU",
         options: {
-          baseURL: "http://gateway.example.svc.cluster.local:8080/v1",
+          baseURL: "http://bifrost.bifrost.svc.cluster.local:8080/v1",
           apiKey: "{env:ANTHROPIC_API_KEY}",
         },
-        models: { "example/model-a": { name: "Model A" } },
+        models: { "tensorix/deepseek/deepseek-chat-v3.1": { name: "DeepSeek v3.1" } },
       },
     };
 
@@ -101,7 +101,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
 
   it("reads PAPERCLIP_OPENCODE_PROVIDERS from process.env when absent from the run env", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
-    const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "example/model-a": {} } } };
+    const providers = { bifrost: { npm: "@ai-sdk/openai-compatible", models: { "tensorix/x": {} } } };
     process.env.PAPERCLIP_OPENCODE_PROVIDERS = JSON.stringify(providers);
     try {
       const prepared = await prepareOpenCodeRuntimeConfig({
@@ -125,7 +125,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       bifrost: {
         npm: "@ai-sdk/openai-compatible",
         options: { baseURL: "http://bifrost/v1", apiKey: "{env:ANTHROPIC_API_KEY}" },
-        models: { "example/model-a": {} },
+        models: { "tensorix/x": {} },
       },
     };
     const prepared = await prepareOpenCodeRuntimeConfig({
@@ -160,14 +160,14 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
     const configHome = await makeConfigHome({ permission: { read: "allow" } });
     const prepared = await prepareOpenCodeRuntimeConfig({
-      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "example/model-a" },
+      env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "anthropic/tensorix/deepseek/deepseek-chat-v3.1" },
       config: {},
     });
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { small_model?: string };
-    expect(runtimeConfig.small_model).toBe("example/model-a");
+    expect(runtimeConfig.small_model).toBe("anthropic/tensorix/deepseek/deepseek-chat-v3.1");
     await prepared.cleanup();
   });
 

@@ -291,14 +291,15 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       status: "active",
     });
 
-  // Without instance-admin elevation, cloud tenant users are authorized purely
-  // through company-scoped permission grants — seed the same role defaults the
-  // regular membership flows create.
+  // Seed the company-role permission grants the authorization engine reads
+  // (idempotent — insertMissing). Without this the cloud_tenant owner has a
+  // membership but no grants, so every assertCompanyPermission check (e.g.
+  // joins:approve on the dashboard's pending-approvals widget) 403s.
   await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
     membershipRole: membership.membershipRole,
-    grantedByUserId: null,
+    grantedByUserId: userId,
   });
 
   return {
@@ -315,6 +316,29 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     isInstanceAdmin: false,
     source: "cloud_tenant",
   };
+}
+
+// Lightweight cloud_tenant auth for contexts that only have raw Node headers and
+// cannot run the Express actor middleware (e.g. WebSocket upgrades). Validates the
+// trusted gateway token and derives the company id from the stack id exactly like
+// resolveCloudTenantActor. Returns null when this is not a (valid) cloud_tenant call.
+export function resolveCloudTenantWsAuth(
+  headers: Record<string, string | string[] | undefined>,
+): { userId: string; companyId: string } | null {
+  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+  if (!expectedToken) return null;
+  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
+  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
+  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
+  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
+  if (!userId || !stackId) return null;
+  return { userId, companyId: cloudTenantCompanyId(stackId) };
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
 function requiredCloudHeader(req: Request, name: string): string {

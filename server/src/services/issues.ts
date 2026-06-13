@@ -238,16 +238,7 @@ export function parseStatusFilter(input: string | readonly string[] | undefined)
 export interface IssueFilters {
   attention?: "blocked";
   status?: string | readonly string[];
-  /**
-   * Filter by assignee agent ID.
-   * - `string` (UUID): match issues assigned to that agent.
-   * - `null`: match unassigned issues (IS NULL).
-   * - The literal string `"null"` is also accepted as a sentinel for `null`
-   *   so that query-string callers can pass `?assigneeAgentId=null` directly.
-   *   The route layer normalises it before calling the service, but the service
-   *   also normalises it for direct callers.
-   */
-  assigneeAgentId?: string | null;
+  assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
@@ -2864,21 +2855,6 @@ async function listIssueBlockedInboxAttentionMap(
   return result;
 }
 
-function parseIssueAssigneeAgentFilter(
-  assigneeAgentId: IssueFilters["assigneeAgentId"],
-): string | null | undefined {
-  const normalizedRaw = typeof assigneeAgentId === "string" ? assigneeAgentId.trim() : assigneeAgentId;
-  const normalized = normalizedRaw === "" ? undefined : normalizedRaw;
-  if (typeof normalized !== "string") return normalized;
-  return normalized.toLowerCase() === "null" ? null : normalized;
-}
-
-function assertValidAssigneeAgentFilter(assigneeAgentFilter: string | null | undefined) {
-  if (typeof assigneeAgentFilter === "string" && !isUuidLike(assigneeAgentFilter)) {
-    throw unprocessable("assigneeAgentId must be a UUID or 'null'");
-  }
-}
-
 async function blockedInboxIssueConditions(
   dbOrTx: any,
   companyId: string,
@@ -2918,13 +2894,7 @@ async function blockedInboxIssueConditions(
   if (statuses.length > 0) {
     conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]!) : inArray(issues.status, statuses));
   }
-  const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-  assertValidAssigneeAgentFilter(assigneeAgentFilter);
-  if (assigneeAgentFilter === null) {
-    conditions.push(isNull(issues.assigneeAgentId));
-  } else if (assigneeAgentFilter) {
-    conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-  }
+  if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
   if (filters?.participantAgentId) conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
   if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
   if (touchedByUserId) conditions.push(touchedByUserCondition(companyId, touchedByUserId));
@@ -3954,8 +3924,6 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId)];
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
@@ -4014,10 +3982,8 @@ export function issueService(db: Db) {
       } else if (statuses.length > 1) {
         conditions.push(inArray(issues.status, statuses));
       }
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
+      if (filters?.assigneeAgentId) {
+        conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       }
       if (filters?.participantAgentId) {
         conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
@@ -4198,13 +4164,7 @@ export function issueService(db: Db) {
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
-      if (assigneeAgentFilter === null) {
-        conditions.push(isNull(issues.assigneeAgentId));
-      } else if (assigneeAgentFilter) {
-        conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
-      }
+      if (filters?.assigneeAgentId) conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.workspaceId) {

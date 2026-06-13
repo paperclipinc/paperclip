@@ -834,13 +834,7 @@ export interface WorkerToHostMethods {
 
   // Metrics
   "metrics.write": [
-    params: {
-      name: string;
-      value: number;
-      tags?: Record<string, string>;
-      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
-      companyId?: string | null;
-    },
+    params: { name: string; value: number; tags?: Record<string, string> },
     result: void,
   ];
 
@@ -852,13 +846,7 @@ export interface WorkerToHostMethods {
 
   // Logger
   "log": [
-    params: {
-      level: "info" | "warn" | "error" | "debug";
-      message: string;
-      meta?: Record<string, unknown>;
-      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
-      companyId?: string | null;
-    },
+    params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
     result: void,
   ];
 

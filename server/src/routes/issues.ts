@@ -52,7 +52,6 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
-  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -748,23 +747,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
-  actorRunId: string | null | undefined;
-  checkoutRunId: string | null | undefined;
-  executionRunId: string | null | undefined;
 }) {
-  // Local-CLI agents post comments under user auth, so the actor.type is "user"
-  // even though the comment originates from the same heartbeat run that owns
-  // the issue lock. Without this guard, an agent that closes its own issue and
-  // then posts a follow-up comment in the same run silently reopens it.
-  // Suppress the implicit move whenever the comment's source run matches the
-  // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string"
-    && input.actorRunId.length > 0
-    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
-  ) {
-    return false;
-  }
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
@@ -2448,8 +2431,6 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
-    const assigneeAgentFilterRaw = req.query.assigneeAgentId;
-    let assigneeAgentId: string | null | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -2491,29 +2472,12 @@ export function issueRoutes(
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
     }
-    if (assigneeAgentFilterRaw !== undefined) {
-      if (typeof assigneeAgentFilterRaw !== "string") {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
-        return;
-      }
-      const normalizedAssigneeAgentFilter = assigneeAgentFilterRaw.trim();
-      if (normalizedAssigneeAgentFilter.length === 0) {
-        assigneeAgentId = undefined;
-      } else if (normalizedAssigneeAgentFilter.toLowerCase() === "null") {
-        assigneeAgentId = null;
-      } else if (isUuidLike(normalizedAssigneeAgentFilter)) {
-        assigneeAgentId = normalizedAssigneeAgentFilter;
-      } else {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
-        return;
-      }
-    }
     const offset = parsedOffset ?? 0;
 
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
-      assigneeAgentId,
+      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
@@ -4897,9 +4861,6 @@ export function issueRoutes(
             assigneeAgentId: requestedAssigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
-            actorRunId: actor.runId,
-            checkoutRunId: existing.checkoutRunId,
-            executionRunId: existing.executionRunId,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -6674,9 +6635,6 @@ export function issueRoutes(
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
-          actorRunId: actor.runId,
-          checkoutRunId: issue.checkoutRunId,
-          executionRunId: issue.executionRunId,
         }) ||
         shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =

@@ -213,7 +213,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       // Pins the HEARTBEAT-path lease call forwarding the AGENT's adapter type
       // (per-run adapter / mixed-harness envs). environment-runtime.ts has two
       // drivers calling environmentAcquireLease; regressions here previously
-      // shipped by editing only the non-heartbeat one.
+      // shipped twice by editing only the non-heartbeat one (#113, #126).
       adapterType: "codex_local",
     });
     await vi.waitFor(() => {
