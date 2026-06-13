@@ -2111,8 +2111,14 @@ export function agentRoutes(
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
-    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const managedDefaults = resolveManagedAgentDefaults();
+    const managedApplied = applyManagedAgentDefaults({
+      requestedAdapterType: hireInput.adapterType,
+      adapterConfig: (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+      managed: managedDefaults,
+    });
+    hireInput.adapterType = assertKnownAdapterType(managedApplied.adapterType);
+    const rawHireAdapterConfig = managedApplied.adapterConfig;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
