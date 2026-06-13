@@ -43,6 +43,7 @@ import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
+import { warnIfManagedExperienceMisconfigured } from "./services/managed-agent-defaults.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -921,6 +922,11 @@ export async function startServer(): Promise<StartedServer> {
   } catch (err) {
     logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
     throw err;
+  }
+
+  const managedMisconfigWarning = warnIfManagedExperienceMisconfigured();
+  if (managedMisconfigWarning) {
+    logger.warn(managedMisconfigWarning);
   }
 
   await new Promise<void>((resolveListen, rejectListen) => {

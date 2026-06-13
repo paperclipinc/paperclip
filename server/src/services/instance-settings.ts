@@ -55,6 +55,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      managedExperience: parsed.data.managedExperience ?? false,
     };
   }
   return {
@@ -69,14 +70,25 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    managedExperience: false,
   };
+}
+
+export function applyManagedExperienceEnvOverride(
+  settings: InstanceExperimentalSettings,
+  env: Record<string, string | undefined> = process.env,
+): InstanceExperimentalSettings {
+  if (env.PAPERCLIP_MANAGED_EXPERIENCE === "true") {
+    return { ...settings, managedExperience: true };
+  }
+  return settings;
 }
 
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
   return {
     id: row.id,
     general: normalizeGeneralSettings(row.general),
-    experimental: normalizeExperimentalSettings(row.experimental),
+    experimental: applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental)),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -131,7 +143,7 @@ export function instanceSettingsService(db: Db) {
 
     getExperimental: async (): Promise<InstanceExperimentalSettings> => {
       const row = await getOrCreateRow();
-      return normalizeExperimentalSettings(row.experimental);
+      return applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental));
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {

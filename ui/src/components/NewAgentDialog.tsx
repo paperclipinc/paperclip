@@ -6,6 +6,7 @@ import { useCompany } from "../context/CompanyContext";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { adaptersApi } from "../api/adapters";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
@@ -51,6 +52,14 @@ export function NewAgentDialog() {
   const [latestAgentPrompt, setLatestAgentPrompt] = useState<string | null>(null);
   const [latestAgentPromptCopied, setLatestAgentPromptCopied] = useState(false);
   const disabledTypes = useDisabledAdaptersSync();
+
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const managed = experimentalSettings?.managedExperience === true;
 
   function resetDialogState() {
     setMode("choices");
@@ -255,8 +264,9 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
+                  {managed
+                    ? "Ask a leader to propose the hire, send an onboarding prompt to an external agent, or invite one directly."
+                    : "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent."}
                 </p>
               </div>
 
@@ -266,10 +276,12 @@ export function NewAgentDialog() {
               </Button>
 
               <div className="grid gap-2">
-                <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
-                  <Settings2 className="h-4 w-4 mr-2" />
-                  Configure a runtime manually
-                </Button>
+                {!managed && (
+                  <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
+                    <Settings2 className="h-4 w-4 mr-2" />
+                    Configure a runtime manually
+                  </Button>
+                )}
                 <div className="space-y-1">
                   <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
                     <MailPlus className="h-4 w-4 mr-2" />
@@ -281,7 +293,7 @@ export function NewAgentDialog() {
                 </div>
               </div>
             </>
-          ) : mode === "runtime" ? (
+          ) : mode === "runtime" && !managed ? (
             <>
               <div className="space-y-2">
                 <button

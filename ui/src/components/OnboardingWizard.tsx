@@ -8,6 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -233,6 +234,15 @@ export function OnboardingWizard() {
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
+  // Managed experience: when on, the instance picks the harness + model for the
+  // user, so the wizard hides the adapter/model pickers and omits those fields
+  // from the launch payload (the server injects the managed defaults).
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
+
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -499,49 +509,62 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        const selectedModelId = model.trim();
-        if (!isValidOpenCodeModelId(selectedModelId)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
-          return;
+      // In managed mode the user never chose a harness/model, so the
+      // adapter-specific preflight (OpenCode model validation, the local
+      // adapter environment probe) does not apply — the server injects the
+      // managed default adapter + model for this hire.
+      if (!managed) {
+        if (adapterType === "opencode_local") {
+          const selectedModelId = model.trim();
+          if (!isValidOpenCodeModelId(selectedModelId)) {
+            setError(
+              "OpenCode requires an explicit model in provider/model format."
+            );
+            return;
+          }
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models."
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError(
+              "OpenCode models are still loading. Please wait and try again."
+            );
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`
+            );
+            return;
+          }
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models."
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
-          );
-          return;
-        }
-      }
 
-      if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
+        if (isLocalAdapter) {
+          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+          if (!result) return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
+        // When managed, omit adapterType + adapterConfig entirely so the server
+        // injects the managed default harness + model. Sending them (even
+        // "process") would pin an inert adapter instead.
+        ...(managed
+          ? {}
+          : {
+              adapterType,
+              adapterConfig: buildAdapterConfig(),
+            }),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -1148,7 +1171,9 @@ export function OnboardingWizard() {
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* Adapter type radio cards — hidden in managed mode, where
+                      the instance picks the harness for the user. */}
+                  {!managed && (
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type
@@ -1248,9 +1273,11 @@ export function OnboardingWizard() {
                       </div>
                     )}
                   </div>
+                  )}
 
-                  {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {/* Conditional adapter fields — Model picker hidden in managed
+                      mode (the instance picks the model for the user). */}
+                  {!managed && isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
