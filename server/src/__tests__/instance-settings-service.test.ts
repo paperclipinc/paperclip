@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeExperimentalSettings } from "../services/instance-settings.js";
+import {
+  normalizeExperimentalSettings,
+  applyManagedExperienceEnvOverride,
+} from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
   it("ignores retired experimental flags without resetting current settings", () => {
@@ -24,6 +27,7 @@ describe("instance settings service", () => {
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+      managedExperience: false,
     });
   });
 
@@ -53,5 +57,30 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
     ).toBe(false);
+  });
+});
+
+describe("managedExperience flag", () => {
+  it("defaults managedExperience to false", () => {
+    expect(normalizeExperimentalSettings({}).managedExperience).toBe(false);
+  });
+
+  it("preserves an explicit managedExperience=true", () => {
+    expect(
+      normalizeExperimentalSettings({ managedExperience: true }).managedExperience,
+    ).toBe(true);
+  });
+
+  it("env override forces managedExperience on", () => {
+    const base = normalizeExperimentalSettings({});
+    const out = applyManagedExperienceEnvOverride(base, {
+      PAPERCLIP_MANAGED_EXPERIENCE: "true",
+    });
+    expect(out.managedExperience).toBe(true);
+  });
+
+  it("env override is a no-op when unset", () => {
+    const base = normalizeExperimentalSettings({ managedExperience: false });
+    expect(applyManagedExperienceEnvOverride(base, {}).managedExperience).toBe(false);
   });
 });
