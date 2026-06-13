@@ -185,9 +185,7 @@ export function NewAgent() {
     }) as Record<string, unknown>;
     if (omitManagedAdapterAndModel) {
       delete payload.adapterType;
-      if (payload.adapterConfig) {
-        delete (payload.adapterConfig as Record<string, unknown>).model;
-      }
+      delete payload.adapterConfig;
     }
     createAgent.mutate(payload);
   }
