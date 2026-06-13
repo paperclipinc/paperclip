@@ -7,6 +7,17 @@ function asNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// The agent create schema defaults an omitted adapterType to "process" (the inert
+// generic adapter). In managed mode we treat that, plus empty/undefined, as
+// "unspecified" so the managed default adapter is injected.
+const UNSPECIFIED_ADAPTER_SENTINEL = "process";
+
+function isUnspecifiedAdapter(value: unknown): boolean {
+  if (typeof value !== "string") return true;
+  const trimmed = value.trim();
+  return trimmed.length === 0 || trimmed === UNSPECIFIED_ADAPTER_SENTINEL;
+}
+
 export function resolveManagedAgentDefaults(
   env: Record<string, string | undefined> = process.env,
 ): ManagedAgentDefaults | null {
@@ -26,7 +37,7 @@ export function applyManagedAgentDefaults(args: {
   const adapterConfig = { ...args.adapterConfig };
   if (!managed) return { adapterType, adapterConfig };
 
-  if (!asNonEmptyString(adapterType)) {
+  if (isUnspecifiedAdapter(adapterType)) {
     adapterType = managed.adapterType;
   }
   if (

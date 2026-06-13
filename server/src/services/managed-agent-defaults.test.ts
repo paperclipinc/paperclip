@@ -65,6 +65,25 @@ describe("applyManagedAgentDefaults", () => {
     expect(out.adapterConfig.model).toBe("anthropic/tensorix/z-ai/glm-4.7");
   });
 
+  it("injects when adapterType is the schema default sentinel 'process'", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: "process",
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("opencode_local");
+    expect(out.adapterConfig.model).toBe("anthropic/tensorix/deepseek/deepseek-v4-pro");
+  });
+
+  it("treats whitespace-only adapterType as unspecified", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: "   ",
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("opencode_local");
+  });
+
   it("is a no-op when managed is null", () => {
     const out = applyManagedAgentDefaults({
       requestedAdapterType: undefined,
