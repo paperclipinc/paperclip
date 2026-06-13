@@ -264,8 +264,9 @@ export function NewAgentDialog() {
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
+                  {managed
+                    ? "Ask a leader to propose the hire, send an onboarding prompt to an external agent, or invite one directly."
+                    : "Ask a leader to propose the hire, configure a runtime yourself, or send an onboarding prompt to an external agent."}
                 </p>
               </div>
 

@@ -706,7 +706,9 @@ export function IssueProperties({
     }
     return <span className="text-sm text-muted-foreground">Primary model</span>;
   })();
-  const assigneeOptionsContent = !managed && supportsAssigneeOverrides ? (
+  const assigneeOptionsContent = managed
+    ? null
+    : supportsAssigneeOverrides ? (
     <div className="w-full space-y-3 p-2">
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>

@@ -62,6 +62,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
+  adapterModelProfiles: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -325,6 +326,7 @@ describe("NewIssueDialog", () => {
     ]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
@@ -971,6 +973,7 @@ describe("NewIssueDialog", () => {
       });
       mockAgentsApi.list.mockResolvedValue([CLAUDE_LOCAL_AGENT]);
       mockAgentsApi.adapterModels.mockResolvedValue([]);
+      mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
       dialogState.newIssueDefaults = {
         assigneeAgentId: CLAUDE_LOCAL_AGENT.id,
       };
@@ -978,22 +981,25 @@ describe("NewIssueDialog", () => {
       const { root } = renderDialog(container);
       await flush();
 
-      // The agent options section is collapsed by default; expand it.
+      // Wait for the agents query to resolve so supportsAssigneeOverrides is true.
+      await waitForAssertion(() => {
+        const toggle = [...container.querySelectorAll("button")].find(
+          (button) => button.textContent?.includes("options"),
+        );
+        expect(toggle).not.toBeUndefined();
+      });
+
+      // The agent options section is collapsed by default; click the toggle to expand it.
       const toggle = [...container.querySelectorAll("button")].find(
         (button) => button.textContent?.includes("options"),
-      );
-      if (toggle) {
-        await act(async () => {
-          toggle.click();
-        });
-        await flush();
-        expect(container.querySelector('[aria-label="Model lane"]')).not.toBeNull();
-      } else {
-        // assignee picker started empty — supportsAssigneeOverrides is false.
-        // The key invariant (managed=true suppresses the section) is covered by
-        // the sibling test above with a symmetric setup.
-        expect(container.querySelector('[aria-label="Model lane"]')).toBeNull();
-      }
+      )!;
+      await act(async () => {
+        toggle.click();
+      });
+      await flush();
+
+      // After expanding, the Model lane radiogroup must be present.
+      expect(container.querySelector('[aria-label="Model lane"]')).not.toBeNull();
 
       act(() => root.unmount());
     });
