@@ -88,7 +88,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
   return {
     id: row.id,
     general: normalizeGeneralSettings(row.general),
-    experimental: normalizeExperimentalSettings(row.experimental),
+    experimental: applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental)),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

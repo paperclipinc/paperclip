@@ -83,4 +83,12 @@ describe("managedExperience flag", () => {
     const base = normalizeExperimentalSettings({ managedExperience: false });
     expect(applyManagedExperienceEnvOverride(base, {}).managedExperience).toBe(false);
   });
+
+  it("env override does not alter an already-true managedExperience", () => {
+    const base = normalizeExperimentalSettings({ managedExperience: true });
+    expect(
+      applyManagedExperienceEnvOverride(base, { PAPERCLIP_MANAGED_EXPERIENCE: "true" }).managedExperience,
+    ).toBe(true);
+    expect(applyManagedExperienceEnvOverride(base, {}).managedExperience).toBe(true);
+  });
 });
