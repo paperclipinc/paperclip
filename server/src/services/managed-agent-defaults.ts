@@ -28,10 +28,10 @@ export function resolveManagedAgentDefaults(
 }
 
 export function applyManagedAgentDefaults(args: {
-  requestedAdapterType: unknown;
+  requestedAdapterType: string | null | undefined;
   adapterConfig: Record<string, unknown>;
   managed: ManagedAgentDefaults | null;
-}): { adapterType: unknown; adapterConfig: Record<string, unknown> } {
+}): { adapterType: string | null | undefined; adapterConfig: Record<string, unknown> } {
   const { managed } = args;
   let adapterType = args.requestedAdapterType;
   const adapterConfig = { ...args.adapterConfig };
