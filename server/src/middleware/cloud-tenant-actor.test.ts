@@ -9,6 +9,7 @@ import { resolveCloudTenantActor } from "./auth.js";
 // returning().then()). The chain is awaitable so directly-awaited inserts resolve.
 function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: "owner", status: "active" }) {
   const insertedTables: unknown[] = [];
+  const deletedTables: unknown[] = [];
   const chain: Record<string, unknown> = {};
   chain.values = () => chain;
   chain.onConflictDoUpdate = () => chain;
@@ -20,8 +21,14 @@ function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: 
       insertedTables.push(table);
       return chain;
     },
+    // resolveCloudTenantActor awaits db.delete(table).where(...) to purge stale
+    // instance_admin rows; the .where() result must be awaitable.
+    delete: (table: unknown) => {
+      deletedTables.push(table);
+      return { where: async () => undefined };
+    },
   } as unknown as Db;
-  return { db, insertedTables };
+  return { db, insertedTables, deletedTables };
 }
 
 function fakeReq(headers: Record<string, string>): Request {
@@ -47,11 +54,13 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("never grants instance admin", async () => {
-    const { db, insertedTables } = createFakeDb();
+    const { db, insertedTables, deletedTables } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).not.toBeNull();
     expect(actor!.isInstanceAdmin).toBe(false);
     expect(insertedTables).not.toContain(instanceUserRoles);
+    // and actively purges any stale instance_admin rows from earlier builds
+    expect(deletedTables).toContain(instanceUserRoles);
   });
 
   it("is scoped to exactly the one company from its stack", async () => {
