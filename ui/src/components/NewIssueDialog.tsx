@@ -515,6 +515,7 @@ export function NewIssueDialog() {
     enabled: newIssueOpen,
     retry: false,
   });
+  const managed = experimentalSettings?.managedExperience === true;
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt),
@@ -1658,7 +1659,7 @@ export function NewIssueDialog() {
             </div>
           )}
 
-          {supportsAssigneeOverrides && (
+          {!managed && supportsAssigneeOverrides && (
             <div className="px-4 pb-2">
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
