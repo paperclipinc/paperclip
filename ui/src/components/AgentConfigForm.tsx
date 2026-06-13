@@ -233,10 +233,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed experience: fold harness/model into an Advanced disclosure and let
-  // the server inject the curated cloud defaults (opencode + a Tensorix model)
-  // when the user never opens it. The form's create default adapter is
-  // `claude_local`, which is NOT in the cloud curated set, so sending it would
-  // fail — omitting it on submit lets the server pick the managed default.
+  // the server inject the operator-configured default adapter/model when the
+  // user never opens it. The form's create default adapter is `claude_local`,
+  // which may not be in the operator-configured set, so omitting it on submit
+  // lets the server pick the managed default.
   const managed = experimentalSettings?.managedExperience === true;
 
   // Instance execution policy (general settings). When `executionMode` is

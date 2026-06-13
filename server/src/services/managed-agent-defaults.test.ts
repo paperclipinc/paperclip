@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveManagedAgentDefaults,
   applyManagedAgentDefaults,
+  warnIfManagedExperienceMisconfigured,
 } from "./managed-agent-defaults.js";
 
 describe("resolveManagedAgentDefaults", () => {
@@ -25,6 +26,29 @@ describe("resolveManagedAgentDefaults", () => {
     expect(
       resolveManagedAgentDefaults({ PAPERCLIP_MANAGED_DEFAULT_ADAPTER: "opencode_local" }),
     ).toEqual({ adapterType: "opencode_local", model: null });
+  });
+});
+
+describe("warnIfManagedExperienceMisconfigured", () => {
+  it("returns a non-null message when flag=true and adapter is unset", () => {
+    const result = warnIfManagedExperienceMisconfigured({
+      PAPERCLIP_MANAGED_EXPERIENCE: "true",
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("PAPERCLIP_MANAGED_DEFAULT_ADAPTER");
+  });
+
+  it("returns null when flag=true and adapter is set", () => {
+    const result = warnIfManagedExperienceMisconfigured({
+      PAPERCLIP_MANAGED_EXPERIENCE: "true",
+      PAPERCLIP_MANAGED_DEFAULT_ADAPTER: "opencode_local",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when flag is unset", () => {
+    const result = warnIfManagedExperienceMisconfigured({});
+    expect(result).toBeNull();
   });
 });
 

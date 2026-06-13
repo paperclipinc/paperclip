@@ -76,7 +76,7 @@ export function NewAgent() {
   const [formError, setFormError] = useState<string | null>(null);
   // Managed experience: when on and the user never opened the form's "Advanced"
   // disclosure to pick a harness, omit adapterType + model from the hire payload
-  // so the server injects the managed defaults (opencode + a Tensorix model).
+  // so the server injects the operator-configured default adapter/model.
   const [omitManagedAdapterAndModel, setOmitManagedAdapterAndModel] = useState(false);
   const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
   const [testAgentState, setTestAgentState] = useState({ disabled: true, pending: false });

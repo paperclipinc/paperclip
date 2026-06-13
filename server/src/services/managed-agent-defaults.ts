@@ -27,6 +27,25 @@ export function resolveManagedAgentDefaults(
   return { adapterType, model: model && model.length > 0 ? model : null };
 }
 
+/**
+ * Returns a warning message string when PAPERCLIP_MANAGED_EXPERIENCE is enabled
+ * but PAPERCLIP_MANAGED_DEFAULT_ADAPTER is not set, causing managed agents to be
+ * created without an injected adapter or model. Returns null when the config is
+ * consistent or managed experience is not enabled.
+ */
+export function warnIfManagedExperienceMisconfigured(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  if (env.PAPERCLIP_MANAGED_EXPERIENCE !== "true") return null;
+  if (resolveManagedAgentDefaults(env) !== null) return null;
+  return (
+    "managedExperience is enabled (PAPERCLIP_MANAGED_EXPERIENCE=true) but" +
+    " PAPERCLIP_MANAGED_DEFAULT_ADAPTER is unset; managed agents will be" +
+    " created without an injected adapter or model." +
+    " Set PAPERCLIP_MANAGED_DEFAULT_ADAPTER and PAPERCLIP_MANAGED_DEFAULT_MODEL."
+  );
+}
+
 export function applyManagedAgentDefaults(args: {
   requestedAdapterType: string | null | undefined;
   adapterConfig: Record<string, unknown>;
