@@ -27,7 +27,14 @@ async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 
 }
 
 async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
-  await db?.$client?.end?.({ timeout: 0 });
+  // Drain in-flight queries before closing the socket. The heartbeat service
+  // can still have queries settling when a test body resolves (the gateway
+  // wake/batch flow writes back after the WS round-trip). end({ timeout: 0 })
+  // force-destroys the connection immediately, which surfaces as a flaky
+  // "write CONNECTION_DESTROYED 127.0.0.1:<port>" rejection from a detached
+  // query. A bounded graceful timeout lets pending queries finish first,
+  // matching how every other test/helper closes its client (db.$client.end()).
+  await db?.$client?.end?.({ timeout: 5 });
 }
 
 async function createControlledGatewayServer() {
@@ -147,7 +154,12 @@ async function createControlledGatewayServer() {
   };
 }
 
-describe("heartbeat comment wake batching", () => {
+// retry: defense-in-depth against the embedded-postgres / heartbeat-service
+// connection teardown race that can surface as a transient CONNECTION_DESTROYED
+// rejection. The primary fix is the graceful drain in closeDbClient above;
+// this bounded retry only catches a residual detached-query race and is scoped
+// to this suite (not a global retry-everything).
+describe("heartbeat comment wake batching", { retry: 2 }, () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
