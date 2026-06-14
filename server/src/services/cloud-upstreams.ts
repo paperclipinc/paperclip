@@ -211,6 +211,14 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       };
     },
 
+    // Resolve the owning companyId of a connection so routes that take a bare
+    // connection/pending id (e.g. finishConnect) can enforce per-company access
+    // before acting on it.
+    getConnectionCompanyId: async (connectionId: string): Promise<string> => {
+      const row = await getConnectionRow(connectionId);
+      return row.companyId;
+    },
+
     finishConnect: async (input: {
       pendingConnectionId: string;
       code: string;
