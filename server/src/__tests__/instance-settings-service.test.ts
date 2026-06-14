@@ -107,4 +107,14 @@ describe("cloudBilling flag", () => {
   it("rejects non-boolean cloudBilling back to the default", () => {
     expect(normalizeExperimentalSettings({ cloudBilling: "yes" }).cloudBilling).toBe(false);
   });
+
+  it("env override PAPERCLIP_CLOUD_BILLING=true forces cloudBilling on", () => {
+    const base = normalizeExperimentalSettings({});
+    expect(applyManagedExperienceEnvOverride(base, { PAPERCLIP_CLOUD_BILLING: "true" }).cloudBilling).toBe(true);
+  });
+
+  it("env override leaves cloudBilling false when unset", () => {
+    const base = normalizeExperimentalSettings({});
+    expect(applyManagedExperienceEnvOverride(base, {}).cloudBilling).toBe(false);
+  });
 });
