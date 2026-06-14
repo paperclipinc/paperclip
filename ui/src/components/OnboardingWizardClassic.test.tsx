@@ -15,6 +15,11 @@ const mockAdaptersApi = vi.hoisted(() => ({
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
+  hire: vi.fn(),
+}));
+
+const mockApprovalsApi = vi.hoisted(() => ({
+  approve: vi.fn(),
 }));
 
 // Open the classic wizard directly on Step 2 ("Create your first agent") for an
@@ -52,6 +57,10 @@ vi.mock("@/api/adapters", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/approvals", () => ({
+  approvalsApi: mockApprovalsApi,
 }));
 
 // Peripheral visuals — render nothing; they are irrelevant to the gating.
@@ -94,6 +103,8 @@ describe("OnboardingWizardClassic managed experience", () => {
     localStorage.clear();
     mockAdaptersApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
+    mockApprovalsApi.approve.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -119,6 +130,36 @@ describe("OnboardingWizardClassic managed experience", () => {
     const root = await renderWizard();
 
     expect(document.body.textContent).toContain("Adapter type");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("auto-creates the CEO and skips Step 2 when managed", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ managedExperience: true });
+    const root = await renderWizard();
+    await flushReact();
+
+    expect(mockAgentsApi.hire).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ role: "ceo" }),
+    );
+    // Managed hire omits adapterType so the server injects the managed default.
+    const hireArgs = mockAgentsApi.hire.mock.calls[0][1];
+    expect(hireArgs).not.toHaveProperty("adapterType");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not auto-create the CEO when not managed", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ managedExperience: false });
+    const root = await renderWizard();
+    await flushReact();
+
+    expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
     flushSync(() => {
       root.unmount();
