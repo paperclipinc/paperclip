@@ -564,6 +564,91 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("refreshes the companies cache with the joined company before redirecting a fresh authenticated invitee", async () => {
+    // Last-gap repro: a brand-new user signs up via the marketing /auth pages,
+    // then is redirected (already authenticated) to /invite/:token as their
+    // FIRST authenticated full-page load. They have no selected/last company, so
+    // the post-accept navigate("/") falls through to CompanyRootRedirect, which
+    // resolves `selectedCompany` from the companies cache. If we navigate before
+    // the membership refetch lands, the cache still holds ONLY their own
+    // auto-provisioned company, so they get redirected to their OWN company
+    // dashboard instead of the one they just joined. The accept must therefore
+    // leave the joined company present in the companies cache BEFORE it hands off
+    // navigation.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // The membership write lags: /api/companies keeps returning ONLY the new
+    // user's own company for the first couple of post-accept refetches, then
+    // becomes readable and includes the joined inviter company. The accept must
+    // refetch until the joined company appears before it hands off navigation.
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValue([
+      { id: "own-company", name: "Jane Co" },
+      { id: "company-1", name: "Acme Robotics" },
+    ]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    // Drain the bounded backoff (150ms/300ms/... between membership refetches).
+    for (let i = 0; i < 30; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      });
+      const cached = queryClient.getQueryData(queryKeys.companies.all) as
+        | { companies: Array<{ id: string }> }
+        | undefined;
+      if (cached?.companies.some((company) => company.id === "company-1")) break;
+    }
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // The accept refetched the companies list more than once, waiting out the
+    // lagging membership write rather than navigating on the first stale list.
+    expect(listCompaniesMock.mock.calls.length).toBeGreaterThan(2);
+
+    // The joined company must be present in the shared companies cache by the
+    // time navigation happens, so CompanyRootRedirect can resolve the inviter
+    // company rather than falling back to companies[0] (the user's own).
+    const cached = queryClient.getQueryData(queryKeys.companies.all) as
+      | { companies: Array<{ id: string }> }
+      | undefined;
+    expect(cached?.companies.map((company) => company.id)).toContain("company-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("retries auto-accept after a transient failure instead of stranding the user with a stale error", async () => {
     // A brand-new authenticated user lands on the invite. The first auto-accept
     // attempt fails transiently (e.g. the session cookie/membership had not
