@@ -1,6 +1,9 @@
-import { ChevronsUpDown, Plus, Settings } from "lucide-react";
+import { ChevronsUpDown, Plus, PlusCircle, Settings } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { NewCompanyDialog } from "./NewCompanyDialog";
 import { useState } from "react";
 
 function statusDotColor(status?: string): string {
@@ -32,12 +36,25 @@ interface CompanySwitcherProps {
 
 export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
 
+  // Cloud-only affordance: "Create company" provisions a NEW control-plane tenant
+  // via the hosting gateway (POST /api/cloud/companies). In a local_trusted
+  // (self-hosted) deployment there is no cloud control plane, so we keep the
+  // native "Manage Companies" flow and hide the cloud create action.
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const isCloud = healthQuery.data?.deploymentMode === "authenticated";
+
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
@@ -72,6 +89,19 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           <DropdownMenuItem disabled>No companies</DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
+        {isCloud && (
+          <DropdownMenuItem
+            onSelect={(e) => {
+              // Keep the dialog mount stable while the menu closes.
+              e.preventDefault();
+              setOpen(false);
+              setNewCompanyOpen(true);
+            }}
+          >
+            <PlusCircle className="h-4 w-4 mr-2" />
+            Create company
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem asChild>
           <Link to="/company/settings" className="no-underline text-inherit">
             <Settings className="h-4 w-4 mr-2" />
@@ -86,5 +116,9 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    {isCloud && (
+      <NewCompanyDialog open={newCompanyOpen} onOpenChange={setNewCompanyOpen} />
+    )}
+    </>
   );
 }
