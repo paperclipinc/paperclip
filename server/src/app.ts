@@ -380,6 +380,11 @@ export async function createApp(
       app.use(
         express.static(uiDist, {
           maxAge: "1h",
+          // Do NOT let express.static serve index.html for "/" directly: that
+          // bypasses readBrandedStaticIndexHtml (the SPA fallback below), so the
+          // brand stylesheet link would never be injected on the landing route.
+          // With index:false, "/" falls through to the branded fallback.
+          index: false,
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
               res.set("Cache-Control", "no-cache");
