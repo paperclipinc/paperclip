@@ -302,17 +302,34 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     grantedByUserId: userId,
   });
 
+  // Resolve the user's REAL active company memberships — exactly the query the
+  // session actor uses above — so a cloud_tenant user sees every company they own
+  // or were invited to, not just the one derived from their stack id. The
+  // stack-company auto-create above guarantees this set always contains the
+  // current stack company on first request; from then on the injected stackId is
+  // only a default/current-company hint, no longer the access list itself.
+  const memberships = await db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
+
   return {
     type: "board",
     userId,
     userName,
     userEmail,
-    companyIds: [companyId],
-    memberships: [{
-      companyId,
-      membershipRole: membership.membershipRole,
-      status: membership.status,
-    }],
+    companyIds: memberships.map((row) => row.companyId),
+    memberships,
     isInstanceAdmin: false,
     source: "cloud_tenant",
   };
