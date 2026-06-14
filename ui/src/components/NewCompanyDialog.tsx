@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@/lib/router";
 import { ApiError } from "@/api/client";
 import { cloudCompaniesApi, type CloudCompanyCreateResult } from "@/api/cloudCompanies";
 import { queryKeys } from "@/lib/queryKeys";
@@ -27,19 +26,23 @@ interface NewCompanyDialogProps {
 // prompt — a single source of truth for the plan, kept out of the product.
 export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const [name, setName] = useState("");
 
   const createCompany = useMutation<CloudCompanyCreateResult, unknown, { name: string }>({
     mutationFn: (data) => cloudCompaniesApi.create(data),
     onSuccess: async (result) => {
       // Refresh the companies list so the switcher shows the new company, then
-      // navigate to its dashboard. The product auto-creates + scopes to the new
-      // company on the first request to that slug (cloud-actor path).
+      // hard-navigate to its dashboard. A client-side navigate would NOT trigger
+      // a fresh gateway request for the new slug, so the gateway would never
+      // inject that company's stack and the product would never auto-create its
+      // membership — the user would land on a membership-less, broken company.
+      // A full-page load makes the gateway process the slug and auto-create the
+      // company + membership (the cloud-actor path), exactly like opening
+      // /PC<slug>/dashboard directly.
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       reset();
       onOpenChange(false);
-      navigate(result.url);
+      window.location.assign(result.url);
     },
   });
 

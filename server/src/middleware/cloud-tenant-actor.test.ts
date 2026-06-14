@@ -22,9 +22,16 @@ function createFakeDb(
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectedTables: unknown[] = [];
+  // Captures the values passed to .values() per inserted table so tests can
+  // assert on derived fields like the default company name.
+  const insertedValues = new Map<unknown, Record<string, unknown>>();
+  let currentTable: unknown = null;
   const memberships = seededMemberships ?? [membershipRow];
   const chain: Record<string, unknown> = {};
-  chain.values = () => chain;
+  chain.values = (values: Record<string, unknown>) => {
+    if (currentTable !== null) insertedValues.set(currentTable, values);
+    return chain;
+  };
   chain.onConflictDoUpdate = () => chain;
   chain.onConflictDoNothing = () => chain;
   chain.returning = async () => [membershipRow];
@@ -32,6 +39,7 @@ function createFakeDb(
   const db = {
     insert: (table: unknown) => {
       insertedTables.push(table);
+      currentTable = table;
       return chain;
     },
     // resolveCloudTenantActor SELECTs the user's real active companyMemberships
@@ -49,7 +57,7 @@ function createFakeDb(
       return { where: async () => undefined };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectedTables };
+  return { db, insertedTables, deletedTables, selectedTables, insertedValues };
 }
 
 function fakeReq(headers: Record<string, string>): Request {
@@ -100,6 +108,34 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(authUsers);
     expect(insertedTables).toContain(companies);
     expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it("defaults the company name to a friendly value (not a raw tenant/stack id)", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    const name = insertedValues.get(companies)?.name as string;
+    // No raw `${stackId} Paperclip` or `tenant:<uuid>`-style default leaks through.
+    expect(name).toBe("Owner's company");
+    expect(name).not.toContain("stack-abc");
+    expect(name).not.toMatch(/tenant:/i);
+  });
+
+  it("defaults the company name from a real display name when present", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-user-name": "Ada Lovelace" }),
+    );
+    expect(insertedValues.get(companies)?.name).toBe("Ada Lovelace's company");
+  });
+
+  it("prefers an explicit paperclip-company-id header over the friendly default", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-id": "Acme Corp" }),
+    );
+    expect(insertedValues.get(companies)?.name).toBe("Acme Corp");
   });
 
   it("returns null when the server token is unset", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -37,6 +37,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { markCloudOnboardingComplete } from "../lib/cloud-onboarding";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -119,6 +120,10 @@ export function OnboardingWizard() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
+  // Cloud first-run onboarding opens at Step 1 with a pre-existing (auto-created)
+  // company: the Company step RENAMES it in place instead of creating a new one,
+  // and completion is tracked in localStorage so the wizard never reopens.
+  const cloudRenameFlow = Boolean(existingCompanyId) && initialStep === 1;
 
   // Restore saved state from localStorage (read once on mount)
   const saved = useMemo(loadSavedState, []);
@@ -201,6 +206,20 @@ export function OnboardingWizard() {
     const company = companies.find((c) => c.id === createdCompanyId);
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
+
+  // Cloud rename flow: pre-fill the Company step with the auto-created company's
+  // current name (once per company) so the user edits it in place. Tracks
+  // whether the rename + goal step has already run to avoid a duplicate goal.
+  const companyStepDoneRef = useRef(false);
+  const prefilledCompanyIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !cloudRenameFlow || !createdCompanyId) return;
+    if (prefilledCompanyIdRef.current === createdCompanyId) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (!company) return;
+    setCompanyName(company.name);
+    prefilledCompanyIdRef.current = createdCompanyId;
+  }, [effectiveOnboardingOpen, cloudRenameFlow, createdCompanyId, companies]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
@@ -373,9 +392,16 @@ export function OnboardingWizard() {
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
+    companyStepDoneRef.current = false;
+    prefilledCompanyIdRef.current = null;
   }
 
   function handleClose() {
+    // Cloud first-run: dismissing the wizard still counts as "onboarded" so it
+    // never reopens for this company.
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -387,6 +413,9 @@ export function OnboardingWizard() {
 
   function handleLaunchToChat() {
     const prefix = createdCompanyPrefix;
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
     navigate(prefix ? `/${prefix}/board-chat` : "/dashboard");
@@ -463,14 +492,23 @@ export function OnboardingWizard() {
   // goal, then advance to naming the team lead. Guarded so revisiting the
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
-    if (createdCompanyId) {
+    // Cloud first-run: the company already exists (auto-created), so RENAME it
+    // in place to whatever the user typed instead of short-circuiting to step 3
+    // with the auto-generated name. Once the rename + goal have run for this
+    // company, revisiting the step just advances (no duplicate goal).
+    if (createdCompanyId && (!cloudRenameFlow || companyStepDoneRef.current)) {
       setStep(3);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company =
+        cloudRenameFlow && createdCompanyId
+          ? await companiesApi.update(createdCompanyId, {
+              name: companyName.trim(),
+            })
+          : await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -489,6 +527,7 @@ export function OnboardingWizard() {
         queryKey: queryKeys.goals.list(company.id)
       });
 
+      companyStepDoneRef.current = true;
       setStep(3); // → Create your team lead
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");

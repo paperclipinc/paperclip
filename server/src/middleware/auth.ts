@@ -214,7 +214,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const companyName = paperclipCompanyId || friendlyCloudCompanyName(userName, userEmail);
   const now = new Date();
 
   await db
@@ -377,6 +377,23 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+// Cloud tenants land on a first-run onboarding wizard where they rename their
+// company, but the auto-created default should still read like a real company
+// (not `${stackId} Paperclip`). Derive a friendly default from the user: prefer
+// a real display name, otherwise the capitalized email local-part.
+function friendlyCloudCompanyName(userName: string, userEmail: string): string {
+  const trimmedName = userName?.trim();
+  if (trimmedName && trimmedName !== userEmail && !trimmedName.includes("@")) {
+    return `${trimmedName}'s company`;
+  }
+  const localPart = userEmail.split("@")[0]?.trim();
+  if (localPart) {
+    const capitalized = localPart.charAt(0).toUpperCase() + localPart.slice(1);
+    return `${capitalized}'s company`;
+  }
+  return "My company";
 }
 
 function cloudTenantCompanyId(stackId: string): string {
