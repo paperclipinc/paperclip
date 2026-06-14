@@ -94,7 +94,27 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      select: vi.fn(),
+      // The cloud_tenant actor resolves the user's REAL active company
+      // memberships after seeding (db.select(...).from(companyMemberships)),
+      // exactly as the session actor does. Mock it to echo back the membership
+      // rows just seeded via insert() so the actor returns a populated
+      // memberships/companyIds set instead of throwing on an undefined chain.
+      select: vi.fn(() => {
+        const chain = {
+          from: () => chain,
+          where: () =>
+            Promise.resolve(
+              inserts
+                .filter((i) => i.values.principalType === "user")
+                .map((i) => ({
+                  companyId: i.values.companyId,
+                  membershipRole: i.values.membershipRole,
+                  status: i.values.status,
+                })),
+            ),
+        };
+        return chain;
+      }),
     } as any;
     const app = express();
     app.use(
