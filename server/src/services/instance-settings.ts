@@ -56,6 +56,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
       managedExperience: parsed.data.managedExperience ?? false,
+      cloudBilling: parsed.data.cloudBilling ?? false,
     };
   }
   return {
@@ -71,6 +72,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
     managedExperience: false,
+    cloudBilling: false,
   };
 }
 

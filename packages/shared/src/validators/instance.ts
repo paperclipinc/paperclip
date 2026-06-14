@@ -49,6 +49,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   managedExperience: z.boolean().default(false),
+  cloudBilling: z.boolean().default(false),
   issueGraphLivenessAutoRecoveryLookbackHours: z
     .number()
     .int()

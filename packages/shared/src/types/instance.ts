@@ -56,6 +56,7 @@ export interface InstanceExperimentalSettings {
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
   managedExperience: boolean;
+  cloudBilling: boolean;
 }
 
 export interface InstanceSettings {
