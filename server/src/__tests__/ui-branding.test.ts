@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyUiBranding,
@@ -119,5 +122,28 @@ describe("ui branding", () => {
   it("does not inject a brand stylesheet when the brand dir is unset", () => {
     const branded = applyUiBranding(TEMPLATE, {});
     expect(branded).not.toContain("/branding/brand.css");
+  });
+
+  // Regression guard for the brand-hook outage: a head comment in ui/index.html
+  // that contained a LITERAL "</head>" made Vite inject the bundled entry script
+  // before that (commented) close-head, burying <script src=index.js> inside the
+  // comment so the SPA never booted (blank page). Keep head comments free of
+  // literal close-head / asset tags.
+  it("ui/index.html has a single </head> and no asset/close-head tags inside comments", () => {
+    const candidates = [
+      path.resolve(fileURLToPath(import.meta.url), "../../../../ui/index.html"),
+      path.resolve(process.cwd(), "../ui/index.html"),
+      path.resolve(process.cwd(), "ui/index.html"),
+    ];
+    const file = candidates.find((p) => fs.existsSync(p));
+    expect(file, `ui/index.html not found in: ${candidates.join(", ")}`).toBeTruthy();
+    const html = fs.readFileSync(file as string, "utf-8");
+    expect(html.match(/<\/head>/gi)?.length ?? 0).toBe(1);
+    const comments = html.match(/<!--[\s\S]*?-->/g) ?? [];
+    for (const c of comments) {
+      expect(/<\/head>/i.test(c)).toBe(false);
+      expect(/<script[^>]*\bsrc=/i.test(c)).toBe(false);
+      expect(/<link[^>]*\bhref=/i.test(c)).toBe(false);
+    }
   });
 });
