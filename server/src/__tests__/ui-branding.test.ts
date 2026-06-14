@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   applyUiBranding,
+  getBrandDir,
   getWorktreeUiBranding,
   isWorktreeUiBrandingEnabled,
+  renderBrandStylesheetLink,
   renderFaviconLinks,
   renderRuntimeBrandingMeta,
 } from "../ui-branding.js";
@@ -78,5 +80,44 @@ describe("ui branding", () => {
     const defaultHtml = applyUiBranding(TEMPLATE, {});
     expect(defaultHtml).toContain('href="/favicon.svg"');
     expect(defaultHtml).not.toContain('name="paperclip-worktree-name"');
+  });
+
+  it("resolves the brand directory only when PAPERCLIP_BRAND_DIR is set", () => {
+    expect(getBrandDir({})).toBeNull();
+    expect(getBrandDir({ PAPERCLIP_BRAND_DIR: "  " })).toBeNull();
+    expect(getBrandDir({ PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" })).toBe(
+      "/etc/paperclip/branding",
+    );
+  });
+
+  it("emits the brand stylesheet link only when a brand dir is configured", () => {
+    expect(renderBrandStylesheetLink({})).toBe("");
+    const link = renderBrandStylesheetLink({ PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" });
+    expect(link).toBe('<link rel="stylesheet" href="/branding/brand.css" />');
+  });
+
+  it("injects the brand stylesheet just before </head> so it wins the cascade", () => {
+    const template = `<!doctype html>
+<head>
+    <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
+    <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
+    <!-- PAPERCLIP_FAVICON_START -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- PAPERCLIP_FAVICON_END -->
+    <link rel="stylesheet" crossorigin href="/assets/index-abc.css">
+  </head>`;
+    const branded = applyUiBranding(template, { PAPERCLIP_BRAND_DIR: "/etc/paperclip/branding" });
+    expect(branded).toContain('<link rel="stylesheet" href="/branding/brand.css" />');
+    // Brand link must come AFTER the bundled stylesheet so its var overrides win.
+    expect(branded.indexOf("/branding/brand.css")).toBeGreaterThan(
+      branded.indexOf("/assets/index-abc.css"),
+    );
+    // And it must sit inside <head>.
+    expect(branded.indexOf("/branding/brand.css")).toBeLessThan(branded.indexOf("</head>"));
+  });
+
+  it("does not inject a brand stylesheet when the brand dir is unset", () => {
+    const branded = applyUiBranding(TEMPLATE, {});
+    expect(branded).not.toContain("/branding/brand.css");
   });
 });

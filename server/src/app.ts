@@ -47,7 +47,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -331,6 +331,29 @@ export async function createApp(
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
 
+  // Runtime brand assets: when PAPERCLIP_BRAND_DIR points at a mounted directory
+  // (e.g. an operator-mounted ConfigMap of brand.css), expose it read-only under
+  // /branding so the UI's brand <link> (injected by applyUiBranding) resolves.
+  // When unset, the route is not registered at all, so /branding/* falls through
+  // to the SPA fallback which 404s non-asset unknown paths — matching the
+  // "guarded, 404 when unset" contract without leaking the HTML shell.
+  {
+    const brandDir = getBrandDir();
+    if (brandDir) {
+      app.use(
+        BRAND_DIR_PUBLIC_PATH,
+        express.static(brandDir, {
+          // Missing files must 404 here rather than fall through to the SPA
+          // shell (a stylesheet served HTML would break with a MIME error).
+          fallthrough: false,
+          index: false,
+          dotfiles: "ignore",
+          maxAge: "5m",
+        }),
+      );
+    }
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
@@ -371,7 +394,12 @@ export async function createApp(
       // instead. The index.html response itself is no-cache so a subsequent
       // deploy's updated asset hashes are picked up on next load.
       app.get(/.*/, (req, res) => {
-        if (req.path.startsWith("/assets/")) {
+        // /assets/* and /branding/* are concrete static namespaces, never SPA
+        // routes. Serving the HTML shell for a missing file under either would
+        // hand a stylesheet/script consumer an HTML body (MIME error). When the
+        // brand dir is unset, /branding/* is unregistered above, so honour the
+        // "404 when unset" contract here rather than leaking the shell.
+        if (req.path.startsWith("/assets/") || req.path.startsWith(`${BRAND_DIR_PUBLIC_PATH}/`)) {
           res.status(404).end();
           return;
         }
