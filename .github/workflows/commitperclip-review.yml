@@ -23,7 +23,16 @@ jobs:
         with:
           ref: main
 
+      # The Dependency Graph API is enabled on upstream (paperclipai/paperclip)
+      # but not on the paperclipinc fork (the API returns 403/404 there, and a
+      # public repo's dependency graph cannot be toggled via the settings API).
+      # Without a gate this step errors with "Dependency review is not supported
+      # on this repository" and aborts the whole job BEFORE the AI review runs.
+      # Gate it to upstream only, and keep continue-on-error so a transient
+      # graph/API hiccup never blocks the commitperclip review.
       - name: Dependency Review
+        if: github.repository == 'paperclipai/paperclip'
+        continue-on-error: true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
