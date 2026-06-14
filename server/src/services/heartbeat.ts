@@ -159,6 +159,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { resolveCompanyConcurrencyCap, clampToCompanyConcurrency } from "./company-concurrency.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -6741,6 +6742,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7676,7 +7685,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const perAgentSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const companyCap = resolveCompanyConcurrencyCap();
+      const companyRunningCount = companyCap === null ? 0 : await countRunningRunsForCompany(agent.companyId);
+      const availableSlots = clampToCompanyConcurrency({ perAgentSlots, companyRunningCount, companyCap });
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
