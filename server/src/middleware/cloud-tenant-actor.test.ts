@@ -10,8 +10,15 @@ import { resolveCloudTenantActor } from "./auth.js";
 function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: "owner", status: "active" }) {
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
+  // Captures the values passed to .values() per inserted table so tests can
+  // assert on derived fields like the default company name.
+  const insertedValues = new Map<unknown, Record<string, unknown>>();
+  let currentTable: unknown = null;
   const chain: Record<string, unknown> = {};
-  chain.values = () => chain;
+  chain.values = (values: Record<string, unknown>) => {
+    if (currentTable !== null) insertedValues.set(currentTable, values);
+    return chain;
+  };
   chain.onConflictDoUpdate = () => chain;
   chain.onConflictDoNothing = () => chain;
   chain.returning = async () => [membershipRow];
@@ -19,6 +26,7 @@ function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: 
   const db = {
     insert: (table: unknown) => {
       insertedTables.push(table);
+      currentTable = table;
       return chain;
     },
     // resolveCloudTenantActor awaits db.delete(table).where(...) to purge stale
@@ -28,7 +36,7 @@ function createFakeDb(membershipRow = { companyId: "company-x", membershipRole: 
       return { where: async () => undefined };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables };
+  return { db, insertedTables, deletedTables, insertedValues };
 }
 
 function fakeReq(headers: Record<string, string>): Request {
@@ -86,6 +94,30 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).toBeNull();
+  });
+
+  it("defaults the company name from the capitalized email local-part when no display name", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(insertedValues.get(companies)?.name).toBe("Owner's company");
+  });
+
+  it("defaults the company name from a real display name when present", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-user-name": "Ada Lovelace" }),
+    );
+    expect(insertedValues.get(companies)?.name).toBe("Ada Lovelace's company");
+  });
+
+  it("prefers an explicit paperclip-company-id header over the friendly default", async () => {
+    const { db, insertedValues } = createFakeDb();
+    await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-paperclip-company-id": "Acme Corp" }),
+    );
+    expect(insertedValues.get(companies)?.name).toBe("Acme Corp");
   });
 
   it("maps a non-owner stack role through to the membership without elevating", async () => {

@@ -30,6 +30,7 @@ import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { shouldOpenCloudOnboarding } from "../lib/cloud-onboarding";
 import {
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
@@ -159,7 +160,24 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    if (health?.deploymentMode === "authenticated") return;
+    // Cloud (authenticated) mode auto-creates the single company up front, so
+    // the single-tenant "no companies, onboard" path never fires. Instead
+    // surface first-run onboarding once for that company (rename + first agent +
+    // starter task); never reopen once completed/dismissed (localStorage).
+    if (health?.deploymentMode === "authenticated") {
+      const cloudCompany = companies[0];
+      if (
+        cloudCompany &&
+        shouldOpenCloudOnboarding({
+          deploymentMode: health.deploymentMode,
+          companyId: cloudCompany.id,
+        })
+      ) {
+        onboardingTriggered.current = true;
+        openOnboarding({ initialStep: 1, companyId: cloudCompany.id });
+      }
+      return;
+    }
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
