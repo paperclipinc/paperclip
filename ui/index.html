@@ -37,6 +37,14 @@
         }
       })();
     </script>
+    <!--
+      Runtime brand stylesheet hook. When PAPERCLIP_BRAND_DIR is set, the server
+      (see server/src/ui-branding.ts) injects
+        <link rel="stylesheet" href="/branding/brand.css" />
+      here, right before </head> and therefore after Vite's bundled stylesheet,
+      so deployer-supplied CSS variable overrides win the cascade. No <link> is
+      emitted when the env var is unset, keeping the default build unbranded.
+    -->
   </head>
   <body>
     <div id="root"></div>

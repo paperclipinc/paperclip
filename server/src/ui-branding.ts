@@ -144,6 +144,39 @@ export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env
   return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
 }
 
+// Public URL path the deployer serves the brand directory from. Kept in sync
+// with the static route registered in app.ts.
+export const BRAND_DIR_PUBLIC_PATH = "/branding";
+const BRAND_STYLESHEET_HREF = `${BRAND_DIR_PUBLIC_PATH}/brand.css`;
+
+/**
+ * Returns the configured brand directory, or null when unset. When set, the
+ * deployer (e.g. the operator) has mounted a directory of brand assets — most
+ * importantly brand.css — that the server exposes under /branding.
+ */
+export function getBrandDir(env: NodeJS.ProcessEnv = process.env): string | null {
+  return nonEmpty(env.PAPERCLIP_BRAND_DIR);
+}
+
+/**
+ * Emits a <link> to the runtime brand stylesheet when PAPERCLIP_BRAND_DIR is set.
+ * The link is injected AFTER the bundled stylesheet (see applyUiBranding) so the
+ * brand overrides win the cascade. Returns "" when no brand dir is configured,
+ * which keeps the default build byte-for-byte unbranded.
+ */
+export function renderBrandStylesheetLink(env: NodeJS.ProcessEnv = process.env): string {
+  if (!getBrandDir(env)) return "";
+  return `<link rel="stylesheet" href="${BRAND_STYLESHEET_HREF}" />`;
+}
+
+function injectBeforeHeadClose(html: string, snippet: string): string {
+  if (!snippet) return html;
+  const idx = html.toLowerCase().lastIndexOf("</head>");
+  if (idx === -1) return html;
+  const indented = `    ${snippet}\n  `;
+  return `${html.slice(0, idx)}${indented}${html.slice(idx)}`;
+}
+
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
   if (!isWorktreeUiBrandingEnabled(env)) {
     return {
@@ -208,10 +241,14 @@ function replaceMarkedBlock(html: string, startMarker: string, endMarker: string
 export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.env): string {
   const branding = getWorktreeUiBranding(env);
   const withFavicon = replaceMarkedBlock(html, FAVICON_BLOCK_START, FAVICON_BLOCK_END, renderFaviconLinks(branding));
-  return replaceMarkedBlock(
+  const withRuntimeMeta = replaceMarkedBlock(
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,
     RUNTIME_BRANDING_BLOCK_END,
     renderRuntimeBrandingMeta(branding),
   );
+  // Inject the runtime brand stylesheet last so it lands after the bundled
+  // stylesheet (Vite emits that at the end of <head>) and its CSS variable
+  // overrides win the cascade. No-op when PAPERCLIP_BRAND_DIR is unset.
+  return injectBeforeHeadClose(withRuntimeMeta, renderBrandStylesheetLink(env));
 }
