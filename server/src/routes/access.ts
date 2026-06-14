@@ -73,6 +73,10 @@ import {
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
+  createDrizzleActivationStore,
+  hasActivationForCompany,
+} from "../services/activation.js";
+import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
@@ -4216,6 +4220,14 @@ export function accessRoutes(
     assertCompanyAccess(req, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
     res.json({ users });
+  });
+
+  router.get("/companies/:companyId/activation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const store = createDrizzleActivationStore(db);
+    const activated = await hasActivationForCompany(store, companyId);
+    res.json({ activated });
   });
 
   router.patch(
