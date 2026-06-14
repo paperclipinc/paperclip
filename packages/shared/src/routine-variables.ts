@@ -1,6 +1,10 @@
 import type { RoutineVariable } from "./types/routine.js";
 
-const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z](?:\\_|[A-Za-z0-9_])*)\s*\}\}/g;
+
+function unescapeRoutineVariableName(raw: string): string {
+  return raw.replace(/\\_/g, "_");
+}
 type RoutineTemplateInput = string | null | undefined | Array<string | null | undefined>;
 
 /**
@@ -50,7 +54,7 @@ export function extractRoutineVariableNames(template: RoutineTemplateInput): str
   const found = new Set<string>();
   for (const source of normalizeRoutineTemplateInput(template)) {
     for (const match of source.matchAll(ROUTINE_VARIABLE_MATCHER)) {
-      const name = match[1];
+      const name = match[1] ? unescapeRoutineVariableName(match[1]) : "";
       if (name && !found.has(name)) {
         found.add(name);
       }
@@ -97,7 +101,8 @@ export function interpolateRoutineTemplate(
   if (template == null) return null;
   if (!values || Object.keys(values).length === 0) return template;
   return template.replace(ROUTINE_VARIABLE_MATCHER, (match, rawName: string) => {
-    if (!(rawName in values)) return match;
-    return stringifyRoutineVariableValue(values[rawName]);
+    const name = unescapeRoutineVariableName(rawName);
+    if (!(name in values)) return match;
+    return stringifyRoutineVariableValue(values[name]);
   });
 }
