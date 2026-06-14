@@ -52,6 +52,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -2474,10 +2475,30 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const assigneeAgentFilterRaw = req.query.assigneeAgentId;
+    let assigneeAgentId: string | null | undefined;
+    if (assigneeAgentFilterRaw !== undefined) {
+      if (typeof assigneeAgentFilterRaw !== "string") {
+        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        return;
+      }
+      const normalizedAssigneeAgentFilter = assigneeAgentFilterRaw.trim();
+      if (normalizedAssigneeAgentFilter.length === 0) {
+        assigneeAgentId = undefined;
+      } else if (normalizedAssigneeAgentFilter.toLowerCase() === "null") {
+        assigneeAgentId = null;
+      } else if (isUuidLike(normalizedAssigneeAgentFilter)) {
+        assigneeAgentId = normalizedAssigneeAgentFilter;
+      } else {
+        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        return;
+      }
+    }
+
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
+      assigneeAgentId,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
       touchedByUserId,
