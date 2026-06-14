@@ -36,6 +36,15 @@ vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
+// Deployment mode drives whether "Add company" opens the native onboarding wizard
+// (local_trusted) or the cloud create dialog (authenticated). Default to local;
+// the cloud test overrides it.
+const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/api/health", () => ({ healthApi: mockHealthApi }));
+
+const mockCloudCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+vi.mock("@/api/cloudCompanies", () => ({ cloudCompaniesApi: mockCloudCompaniesApi }));
+
 vi.mock("@/api/sidebarPreferences", () => ({
   sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
@@ -137,6 +146,8 @@ describe("SidebarCompanyMenu", () => {
       updatedAt: null,
     });
     mockLocation.pathname = "/PAP/dashboard";
+    // Default: self-hosted (local_trusted) — keep the native onboarding flow.
+    mockHealthApi.get.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
   });
 
   afterEach(() => {
@@ -324,6 +335,51 @@ describe("SidebarCompanyMenu", () => {
 
     expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
     expect(mockNavigate).toHaveBeenCalledWith("/STR/dashboard");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("in cloud mode 'Add company' opens the cloud create dialog instead of the native onboarding wizard", async () => {
+    mockHealthApi.get.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenu />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Cloud copy on the add item; no native "Add company..."/"Create new team...".
+    expect(document.body.textContent).toContain("Create company...");
+
+    const addItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Create company..."));
+    expect(addItem).toBeTruthy();
+
+    await act(async () => {
+      addItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The native onboarding wizard is NOT used in cloud; the cloud dialog opens.
+    expect(mockOpenOnboarding).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Start a new company in your account");
 
     await act(async () => {
       root.unmount();

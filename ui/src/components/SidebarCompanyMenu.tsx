@@ -32,9 +32,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { healthApi } from "@/api/health";
 import { useCompany } from "@/context/CompanyContext";
 import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabled";
 import { useDialogActions } from "@/context/DialogContext";
+import { NewCompanyDialog } from "./NewCompanyDialog";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
@@ -132,6 +134,7 @@ function SortableCompanyItem({
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   // Team-centric copy (PAP-67) ships behind the Conference Room Chat flag
@@ -161,6 +164,17 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  // In the EU cloud (deploymentMode "authenticated"), creating an additional
+  // company must provision a control-plane tenant via POST /api/cloud/companies
+  // (the product-native POST /api/companies is blocked at the gateway). So in
+  // cloud "Add company" opens the cloud create dialog instead of the native
+  // onboarding wizard. Self-hosted (local_trusted) keeps the native flow.
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const isCloud = health?.deploymentMode === "authenticated";
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { orderedCompanies, persistOrder } = useCompanyOrder({
     companies: sidebarCompanies,
@@ -206,6 +220,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   function addCompany() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
+    if (isCloud) {
+      // Cloud: provision a new tenant via the gateway. The native onboarding
+      // wizard would call POST /api/companies, which is blocked in cloud.
+      setNewCompanyOpen(true);
+      return;
+    }
     openOnboarding();
   }
 
@@ -225,6 +245,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   );
 
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
@@ -295,7 +316,13 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>{conferenceRoomChatEnabled ? "Create new team..." : "Add company..."}</span>
+          <span>
+            {isCloud
+              ? "Create company..."
+              : conferenceRoomChatEnabled
+                ? "Create new team..."
+                : "Add company..."}
+          </span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>
@@ -345,5 +372,9 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
+    {isCloud && (
+      <NewCompanyDialog open={newCompanyOpen} onOpenChange={setNewCompanyOpen} />
+    )}
+    </>
   );
 }
