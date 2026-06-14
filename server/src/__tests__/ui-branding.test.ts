@@ -10,6 +10,7 @@ import {
   renderBrandStylesheetLink,
   renderFaviconLinks,
   renderRuntimeBrandingMeta,
+  resolveDefaultTheme,
 } from "../ui-branding.js";
 
 const TEMPLATE = `<!doctype html>
@@ -122,6 +123,32 @@ describe("ui branding", () => {
   it("does not inject a brand stylesheet when the brand dir is unset", () => {
     const branded = applyUiBranding(TEMPLATE, {});
     expect(branded).not.toContain("/branding/brand.css");
+  });
+
+  it("resolveDefaultTheme reads PAPERCLIP_DEFAULT_THEME, defaulting to dark", () => {
+    expect(resolveDefaultTheme({})).toBe("dark");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "light" })).toBe("light");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "LIGHT" })).toBe("light");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "dark" })).toBe("dark");
+    expect(resolveDefaultTheme({ PAPERCLIP_DEFAULT_THEME: "  " })).toBe("dark");
+  });
+
+  it("injects a paperclip-default-theme meta only when set to light, before the inline theme script", () => {
+    // The meta lives in the runtime-branding block, which precedes the inline
+    // theme script, so the pre-React script reads it without a flash.
+    const tpl = `<!doctype html><head>
+    <!-- PAPERCLIP_RUNTIME_BRANDING_START -->
+    <!-- PAPERCLIP_RUNTIME_BRANDING_END -->
+    <!-- PAPERCLIP_FAVICON_START -->
+    <!-- PAPERCLIP_FAVICON_END -->
+    <script>var k="paperclip.theme";</script>
+  </head>`;
+    const light = applyUiBranding(tpl, { PAPERCLIP_DEFAULT_THEME: "light" });
+    expect(light).toContain('<meta name="paperclip-default-theme" content="light" />');
+    expect(light.indexOf("paperclip-default-theme")).toBeLessThan(light.indexOf("paperclip.theme"));
+    // Default (dark) build stays free of the meta.
+    expect(applyUiBranding(tpl, {})).not.toContain("paperclip-default-theme");
+    expect(applyUiBranding(tpl, { PAPERCLIP_DEFAULT_THEME: "dark" })).not.toContain("paperclip-default-theme");
   });
 
   // Regression guard for the brand-hook outage: a head comment in ui/index.html

@@ -211,15 +211,34 @@ export function renderFaviconLinks(branding: WorktreeUiBranding): string {
   ].join("\n");
 }
 
-export function renderRuntimeBrandingMeta(branding: WorktreeUiBranding): string {
-  if (!branding.enabled || !branding.name || !branding.color || !branding.textColor) return "";
+/**
+ * The colour theme a fresh visitor (no stored preference) should see. Reads
+ * PAPERCLIP_DEFAULT_THEME ("light" | "dark"); falls back to "dark" (the product's
+ * built-in default) so the unconfigured build is unchanged. Deployers set "light"
+ * to make a first visit render in light mode. The pre-React inline script in
+ * ui/index.html and the ThemeProvider both read the injected meta tag.
+ */
+export function resolveDefaultTheme(env: NodeJS.ProcessEnv = process.env): "light" | "dark" {
+  return nonEmpty(env.PAPERCLIP_DEFAULT_THEME)?.toLowerCase() === "light" ? "light" : "dark";
+}
 
-  return [
-    '<meta name="paperclip-worktree-enabled" content="true" />',
-    `<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
-    `<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
-    `<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
-  ].join("\n");
+export function renderRuntimeBrandingMeta(
+  branding: WorktreeUiBranding,
+  defaultTheme: "light" | "dark" = "dark",
+): string {
+  const parts: string[] = [];
+  // Only emit the default-theme meta when it differs from the built-in "dark",
+  // so the unconfigured default build stays byte-for-byte identical.
+  if (defaultTheme !== "dark") {
+    parts.push(`<meta name="paperclip-default-theme" content="${defaultTheme}" />`);
+  }
+  if (branding.enabled && branding.name && branding.color && branding.textColor) {
+    parts.push('<meta name="paperclip-worktree-enabled" content="true" />');
+    parts.push(`<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`);
+    parts.push(`<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`);
+    parts.push(`<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`);
+  }
+  return parts.join("\n");
 }
 
 function replaceMarkedBlock(html: string, startMarker: string, endMarker: string, content: string): string {
@@ -245,7 +264,7 @@ export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.e
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,
     RUNTIME_BRANDING_BLOCK_END,
-    renderRuntimeBrandingMeta(branding),
+    renderRuntimeBrandingMeta(branding, resolveDefaultTheme(env)),
   );
   // Inject the runtime brand stylesheet last so it lands after the bundled
   // stylesheet (Vite emits that at the end of <head>) and its CSS variable
