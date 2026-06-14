@@ -34,4 +34,20 @@ describe("computeCostUsdForRun", () => {
   it("returns 0 when no baseUrl is configured (compute pricing off)", async () => {
     expect(await computeCostUsdForRun({ baseUrl: "" }, { runId: "r", namespace: "ns", start, end })).toBe(0);
   });
+
+  it("filters by the run-id label alone when no namespace is resolvable (cloud_tenant)", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      expect(url).toContain("paperclip.io/run-id");
+      expect(url).toContain("run_abc");
+      // No empty namespace clause when namespace is "".
+      expect(url).not.toContain('namespace:""');
+      return { ok: true, status: 200, json: async () => ({ data: [{ run_abc: { totalCost: 0.05 } }] }) };
+    }) as unknown as typeof fetch;
+    const usd = await computeCostUsdForRun(
+      { baseUrl: "http://k:9090" },
+      { runId: "run_abc", namespace: "", start, end },
+      fetchImpl,
+    );
+    expect(usd).toBeCloseTo(0.05, 6);
+  });
 });

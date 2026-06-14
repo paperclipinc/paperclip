@@ -13,7 +13,12 @@ export async function computeCostUsdForRun(
   // Build the query string manually so the colon/slash in `window` and the
   // `paperclip.io/run-id` label survive literally (URLSearchParams would
   // percent-encode them and break Kubecost's parsing + our integration tests).
-  const filter = `namespace:"${run.namespace}"+label[paperclip.io/run-id]:"${run.runId}"`;
+  // The run-id label is globally unique, so when no namespace is resolvable
+  // server-side (cloud_tenant mode) we filter by the run-id label ALONE rather
+  // than emitting an empty `namespace:""` clause that would match nothing.
+  const filter = run.namespace
+    ? `namespace:"${run.namespace}"+label[paperclip.io/run-id]:"${run.runId}"`
+    : `label[paperclip.io/run-id]:"${run.runId}"`;
   const qs = `window=${window}&aggregate=label:paperclip.io/run-id&filter=${filter}&accumulate=true`;
   try {
     const ac = new AbortController();
