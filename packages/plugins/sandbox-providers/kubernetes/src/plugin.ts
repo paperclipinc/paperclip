@@ -27,6 +27,10 @@ import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
+import {
+  resolveCompanyInferenceKey,
+  applyCompanyInferenceKey,
+} from "./inference-key-resolver.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
@@ -306,7 +310,25 @@ const plugin = definePlugin({
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
-    const adapterEnv = buildAdapterEnv(adapterDefaults);
+    let adapterEnv = buildAdapterEnv(adapterDefaults);
+
+    // Cloud per-company inference key (Bifrost virtual key). When a control-plane
+    // resolver URL is configured, replace the shared platform inference auth keys
+    // (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) with the company's OWN
+    // virtual key so each company's runs land in their own inference cache bucket /
+    // spend ledger. FAIL-CLOSED: a configured-but-failing resolve throws (rejects
+    // the lease); we NEVER fall back to the shared key here (that would put this
+    // run in the shared cache bucket = a cross-tenant leak). When the resolver URL
+    // is unset (OSS / local / non-cloud), this block is skipped and the inherited
+    // env is used unchanged.
+    if (config.cloudInferenceKeyResolverUrl) {
+      const companyKey = await resolveCompanyInferenceKey({
+        resolverUrl: config.cloudInferenceKeyResolverUrl,
+        companyId: params.companyId,
+      });
+      adapterEnv = applyCompanyInferenceKey(adapterEnv, companyKey);
+    }
+
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).

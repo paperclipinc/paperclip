@@ -108,6 +108,12 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
           },
+          cloudInferenceKeyResolverUrl: {
+            type: "string",
+            format: "uri",
+            description:
+              "Cloud-only. Control-plane URL that resolves a per-company inference key (Bifrost virtual key). When set, the plugin POSTs {companyId} to <url>/internal/bifrost-key, expects 200 {keyValue}, and overrides the inference auth env vars (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY) on the per-run Secret with it. Fail-closed: a failed resolve rejects the lease (never falls back to the shared key). Leave unset for OSS/local.",
+          },
         },
         anyOf: [
           { required: ["inCluster"] },
