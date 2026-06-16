@@ -99,14 +99,28 @@ function findButton(container: HTMLElement, text: string): HTMLButtonElement | u
 
 describe("CompanySwitcher — cloud create company", () => {
   let container: HTMLDivElement;
+  let locationAssignMock: ReturnType<typeof vi.fn>;
+  let originalLocation: Location;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     healthGetMock.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    locationAssignMock = vi.fn();
+    originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, assign: locationAssignMock } as unknown as Location,
+    });
   });
 
   afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -168,7 +182,7 @@ describe("CompanySwitcher — cloud create company", () => {
     await flushReact();
 
     expect(createCloudCompanyMock).toHaveBeenCalledWith({ name: "NewCo" });
-    expect(navigateMock).toHaveBeenCalledWith("/PC1A2B/dashboard");
+    expect(locationAssignMock).toHaveBeenCalledWith("/PC1A2B/dashboard");
 
     await act(async () => root.unmount());
   });
@@ -219,7 +233,7 @@ describe("CompanySwitcher — cloud create company", () => {
       (a) => a.getAttribute("href") === "/pricing",
     );
     expect(pricingLink).toBeTruthy();
-    expect(navigateMock).not.toHaveBeenCalled();
+    expect(locationAssignMock).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
