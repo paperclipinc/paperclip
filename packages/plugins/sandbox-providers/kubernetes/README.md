@@ -74,6 +74,7 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
+| `cloudInferenceKeyResolverUrl` | (none) | Cloud-only. URL of a control-plane that resolves a per-company inference key (Bifrost virtual key). When set, the plugin POSTs `{ "companyId": "<id>" }` to `<url>/internal/bifrost-key`, expects `200 { "keyValue": "<vk>" }`, and overrides the secret inference auth env vars (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`) on the per-run Secret with that key, so each company's runs use their own key (separate cache bucket / spend ledger). **Fail-closed:** if configured but the call fails or returns no key, the lease is rejected — the run NEVER falls back to the shared platform key (which would put it in the shared inference cache bucket = a cross-tenant leak). Unset = OSS / local behavior: the inherited env is used unchanged. Resolved keys are cached in-process by companyId for the worker lifetime. |
 
 Full JSON Schema in `src/manifest.ts`.
 
