@@ -113,6 +113,15 @@ export function parseExecutionPolicyBootstrapEnv(
   const imageRegistry = env.PAPERCLIP_K8S_IMAGE_REGISTRY?.trim();
   if (imageRegistry) kubernetesConfig.imageRegistry = imageRegistry;
 
+  // Cloud control-plane base URL for per-company inference-key (Bifrost vk)
+  // resolution. The plugin appends `/internal/bifrost-key` itself, so this is a
+  // BASE URL. Left undefined when unset → OSS/local behavior unchanged (shared
+  // platform key).
+  const cloudInferenceKeyResolverUrl = env.PAPERCLIP_K8S_CLOUD_INFERENCE_KEY_RESOLVER_URL?.trim();
+  if (cloudInferenceKeyResolverUrl) {
+    kubernetesConfig.cloudInferenceKeyResolverUrl = cloudInferenceKeyResolverUrl;
+  }
+
   const rpcTimeoutMs = parsePositiveIntMs(env.PAPERCLIP_K8S_RPC_TIMEOUT_MS);
   if (rpcTimeoutMs !== undefined) kubernetesConfig.timeoutMs = rpcTimeoutMs;
 

@@ -2448,8 +2448,6 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
-    const assigneeAgentFilterRaw = req.query.assigneeAgentId;
-    let assigneeAgentId: string | null | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -2491,6 +2489,10 @@ export function issueRoutes(
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
     }
+    const offset = parsedOffset ?? 0;
+
+    const assigneeAgentFilterRaw = req.query.assigneeAgentId;
+    let assigneeAgentId: string | null | undefined;
     if (assigneeAgentFilterRaw !== undefined) {
       if (typeof assigneeAgentFilterRaw !== "string") {
         res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
@@ -2508,7 +2510,6 @@ export function issueRoutes(
         return;
       }
     }
-    const offset = parsedOffset ?? 0;
 
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,

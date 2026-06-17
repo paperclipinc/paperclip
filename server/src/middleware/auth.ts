@@ -214,7 +214,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const companyName = paperclipCompanyId || friendlyCloudCompanyName(userName, userEmail);
   const now = new Date();
 
   await db
@@ -291,30 +291,71 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       status: "active",
     });
 
-  // Without instance-admin elevation, cloud tenant users are authorized purely
-  // through company-scoped permission grants — seed the same role defaults the
-  // regular membership flows create.
+  // Seed the company-role permission grants the authorization engine reads
+  // (idempotent — insertMissing). Without this the cloud_tenant owner has a
+  // membership but no grants, so every assertCompanyPermission check (e.g.
+  // joins:approve on the dashboard's pending-approvals widget) 403s.
   await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
     membershipRole: membership.membershipRole,
-    grantedByUserId: null,
+    grantedByUserId: userId,
   });
+
+  // Resolve the user's REAL active company memberships — exactly the query the
+  // session actor uses above — so a cloud_tenant user sees every company they own
+  // or were invited to, not just the one derived from their stack id. The
+  // stack-company auto-create above guarantees this set always contains the
+  // current stack company on first request; from then on the injected stackId is
+  // only a default/current-company hint, no longer the access list itself.
+  const memberships = await db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
 
   return {
     type: "board",
     userId,
     userName,
     userEmail,
-    companyIds: [companyId],
-    memberships: [{
-      companyId,
-      membershipRole: membership.membershipRole,
-      status: membership.status,
-    }],
+    companyIds: memberships.map((row) => row.companyId),
+    memberships,
     isInstanceAdmin: false,
     source: "cloud_tenant",
   };
+}
+
+// Lightweight cloud_tenant auth for contexts that only have raw Node headers and
+// cannot run the Express actor middleware (e.g. WebSocket upgrades). Validates the
+// trusted gateway token and derives the company id from the stack id exactly like
+// resolveCloudTenantActor. Returns null when this is not a (valid) cloud_tenant call.
+export function resolveCloudTenantWsAuth(
+  headers: Record<string, string | string[] | undefined>,
+): { userId: string; companyId: string } | null {
+  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+  if (!expectedToken) return null;
+  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
+  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
+  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
+  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
+  if (!userId || !stackId) return null;
+  return { userId, companyId: cloudTenantCompanyId(stackId) };
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
 }
 
 function requiredCloudHeader(req: Request, name: string): string {
@@ -336,6 +377,23 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+// Cloud tenants land on a first-run onboarding wizard where they rename their
+// company, but the auto-created default should still read like a real company
+// (not `${stackId} Paperclip`). Derive a friendly default from the user: prefer
+// a real display name, otherwise the capitalized email local-part.
+function friendlyCloudCompanyName(userName: string, userEmail: string): string {
+  const trimmedName = userName?.trim();
+  if (trimmedName && trimmedName !== userEmail && !trimmedName.includes("@")) {
+    return `${trimmedName}'s company`;
+  }
+  const localPart = userEmail.split("@")[0]?.trim();
+  if (localPart) {
+    const capitalized = localPart.charAt(0).toUpperCase() + localPart.slice(1);
+    return `${capitalized}'s company`;
+  }
+  return "My company";
 }
 
 function cloudTenantCompanyId(stackId: string): string {

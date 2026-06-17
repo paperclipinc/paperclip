@@ -7,6 +7,7 @@ import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
@@ -430,6 +431,13 @@ export function IssueProperties({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const managed = experimentalSettings?.managedExperience === true;
   const currentUserId = session?.user?.id ?? session?.session?.userId;
 
   const { data: agents } = useQuery({
@@ -698,7 +706,9 @@ export function IssueProperties({
     }
     return <span className="text-sm text-muted-foreground">Primary model</span>;
   })();
-  const assigneeOptionsContent = supportsAssigneeOverrides ? (
+  const assigneeOptionsContent = managed
+    ? null
+    : supportsAssigneeOverrides ? (
     <div className="w-full space-y-3 p-2">
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>
@@ -1920,7 +1930,7 @@ export function IssueProperties({
           {assigneeContent}
         </PropertyPicker>
 
-        {showAssigneeAdapterOptions ? (
+        {!managed && showAssigneeAdapterOptions ? (
           <PropertyPicker
             inline={inline}
             label="Model"

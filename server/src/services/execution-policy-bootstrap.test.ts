@@ -120,6 +120,30 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
+  it("reads PAPERCLIP_K8S_CLOUD_INFERENCE_KEY_RESOLVER_URL into kubernetesConfig.cloudInferenceKeyResolverUrl", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({
+        PAPERCLIP_EXECUTION_MODE: "kubernetes",
+        PAPERCLIP_K8S_CLOUD_INFERENCE_KEY_RESOLVER_URL: "http://control-plane.paperclip-cloud.svc:3000",
+      }),
+    );
+    expect(parsed?.kubernetesConfig.cloudInferenceKeyResolverUrl).toBe(
+      "http://control-plane.paperclip-cloud.svc:3000",
+    );
+  });
+
+  it("omits cloudInferenceKeyResolverUrl when the env var is absent or empty", () => {
+    expect(
+      parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }))
+        ?.kubernetesConfig.cloudInferenceKeyResolverUrl,
+    ).toBeUndefined();
+    expect(
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CLOUD_INFERENCE_KEY_RESOLVER_URL: "   " }),
+      )?.kubernetesConfig.cloudInferenceKeyResolverUrl,
+    ).toBeUndefined();
+  });
+
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(

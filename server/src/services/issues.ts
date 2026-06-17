@@ -238,15 +238,6 @@ export function parseStatusFilter(input: string | readonly string[] | undefined)
 export interface IssueFilters {
   attention?: "blocked";
   status?: string | readonly string[];
-  /**
-   * Filter by assignee agent ID.
-   * - `string` (UUID): match issues assigned to that agent.
-   * - `null`: match unassigned issues (IS NULL).
-   * - The literal string `"null"` is also accepted as a sentinel for `null`
-   *   so that query-string callers can pass `?assigneeAgentId=null` directly.
-   *   The route layer normalises it before calling the service, but the service
-   *   also normalises it for direct callers.
-   */
   assigneeAgentId?: string | null;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -3954,8 +3945,6 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId)];
-      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
-      assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
@@ -4014,6 +4003,8 @@ export function issueService(db: Db) {
       } else if (statuses.length > 1) {
         conditions.push(inArray(issues.status, statuses));
       }
+      const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
+      assertValidAssigneeAgentFilter(assigneeAgentFilter);
       if (assigneeAgentFilter === null) {
         conditions.push(isNull(issues.assigneeAgentId));
       } else if (assigneeAgentFilter) {

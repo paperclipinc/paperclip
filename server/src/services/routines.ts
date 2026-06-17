@@ -96,17 +96,6 @@ function assertTimeZone(timeZone: string) {
   }
 }
 
-function floorToMinute(date: Date) {
-  const copy = new Date(date.getTime());
-  copy.setUTCSeconds(0, 0);
-  return copy;
-}
-
-// Constructing an Intl.DateTimeFormat costs ~1ms of ICU work, and
-// computeNextRun calls getZonedMinuteParts once per minute-step (up to
-// 366*24*60*5 iterations for sparse schedules), which can block the event
-// loop for minutes per scheduler tick. Formatter instances are immutable,
-// so cache one per timezone. See #8033.
 const zonedMinuteFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getZonedMinuteFormatter(timeZone: string) {
@@ -125,6 +114,12 @@ function getZonedMinuteFormatter(timeZone: string) {
     zonedMinuteFormatterCache.set(timeZone, formatter);
   }
   return formatter;
+}
+
+function floorToMinute(date: Date) {
+  const copy = new Date(date.getTime());
+  copy.setUTCSeconds(0, 0);
+  return copy;
 }
 
 function getZonedMinuteParts(date: Date, timeZone: string) {

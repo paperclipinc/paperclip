@@ -1,9 +1,4 @@
 /// <reference path="./types/express.d.ts" />
-// Kicks off the OTel bootstrap as early as possible (no-op unless
-// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
-// instrumentationReady before opening DB connections or constructing the
-// HTTP server, so trace coverage does not depend on incidental timing.
-import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -48,6 +43,7 @@ import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
+import { warnIfManagedExperienceMisconfigured } from "./services/managed-agent-defaults.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -100,9 +96,6 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
-  // Tracing must be active (or have failed and logged) before the first DB
-  // connection or the HTTP server exists — see instrumentation.ts.
-  await instrumentationReady;
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -931,6 +924,11 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  const managedMisconfigWarning = warnIfManagedExperienceMisconfigured();
+  if (managedMisconfigWarning) {
+    logger.warn(managedMisconfigWarning);
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
@@ -1011,10 +1009,6 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
-
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
-      await shutdownInstrumentation();
 
       process.exit(0);
     };

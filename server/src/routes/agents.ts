@@ -102,6 +102,10 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import {
+  resolveManagedAgentDefaults,
+  applyManagedAgentDefaults,
+} from "../services/managed-agent-defaults.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1562,7 +1566,7 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanCreateAgentsForCompany(req, companyId);
+      await assertCanReadConfigurations(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
@@ -2150,8 +2154,14 @@ export function agentRoutes(
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
-    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const managedDefaults = resolveManagedAgentDefaults();
+    const managedApplied = applyManagedAgentDefaults({
+      requestedAdapterType: hireInput.adapterType,
+      adapterConfig: (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+      managed: managedDefaults,
+    });
+    hireInput.adapterType = assertKnownAdapterType(managedApplied.adapterType);
+    const rawHireAdapterConfig = managedApplied.adapterConfig;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -2336,8 +2346,14 @@ export function agentRoutes(
       instructionsBundle,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
-    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const managedDefaults = resolveManagedAgentDefaults();
+    const managedApplied = applyManagedAgentDefaults({
+      requestedAdapterType: createInput.adapterType,
+      adapterConfig: (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+      managed: managedDefaults,
+    });
+    createInput.adapterType = assertKnownAdapterType(managedApplied.adapterType);
+    const rawCreateAdapterConfig = managedApplied.adapterConfig;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,

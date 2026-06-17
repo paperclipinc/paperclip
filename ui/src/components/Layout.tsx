@@ -29,14 +29,15 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { hasCompletedCloudOnboarding, shouldOpenCloudOnboarding } from "../lib/cloud-onboarding";
 import {
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
-import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -147,6 +148,22 @@ export function Layout() {
     queryFn: () => instanceSettingsApi.getGeneral(),
   }).data?.keyboardShortcuts === true;
 
+  // Cloud first-run onboarding is OWNER-ONLY: an invited member landing on a
+  // shared company must never see the rename-your-company wizard. We learn the
+  // viewer's role for the (auto-created) cloud company from its members access
+  // summary. Gate the fetch to cloud mode + a not-yet-onboarded company so we
+  // never query members on self-hosted or after onboarding is done.
+  const cloudCompanyId =
+    health?.deploymentMode === "authenticated" ? companies[0]?.id : undefined;
+  const cloudViewerRoleQuery = useQuery({
+    queryKey: queryKeys.access.companyMembers(cloudCompanyId ?? ""),
+    queryFn: () => accessApi.listMembers(cloudCompanyId as string),
+    enabled:
+      Boolean(cloudCompanyId) && !hasCompletedCloudOnboarding(cloudCompanyId as string),
+    retry: false,
+  });
+  const cloudViewerRole = cloudViewerRoleQuery.data?.access.currentUserRole ?? null;
+
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
   // is active, but does NOT mutate the persisted preference. Clearing the force
@@ -160,12 +177,34 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    if (health?.deploymentMode === "authenticated") return;
+    // Cloud (authenticated) mode auto-creates the single company up front, so
+    // the single-tenant "no companies, onboard" path never fires. Instead
+    // surface first-run onboarding once for that company (rename + first agent +
+    // starter task); never reopen once completed/dismissed (localStorage).
+    if (health?.deploymentMode === "authenticated") {
+      const cloudCompany = companies[0];
+      // Wait for the viewer's role to resolve before deciding (owner-only). While
+      // the role query is still loading, cloudViewerRole is null and
+      // shouldOpenCloudOnboarding returns false; the effect re-runs once the role
+      // arrives. Invited members resolve to a non-owner role -> wizard never opens.
+      if (
+        cloudCompany &&
+        shouldOpenCloudOnboarding({
+          deploymentMode: health.deploymentMode,
+          companyId: cloudCompany.id,
+          viewerRole: cloudViewerRole,
+        })
+      ) {
+        onboardingTriggered.current = true;
+        openOnboarding({ initialStep: 1, companyId: cloudCompany.id });
+      }
+      return;
+    }
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode, cloudViewerRole]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
@@ -425,22 +464,11 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "clip";
+    document.body.style.overflow = isMobile ? "visible" : "hidden";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [isMobile]);
-
-  // `scrollIntoView` walks every ancestor scroll container. On a long thread
-  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
-  // animates `documentElement.scrollTop` via the browser's internal scroll
-  // algorithm, which bypasses the CSS `overflow` on the root element and
-  // visually shifts the entire shell (sidebar included) off-screen. Pin
-  // both roots to scrollTop=0 on every scroll tick.
-  useEffect(() => {
-    if (isMobile) return;
-    return pinDocumentScrollToZero();
   }, [isMobile]);
 
   useEffect(() => {
@@ -468,7 +496,7 @@ export function Layout() {
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-clip",
+        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
       )}
       >
       <a
@@ -479,7 +507,7 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"

@@ -50,9 +50,7 @@ function applyTheme(theme: Theme) {
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => resolveThemeFromDocument());
-  // Track whether the user has explicitly chosen a theme. If false, the
-  // theme is being derived from the OS `prefers-color-scheme` and should
-  // follow OS-level changes mid-session without being persisted.
+
   const [hasExplicitChoice, setHasExplicitChoice] = useState<boolean>(() => hasStoredTheme());
 
   const setTheme = useCallback((nextTheme: Theme) => {
@@ -75,8 +73,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [theme, hasExplicitChoice]);
 
-  // When the user has not made an explicit choice, follow OS-level
-  // `prefers-color-scheme` changes so the UI flips alongside the OS theme.
   useEffect(() => {
     if (hasExplicitChoice) return;
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;

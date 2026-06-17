@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -45,6 +46,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { markCloudOnboardingComplete } from "../lib/cloud-onboarding";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import {
   Building2,
@@ -109,6 +111,12 @@ export function OnboardingWizardClassic() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
+  // Cloud first-run onboarding opens at Step 1 with a pre-existing (auto-created)
+  // company. In that case the Company step RENAMES the existing company instead
+  // of creating a new one, and completion is tracked in localStorage so the
+  // wizard never reopens. (The route-driven case opens at Step 2 and is not a
+  // rename flow.)
+  const cloudRenameFlow = Boolean(existingCompanyId) && initialStep === 1;
 
   const [step, setStep] = useState<Step>(initialStep);
   const [loading, setLoading] = useState(false);
@@ -197,6 +205,19 @@ export function OnboardingWizardClassic() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // Cloud rename flow: pre-fill the Company step with the auto-created company's
+  // current name so the user edits it in place. Pre-fill once per opened company
+  // so we don't clobber the user's edits when the company list refreshes.
+  const prefilledCompanyIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !cloudRenameFlow || !createdCompanyId) return;
+    if (prefilledCompanyIdRef.current === createdCompanyId) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (!company) return;
+    setCompanyName(company.name);
+    prefilledCompanyIdRef.current = createdCompanyId;
+  }, [effectiveOnboardingOpen, cloudRenameFlow, createdCompanyId, companies]);
+
   // Resize textarea when step 3 is shown or description changes
   useEffect(() => {
     if (step === 3) autoResizeTextarea();
@@ -211,6 +232,14 @@ export function OnboardingWizardClassic() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 2
   });
+  // Managed experience: when on, the instance picks the harness + model for the
+  // user, so the wizard hides the adapter/model pickers and omits those fields
+  // from the launch payload (the server injects the managed defaults).
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
@@ -321,9 +350,15 @@ export function OnboardingWizardClassic() {
     setCreatedAgentId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
+    prefilledCompanyIdRef.current = null;
   }
 
   function handleClose() {
+    // In the cloud first-run flow, dismissing the wizard (close button, Escape,
+    // backdrop) still counts as "onboarded" so it never reopens for this company.
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
   }
@@ -401,7 +436,15 @@ export function OnboardingWizardClassic() {
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      // Cloud first-run: the company already exists (auto-created), so RENAME it
+      // in place instead of creating a second company. Otherwise create a new
+      // one (single-tenant onboarding).
+      const company =
+        cloudRenameFlow && createdCompanyId
+          ? await companiesApi.update(createdCompanyId, {
+              name: companyName.trim(),
+            })
+          : await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -438,25 +481,38 @@ export function OnboardingWizardClassic() {
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        if (!isValidOpenCodeModelId(model)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
-          return;
+      // In managed mode the user never chose a harness/model, so the
+      // adapter-specific preflight (OpenCode model validation, the local
+      // adapter environment probe) does not apply — the server injects the
+      // managed default adapter + model for this hire.
+      if (!managed) {
+        if (adapterType === "opencode_local") {
+          if (!isValidOpenCodeModelId(model)) {
+            setError(
+              "OpenCode requires an explicit model in provider/model format."
+            );
+            return;
+          }
         }
-      }
 
-      if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
+        if (isLocalAdapter) {
+          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+          if (!result) return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
+        // When managed, omit adapterType + adapterConfig entirely so the server
+        // injects the managed default harness + model. Sending them (even
+        // "process") would pin an inert adapter instead.
+        ...(managed
+          ? {}
+          : {
+              adapterType,
+              adapterConfig: buildAdapterConfig(),
+            }),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -580,6 +636,9 @@ export function OnboardingWizardClassic() {
         });
       }
 
+      if (cloudRenameFlow) {
+        markCloudOnboardingComplete(createdCompanyId);
+      }
       setSelectedCompanyId(createdCompanyId);
       reset();
       closeOnboarding();
@@ -747,7 +806,9 @@ export function OnboardingWizardClassic() {
                     />
                   </div>
 
-                  {/* Adapter type radio cards */}
+                  {/* Adapter type radio cards — hidden in managed mode, where
+                      the instance picks the harness for the user. */}
+                  {!managed && (
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type
@@ -850,9 +911,11 @@ export function OnboardingWizardClassic() {
                       </div>
                     )}
                   </div>
+                  )}
 
-                  {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {/* Conditional adapter fields — Model picker hidden in managed
+                      mode (the instance picks the model for the user). */}
+                  {!managed && isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1272,7 +1335,7 @@ export function OnboardingWizardClassic() {
           {/* Right half — ASCII art (hidden on mobile) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-[width,opacity] duration-500 ease-in-out",
               step === 1 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >

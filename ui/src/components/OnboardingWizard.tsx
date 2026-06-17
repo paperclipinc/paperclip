@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -8,6 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -36,6 +37,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { markCloudOnboardingComplete } from "../lib/cloud-onboarding";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -118,6 +120,10 @@ export function OnboardingWizard() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
+  // Cloud first-run onboarding opens at Step 1 with a pre-existing (auto-created)
+  // company: the Company step RENAMES it in place instead of creating a new one,
+  // and completion is tracked in localStorage so the wizard never reopens.
+  const cloudRenameFlow = Boolean(existingCompanyId) && initialStep === 1;
 
   // Restore saved state from localStorage (read once on mount)
   const saved = useMemo(loadSavedState, []);
@@ -201,6 +207,20 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // Cloud rename flow: pre-fill the Company step with the auto-created company's
+  // current name (once per company) so the user edits it in place. Tracks
+  // whether the rename + goal step has already run to avoid a duplicate goal.
+  const companyStepDoneRef = useRef(false);
+  const prefilledCompanyIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !cloudRenameFlow || !createdCompanyId) return;
+    if (prefilledCompanyIdRef.current === createdCompanyId) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (!company) return;
+    setCompanyName(company.name);
+    prefilledCompanyIdRef.current = createdCompanyId;
+  }, [effectiveOnboardingOpen, cloudRenameFlow, createdCompanyId, companies]);
+
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -233,6 +253,15 @@ export function OnboardingWizard() {
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
+  // Managed experience: when on, the instance picks the harness + model for the
+  // user, so the wizard hides the adapter/model pickers and omits those fields
+  // from the launch payload (the server injects the managed defaults).
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
+
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -363,9 +392,16 @@ export function OnboardingWizard() {
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
+    companyStepDoneRef.current = false;
+    prefilledCompanyIdRef.current = null;
   }
 
   function handleClose() {
+    // Cloud first-run: dismissing the wizard still counts as "onboarded" so it
+    // never reopens for this company.
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -377,6 +413,9 @@ export function OnboardingWizard() {
 
   function handleLaunchToChat() {
     const prefix = createdCompanyPrefix;
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
     navigate(prefix ? `/${prefix}/board-chat` : "/dashboard");
@@ -453,14 +492,23 @@ export function OnboardingWizard() {
   // goal, then advance to naming the team lead. Guarded so revisiting the
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
-    if (createdCompanyId) {
+    // Cloud first-run: the company already exists (auto-created), so RENAME it
+    // in place to whatever the user typed instead of short-circuiting to step 3
+    // with the auto-generated name. Once the rename + goal have run for this
+    // company, revisiting the step just advances (no duplicate goal).
+    if (createdCompanyId && (!cloudRenameFlow || companyStepDoneRef.current)) {
       setStep(3);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company =
+        cloudRenameFlow && createdCompanyId
+          ? await companiesApi.update(createdCompanyId, {
+              name: companyName.trim(),
+            })
+          : await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -479,6 +527,7 @@ export function OnboardingWizard() {
         queryKey: queryKeys.goals.list(company.id)
       });
 
+      companyStepDoneRef.current = true;
       setStep(3); // → Create your team lead
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
@@ -499,49 +548,62 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        const selectedModelId = model.trim();
-        if (!isValidOpenCodeModelId(selectedModelId)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
-          return;
+      // In managed mode the user never chose a harness/model, so the
+      // adapter-specific preflight (OpenCode model validation, the local
+      // adapter environment probe) does not apply — the server injects the
+      // managed default adapter + model for this hire.
+      if (!managed) {
+        if (adapterType === "opencode_local") {
+          const selectedModelId = model.trim();
+          if (!isValidOpenCodeModelId(selectedModelId)) {
+            setError(
+              "OpenCode requires an explicit model in provider/model format."
+            );
+            return;
+          }
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models."
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError(
+              "OpenCode models are still loading. Please wait and try again."
+            );
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`
+            );
+            return;
+          }
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models."
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
-          );
-          return;
-        }
-      }
 
-      if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
+        if (isLocalAdapter) {
+          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+          if (!result) return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
+        // When managed, omit adapterType + adapterConfig entirely so the server
+        // injects the managed default harness + model. Sending them (even
+        // "process") would pin an inert adapter instead.
+        ...(managed
+          ? {}
+          : {
+              adapterType,
+              adapterConfig: buildAdapterConfig(),
+            }),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -1148,7 +1210,9 @@ export function OnboardingWizard() {
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* Adapter type radio cards — hidden in managed mode, where
+                      the instance picks the harness for the user. */}
+                  {!managed && (
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type
@@ -1248,9 +1312,11 @@ export function OnboardingWizard() {
                       </div>
                     )}
                   </div>
+                  )}
 
-                  {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {/* Conditional adapter fields — Model picker hidden in managed
+                      mode (the instance picks the model for the user). */}
+                  {!managed && isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1623,7 +1689,7 @@ export function OnboardingWizard() {
               name + mission steps) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-[width,opacity] duration-500 ease-in-out",
               step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >

@@ -506,6 +506,278 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("auto-accepts a fresh human invite for a user who arrives already authenticated", async () => {
+    // Repro of the cloud signup-via-invite journey: the brand-new user signs up
+    // on the marketing /auth pages, then is redirected (already authenticated)
+    // to /invite/:token. They never touch InviteLanding's inline auth, so the
+    // page must auto-accept on mount. Regression guard: it must NOT surface
+    // "Invite not found" (a stale acceptMutation closure firing before the
+    // invite query settled).
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // Cloud reality: the brand-new user already auto-provisioned their OWN
+    // company at signup, so the list is non-empty but does not include the
+    // inviter's company.
+    listCompaniesMock.mockResolvedValue([{ id: "own-company", name: "Jane Co" }]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(container.textContent).not.toContain("Invite not found");
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("refreshes the companies cache with the joined company before redirecting a fresh authenticated invitee", async () => {
+    // Last-gap repro: a brand-new user signs up via the marketing /auth pages,
+    // then is redirected (already authenticated) to /invite/:token as their
+    // FIRST authenticated full-page load. They have no selected/last company, so
+    // the post-accept navigate("/") falls through to CompanyRootRedirect, which
+    // resolves `selectedCompany` from the companies cache. If we navigate before
+    // the membership refetch lands, the cache still holds ONLY their own
+    // auto-provisioned company, so they get redirected to their OWN company
+    // dashboard instead of the one they just joined. The accept must therefore
+    // leave the joined company present in the companies cache BEFORE it hands off
+    // navigation.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // The membership write lags: /api/companies keeps returning ONLY the new
+    // user's own company for the first couple of post-accept refetches, then
+    // becomes readable and includes the joined inviter company. The accept must
+    // refetch until the joined company appears before it hands off navigation.
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Jane Co" }]);
+    listCompaniesMock.mockResolvedValue([
+      { id: "own-company", name: "Jane Co" },
+      { id: "company-1", name: "Acme Robotics" },
+    ]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    // Drain the bounded backoff (150ms/300ms/... between membership refetches).
+    for (let i = 0; i < 30; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      });
+      const cached = queryClient.getQueryData(queryKeys.companies.all) as
+        | { companies: Array<{ id: string }> }
+        | undefined;
+      if (cached?.companies.some((company) => company.id === "company-1")) break;
+    }
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // The accept refetched the companies list more than once, waiting out the
+    // lagging membership write rather than navigating on the first stale list.
+    expect(listCompaniesMock.mock.calls.length).toBeGreaterThan(2);
+
+    // The joined company must be present in the shared companies cache by the
+    // time navigation happens, so CompanyRootRedirect can resolve the inviter
+    // company rather than falling back to companies[0] (the user's own).
+    const cached = queryClient.getQueryData(queryKeys.companies.all) as
+      | { companies: Array<{ id: string }> }
+      | undefined;
+    expect(cached?.companies.map((company) => company.id)).toContain("company-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("retries auto-accept after a transient failure instead of stranding the user with a stale error", async () => {
+    // A brand-new authenticated user lands on the invite. The first auto-accept
+    // attempt fails transiently (e.g. the session cookie/membership had not
+    // propagated yet). The page must not get permanently stuck showing the error
+    // with only a manual button: a second mount/settle should auto-retry and
+    // join the user. Guards the `error === null` clause that used to latch
+    // auto-accept off forever after one failure.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+    listCompaniesMock.mockResolvedValue([{ id: "own-company", name: "Jane Co" }]);
+    acceptInviteMock
+      .mockRejectedValueOnce(Object.assign(new Error("Request failed: 409"), { status: 409 }))
+      .mockResolvedValue({
+        id: "join-1",
+        companyId: "company-1",
+        requestType: "human",
+        status: "approved",
+      });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    // First attempt failed, second auto-retried and succeeded.
+    expect(acceptInviteMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(container.textContent).not.toContain("Request failed: 409");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("consumes a non-bootstrap invite from sign-up onSuccess even when the session query has not refreshed yet", async () => {
+    // The session query keeps resolving to null for the whole flow, so the
+    // auto-accept effect (which requires a session) can never fire. This pins
+    // the responsibility on authMutation.onSuccess: after a fresh sign-up it
+    // must consume the invite token itself, otherwise the brand-new user gets
+    // an account but is never added to the inviting company's membership.
+    getSessionMock.mockResolvedValue(null);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    expect(inputValueSetter).toBeTypeOf("function");
+
+    const nameInput = container.querySelector('input[name="name"]') as HTMLInputElement | null;
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement | null;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement | null;
+    expect(nameInput).not.toBeNull();
+    expect(emailInput).not.toBeNull();
+    expect(passwordInput).not.toBeNull();
+
+    await act(async () => {
+      inputValueSetter!.call(nameInput, "Jane Example");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement | null;
+    expect(authForm).not.toBeNull();
+
+    await act(async () => {
+      authForm?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(signUpEmailMock).toHaveBeenCalledWith({
+      name: "Jane Example",
+      email: "jane@example.com",
+      password: "supersecret",
+    });
+    // The invite token must be consumed so the new user joins the company.
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows the pending approval page with the company icon and linked access instructions", async () => {
     acceptInviteMock.mockResolvedValue({
       id: "join-1",
@@ -955,6 +1227,43 @@ describe("InviteLandingPage", () => {
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(container.textContent).toContain("Request to join Acme Robotics");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders with theme tokens so it follows the deployer default theme instead of hardcoding dark", async () => {
+    // The invite page is reached before the normal app shell. It must inherit
+    // the document theme (set by the PAPERCLIP_DEFAULT_THEME bootstrap) via
+    // shadcn theme tokens, not hardcode zinc/dark classes — otherwise a cream
+    // (light) cloud renders a dark invite page.
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const root1 = container.querySelector(".min-h-screen") as HTMLElement | null;
+    expect(root1).not.toBeNull();
+    expect(root1!.className).toContain("bg-background");
+    expect(root1!.className).toContain("text-foreground");
+    // No hardcoded dark zinc surfaces anywhere in the rendered tree.
+    expect(container.innerHTML).not.toContain("bg-zinc-950");
+    expect(container.innerHTML).not.toContain("text-zinc-100");
 
     await act(async () => {
       root.unmount();

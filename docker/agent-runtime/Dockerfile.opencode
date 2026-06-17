@@ -1,11 +1,12 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
-FROM paperclipai/agent-runtime-base:${BASE_TAG}
+FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
 USER root
 # opencode-ai npm package; binary on PATH is `opencode`.
 RUN npm install -g opencode-ai@latest \
-    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+    && chown -R 1000:1000 /usr/lib/node_modules \
+    || true
 
 USER 1000:1000
 
