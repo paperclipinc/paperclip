@@ -619,11 +619,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        // Bill the partial tokens accumulated before the wall-clock timeout.
+        // OpenCode emits per-step `step_finish` usage as it streams, so
+        // parseOpenCodeJsonl(proc.stdout) already holds whatever completed
+        // before we killed the process. Without this the timeout result carries
+        // no usage/costUsd and heartbeat writes no cost_event, so real tokens
+        // (long runs hit the timeout most) are billed to nobody. (H1)
+        const modelIdOnTimeout = model || null;
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
+          usage: {
+            inputTokens: attempt.parsed.usage.inputTokens,
+            outputTokens: attempt.parsed.usage.outputTokens,
+            cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          },
+          provider: parseModelProvider(modelIdOnTimeout),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelIdOnTimeout)),
+          model: modelIdOnTimeout,
+          billingType: "unknown",
+          costUsd: attempt.parsed.costUsd,
           clearSession: clearSessionOnMissingSession,
         };
       }

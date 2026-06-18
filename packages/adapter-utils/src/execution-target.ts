@@ -404,6 +404,11 @@ export async function runAdapterExecutionTargetProcess(
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
+    // TODO(audit H2/M6): onLog is forwarded to the sandbox runner, but providers
+    // that exec-and-collect (rather than stream over the exec channel) only
+    // surface stdout/stderr once the process exits, so long sandbox runs show no
+    // live output. Live incremental streaming of sandbox exec output to onLog is
+    // a separate, larger effort tracked under audit H2/M6.
     return await runner.execute({
       command,
       args,

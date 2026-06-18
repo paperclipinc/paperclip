@@ -65,6 +65,11 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+function isTruthyEnvFlag(value: string | undefined | null): boolean {
+  if (typeof value !== "string") return false;
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
 function resolveGeminiBillingType(env: Record<string, string>): "api" | "subscription" {
   return hasNonEmptyEnvValue(env, "GEMINI_API_KEY") || hasNonEmptyEnvValue(env, "GOOGLE_API_KEY")
     ? "api"
@@ -540,8 +545,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // Optional diagnostic: surface Gemini's own debug logs on stderr (captured
+  // into the run result) so failures Gemini otherwise wraps opaquely can be
+  // diagnosed in remote/sandbox runs where the CLI's log file is unreachable
+  // post-hoc. Mirrors opencode's PAPERCLIP_OPENCODE_PRINT_LOGS -> --print-logs;
+  // Gemini's equivalent is --debug. Toggle via PAPERCLIP_GEMINI_PRINT_LOGS (run
+  // env, then process env). (L1)
+  const printLogs = isTruthyEnvFlag(
+    env.PAPERCLIP_GEMINI_PRINT_LOGS ?? process.env.PAPERCLIP_GEMINI_PRINT_LOGS,
+  );
+
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
+    if (printLogs) args.push("--debug");
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
     args.push("--approval-mode", "yolo");
@@ -609,6 +625,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
+      // Bill the partial tokens accumulated before the wall-clock timeout.
+      // Gemini emits incremental usage (step_finish / usageMetadata) as it
+      // streams, so parseGeminiJsonl(proc.stdout) holds whatever completed
+      // before we killed the process. Without this the timeout result carries
+      // no usage/costUsd and heartbeat writes no cost_event, so real tokens are
+      // billed to nobody. (H1)
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
@@ -619,6 +641,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : networkUnavailable
             ? "gemini_network_unavailable"
             : null,
+        usage: attempt.parsed.usage,
+        provider: "google",
+        biller: "google",
+        model,
+        billingType,
+        costUsd: attempt.parsed.costUsd,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -633,7 +661,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       structuredFailure ||
       stderrLine ||
       `Gemini exited with code ${attempt.proc.exitCode ?? -1}`;
-    const failed = (attempt.proc.exitCode ?? 0) !== 0;
+    // Treat a parsed error as a failure even when the process exited 0: Gemini
+    // can emit an error result event (status error/failed, is_error, or an
+    // `error` event) and still exit cleanly, which previously surfaced as a
+    // false success. Key off parsed.errorMessage specifically — the parser only
+    // sets it on a genuine error (NOT for status=success), so unlike
+    // structuredFailure (which describes ANY result, including successes) it is
+    // a safe failure signal. Mirrors codex/opencode/pi. (M2)
+    const failed = (attempt.proc.exitCode ?? 0) !== 0 || Boolean(parsedError);
     const clearSessionForTurnLimit = isGeminiTurnLimitResult(
       attempt.parsed.resultEvent,
       attempt.proc.exitCode,

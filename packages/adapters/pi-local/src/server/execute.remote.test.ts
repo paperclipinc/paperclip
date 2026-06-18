@@ -583,4 +583,64 @@ describe("pi remote execution", () => {
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
     expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
   });
+
+  it("H1: bills partial usage on a wall-clock timeout", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-timeout-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // Pi accumulates usage per turn_end; the run streams one turn then times out.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGKILL",
+      timedOut: true,
+      stdout: [
+        JSON.stringify({
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            content: "partial",
+            usage: { input: 70, output: 25, cacheRead: 3, cost: { total: 0.0015 } },
+          },
+        }),
+      ].join("\n"),
+      stderr: "",
+      pid: 130,
+      startedAt: new Date().toISOString(),
+    } as never);
+
+    const result = await execute({
+      runId: "run-timeout",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Pi Builder",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "pi", model: "anthropic/claude-3-5-sonnet" },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 70, cachedInputTokens: 3, outputTokens: 25 });
+    expect(result.costUsd).toBeCloseTo(0.0015, 6);
+    expect(result.provider).toBe("anthropic");
+    expect(result.biller).toBeTruthy();
+  });
 });

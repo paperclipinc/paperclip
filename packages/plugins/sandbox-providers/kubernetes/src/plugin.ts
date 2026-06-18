@@ -38,7 +38,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
-import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -112,6 +112,11 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
+
+// The default realized workspace cwd. The agent pod mounts /workspace as an
+// emptyDir at scheduling time (see pod-spec-builder); onEnvironmentRealizeWorkspace
+// hands this back and the lease metadata carries it from acquisition.
+const REALIZED_WORKSPACE_CWD = "/workspace";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -357,6 +362,12 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Carry the realized workspace cwd on the lease from acquisition, matching
+      // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
+      // Daytona providers do the same: a lease that knows its own cwd makes the
+      // execution target correct even if the orchestrator's separate cwd
+      // threading regresses. Defense-in-depth for the C1 remoteCwd fix.
+      remoteCwd: REALIZED_WORKSPACE_CWD,
     };
 
     return {
@@ -446,7 +457,7 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : "/workspace";
+        : REALIZED_WORKSPACE_CWD;
     return {
       cwd,
       metadata: {
@@ -478,6 +489,12 @@ const plugin = definePlugin({
         : config.backend;
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+    // acquireLease names the per-run Secret `${jobName}-env` and uses jobName as
+    // the providerLeaseId, so the suffix fallback reconstructs it exactly.
+    const secretName =
+      typeof params.leaseMetadata?.secretName === "string"
+        ? params.leaseMetadata.secretName
+        : `${params.providerLeaseId}-env`;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -493,6 +510,13 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+
+    // Explicitly delete the per-run Secret on release too. Normal release relies
+    // on the Sandbox CR / Job ownerRef cascade to remove it, but a wedged
+    // controller or broken ownerRef would otherwise strand per-run inference-vk
+    // Secrets in tenant namespaces. Best-effort + 404-tolerant so release never
+    // fails on a cleanup race. SECURITY-relevant. See deleteLeaseSecretBestEffort.
+    await deleteLeaseSecretBestEffort(clients, namespace, secretName);
   },
 
   async onEnvironmentDestroyLease(

@@ -419,4 +419,93 @@ describe("codex remote execution", () => {
     expect(call?.[3].env.CODEX_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/codex/home`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
   });
+
+  // Shared setup for the billing/failure cases below: a fresh workspace +
+  // CODEX_HOME and an SSH execution target so all process spawning is mocked.
+  async function runCodexRemote(stdout: string, procOverrides: Record<string, unknown> = {}) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-billing-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+      ...procOverrides,
+    } as never);
+    return execute({
+      runId: "run-billing",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "codex", env: { CODEX_HOME: codexHomeDir, OPENAI_API_KEY: "sk-test" } },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        spec: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+  }
+
+  it("H1: bills partial usage on a wall-clock timeout (per completed turn)", async () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t-1" }),
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 120, cached_input_tokens: 10, output_tokens: 45 },
+      }),
+    ].join("\n");
+    const result = await runCodexRemote(stdout, { timedOut: true, exitCode: null });
+    expect(result.timedOut).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 120, cachedInputTokens: 10, outputTokens: 45 });
+    expect(result.model).toBeDefined();
+    expect(result.biller).toBeTruthy();
+  });
+
+  it("M2: a parsed error with exit code 0 is treated as a failure (no false success)", async () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t-2" }),
+      JSON.stringify({ type: "error", message: "model refused the request" }),
+    ].join("\n");
+    const result = await runCodexRemote(stdout, { exitCode: 0 });
+    expect(result.timedOut).toBe(false);
+    expect(result.errorMessage).toBe("model refused the request");
+    // exitCode synthesized to 1 so heartbeat does not mark the run succeeded.
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("M2: a clean exit 0 with no parsed error stays a success", async () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: "t-3" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 5, output_tokens: 3 } }),
+    ].join("\n");
+    const result = await runCodexRemote(stdout, { exitCode: 0 });
+    expect(result.errorMessage).toBeNull();
+    expect(result.exitCode).toBe(0);
+  });
 });
