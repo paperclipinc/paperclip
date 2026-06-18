@@ -415,10 +415,17 @@ export async function prepareSandboxManagedRuntime(input: {
         await input.client.run(
           `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
-              tolerantTar(
-                `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
-                  `${tarExcludeFlags(input.workspaceExclude)} .`,
-              ),
+              // The workspace is LIVE during teardown (the agent's lingering processes
+              // create/delete temp files), so GNU tar otherwise exits 2 on "Cannot open:
+              // No such file" for a file that vanished mid-archive, hard-failing the whole
+              // run. --ignore-failed-read makes it a best-effort archive of whatever is
+              // readable. The flag is GNU/busybox-only (BSD tar rejects it), so gate it on a
+              // capability probe -> portable across the agent image (GNU 1.34) and dev/CI.
+              `__pc_ifr=""; tar --ignore-failed-read --version >/dev/null 2>&1 && __pc_ifr=--ignore-failed-read; ` +
+                tolerantTar(
+                  `tar $__pc_ifr -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
+                    `${tarExcludeFlags(input.workspaceExclude)} .`,
+                ),
           )}`,
           { timeoutMs: input.spec.timeoutMs },
         );
