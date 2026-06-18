@@ -21,13 +21,33 @@ export const INFERENCE_AUTH_ENV_KEYS = [
   "GEMINI_API_KEY",
 ] as const;
 
-// Process-lifetime cache: companyId -> resolved virtual key. A control-plane
+// TTL-bounded cache: companyId -> { keyValue, expiresAt }. A control-plane
 // round-trip on every lease would be wasteful (leases are frequent, the key is
-// stable). Caching for the process lifetime is acceptable: a key rotation
-// re-partitions the cache on the next worker restart, and stale entries simply
-// keep using the previous (still valid until revoked) key — an accepted
-// trade-off documented on the config field.
-const keyCache = new Map<string, string>();
+// usually stable), so we cache. But an UNBOUNDED process-lifetime cache is a
+// security hazard: a company vk that is rotated or revoked control-plane-side
+// would keep being injected into that company's runs until the worker restarts
+// (could be days). A short TTL bounds that staleness window to at most
+// `DEFAULT_INFERENCE_KEY_CACHE_TTL_MS`, after which we re-resolve and pick up
+// the new key (or fail closed if the key was revoked). Configurable via
+// PAPERCLIP_INFERENCE_KEY_CACHE_TTL_MS for ops.
+const DEFAULT_INFERENCE_KEY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function resolveCacheTtlMs(): number {
+  const raw = process.env.PAPERCLIP_INFERENCE_KEY_CACHE_TTL_MS;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_INFERENCE_KEY_CACHE_TTL_MS;
+}
+
+interface CacheEntry {
+  keyValue: string;
+  /** epoch ms after which this entry is stale and must be re-resolved. */
+  expiresAt: number;
+}
+
+const keyCache = new Map<string, CacheEntry>();
 
 /** Test-only: reset the in-process cache between cases. */
 export function __resetInferenceKeyCache(): void {
@@ -39,6 +59,10 @@ export interface ResolveInferenceKeyOptions {
   companyId: string;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Override the cache TTL (ms) for this resolve. Injectable for tests. */
+  cacheTtlMs?: number;
+  /** Injectable clock for tests; defaults to Date.now. */
+  now?: () => number;
 }
 
 /**
@@ -54,9 +78,14 @@ export async function resolveCompanyInferenceKey(
 ): Promise<string> {
   const { resolverUrl, companyId } = opts;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const now = opts.now ?? Date.now;
+  const cacheTtlMs = opts.cacheTtlMs ?? resolveCacheTtlMs();
 
   const cached = keyCache.get(companyId);
-  if (cached) return cached;
+  if (cached && cached.expiresAt > now()) return cached.keyValue;
+  // Stale (or absent): drop the expired entry and re-resolve below so a rotated
+  // or revoked key is picked up rather than served from cache.
+  if (cached) keyCache.delete(companyId);
 
   // Tolerate a trailing slash on the configured URL.
   const endpoint = `${resolverUrl.replace(/\/+$/, "")}/internal/bifrost-key`;
@@ -104,7 +133,7 @@ export async function resolveCompanyInferenceKey(
     );
   }
 
-  keyCache.set(companyId, keyValue);
+  keyCache.set(companyId, { keyValue, expiresAt: now() + cacheTtlMs });
   return keyValue;
 }
 

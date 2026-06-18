@@ -366,4 +366,68 @@ describe("opencode remote execution", () => {
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
   });
+
+  it("H1: bills partial usage on a wall-clock timeout", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-timeout-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    // OPENCODE_ALLOW_ALL_MODELS skips the `opencode models` probe so the single
+    // mocked spawn is the run itself. The run streams a step_finish (usage) and
+    // then times out — the accumulated usage must be billed.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGKILL",
+      timedOut: true,
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "session_to" }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "session_to",
+          part: { cost: 0.002, tokens: { input: 50, output: 20, reasoning: 0, cache: { read: 5, write: 0 } } },
+        }),
+      ].join("\n"),
+      stderr: "",
+      pid: 124,
+      startedAt: new Date().toISOString(),
+    } as never);
+
+    const result = await execute({
+      runId: "run-timeout",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+        env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 50, cachedInputTokens: 5, outputTokens: 20 });
+    expect(result.costUsd).toBeCloseTo(0.002, 6);
+    expect(result.model).toBe("opencode/gpt-5-nano");
+    expect(result.biller).toBeTruthy();
+  });
 });

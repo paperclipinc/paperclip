@@ -731,11 +731,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        // Bill the partial tokens accumulated before the wall-clock timeout. Pi
+        // emits per-message usage as it streams, so parsePiJsonl(proc.stdout)
+        // already holds whatever completed before we killed the process.
+        // Without this the timeout result carries no usage/costUsd and heartbeat
+        // writes no cost_event, so real tokens are billed to nobody. (H1)
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
+          usage: {
+            inputTokens: attempt.parsed.usage.inputTokens,
+            outputTokens: attempt.parsed.usage.outputTokens,
+            cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          },
+          provider,
+          biller: resolvePiBiller(runtimeEnv, provider),
+          model,
+          billingType: "unknown",
+          costUsd: attempt.parsed.usage.costUsd,
           clearSession: clearSessionOnMissingSession,
         };
       }

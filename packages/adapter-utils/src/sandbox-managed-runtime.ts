@@ -272,6 +272,57 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+// Belt-and-suspenders cap on the workspace DOWNLOAD size. The current restore
+// path buffers the whole tar in memory via one readFile, so an unexpectedly
+// large workspace would either truncate (exec maxBuffer) or OOM with an opaque
+// failure. We probe the remote archive size first (writing the byte count to a
+// tiny sidecar we can read cheaply) and fail with a clear, actionable message
+// above the cap. Streaming download for huge workspaces is the real fix
+// (TODO(audit H2/M6)); this just makes the failure mode safe and legible.
+const DEFAULT_MAX_WORKSPACE_DOWNLOAD_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+function resolveMaxWorkspaceDownloadBytes(): number {
+  const raw = process.env.PAPERCLIP_MAX_WORKSPACE_DOWNLOAD_BYTES;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_MAX_WORKSPACE_DOWNLOAD_BYTES;
+}
+
+async function assertRemoteArchiveWithinCap(
+  client: SandboxManagedRuntimeClient,
+  remoteTarPath: string,
+  timeoutMs: number,
+): Promise<void> {
+  const cap = resolveMaxWorkspaceDownloadBytes();
+  const sidecar = `${remoteTarPath}.size`;
+  // `wc -c` is POSIX-portable; the sidecar is a handful of bytes so reading it
+  // back never hits the buffering concern itself.
+  await client.run(
+    `sh -c ${shellQuote(`wc -c < ${shellQuote(remoteTarPath)} | tr -d ' \\n' > ${shellQuote(sidecar)}`)}`,
+    { timeoutMs },
+  );
+  let sizeText = "";
+  try {
+    const sizeBytes = await client.readFile(sidecar);
+    sizeText = toBuffer(sizeBytes).toString("utf8").trim();
+  } finally {
+    await client.remove(sidecar).catch(() => undefined);
+  }
+  const size = Number(sizeText);
+  if (!Number.isFinite(size)) return; // Probe inconclusive: don't block restore.
+  if (size > cap) {
+    await client.remove(remoteTarPath).catch(() => undefined);
+    throw new Error(
+      `Workspace download (${size} bytes) exceeds the ${cap}-byte cap. The current restore ` +
+        `path buffers the whole archive in memory; reduce the workspace size (e.g. add ` +
+        `.gitignore-style excludes) or raise PAPERCLIP_MAX_WORKSPACE_DOWNLOAD_BYTES. ` +
+        `Streamed download for large workspaces is tracked under audit H2/M6.`,
+    );
+  }
+}
+
 // Wrap a remote `tar` invocation so a benign exit code 1 is not treated as a
 // failure. GNU/busybox tar exits 1 for warnings such as "file changed as we
 // read it" / "Removing leading '/'" / "some files differ" — guaranteed when
@@ -371,6 +422,12 @@ export async function prepareSandboxManagedRuntime(input: {
           )}`,
           { timeoutMs: input.spec.timeoutMs },
         );
+        // TODO(audit H2/M6): this downloads the whole workspace tar into memory
+        // in one readFile. For large workspaces this should stream the tar
+        // (chunked download + streamed extract) rather than buffer it. Until
+        // then, fail with a clear, actionable error if the archive exceeds the
+        // cap, instead of an opaque exec maxBuffer truncation / OOM.
+        await assertRemoteArchiveWithinCap(input.client, remoteWorkspaceTar, input.spec.timeoutMs);
         const archiveBytes = await input.client.readFile(remoteWorkspaceTar);
         await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
         const localArchivePath = path.join(tempDir, "workspace.tar");

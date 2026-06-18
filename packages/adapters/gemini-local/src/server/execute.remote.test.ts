@@ -405,4 +405,77 @@ describe("gemini remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(runChildProcess).not.toHaveBeenCalled();
   });
+
+  async function runGeminiRemote(stdout: string, procOverrides: Record<string, unknown> = {}) {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-billing-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 1,
+      startedAt: new Date().toISOString(),
+      ...procOverrides,
+    } as never);
+    return execute({
+      runId: "run-billing",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "gemini", env: { GEMINI_API_KEY: "test-key" } },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+  }
+
+  it("H1: bills partial usage on a wall-clock timeout", async () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "g-1", model: "gemini-2.5-pro" }),
+      JSON.stringify({ type: "step_finish", usage: { inputTokens: 90, outputTokens: 30, cachedInputTokens: 5 } }),
+    ].join("\n");
+    const result = await runGeminiRemote(stdout, { timedOut: true, exitCode: null });
+    expect(result.timedOut).toBe(true);
+    expect(result.usage).toEqual({ inputTokens: 90, cachedInputTokens: 5, outputTokens: 30 });
+    expect(result.biller).toBe("google");
+  });
+
+  it("M2: a structured error result with exit code 0 is treated as a failure", async () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "g-2", model: "gemini-2.5-pro" }),
+      JSON.stringify({ type: "result", status: "error", error: "quota exhausted" }),
+    ].join("\n");
+    const result = await runGeminiRemote(stdout, { exitCode: 0 });
+    expect(result.timedOut).toBe(false);
+    expect(result.errorMessage).toBe("quota exhausted");
+  });
+
+  it("M2: a successful result with exit code 0 stays a success", async () => {
+    const stdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "g-3", model: "gemini-2.5-pro" }),
+      JSON.stringify({ type: "result", status: "success", stats: { input_tokens: 1, output_tokens: 1 } }),
+    ].join("\n");
+    const result = await runGeminiRemote(stdout, { exitCode: 0 });
+    expect(result.errorMessage).toBeNull();
+  });
 });

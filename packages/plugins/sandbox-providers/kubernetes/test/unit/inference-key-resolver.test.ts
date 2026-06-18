@@ -45,7 +45,7 @@ describe("resolveCompanyInferenceKey", () => {
     expect(fetchImpl.mock.calls[0][0]).toBe(`${RESOLVER_URL}/internal/bifrost-key`);
   });
 
-  it("caches by companyId for the process lifetime (no second round-trip)", async () => {
+  it("caches by companyId within the TTL window (no second round-trip)", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ keyValue: "vk-cached" }));
     const a = await resolveCompanyInferenceKey({
       resolverUrl: RESOLVER_URL,
@@ -60,6 +60,52 @@ describe("resolveCompanyInferenceKey", () => {
     expect(a).toBe("vk-cached");
     expect(b).toBe("vk-cached");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-resolves after the cache TTL expires (picks up a rotated key)", async () => {
+    // First resolve at t=1000 returns the original key; the entry expires at
+    // 1000 + ttl. A resolve after expiry must re-fetch and surface the rotated
+    // key rather than serving the stale one (the security-relevant case).
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ keyValue: "vk-old" }))
+      .mockResolvedValueOnce(jsonResponse({ keyValue: "vk-rotated" }));
+    let nowMs = 1_000;
+    const now = () => nowMs;
+    const cacheTtlMs = 60_000;
+
+    const first = await resolveCompanyInferenceKey({
+      resolverUrl: RESOLVER_URL,
+      companyId: "rot",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      cacheTtlMs,
+      now,
+    });
+    expect(first).toBe("vk-old");
+
+    // Within TTL: still cached.
+    nowMs = 1_000 + cacheTtlMs - 1;
+    const cached = await resolveCompanyInferenceKey({
+      resolverUrl: RESOLVER_URL,
+      companyId: "rot",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      cacheTtlMs,
+      now,
+    });
+    expect(cached).toBe("vk-old");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Past TTL: must re-resolve and return the rotated key.
+    nowMs = 1_000 + cacheTtlMs + 1;
+    const rotated = await resolveCompanyInferenceKey({
+      resolverUrl: RESOLVER_URL,
+      companyId: "rot",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      cacheTtlMs,
+      now,
+    });
+    expect(rotated).toBe("vk-rotated");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("FAIL-CLOSED: throws on non-2xx (does not return a key)", async () => {
