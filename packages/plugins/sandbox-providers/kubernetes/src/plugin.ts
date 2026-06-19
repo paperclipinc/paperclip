@@ -825,6 +825,30 @@ const plugin = definePlugin({
         };
       }
 
+      // OBSERVABILITY: every harness command (opencode run, the callback-bridge
+      // poll, the workspace tar) flows through this single execInPod. Failures
+      // bubble up to the adapter as an opaque "exit code N" with the detail often
+      // lost (restoreWorkspace teardown masks the real result; opencode wraps its
+      // own errors). Log the full exec result (command + exit + stdout/stderr
+      // tails) server-side so the actual cause — why a build makes 0 inference, why
+      // tar exits 2 — is greppable from server logs without racing the ephemeral
+      // sandbox pod. Always on for non-zero exits; full dumps (incl. exit 0) gated
+      // behind PAPERCLIP_K8S_EXEC_DEBUG to avoid noise.
+      const execDebug = ["1", "true", "yes"].includes(
+        (process.env.PAPERCLIP_K8S_EXEC_DEBUG ?? "").toLowerCase(),
+      );
+      if (execResult.exitCode !== 0 || execDebug) {
+        const tail = (s: string, n: number) =>
+          typeof s === "string" && s.length > n ? s.slice(-n) : (s ?? "");
+        console.warn(
+          `[paperclip][k8s-exec] sandbox=${lease.providerLeaseId} pod=${podName} ns=${namespace} ` +
+            `exit=${execResult.exitCode} cmd=${JSON.stringify(execCommand).slice(0, 400)} ` +
+            `stdoutLen=${execResult.stdout?.length ?? 0} stderrLen=${execResult.stderr?.length ?? 0}\n` +
+            `  stdoutTail=${JSON.stringify(tail(execResult.stdout, 1500))}\n` +
+            `  stderrTail=${JSON.stringify(tail(execResult.stderr, 3000))}`,
+        );
+      }
+
       return {
         exitCode: execResult.exitCode,
         timedOut: false,
