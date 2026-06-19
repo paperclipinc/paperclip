@@ -46,6 +46,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
+  isOpenCodeBudgetStop,
+  planOpenCodeBudget,
+  resolveOpenCodeRunBudgetMs,
+  wrapCommandWithTimeout,
+} from "./budget.js";
+import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
@@ -323,6 +329,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
+    // Bounded-resumable-wake time-box: opencode has no turn bound, so we run it
+    // under a graceful wall-clock budget (SIGTERM at the budget so it flushes its
+    // session, SIGKILL after the grace) and map the budget stop to the same
+    // `max_turns_exhausted` stop claude returns, so the heartbeat continuation
+    // auto-wakes + resumes via `--session`. See ./budget.ts.
+    const openCodeBudgetMs = resolveOpenCodeRunBudgetMs({
+      config,
+      env,
+      processEnv: process.env,
+    });
+    const openCodeBudget = planOpenCodeBudget({
+      budgetMs: openCodeBudgetMs,
+      outerTimeoutSec: timeoutSec,
+      graceSec,
+    });
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
@@ -411,6 +432,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
         preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
       }
+      // CROSS-WAKE SESSION PERSISTENCE (the crux of bounded resumable wakes).
+      //
+      // opencode stores its session/message store on disk under its DATA dir
+      // (XDG_DATA_HOME/opencode, defaulting to $HOME/.local/share/opencode), NOT
+      // server-side. On the sandbox path HOME is the managed runtime root, which
+      // lives under `<workspace>/.paperclip-runtime/<adapter>` -- and that dir is
+      // EXCLUDED from the workspace tar that round-trips the workspace between the
+      // host (the durable store) and the ephemeral sandbox pod on each wake. So if
+      // the session store stayed under the default location it would be discarded
+      // every wake and `--session <id>` resume would always start fresh, defeating
+      // bounded wakes (no build accumulation).
+      //
+      // Pin XDG_DATA_HOME into the PERSISTED workspace (under effectiveExecutionCwd,
+      // which IS in the round-tripped tar and is NOT under .paperclip-runtime) so the
+      // opencode session store survives across wakes. We scope it to a dedicated
+      // dot-dir and best-effort add it to the repo's git exclude so it never shows up
+      // in the agent's workspace diff. This is sandbox-only: on the local path
+      // opencode's default $HOME/.local/share/opencode persists naturally.
+      const remoteOpenCodeDataHome = path.posix.join(effectiveExecutionCwd, ".paperclip-opencode-data");
+      preparedRuntimeConfig.env.XDG_DATA_HOME = remoteOpenCodeDataHome;
+      await runAdapterExecutionTargetShellCommand(
+        runId,
+        executionTarget,
+        // Create the persisted data dir and hide it from `git status`/workspace-diff
+        // via .git/info/exclude (best-effort: a non-git or fresh workspace simply has
+        // nothing to exclude; the `|| true` keeps a missing repo from failing the run).
+        `mkdir -p ${JSON.stringify(remoteOpenCodeDataHome)} && ` +
+          `{ git -C ${JSON.stringify(effectiveExecutionCwd)} rev-parse --git-dir >/dev/null 2>&1 && ` +
+          `__pc_gd=$(git -C ${JSON.stringify(effectiveExecutionCwd)} rev-parse --git-dir) && ` +
+          `mkdir -p "$__pc_gd/info" && ` +
+          `grep -qxF '.paperclip-opencode-data/' "$__pc_gd/info/exclude" 2>/dev/null || ` +
+          `echo '.paperclip-opencode-data/' >> "$__pc_gd/info/exclude"; } || true`,
+        { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+      );
       if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
         preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
       }
@@ -594,11 +649,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+      // Apply the wall-clock budget. LOCAL: the child-process runner already
+      // does graceful SIGTERM-then-SIGKILL at its timeout (using graceSec), so we
+      // just hand it the budget as the effective timeout. REMOTE/sandbox: the
+      // runner's RPC cap is a hard SIGKILL, so we wrap the command with coreutils
+      // `timeout` to deliver a graceful SIGTERM IN THE POD before the hard cap.
+      let runCommand = command;
+      let runArgs = args;
+      let runTimeoutSec = timeoutSec;
+      if (openCodeBudget.enabled) {
+        if (executionTargetIsRemote) {
+          const wrapped = wrapCommandWithTimeout({
+            command,
+            args,
+            budgetSec: openCodeBudget.budgetSec,
+            graceSec: openCodeBudget.graceSec,
+          });
+          runCommand = wrapped.command;
+          runArgs = wrapped.args;
+        } else {
+          runTimeoutSec = openCodeBudget.budgetSec;
+        }
+      }
+
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, runCommand, runArgs, {
         cwd,
         env: preparedRuntimeConfig.env,
         stdin: prompt,
-        timeoutSec,
+        timeoutSec: runTimeoutSec,
         graceSec,
         onSpawn,
         onLog,
@@ -642,6 +720,70 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           billingType: "unknown",
           costUsd: attempt.parsed.costUsd,
           clearSession: clearSessionOnMissingSession,
+        };
+      }
+
+      // Budget-induced stop: opencode hit the wall-clock budget and was sent a
+      // graceful SIGTERM so it flushed its session. This is a BOUNDED stop (like
+      // claude's --max-turns), NOT a failure: bill the partial usage parsed from
+      // the stream exactly like the timeout branch above, but map it to the SAME
+      // `max_turns_exhausted` stop reason claude uses (errorCode + resultJson
+      // stopReason) so the heartbeat MAX_TURN continuation auto-wakes + resumes.
+      // Unlike claude's max-turns path we do NOT clear the session here -- we WANT
+      // to resume it on the next wake -- so the resolved sessionId is preserved.
+      const budgetStop = isOpenCodeBudgetStop({
+        budgetEnabled: openCodeBudget.enabled,
+        remote: executionTargetIsRemote,
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        timedOut: attempt.proc.timedOut,
+      });
+      if (budgetStop) {
+        const modelIdOnBudget = model || null;
+        const budgetSessionId =
+          attempt.parsed.sessionId ??
+          (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
+        const budgetSessionParams = budgetSessionId
+          ? ({
+              sessionId: budgetSessionId,
+              cwd: effectiveExecutionCwd,
+              ...(workspaceId ? { workspaceId } : {}),
+              ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+              ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+              ...(executionTargetIsRemote
+                ? {
+                    remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+                  }
+                : {}),
+            } as Record<string, unknown>)
+          : null;
+        return {
+          exitCode: attempt.proc.exitCode,
+          signal: attempt.proc.signal,
+          timedOut: false,
+          errorMessage: `OpenCode reached its ${openCodeBudget.budgetSec}s run budget; resuming on the next wake.`,
+          errorCode: "max_turns_exhausted",
+          usage: {
+            inputTokens: attempt.parsed.usage.inputTokens,
+            outputTokens: attempt.parsed.usage.outputTokens,
+            cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          },
+          sessionId: budgetSessionId,
+          sessionParams: budgetSessionParams,
+          sessionDisplayId: budgetSessionId,
+          provider: parseModelProvider(modelIdOnBudget),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelIdOnBudget)),
+          model: modelIdOnBudget,
+          billingType: "unknown",
+          costUsd: attempt.parsed.costUsd,
+          resultJson: {
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            stopReason: "max_turns_exhausted",
+          },
+          summary: attempt.parsed.summary,
+          // Keep the session: we resume it on the continuation wake.
+          clearSession: false,
         };
       }
 
