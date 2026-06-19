@@ -56,6 +56,7 @@ import type {
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
+import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -1072,6 +1073,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
 
 function CopyablePreBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   return (
     <div className="group/pre relative">
       <pre className={className}>{children}</pre>
@@ -1084,9 +1086,15 @@ function CopyablePreBlock({ children, className }: { children: string; className
         title="Copy"
         aria-label="Copy"
         onClick={() => {
-          void navigator.clipboard.writeText(children).then(() => {
+          void copyTextToClipboard(children).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
+          }).catch((error) => {
+            toastActions?.pushToast({
+              title: "Copy failed",
+              body: error instanceof Error ? error.message : "Unable to copy text",
+              tone: "error",
+            });
           });
         }}
       >
@@ -1332,6 +1340,7 @@ function IssueChatUserMessage({
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const toastActions = useOptionalToastActions();
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1452,9 +1461,15 @@ function IssueChatUserMessage({
                   .filter((p): p is { type: "text"; text: string } => p.type === "text")
                   .map((p) => p.text)
                   .join("\n\n");
-                void navigator.clipboard.writeText(text).then(() => {
+                void copyTextToClipboard(text).then(() => {
                   setCopied(true);
                   setTimeout(() => setCopied(false), 2000);
+                }).catch((error) => {
+                  toastActions?.pushToast({
+                    title: "Copy failed",
+                    body: error instanceof Error ? error.message : "Unable to copy message",
+                    tone: "error",
+                  });
                 });
               }}
             >
@@ -1567,6 +1582,7 @@ function IssueChatAssistantMessage({
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
+  const toastActions = useOptionalToastActions();
   const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
@@ -1685,9 +1701,15 @@ function IssueChatAssistantMessage({
                   title="Copy message"
                   aria-label="Copy message"
                   onClick={() => {
-                    void navigator.clipboard.writeText(copyText).then(() => {
+                    void copyTextToClipboard(copyText).then(() => {
                       setCopied(true);
                       setTimeout(() => setCopied(false), 2000);
+                    }).catch((error) => {
+                      toastActions?.pushToast({
+                        title: "Copy failed",
+                        body: error instanceof Error ? error.message : "Unable to copy message",
+                        tone: "error",
+                      });
                     });
                   }}
                 >
@@ -1729,7 +1751,13 @@ function IssueChatAssistantMessage({
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       onClick={() => {
-                        void navigator.clipboard.writeText(copyText);
+                        void copyTextToClipboard(copyText).catch((error) => {
+                          toastActions?.pushToast({
+                            title: "Copy failed",
+                            body: error instanceof Error ? error.message : "Unable to copy message",
+                            tone: "error",
+                          });
+                        });
                       }}
                     >
                       <Copy className="mr-2 h-3.5 w-3.5" />
@@ -2369,6 +2397,7 @@ function SystemNoticeCommentRow({
   anchorId?: string;
 }) {
   const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const toastActions = useOptionalToastActions();
   const custom = message.metadata.custom as Record<string, unknown>;
   const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
   const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
@@ -2418,18 +2447,30 @@ function SystemNoticeCommentRow({
   });
 
   const handleCopy = () => {
-    void navigator.clipboard.writeText(bodyText).then(() => {
+    void copyTextToClipboard(bodyText).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice",
+        tone: "error",
+      });
     });
   };
 
   const handleCopyLink = () => {
     if (!anchorId || typeof window === "undefined") return;
     const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
-    void navigator.clipboard.writeText(url).then(() => {
+    void copyTextToClipboard(url).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
+    }).catch((error) => {
+      toastActions?.pushToast({
+        title: "Copy failed",
+        body: error instanceof Error ? error.message : "Unable to copy system notice link",
+        tone: "error",
+      });
     });
   };
 

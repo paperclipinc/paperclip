@@ -83,7 +83,7 @@ jobs:
       # every job consumes the same hash without recomputing.
       - name: Upload regenerated lockfile for downstream jobs
         if: steps.regen_lockfile.outputs.regenerated == '1'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pr-lockfile
           path: pnpm-lock.yaml
@@ -106,7 +106,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
@@ -153,7 +153,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
@@ -206,7 +206,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
@@ -256,7 +256,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
@@ -290,7 +290,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
@@ -344,7 +344,7 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: pr-lockfile
