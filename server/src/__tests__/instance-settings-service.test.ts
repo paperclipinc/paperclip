@@ -11,6 +11,7 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -23,6 +24,7 @@ describe("instance settings service", () => {
       enableConferenceRoomChat: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
@@ -37,6 +39,14 @@ describe("instance settings service", () => {
     // Rows persisted before the flag existed (PAP-137) must normalize to off.
     expect(
       normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableConferenceRoomChat,
+    ).toBe(false);
+  });
+
+  it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
     ).toBe(false);
   });
 

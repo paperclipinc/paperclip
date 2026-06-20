@@ -17,6 +17,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
+import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
@@ -496,7 +497,7 @@ export function Layout() {
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
-        isMobile ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
+        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
       )}
       >
       <a
@@ -594,7 +595,9 @@ export function Layout() {
                   requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
                 />
               ) : (
-                <Outlet />
+                <RouteErrorBoundary>
+                  <Outlet />
+                </RouteErrorBoundary>
               )}
             </main>
             <PropertiesPanel />
