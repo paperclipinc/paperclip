@@ -55,6 +55,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    managedExperience: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
   };
 }

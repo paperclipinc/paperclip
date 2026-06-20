@@ -396,11 +396,6 @@ export function IssueProperties({
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -447,6 +442,7 @@ export function IssueProperties({
     retry: false,
   });
   const managed = experimentalSettings?.managedExperience === true;
+  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const currentUserId = session?.user?.id ?? session?.session?.userId;
 
   const { data: agents } = useQuery({
