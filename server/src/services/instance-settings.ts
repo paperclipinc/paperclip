@@ -10,6 +10,7 @@ import {
   type InstanceExperimentalSettings,
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
+  type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
@@ -64,9 +65,9 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: false,
     enableConferenceRoomChat: false,
+    enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
-    enableTaskWatchdogs: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
@@ -89,11 +90,12 @@ export function applyManagedExperienceEnvOverride(
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
   return {
     id: row.id,
+    defaultEnvironmentId: row.defaultEnvironmentId ?? null,
     general: normalizeGeneralSettings(row.general),
     experimental: applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental)),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
+  } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db) {
@@ -137,6 +139,22 @@ export function instanceSettingsService(db: Db) {
 
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+
+    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
+            ? { defaultEnvironmentId: patch.defaultEnvironmentId ?? null }
+            : {}),
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
