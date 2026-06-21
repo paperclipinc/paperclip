@@ -17,4 +17,13 @@ export const budgetsApi = {
       `/companies/${companyId}/budget-incidents/${encodeURIComponent(incidentId)}/resolve`,
       data,
     ),
+  // Cloud-only: when the `cloudBilling` instance flag is on, a budget raise is
+  // funded by a metered credit top-up that runs through the hosted checkout
+  // (Vatly) instead of writing the limit directly. Self-hosters never call this.
+  checkoutCreditTopup: (companyId: string, amountCents: number) =>
+    api.post<{ checkoutUrl: string }>("/cloud-billing/checkout", {
+      kind: "credit_topup",
+      companyId,
+      amountCents,
+    }),
 };
