@@ -260,6 +260,9 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
+const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
+const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -411,6 +414,34 @@ function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string
   return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
 }
 
+function isConfiguredEnvBindingValue(binding: unknown) {
+  const parsed = envBindingSchema.safeParse(binding);
+  if (!parsed.success) return false;
+  const value = parsed.data;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (value.type === "plain") return value.value.trim().length > 0;
+  return true;
+}
+
+function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
+  return desiredSkills.some((skill) => {
+    const normalized = skill.trim();
+    return normalized === GITHUB_PR_WORKFLOW_SKILL_KEY
+      || normalized === GITHUB_PR_WORKFLOW_SKILL_SLUG
+      || normalized.endsWith(`/${GITHUB_PR_WORKFLOW_SKILL_SLUG}`);
+  });
+}
+
+export function requiresPushCapabilityPreflight(input: {
+  adapterType: string;
+  issueId: string | null | undefined;
+  explicitRunScopedSkillKeys: string[];
+}) {
+  return Boolean(input.issueId)
+    && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)
+    && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
+}
+
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
@@ -457,6 +488,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   agentId?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
+  environmentId?: string | null;
+  environmentEnv?: unknown;
   projectId?: string | null;
   routineId?: string | null;
   executionRunConfig: Record<string, unknown>;
@@ -464,17 +497,51 @@ export async function resolveExecutionRunAdapterConfig(input: {
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
   trustPreset?: TrustPresetResolution;
+  requiredScopedEnvBinding?: {
+    keys: string[];
+    consumerScopes: Array<"agent" | "project">;
+    reason: string;
+    remediation: string;
+  };
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
+  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
   const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
   const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
     : undefined;
   if (input.trustPreset?.kind === "low_trust_review") {
+    assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
+  }
+  const requiredScopedEnvBinding = input.requiredScopedEnvBinding ?? null;
+  const requiredScopedBindingsConfigured = requiredScopedEnvBinding
+    ? requiredScopedEnvBinding.keys.some((key) => (
+      requiredScopedEnvBinding.consumerScopes.includes("agent")
+      && isConfiguredEnvBindingValue(agentEnv[key])
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("project")
+      && isConfiguredEnvBindingValue(projectEnv?.[key])
+    ))
+    : false;
+  if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured) {
+    throw new ConfigurationIncompleteFailure(`configuration incomplete: ${requiredScopedEnvBinding.remediation}`, {
+      configurationIncomplete: {
+        reason: requiredScopedEnvBinding.reason,
+        companyId: input.companyId,
+        agentId: input.agentId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        routineId: input.routineId ?? null,
+        requiredEnvKeys: requiredScopedEnvBinding.keys,
+        requiredScopes: requiredScopedEnvBinding.consumerScopes,
+        missingBindings: [],
+      },
+    });
   }
   // Pre-dispatch binding-validation gate: detect declared secret refs that have
   // no binding before resolving any secret value. Missing bindings short-circuit
@@ -482,6 +549,15 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
   if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
     const missingBindings: MissingRuntimeBinding[] = [];
+    if (environmentEnv && input.environmentId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          environmentEnv,
+          { consumerType: "environment", consumerId: input.environmentId },
+        )),
+      );
+    }
     if (input.agentId) {
       missingBindings.push(
         ...(await input.secretsSvc.collectMissingRuntimeBindings(
@@ -509,6 +585,33 @@ export async function resolveExecutionRunAdapterConfig(input: {
         )),
       );
     }
+    if (requiredScopedEnvBinding) {
+      const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
+      const requiredScopes = new Set(requiredScopedEnvBinding.consumerScopes);
+      const requiredMissingBindings = missingBindings.filter((binding) =>
+        requiredScopes.has(binding.consumerType as "agent" | "project")
+        && requiredEnvKeys.has(binding.envKey),
+      );
+      if (requiredMissingBindings.length > 0) {
+        const detail = requiredMissingBindings.map(formatMissingBindingForOperator).join("; ");
+        throw new ConfigurationIncompleteFailure(
+          `configuration incomplete: ${requiredScopedEnvBinding.remediation}; ${detail}`,
+          {
+            configurationIncomplete: {
+              reason: requiredScopedEnvBinding.reason,
+              companyId: input.companyId,
+              agentId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              projectId: input.projectId ?? null,
+              routineId: input.routineId ?? null,
+              requiredEnvKeys: requiredScopedEnvBinding.keys,
+              requiredScopes: requiredScopedEnvBinding.consumerScopes,
+              missingBindings: requiredMissingBindings,
+            },
+          },
+        );
+      }
+    }
     if (missingBindings.length > 0) {
       const detail = missingBindings.map(formatMissingBindingForOperator).join("; ");
       throw new ConfigurationIncompleteFailure(`configuration incomplete: ${detail}`, {
@@ -524,6 +627,23 @@ export async function resolveExecutionRunAdapterConfig(input: {
       });
     }
   }
+  const environmentEnvResolution = environmentEnv
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        environmentEnv,
+        input.environmentId
+          ? {
+              consumerType: "environment",
+              consumerId: input.environmentId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
@@ -539,6 +659,15 @@ export async function resolveExecutionRunAdapterConfig(input: {
         }
       : undefined,
   );
+  if (Object.keys(environmentEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...environmentEnvResolution.env,
+      ...parseObject(resolvedConfig.env),
+    };
+    for (const key of environmentEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   const projectEnvResolution = projectEnv
     ? await input.secretsSvc.resolveEnvBindings(
         input.companyId,
@@ -595,6 +724,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     resolvedConfig,
     secretKeys,
     secretManifest: [
+      ...(environmentEnvResolution.manifest ?? []),
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
@@ -1038,6 +1168,53 @@ function sameResolvedPath(left: string | null | undefined, right: string | null 
   const rightPath = readNonEmptyString(right);
   if (!leftPath || !rightPath) return false;
   return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+async function hasGitPushRemote(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  const remoteNames = await execFile("git", ["remote"], { cwd: normalized })
+    .then((result) =>
+      result.stdout
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    )
+    .catch(() => []);
+
+  for (const remoteName of remoteNames) {
+    const pushUrl = await execFile("git", ["remote", "get-url", "--push", remoteName], { cwd: normalized })
+      .then((result) => readNonEmptyString(result.stdout))
+      .catch(() => null);
+    if (pushUrl) return true;
+  }
+  return false;
+}
+
+export async function assertPushCapabilityCheckoutValid(input: {
+  enabled: boolean;
+  issue: {
+    id: string;
+    identifier: string | null;
+  } | null;
+  cwd: string | null | undefined;
+}) {
+  if (!input.enabled || !input.issue) return;
+  const cwd = readNonEmptyString(input.cwd);
+  if (!cwd) return;
+  if (await hasGitPushRemote(cwd)) return;
+  throw new WorkspaceValidationFailure(
+    `Issue ${input.issue.identifier ?? input.issue.id} requested the GitHub PR workflow, but checkout "${cwd}" has no configured push remote. Bind the run to a writable repo checkout before dispatching the agent.`,
+    {
+      workspaceValidation: {
+        reason: "missing_git_push_remote",
+        issueId: input.issue.id,
+        issueIdentifier: input.issue.identifier,
+        executionWorkspaceCwd: cwd,
+        requiredEnvKeys: [...PUSH_CAPABILITY_ENV_KEYS],
+      },
+    },
+  );
 }
 
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
@@ -8433,37 +8610,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedReusableExecutionWorkspaceConfig = requestedShouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
-    const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      workspaceConfig: requestedReusableExecutionWorkspaceConfig,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
+      localDefaultEnvironmentId: localEnvironment.id,
     });
-    // PAPA-380 / PAPA-431: when the resolver refuses silent reuse of the
-    // persisted workspace environment, also force a fresh workspace
-    // realization on the assignee's intended env. Reusing the on-disk
-    // workspace while swapping the env underneath it would mismatch the cwd's
-    // runtime expectations (e.g. an SSH-targeted worktree running on the
-    // local default driver).
-    if (environmentResolution.conflict) {
-      logger.warn(
-        {
-          runId: run.id,
-          issueId,
-          agentId: agent.id,
-          adapterType: agent.adapterType,
-          existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
-          workspaceEnvironmentId: environmentResolution.conflict.workspaceEnvironmentId,
-          assigneeIntendedEnvironmentId:
-            environmentResolution.conflict.assigneeIntendedEnvironmentId,
-          assigneeIntendedSource: environmentResolution.conflict.assigneeIntendedSource,
-        },
-        "Refusing silent reuse of execution workspace whose environment does not match the assignee's intended environment; forcing fresh realization",
-      );
-    }
-    const shouldReuseExisting = requestedShouldReuseExisting && !environmentResolution.conflict;
+    const shouldReuseExisting = requestedShouldReuseExisting;
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? requestedReusableExecutionWorkspaceConfig
       : null;
@@ -8561,7 +8715,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const preflightEnvironment = await envOrchestrator.resolveEnvironment({
           companyId: agent.companyId,
           selectedEnvironmentId,
-          defaultEnvironmentId: defaultEnvironment.id,
+          localEnvironmentId: localEnvironment.id,
         });
         return preflightEnvironment.driver;
       },
@@ -8625,11 +8779,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment
+      : selectedEnvironmentId
+        ? await environmentsSvc.getById(selectedEnvironmentId)
+        : null;
+    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
+      db,
+      companyId: agent.companyId,
+      issueId,
+    });
+    const pushCapabilityPreflightRequired = requiresPushCapabilityPreflight({
+      adapterType: agent.adapterType,
+      issueId,
+      explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
+    });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
       issueId,
       heartbeatRunId: run.id,
+      environmentId: selectedEnvironmentForConfig?.id ?? null,
+      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
       projectId: projectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       executionRunConfig,
@@ -8637,6 +8808,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
       trustPreset,
+      requiredScopedEnvBinding: pushCapabilityPreflightRequired
+        ? {
+            keys: [...PUSH_CAPABILITY_ENV_KEYS],
+            consumerScopes: ["agent", "project"],
+            reason: "push_write_credential_missing",
+            remediation:
+              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+          }
+        : undefined,
     });
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
@@ -8645,11 +8825,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
-    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
-      db,
-      companyId: agent.companyId,
-      issueId,
-    });
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -8865,17 +9040,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
-    // When execution is forced to Kubernetes, `selectedEnvironmentId` is already
-    // pinned to the managed k8s environment above; ignore any persisted workspace
-    // environmentId (which could point at a stale local/ssh env) so a reused
-    // workspace can never downgrade us off the sandbox.
-    const persistedEnvironmentId = isExecutionForcedToKubernetes(executionPolicy)
-      ? selectedEnvironmentId
-      : persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
       companyId: agent.companyId,
-      selectedEnvironmentId: persistedEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      selectedEnvironmentId,
+      localEnvironmentId: localEnvironment.id,
       adapterType: agent.adapterType,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
@@ -9269,6 +9437,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
         environmentDriver: selectedEnvironment.driver,
         leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
+      await assertPushCapabilityCheckoutValid({
+        enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+            }
+          : null,
+        cwd: executionWorkspace.cwd,
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
