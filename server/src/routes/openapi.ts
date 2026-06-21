@@ -552,6 +552,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
@@ -2536,6 +2537,15 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "List company invites",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/activation",
+  tags: ["access"],
+  summary: "Get company activation status",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
