@@ -68,6 +68,11 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import {
+  createDrizzleActivationStore,
+  recordActivationEvent,
+  resolveActivationSink,
+} from "./activation.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -8230,6 +8235,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outputTokens,
         costCents: additionalCostCents,
         occurredAt: new Date(),
+      });
+
+      // Activation instrumentation: a successful run that produced a cost
+      // event is the activation point (first successful agent run). No-op
+      // unless PAPERCLIP_ACTIVATION_SINK is set; swallows its own errors so it
+      // can never affect run completion.
+      await recordActivationEvent(createDrizzleActivationStore(db), {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        heartbeatRunId: run.id,
+        sink: resolveActivationSink(),
       });
     }
   }

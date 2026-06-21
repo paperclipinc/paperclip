@@ -78,6 +78,16 @@ import {
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
+  createDrizzleActivationStore,
+  hasActivationForCompany,
+} from "../services/activation.js";
+import {
+  getInviteEmailTransport,
+  inviteEmailHook,
+  type InviteEmailPayload,
+} from "../services/invite-email.js";
+import { assertSeatAvailable } from "../services/seat-limit.js";
+import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
@@ -3124,6 +3134,10 @@ export function accessRoutes(
         }
       });
 
+      // Billing seat insertion point (Billing workstream owns enforcement;
+      // launch default is unlimited).
+      await assertSeatAvailable(db, created.companyId);
+
       const companyBranding = await getInviteCompanyBranding(created.companyId, token);
       const inviteSummary = toInviteSummaryResponse(
         req,
@@ -3131,6 +3145,17 @@ export function accessRoutes(
         created,
         companyBranding
       );
+
+      // Optional email delivery: when a recipient email is present and the
+      // Email workstream has registered a transport, send the invite. Otherwise
+      // the copyable inviteUrl below is the unchanged fallback.
+      await inviteEmailHook(getInviteEmailTransport(), {
+        email: (req.body.email as string | null | undefined) ?? null,
+        inviteUrl: inviteSummary.inviteUrl,
+        companyName: companyBranding.name ?? null,
+        role: (req.body.humanRole as InviteEmailPayload["role"]) ?? null,
+      });
+
       res.status(201).json({
         ...created,
         token,
@@ -4243,6 +4268,14 @@ export function accessRoutes(
     assertCompanyAccess(req, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
     res.json({ users });
+  });
+
+  router.get("/companies/:companyId/activation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const store = createDrizzleActivationStore(db);
+    const activated = await hasActivationForCompany(store, companyId);
+    res.json({ activated });
   });
 
   router.patch(
