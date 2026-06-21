@@ -12,6 +12,7 @@ import type {
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -199,6 +200,15 @@ export function Costs() {
     staleTime: 5_000,
   });
 
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  // Cloud-hosted billing: a budget raise is funded by a prepaid credit top-up
+  // routed through the hosted checkout (Vatly), not a direct limit write.
+  // Self-hosters leave this off and keep the existing direct PATCH/POST write.
+  const cloudBilling = experimentalSettings?.cloudBilling === true;
+
   const invalidateBudgetViews = () => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
@@ -208,19 +218,29 @@ export function Costs() {
   };
 
   const policyMutation = useMutation({
-    mutationFn: (input: {
+    mutationFn: async (input: {
       scopeType: BudgetPolicySummary["scopeType"];
       scopeId: string;
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
-    }) =>
-      budgetsApi.upsertPolicy(companyId, {
+    }) => {
+      if (cloudBilling) {
+        const { checkoutUrl } = await budgetsApi.checkoutCreditTopup(companyId, input.amount);
+        window.location.assign(checkoutUrl);
+        return;
+      }
+      await budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
         amount: input.amount,
         windowKind: input.windowKind,
-      }),
-    onSuccess: invalidateBudgetViews,
+      });
+    },
+    onSuccess: () => {
+      // Under cloudBilling the page is navigating to checkout, so refreshing
+      // budget views is unnecessary (and the credit lands via webhook later).
+      if (!cloudBilling) invalidateBudgetViews();
+    },
   });
 
   const incidentMutation = useMutation({

@@ -22,6 +22,8 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { GettingStartedChecklist } from "../components/GettingStartedChecklist";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -82,6 +84,12 @@ export function Dashboard() {
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
 
   const userProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
@@ -197,7 +205,18 @@ export function Dashboard() {
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
-      {hasNoAgents && (
+      {managed && selectedCompanyId ? (
+        <GettingStartedChecklist
+          companyId={selectedCompanyId}
+          hasAgents={(agents?.length ?? 0) > 0}
+          hasIssues={(issues?.length ?? 0) > 0}
+          onHireAgent={() =>
+            openOnboarding({ initialStep: 2, companyId: selectedCompanyId })
+          }
+        />
+      ) : null}
+
+      {!managed && hasNoAgents && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
           <div className="flex items-center gap-2.5">
             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />

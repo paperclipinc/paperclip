@@ -53,6 +53,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExperimentalFileViewer: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
+    cloudBilling: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     managedExperience: false,

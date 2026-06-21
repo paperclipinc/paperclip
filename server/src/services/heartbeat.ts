@@ -68,6 +68,11 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import {
+  createDrizzleActivationStore,
+  recordActivationEvent,
+  resolveActivationSink,
+} from "./activation.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -161,6 +166,7 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { resolveCompanyConcurrencyCap, clampToCompanyConcurrency } from "./company-concurrency.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -200,6 +206,17 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
+import { computeCostUsdForRun } from "./kubecost-client.js";
+import { billedCostCents, parseMargin } from "./run-cost.js";
+
+// Cloud cost-plus billing inputs. All degrade safely to today's behaviour
+// when unset: an empty price table -> priceCloudTokens returns null ->
+// billedCostCents returns 0; an empty KUBECOST_URL -> compute cost 0; a
+// missing margin -> 1.0 (wholesale only).
+const cloudPriceTable = parsePriceTable(process.env.PAPERCLIP_CLOUD_PRICE_TABLE);
+const cloudMargin = parseMargin(process.env.PAPERCLIP_CLOUD_MARGIN_MULTIPLIER);
+const kubecostCfg = { baseUrl: process.env.KUBECOST_URL ?? "" };
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -7243,6 +7260,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -8149,7 +8174,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    // Cost-plus fold: cost_cents = ceil((wholesale model tokens + wholesale
+    // Kubecost compute) * margin * 100). modelUsd === null means "skip
+    // metering" (BYOK / subscription_included / model not in the price table)
+    // and yields 0 cents, preserving today's behaviour when env is unset.
+    const modelUsd = priceCloudTokens(cloudPriceTable, {
+      model: result.model ?? "unknown",
+      billingType,
+      costUsd: result.costUsd,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    });
+    // No k8s namespace is resolvable server-side in cloud_tenant mode (the
+    // tenant->namespace mapping lives in the gateway/operator, not the product
+    // DB), so pass ""; computeCostUsdForRun then degrades to 0 (and to 0
+    // outright when KUBECOST_URL is unset). Compute is only queried for a
+    // metered run (modelUsd !== null).
+    const computeUsd = modelUsd === null ? 0 : await computeCostUsdForRun(kubecostCfg, {
+      runId: run.id,
+      namespace: "",
+      start: run.startedAt ?? run.createdAt ?? new Date(),
+      end: run.finishedAt ?? new Date(),
+    });
+    const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
@@ -8188,6 +8236,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+
+      // Activation instrumentation: a successful run that produced a cost
+      // event is the activation point (first successful agent run). No-op
+      // unless PAPERCLIP_ACTIVATION_SINK is set; swallows its own errors so it
+      // can never affect run completion.
+      await recordActivationEvent(createDrizzleActivationStore(db), {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        heartbeatRunId: run.id,
+        sink: resolveActivationSink(),
+      });
     }
   }
 
@@ -8204,7 +8263,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const perAgentSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const companyCap = resolveCompanyConcurrencyCap();
+      const companyRunningCount = companyCap === null ? 0 : await countRunningRunsForCompany(agent.companyId);
+      const availableSlots = clampToCompanyConcurrency({ perAgentSlots, companyRunningCount, companyCap });
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db

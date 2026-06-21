@@ -152,6 +152,9 @@ export function OnboardingWizardClassic() {
     DEFAULT_TASK_DESCRIPTION
   );
 
+  // Guards the managed auto-CEO so it fires at most once per open session.
+  const autoCeoStartedRef = useRef(false);
+
   // Auto-grow textarea for task description
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const autoResizeTextarea = useCallback(() => {
@@ -243,6 +246,44 @@ export function OnboardingWizardClassic() {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapter = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+
+  // Managed experience: auto-create the CEO and skip the Step 2 screen. The
+  // user never picks a harness/model (handleStep2Next omits them when managed,
+  // so the server injects the managed defaults), so there is nothing to choose
+  // on Step 2: create the default CEO from the "CEO" name and advance to Task.
+  // The path becomes Company -> Task -> Launch (and, when control-plane has
+  // already provisioned the company, the user lands straight on Task).
+  useEffect(() => {
+    if (
+      managed &&
+      effectiveOnboardingOpen &&
+      step === 2 &&
+      createdCompanyId &&
+      !createdAgentId &&
+      !loading &&
+      !autoCeoStartedRef.current
+    ) {
+      autoCeoStartedRef.current = true;
+      void handleStep2Next();
+    }
+    // handleStep2Next is a stable hoisted function declaration; the guard ref
+    // keeps this to a single run per open session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [managed, effectiveOnboardingOpen, step, createdCompanyId, createdAgentId, loading]);
+
+  // Reset the auto-CEO guard whenever the wizard closes so a later reopen can
+  // auto-run again.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) autoCeoStartedRef.current = false;
+  }, [effectiveOnboardingOpen]);
+
+  // Cloud pre-provisions the company; if an agent already exists, open at Task.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !managed) return;
+    if (createdCompanyId && createdAgentId && step < 3) {
+      setStep(3);
+    }
+  }, [effectiveOnboardingOpen, managed, createdCompanyId, createdAgentId, step]);
 
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults.

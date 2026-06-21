@@ -31,6 +31,7 @@ describe("instance settings service", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
       managedExperience: false,
+      cloudBilling: false,
     });
   });
 
@@ -101,5 +102,30 @@ describe("managedExperience flag", () => {
       applyManagedExperienceEnvOverride(base, { PAPERCLIP_MANAGED_EXPERIENCE: "true" }).managedExperience,
     ).toBe(true);
     expect(applyManagedExperienceEnvOverride(base, {}).managedExperience).toBe(true);
+  });
+});
+
+describe("cloudBilling flag", () => {
+  it("defaults cloudBilling to false", () => {
+    expect(normalizeExperimentalSettings({}).cloudBilling).toBe(false);
+    expect(normalizeExperimentalSettings(undefined).cloudBilling).toBe(false);
+  });
+
+  it("round-trips an explicit cloudBilling=true", () => {
+    expect(normalizeExperimentalSettings({ cloudBilling: true }).cloudBilling).toBe(true);
+  });
+
+  it("rejects non-boolean cloudBilling back to the default", () => {
+    expect(normalizeExperimentalSettings({ cloudBilling: "yes" }).cloudBilling).toBe(false);
+  });
+
+  it("env override PAPERCLIP_CLOUD_BILLING=true forces cloudBilling on", () => {
+    const base = normalizeExperimentalSettings({});
+    expect(applyManagedExperienceEnvOverride(base, { PAPERCLIP_CLOUD_BILLING: "true" }).cloudBilling).toBe(true);
+  });
+
+  it("env override leaves cloudBilling false when unset", () => {
+    const base = normalizeExperimentalSettings({});
+    expect(applyManagedExperienceEnvOverride(base, {}).cloudBilling).toBe(false);
   });
 });
