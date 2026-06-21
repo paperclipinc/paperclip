@@ -49,6 +49,14 @@ describe("ensureTenant", () => {
     egressAllowFqdns: ["api.anthropic.com"],
     egressAllowCidrs: [] as string[],
     resourceQuota: { pods: "20", requestsCpu: "5", requestsMemory: "20Gi", limitsCpu: "20", limitsMemory: "80Gi" },
+    limitRange: {
+      defaultCpu: "1",
+      defaultMemory: "2Gi",
+      defaultRequestCpu: "250m",
+      defaultRequestMemory: "512Mi",
+      maxCpu: "4",
+      maxMemory: "8Gi",
+    },
   };
 
   it("creates all required resources in the correct order on a fresh tenant", async () => {
@@ -93,6 +101,18 @@ describe("ensureTenant", () => {
     clients.core.readNamespace.mockResolvedValue({ body: { metadata: { name: baseInput.namespace } } });
     await ensureTenant(clients as never, baseInput);
     expect(clients.core.createNamespace).not.toHaveBeenCalled();
+  });
+
+  it("flows a configured limitRange.maxCpu into the created LimitRange manifest", async () => {
+    const clients = makeMockClients();
+    await ensureTenant(clients as never, {
+      ...baseInput,
+      limitRange: { ...baseInput.limitRange, maxCpu: "9" },
+    });
+    const lrCall = clients.calls.find((c) => c.kind === "LimitRange");
+    expect(lrCall).toBeDefined();
+    const lr = lrCall!.body as { spec: { limits: { max: { cpu: string } }[] } };
+    expect(lr.spec.limits[0].max.cpu).toBe("9");
   });
 
   it("tolerates a 409 AlreadyExists from a concurrent ensure for the same tenant", async () => {

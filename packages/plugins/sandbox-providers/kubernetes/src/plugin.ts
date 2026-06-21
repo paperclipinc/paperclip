@@ -54,15 +54,30 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota defaults applied to every tenant namespace (tunable via
-// config in a future iteration).
-const DEFAULT_RESOURCE_QUOTA = {
-  pods: "20",
-  requestsCpu: "10",
-  requestsMemory: "20Gi",
-  limitsCpu: "20",
-  limitsMemory: "40Gi",
-};
+// Resource quota + LimitRange defaults applied to every tenant namespace.
+// Defaults match the historical hard-coded values, so when none of the
+// PAPERCLIP_K8S_QUOTA_* / PAPERCLIP_K8S_LIMITRANGE_* env vars are set the
+// emitted manifests are byte-for-byte unchanged (self-host parity). Operators
+// may override individual fields via env without touching code.
+function envQuota() {
+  return {
+    pods: process.env.PAPERCLIP_K8S_QUOTA_PODS ?? "20",
+    requestsCpu: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_CPU ?? "10",
+    requestsMemory: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_MEMORY ?? "20Gi",
+    limitsCpu: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_CPU ?? "20",
+    limitsMemory: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_MEMORY ?? "40Gi",
+  };
+}
+function envLimitRange() {
+  return {
+    defaultCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_CPU ?? "1",
+    defaultMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_MEMORY ?? "2Gi",
+    defaultRequestCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_CPU ?? "250m",
+    defaultRequestMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_MEMORY ?? "512Mi",
+    maxCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_CPU ?? "4",
+    maxMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_MEMORY ?? "8Gi",
+  };
+}
 
 function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: string): string {
   // TODO: future versions could thread companyName through AcquireLeaseParams
@@ -258,7 +273,8 @@ const plugin = definePlugin({
       egressMode: config.egressMode,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
-      resourceQuota: DEFAULT_RESOURCE_QUOTA,
+      resourceQuota: envQuota(),
+      limitRange: envLimitRange(),
     });
 
     const jobName = `pc-${newRunUlidDns()}`;
