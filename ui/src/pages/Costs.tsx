@@ -10,7 +10,7 @@ import type {
   QuotaWindow,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
-import { budgetsApi } from "../api/budgets";
+import { budgetsApi, resolveCloudBudgetAction } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -204,9 +204,10 @@ export function Costs() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  // Cloud-hosted billing: a budget raise is funded by a prepaid credit top-up
-  // routed through the hosted checkout (Vatly), not a direct limit write.
-  // Self-hosters leave this off and keep the existing direct PATCH/POST write.
+  // Cloud-hosted billing: the company budget is a recurring monthly wallet funded
+  // through the hosted checkout (Paddle) that carries over month to month, not a
+  // direct limit write. Self-hosters leave this off and keep the existing direct
+  // PATCH/POST write.
   const cloudBilling = experimentalSettings?.cloudBilling === true;
 
   const invalidateBudgetViews = () => {
@@ -217,6 +218,17 @@ export function Costs() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
   };
 
+  // Under cloudBilling the company budget is the recurring carry-over wallet. Its
+  // current funded amount (cap) tells us first-time-set vs change: a wallet with
+  // amount > 0 already has a budget subscription, so a change PATCHes the
+  // subscription quantity (prorated); otherwise we start a fresh checkout.
+  const currentCompanyBudgetCents = useMemo(() => {
+    const companyPolicy = (budgetData?.policies ?? []).find(
+      (policy) => policy.scopeType === "company",
+    );
+    return companyPolicy?.amount ?? 0;
+  }, [budgetData?.policies]);
+
   const policyMutation = useMutation({
     mutationFn: async (input: {
       scopeType: BudgetPolicySummary["scopeType"];
@@ -225,7 +237,13 @@ export function Costs() {
       windowKind: BudgetPolicySummary["windowKind"];
     }) => {
       if (cloudBilling) {
-        const { checkoutUrl } = await budgetsApi.checkoutCreditTopup(companyId, input.amount);
+        if (resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
+          // Existing recurring budget: update the subscription quantity in place.
+          await budgetsApi.updateRecurringBudget(companyId, input.amount);
+          return;
+        }
+        // First-time set: create the recurring budget subscription via checkout.
+        const { checkoutUrl } = await budgetsApi.setRecurringBudget(companyId, input.amount);
         window.location.assign(checkoutUrl);
         return;
       }
@@ -237,9 +255,12 @@ export function Costs() {
       });
     },
     onSuccess: () => {
-      // Under cloudBilling the page is navigating to checkout, so refreshing
-      // budget views is unnecessary (and the credit lands via webhook later).
-      if (!cloudBilling) invalidateBudgetViews();
+      // A first-time cloud budget navigates to checkout (the funded amount lands
+      // via webhook later), so refreshing budget views then is unnecessary. A
+      // recurring-budget change stays on the page, so refresh as usual.
+      if (!cloudBilling || resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
+        invalidateBudgetViews();
+      }
     },
   });
 
@@ -862,7 +883,9 @@ export function Costs() {
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    {cloudBilling
+                      ? "Your company budget is funded monthly and carries over. Hard-stop spend limits for agents and projects apply on top. Provider subscription quota stays separate and appears under Providers."
+                      : "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
@@ -930,7 +953,9 @@ export function Costs() {
                         <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
-                            ? "Company-wide monthly policy."
+                            ? cloudBilling
+                              ? "Funded monthly and rolls over. Unused budget carries into next month."
+                              : "Company-wide monthly policy."
                             : scopeType === "agent"
                               ? "Recurring monthly spend policies for individual agents."
                               : "Lifetime spend policies for execution-bound projects."}
