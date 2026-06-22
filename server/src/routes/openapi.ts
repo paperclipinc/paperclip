@@ -607,6 +607,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
+  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -2289,6 +2290,18 @@ registry.registerPath({
   summary: "Get budget overview",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/budgets/increment",
+  tags: ["costs"],
+  summary: "Increment company budget (cloud-internal)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
 });
 
 registry.registerPath({
