@@ -322,6 +322,30 @@ export function costRoutes(
     },
   );
 
+  // Cloud-internal: the control-plane credits the company's recurring carry-over
+  // budget wallet here on each Paddle budget charge (and the trial/included-budget
+  // seeds). This is a server-to-server call gated on the trusted
+  // `x-paperclip-cloud-credit` header — the app is only reachable via the cloud
+  // gateway/control-plane network boundary, so a normal user actor is never
+  // present and we deliberately do NOT run assertBoard/assertCompanyAccess here.
+  // Self-hosters never set this header, so this path is inert for OSS.
+  router.post("/companies/:companyId/budgets/increment", async (req, res) => {
+    if (req.header("x-paperclip-cloud-credit") !== "1") {
+      res.status(403).json({ error: "Budget increment is a cloud-internal operation" });
+      return;
+    }
+
+    const companyId = req.params.companyId as string;
+    const deltaCents = req.body?.deltaCents;
+    if (typeof deltaCents !== "number" || !Number.isInteger(deltaCents) || deltaCents <= 0) {
+      res.status(400).json({ error: "deltaCents must be a positive integer" });
+      return;
+    }
+
+    const result = await budgets.incrementCompanyBudget(companyId, deltaCents);
+    res.json({ companyId, amount: result.amount });
+  });
+
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
