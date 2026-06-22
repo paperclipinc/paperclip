@@ -180,7 +180,10 @@ const profileImageSchema = z
 export const currentUserProfileSchema = z.object({
   id: z.string().min(1),
   email: z.string().email().nullable(),
-  name: z.string().min(1).max(120).nullable(),
+  name: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().min(1).max(120).nullable(),
+  ),
   image: profileImageSchema.nullable(),
 });
 
