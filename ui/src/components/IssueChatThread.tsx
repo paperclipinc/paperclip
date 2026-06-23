@@ -120,6 +120,7 @@ import {
   computeComposerHandoffPreview,
   extractAgentMentionIds,
   findPlainAgentNameCandidate,
+  type ComposerHandoffPreview,
   type HandoffAgentMention,
 } from "../lib/interrupt-handoff";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
@@ -225,6 +226,8 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   successfulRunHandoff: null,
 });
 
+const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-[calc(100%-0.5rem)] sm:max-w-[85%]";
+
 export type IssueChatRunFinalizationAction = {
   id: "cancel" | "done";
   label: string;
@@ -314,6 +317,10 @@ function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | u
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+}
+
+export function shouldRenderComposerHandoffPreview(body: string, preview: ComposerHandoffPreview): boolean {
+  return Boolean(body.trim()) && preview.kind !== "none";
 }
 
 export interface IssueChatComposerHandle {
@@ -1751,7 +1758,8 @@ function IssueChatAssistantMessage({
           {/* Canonical conference-room agent bubble (BoardChat.tsx:712). */}
           <div
             className={cn(
-              "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible [border-radius:14px_14px_14px_4px]",
+              "min-w-0 break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible [border-radius:14px_14px_14px_4px]",
+              AGENT_COMMENT_BUBBLE_WIDTH_CLASS,
               deleted
                 ? "border border-border bg-muted/50 text-muted-foreground"
                 : "border border-border bg-card text-foreground",
@@ -3840,8 +3848,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         </div>
       ) : null}
 
-      {body.trim() ? (
-        <ComposerHandoffPreviewRow preview={handoffPreview} resolvers={handoffResolvers} />
+      {shouldRenderComposerHandoffPreview(body, handoffPreview) ? (
+        <div className="my-2">
+          <ComposerHandoffPreviewRow preview={handoffPreview} resolvers={handoffResolvers} />
+        </div>
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">

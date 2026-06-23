@@ -207,6 +207,22 @@ describe("Sidebar", () => {
     });
   });
 
+  it("defaults to streamlined navigation while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Projects");
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("true");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
