@@ -156,6 +156,7 @@ interface IssuePropertiesProps {
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
+const ISSUE_PROPERTY_RELATION_PREVIEW_COUNT = 5;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -323,6 +324,27 @@ function RemovableIssueReferencePill({
   );
 }
 
+function ExpandRelationListButton({
+  hiddenCount,
+  expanded,
+  onClick,
+}: {
+  hiddenCount: number;
+  expanded: boolean;
+  onClick: () => void;
+}) {
+  if (!expanded && hiddenCount <= 0) return null;
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={onClick}
+    >
+      {expanded ? "show less" : `and ${hiddenCount} more...`}
+    </button>
+  );
+}
+
 /** Renders a Popover on desktop, or an inline collapsible section on mobile (inline mode). */
 function PropertyPicker({
   inline,
@@ -410,6 +432,8 @@ export function IssueProperties({
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
+  const [blockedByExpanded, setBlockedByExpanded] = useState(false);
+  const [subTasksExpanded, setSubTasksExpanded] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const [parentSearch, setParentSearch] = useState("");
   const [reviewersOpen, setReviewersOpen] = useState(false);
@@ -430,6 +454,11 @@ export function IssueProperties({
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+
+  useEffect(() => {
+    setBlockedByExpanded(false);
+    setSubTasksExpanded(false);
+  }, [issue.id]);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1842,6 +1871,15 @@ export function IssueProperties({
   );
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const blockedByRelations = issue.blockedBy ?? [];
+  const visibleBlockedByRelations = blockedByExpanded
+    ? blockedByRelations
+    : blockedByRelations.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenBlockedByCount = blockedByRelations.length - visibleBlockedByRelations.length;
+  const visibleChildIssues = subTasksExpanded
+    ? childIssues
+    : childIssues.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenChildIssueCount = childIssues.length - visibleChildIssues.length;
   const descendantIssueIds = useMemo(() => {
     if (!allIssues?.length) return new Set<string>();
     const childrenByParentId = new Map<string, string[]>();
@@ -2154,9 +2192,14 @@ export function IssueProperties({
         {inline ? (
           <div>
             <PropertyRow label="Blocked by">
-              {(issue.blockedBy ?? []).map((relation) => (
+              {visibleBlockedByRelations.map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
+              <ExpandRelationListButton
+                hiddenCount={hiddenBlockedByCount}
+                expanded={blockedByExpanded}
+                onClick={() => setBlockedByExpanded((expanded) => !expanded)}
+              />
               {renderAddBlockedByButton(() => setBlockedByOpen((open) => !open))}
             </PropertyRow>
             {blockedByOpen && (
@@ -2167,9 +2210,14 @@ export function IssueProperties({
           </div>
         ) : (
           <PropertyRow label="Blocked by">
-            {(issue.blockedBy ?? []).map((relation) => (
+            {visibleBlockedByRelations.map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}
+            <ExpandRelationListButton
+              hiddenCount={hiddenBlockedByCount}
+              expanded={blockedByExpanded}
+              onClick={() => setBlockedByExpanded((expanded) => !expanded)}
+            />
             <Popover
               open={blockedByOpen}
               onOpenChange={(open) => {
@@ -2200,10 +2248,15 @@ export function IssueProperties({
         <PropertyRow label="Sub-tasks">
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
-              ? childIssues.map((child) => (
+              ? visibleChildIssues.map((child) => (
                 <IssueReferencePill key={child.id} issue={child} />
               ))
               : null}
+            <ExpandRelationListButton
+              hiddenCount={hiddenChildIssueCount}
+              expanded={subTasksExpanded}
+              onClick={() => setSubTasksExpanded((expanded) => !expanded)}
+            />
             {onAddSubIssue ? (
               <button
                 type="button"

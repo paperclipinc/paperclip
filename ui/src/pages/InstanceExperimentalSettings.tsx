@@ -232,8 +232,10 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  // Default ON: treat anything but an explicit `false` as enabled so
+  // the toggle reflects the streamlined sidebar being the default experience.
   const enableStreamlinedLeftNavigation =
-    experimentalQuery.data?.enableStreamlinedLeftNavigation === true;
+    experimentalQuery.data?.enableStreamlinedLeftNavigation !== false;
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;

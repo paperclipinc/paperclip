@@ -20,9 +20,8 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
+      enableStreamlinedLeftNavigation: true,
       enableConferenceRoomChat: false,
-      enableTaskWatchdogs: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
@@ -59,7 +58,7 @@ describe("instance settings service", () => {
     const current = normalizeExperimentalSettings({});
     const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
     expect(enabled.enableConferenceRoomChat).toBe(true);
-    expect(enabled.enableStreamlinedLeftNavigation).toBe(false);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
 
     const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
     expect(disabled).toEqual(current);

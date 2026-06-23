@@ -1562,6 +1562,8 @@ describe("IssueChatThread", () => {
     );
     expect(bubble).toBeDefined();
     expect(bubble?.textContent).toContain("Here is my agent reply.");
+    expect(bubble?.className).toContain("max-w-[calc(100%-0.5rem)]");
+    expect(bubble?.className).toContain("sm:max-w-[85%]");
     // Neutral, not the human liveness-blue bubble.
     expect(bubble?.className).not.toContain("bg-[#2563EB]");
 
