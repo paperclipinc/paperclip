@@ -219,6 +219,7 @@ export async function mergeDirectoryWithBaseline(input: {
   sourceDir: string;
   targetDir: string;
   beforeApply?: () => Promise<void>;
+  afterApply?: () => Promise<void>;
 }): Promise<void> {
   const source = await captureDirectorySnapshot(input.sourceDir, { exclude: input.baseline.exclude });
   await withDirectoryMergeLock(input.targetDir, async () => {
@@ -248,6 +249,8 @@ export async function mergeDirectoryWithBaseline(input: {
     for (const [relative, entry] of changedSourceEntries) {
       await copySnapshotEntry(input.sourceDir, input.targetDir, relative, entry);
     }
+
+    await input.afterApply?.();
   });
 }
 

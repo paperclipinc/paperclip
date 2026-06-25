@@ -28,7 +28,7 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
-import type { RuntimeProgressSink } from "./runtime-progress.js";
+import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -83,6 +83,7 @@ export interface AdapterExecutionTargetProcessOptions {
   timeoutSec: number;
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
 }
@@ -407,11 +408,10 @@ export async function runAdapterExecutionTargetProcess(
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
-    // TODO(audit H2/M6): onLog is forwarded to the sandbox runner, but providers
-    // that exec-and-collect (rather than stream over the exec channel) only
-    // surface stdout/stderr once the process exits, so long sandbox runs show no
-    // live output. Live incremental streaming of sandbox exec output to onLog is
-    // a separate, larger effort tracked under audit H2/M6.
+    await options.onRuntimeProgress?.({
+      phase: "adapter_startup",
+      message: "Starting adapter in sandbox",
+    });
     return await runner.execute({
       command,
       args,
@@ -943,6 +943,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   // forwarded down to the transport so the sandbox/SSH children can attach byte
   // counters without further changes here.
   onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -995,6 +996,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
+    onRuntimeProgress: input.onRuntimeProgress,
   });
   return {
     target,
