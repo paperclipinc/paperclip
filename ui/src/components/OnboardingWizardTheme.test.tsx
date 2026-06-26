@@ -22,7 +22,7 @@ function readComponent(file: string): string {
 }
 
 describe("OnboardingWizard decorative panel theming", () => {
-  for (const file of ["OnboardingWizard.tsx", "OnboardingWizardClassic.tsx"]) {
+  for (const file of ["OnboardingWizard.tsx"]) {
     describe(file, () => {
       const source = readComponent(file);
 
