@@ -30,15 +30,16 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { hasCompletedCloudOnboarding, shouldOpenCloudOnboarding } from "../lib/cloud-onboarding";
 import {
+  applyMainContentScrollTop,
+  NavigationScrollMemory,
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
+import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -88,6 +89,8 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
+  const scrollMemory = useRef(new NavigationScrollMemory());
+  const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
@@ -149,22 +152,6 @@ export function Layout() {
     queryFn: () => instanceSettingsApi.getGeneral(),
   }).data?.keyboardShortcuts === true;
 
-  // Cloud first-run onboarding is OWNER-ONLY: an invited member landing on a
-  // shared company must never see the rename-your-company wizard. We learn the
-  // viewer's role for the (auto-created) cloud company from its members access
-  // summary. Gate the fetch to cloud mode + a not-yet-onboarded company so we
-  // never query members on self-hosted or after onboarding is done.
-  const cloudCompanyId =
-    health?.deploymentMode === "authenticated" ? companies[0]?.id : undefined;
-  const cloudViewerRoleQuery = useQuery({
-    queryKey: queryKeys.access.companyMembers(cloudCompanyId ?? ""),
-    queryFn: () => accessApi.listMembers(cloudCompanyId as string),
-    enabled:
-      Boolean(cloudCompanyId) && !hasCompletedCloudOnboarding(cloudCompanyId as string),
-    retry: false,
-  });
-  const cloudViewerRole = cloudViewerRoleQuery.data?.access.currentUserRole ?? null;
-
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
   // is active, but does NOT mutate the persisted preference. Clearing the force
@@ -178,34 +165,12 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    // Cloud (authenticated) mode auto-creates the single company up front, so
-    // the single-tenant "no companies, onboard" path never fires. Instead
-    // surface first-run onboarding once for that company (rename + first agent +
-    // starter task); never reopen once completed/dismissed (localStorage).
-    if (health?.deploymentMode === "authenticated") {
-      const cloudCompany = companies[0];
-      // Wait for the viewer's role to resolve before deciding (owner-only). While
-      // the role query is still loading, cloudViewerRole is null and
-      // shouldOpenCloudOnboarding returns false; the effect re-runs once the role
-      // arrives. Invited members resolve to a non-owner role -> wizard never opens.
-      if (
-        cloudCompany &&
-        shouldOpenCloudOnboarding({
-          deploymentMode: health.deploymentMode,
-          companyId: cloudCompany.id,
-          viewerRole: cloudViewerRole,
-        })
-      ) {
-        onboardingTriggered.current = true;
-        openOnboarding({ initialStep: 1, companyId: cloudCompany.id });
-      }
-      return;
-    }
+    if (health?.deploymentMode === "authenticated") return;
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode, cloudViewerRole]);
+  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
@@ -465,11 +430,22 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
-    document.body.style.overflow = isMobile ? "visible" : "hidden";
+    document.body.style.overflow = isMobile ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [isMobile]);
+
+  // `scrollIntoView` walks every ancestor scroll container. On a long thread
+  // the post-submit `scrollIntoView` on the new comment reaches `<html>` and
+  // animates `documentElement.scrollTop` via the browser's internal scroll
+  // algorithm, which bypasses the CSS `overflow` on the root element and
+  // visually shifts the entire shell (sidebar included) off-screen. Pin
+  // both roots to scrollTop=0 on every scroll tick.
+  useEffect(() => {
+    if (isMobile) return;
+    return pinDocumentScrollToZero();
   }, [isMobile]);
 
   useEffect(() => {
@@ -478,7 +454,20 @@ export function Layout() {
     return scheduleMainContentFocus(mainContent);
   }, [location.pathname]);
 
+  // Continuously record the scroll offset of the active history entry so a
+  // later back/forward navigation can restore it (see NavigationScrollMemory).
   useEffect(() => {
+    const main = mainContentRef.current;
+    if (!main) return;
+    const recordScroll = () => {
+      scrollMemory.current.remember(activeScrollKey.current, main.scrollTop);
+    };
+    main.addEventListener("scroll", recordScroll, { passive: true });
+    return () => main.removeEventListener("scroll", recordScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const main = mainContentRef.current;
     const shouldResetScroll = shouldResetScrollOnNavigation({
       previousPathname: previousPathname.current,
       pathname: location.pathname,
@@ -488,15 +477,32 @@ export function Layout() {
 
     previousPathname.current = location.pathname;
 
-    if (!shouldResetScroll) return;
-    resetNavigationScroll(mainContentRef.current);
-  }, [location.pathname, navigationType]);
+    const isHistoryPop = navigationType === "POP";
+    const restoredScrollTop = isHistoryPop ? scrollMemory.current.recall(location.key) : 0;
+    activeScrollKey.current = location.key;
+
+    if (isHistoryPop) {
+      applyMainContentScrollTop(main, restoredScrollTop);
+      // Cached page content can finish laying out a frame after commit; re-apply
+      // once it has so the restored offset isn't clamped to a shorter interim height.
+      const raf = requestAnimationFrame(() => applyMainContentScrollTop(main, restoredScrollTop));
+      return () => cancelAnimationFrame(raf);
+    }
+
+    if (shouldResetScroll) {
+      resetNavigationScroll(main);
+    }
+  }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
         "bg-background text-foreground pt-[env(safe-area-inset-top)]",
+        // overflow-x-clip on mobile keeps a stray wide descendant from making the
+        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+        // computed as visible, so native body scroll + the sticky breadcrumb keep
+        // working.
         isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
       )}
       >
@@ -508,7 +514,7 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-hidden")}>
+      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"

@@ -68,6 +68,7 @@ import {
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
   // Environments
   createEnvironmentSchema,
@@ -769,6 +770,22 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
+      serverInfo: z.object({
+        processStartedAt: z.string().datetime(),
+        git: z.union([
+          z.object({
+            available: z.literal(true),
+            fullSha: z.string(),
+            shortSha: z.string(),
+            subject: z.string(),
+            committedAt: z.string().datetime().nullable(),
+          }).strict(),
+          z.object({
+            available: z.literal(false),
+            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+          }).strict(),
+        ]),
+      }).strict().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -2303,18 +2320,6 @@ registry.registerPath({
 });
 
 registry.registerPath({
-  method: "post",
-  path: "/api/companies/{companyId}/budgets/increment",
-  tags: ["costs"],
-  summary: "Increment company budget (cloud-internal)",
-  request: {
-    params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
-  },
-  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
-});
-
-registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}/budgets",
   tags: ["costs"],
@@ -2560,15 +2565,6 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "List company invites",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/companies/{companyId}/activation",
-  tags: ["access"],
-  summary: "Get company activation status",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -3299,6 +3295,18 @@ registry.registerPath({
   summary: "List execution workspaces for a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/workspace-overview",
+  tags: ["execution-workspaces"],
+  summary: "List bounded execution workspace overview rows for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: workspaceOverviewQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({

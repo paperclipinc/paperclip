@@ -9,6 +9,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -19,6 +20,7 @@ import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
+import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -47,7 +49,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
+import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -160,6 +162,11 @@ export async function createApp(
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
 
+  // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).
+  // Default is unset → Express trusts nothing, which is the only safe choice
+  // when the server may be reachable without a known reverse proxy in front.
+  applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
+
   app.use(COMPANY_IMPORT_API_PATH, express.json({
     limit: PORTABLE_JSON_BODY_LIMIT,
     verify: captureRawBody,
@@ -226,6 +233,7 @@ export async function createApp(
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(pipelineRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
@@ -331,29 +339,6 @@ export async function createApp(
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
 
-  // Runtime brand assets: when PAPERCLIP_BRAND_DIR points at a mounted directory
-  // (e.g. an operator-mounted ConfigMap of brand.css), expose it read-only under
-  // /branding so the UI's brand <link> (injected by applyUiBranding) resolves.
-  // When unset, the route is not registered at all, so /branding/* falls through
-  // to the SPA fallback which 404s non-asset unknown paths — matching the
-  // "guarded, 404 when unset" contract without leaking the HTML shell.
-  {
-    const brandDir = getBrandDir();
-    if (brandDir) {
-      app.use(
-        BRAND_DIR_PUBLIC_PATH,
-        express.static(brandDir, {
-          // Missing files must 404 here rather than fall through to the SPA
-          // shell (a stylesheet served HTML would break with a MIME error).
-          fallthrough: false,
-          index: false,
-          dotfiles: "ignore",
-          maxAge: "5m",
-        }),
-      );
-    }
-  }
-
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
@@ -380,11 +365,6 @@ export async function createApp(
       app.use(
         express.static(uiDist, {
           maxAge: "1h",
-          // Do NOT let express.static serve index.html for "/" directly: that
-          // bypasses readBrandedStaticIndexHtml (the SPA fallback below), so the
-          // brand stylesheet link would never be injected on the landing route.
-          // With index:false, "/" falls through to the branded fallback.
-          index: false,
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
               res.set("Cache-Control", "no-cache");
@@ -399,12 +379,7 @@ export async function createApp(
       // instead. The index.html response itself is no-cache so a subsequent
       // deploy's updated asset hashes are picked up on next load.
       app.get(/.*/, (req, res) => {
-        // /assets/* and /branding/* are concrete static namespaces, never SPA
-        // routes. Serving the HTML shell for a missing file under either would
-        // hand a stylesheet/script consumer an HTML body (MIME error). When the
-        // brand dir is unset, /branding/* is unregistered above, so honour the
-        // "404 when unset" contract here rather than leaking the shell.
-        if (req.path.startsWith("/assets/") || req.path.startsWith(`${BRAND_DIR_PUBLIC_PATH}/`)) {
+        if (req.path.startsWith("/assets/")) {
           res.status(404).end();
           return;
         }

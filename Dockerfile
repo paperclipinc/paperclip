@@ -31,6 +31,8 @@ COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
+COPY packages/adapters/hermes/package.json packages/adapters/hermes/
+COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
@@ -52,23 +54,6 @@ RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
-
-# Build the kubernetes sandbox-provider plugin standalone. It is intentionally
-# excluded from the pnpm workspace (pnpm-workspace.yaml) to keep its heavy deps
-# (@kubernetes/client-node) out of the root lockfile, so the workspace install
-# above does NOT install or build it. We install + build it in place here with
-# --ignore-workspace --no-lockfile (mirroring scripts/build-standalone-public-packages.mjs)
-# so its dist/, its node_modules/, and the @paperclipai/plugin-sdk dev symlink
-# (postinstall, points at the already-built packages/plugins/sdk) all land in
-# /app and get copied wholesale into the production stage. Auto-installed at
-# startup by app.ts so the "kubernetes" sandbox provider is registered.
-# SAFETY (invariant A): a build failure here fails the whole image build, so a
-# broken plugin can never produce a deployable image.
-RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes install --ignore-workspace --no-lockfile
-RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes run build
-RUN test -f packages/plugins/sandbox-providers/kubernetes/dist/manifest.js \
-  && test -f packages/plugins/sandbox-providers/kubernetes/dist/worker.js \
-  || (echo "ERROR: kubernetes plugin build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000

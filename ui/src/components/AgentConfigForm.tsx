@@ -78,15 +78,6 @@ type AgentConfigFormProps = {
     result: AdapterEnvironmentTestResult | null;
   }) => void;
   hideInlineSave?: boolean;
-  /**
-   * Create-mode only. Fires when the managed-experience "omit harness + model"
-   * decision changes: `true` while managed mode is on AND the user has not
-   * opened the Advanced disclosure to pick an adapter, so the create caller
-   * should strip `adapterType` + `adapterConfig.model` from its payload and let
-   * the server inject the managed defaults. `false` otherwise (non-managed, or
-   * the user explicitly picked a harness).
-   */
-  onManagedDefaultsChange?: (omitAdapterAndModel: boolean) => void;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
@@ -95,6 +86,7 @@ type AgentConfigFormProps = {
   hidePromptTemplate?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
+  onManagedDefaultsChange?: (omitAdapterAndModel: boolean) => void;
 } & (
   | {
       mode: "create";
@@ -232,12 +224,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
-  // Managed experience: fold harness/model into an Advanced disclosure and let
-  // the server inject the operator-configured default adapter/model when the
-  // user never opens it. The form's create default adapter is `claude_local`,
-  // which may not be in the operator-configured set, so omitting it on submit
-  // lets the server pick the managed default.
-  const managed = experimentalSettings?.managedExperience === true;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
@@ -451,8 +437,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const rawModels = fetchedModels ?? externalModels ?? [];
-  const adapterCommandField =
-    adapterType === "hermes_local" ? "hermesCommand" : "command";
+  const adapterCommandField = "command";
   const acpxAgent =
     adapterType === "acpx_local"
       ? isCreate
@@ -505,81 +490,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
-  // Managed experience: the harness + model live inside a collapsed "Advanced"
-  // disclosure. `managedAdapterTouched` records whether the user opened it and
-  // picked an adapter type, so the create submit knows whether to omit the
-  // adapter/model and let the server inject the managed defaults.
-  const [managedAdvancedOpen, setManagedAdvancedOpen] = useState(false);
-  const [managedAdapterTouched, setManagedAdapterTouched] = useState(false);
-
-  // Report the managed "omit harness + model" decision to the create caller so
-  // it can strip those fields before hiring (only in create mode; edit mode
-  // keeps the agent's stored adapter/model untouched).
-  const omitManagedAdapterAndModel = isCreate && managed && !managedAdapterTouched;
-  const onManagedDefaultsChange = props.onManagedDefaultsChange;
-  useEffect(() => {
-    if (!isCreate) return;
-    onManagedDefaultsChange?.(omitManagedAdapterAndModel);
-  }, [isCreate, omitManagedAdapterAndModel, onManagedDefaultsChange]);
-
-  // Shared adapter-type + model change handlers, used by both the plain fields
-  // (non-managed) and the managed "Advanced" disclosure so edit-mode overlay
-  // behaviour stays identical in both. The managed disclosure additionally marks
-  // the adapter as touched so the create path stops omitting it.
-  function handleAdapterTypeChange(t: string) {
-    if (isCreate) {
-      // Reset all adapter-specific fields to defaults when switching adapter type
-      const { adapterType: _at, ...defaults } = defaultCreateValues;
-      const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
-      if (t === "codex_local") {
-        nextValues.dangerouslyBypassSandbox =
-          DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-      } else if (t === "gemini_local") {
-        nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
-      } else if (t === "cursor") {
-        nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-      } else if (t === "opencode_local") {
-        nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-      }
-      set!(nextValues);
-    } else {
-      // Clear all adapter config and explicitly blank out model + effort/mode keys
-      // so the old adapter's values don't bleed through via eff()
-      setOverlay((prev) => ({
-        ...prev,
-        adapterType: t,
-        modelProfiles: { cheap: { cleared: true } },
-        adapterConfig: {
-          model:
-            t === "gemini_local"
-              ? DEFAULT_GEMINI_LOCAL_MODEL
-              : t === "opencode_local"
-                ? DEFAULT_OPENCODE_LOCAL_MODEL
-              : t === "cursor"
-                ? DEFAULT_CURSOR_LOCAL_MODEL
-                : "",
-          effort: "",
-          modelReasoningEffort: "",
-          variant: "",
-          mode: "",
-          ...(t === "codex_local"
-            ? {
-                dangerouslyBypassApprovalsAndSandbox:
-                  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-              }
-            : {}),
-        },
-      }));
-    }
-  }
-
-  function handleModelChange(v: string) {
-    if (isCreate) {
-      set!({ model: v });
-    } else {
-      mark("adapterConfig", "model", v || undefined);
-    }
-  }
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
@@ -606,24 +516,100 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
 
-  function buildAdapterConfigForTest(): Record<string, unknown> {
+  function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
-      return uiAdapter.buildAdapterConfig(val!);
+      const next = uiAdapter.buildAdapterConfig(val!);
+      if (adapterConfigPatch) {
+        Object.assign(next, adapterConfigPatch);
+      }
+      return next;
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
-    if (adapterType === "hermes_local") {
-      const hermesCommand =
-        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
-          ? next.hermesCommand
-          : typeof next.command === "string" && next.command.length > 0
-            ? next.command
-            : undefined;
-      if (hermesCommand) {
-        next.hermesCommand = hermesCommand;
-      }
+    if (adapterConfigPatch) {
+      Object.assign(next, adapterConfigPatch);
     }
     return next;
+  }
+
+  function buildCheapAdapterConfigForTest(): Record<string, unknown> {
+    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
+    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
+    const cheapAdapterConfig = isCreate
+      ? {
+          ...adapterDefaultConfig,
+          ...(createCheapModel ? { model: createCheapModel } : {}),
+        }
+      : {
+          ...adapterDefaultConfig,
+          ...cheapProfileFromAgent.adapterConfig,
+          ...asObject(cheapOverlay?.adapterConfig),
+        };
+    return buildAdapterConfigForTest(cheapAdapterConfig);
+  }
+
+  function getCheapModelTestCase(): { model: string; adapterConfig: Record<string, unknown> } | null {
+    if (!currentCheapEnabled) return null;
+    const adapterConfig = buildCheapAdapterConfigForTest();
+    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    const model = configModel || currentCheapModel.trim();
+    if (!model) return null;
+    adapterConfig.model = model;
+    return { model, adapterConfig };
+  }
+
+  function prefixEnvironmentTestChecks(
+    result: AdapterEnvironmentTestResult,
+    label: string,
+    model: string | null,
+  ): AdapterEnvironmentTestResult {
+    const modelLabel = model ? ` (${model})` : "";
+    return {
+      ...result,
+      checks: [
+        {
+          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
+          level: "info",
+          message: `${label} test${modelLabel}`,
+        },
+        ...result.checks.map((check) => ({
+          ...check,
+          message: `${label} test${modelLabel}: ${check.message}`,
+        })),
+      ],
+    };
+  }
+
+  async function runEnvironmentTestCase(
+    label: string,
+    model: string | null,
+    adapterConfig: Record<string, unknown>,
+    environmentId: string | null,
+  ): Promise<AdapterEnvironmentTestResult> {
+    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
+      adapterConfig,
+      environmentId,
+    });
+    return prefixEnvironmentTestChecks(result, label, model);
+  }
+
+  function mergeEnvironmentTestResults(
+    results: AdapterEnvironmentTestResult[],
+  ): AdapterEnvironmentTestResult {
+    const checks = results.flatMap((result) => result.checks);
+    const status = results.some((result) => result.status === "fail")
+      ? "fail"
+      : results.some((result) => result.status === "warn")
+        ? "warn"
+        : "pass";
+    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
+
+    return {
+      adapterType,
+      status,
+      checks,
+      testedAt,
+    };
   }
 
   const testEnvironment = useMutation({
@@ -631,10 +617,38 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select a company to test adapter environment");
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(),
-        environmentId: currentDefaultEnvironmentId || null,
-      });
+      const primaryModel = currentModelId.trim() || null;
+      const cheapTestCase = getCheapModelTestCase();
+      const environmentId = currentDefaultEnvironmentId || null;
+      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
+        {
+          label: "Primary model",
+          model: primaryModel,
+          result: await runEnvironmentTestCase(
+            "Primary model",
+            primaryModel,
+            buildAdapterConfigForTest(),
+            environmentId,
+          ),
+        },
+      ];
+
+      if (cheapTestCase) {
+        testResults.push({
+          label: "Cheap model",
+          model: cheapTestCase.model,
+          result: await runEnvironmentTestCase(
+            "Cheap model",
+            cheapTestCase.model,
+            cheapTestCase.adapterConfig,
+            environmentId,
+          ),
+        });
+      }
+
+      return testResults.length > 1
+        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
+        : testResults[0]!.result;
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -782,9 +796,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cheapProfileFromAgent = useMemo(() => {
     const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
     const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
+    const cheapAdapterConfig = asObject(cheap.adapterConfig);
     return {
       enabled: cheap.enabled !== false,
+      adapterConfig: cheapAdapterConfig,
       model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
     };
   }, [runtimeConfig]);
@@ -1060,51 +1075,60 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          {showAdapterTypeField && (managed ? (
-            // Managed mode: fold the harness + model behind an Advanced
-            // disclosure. Picking either marks the adapter "touched" so the
-            // create path stops omitting it and the server defaults no longer
-            // apply. The lower Permissions & Configuration model picker is
-            // suppressed in managed mode (see below) so the model lives here.
-            <CollapsibleSection
-              title="Advanced: runtime & model"
-              bordered={cards}
-              open={managedAdvancedOpen}
-              onToggle={() => setManagedAdvancedOpen(!managedAdvancedOpen)}
-            >
-              <div className="space-y-3">
-                <Field label="Adapter type" hint={help.adapterType}>
-                  <AdapterTypeDropdown
-                    value={adapterType}
-                    disabledTypes={disabledTypes}
-                    onChange={(t) => {
-                      setManagedAdapterTouched(true);
-                      handleAdapterTypeChange(t);
-                    }}
-                  />
-                </Field>
-                <ManagedModelField
-                  models={models}
-                  value={currentModelId}
-                  onChange={(v) => {
-                    setManagedAdapterTouched(true);
-                    handleModelChange(v);
-                  }}
-                  open={modelOpen}
-                  onOpenChange={setModelOpen}
-                  adapterType={adapterType}
-                />
-              </div>
-            </CollapsibleSection>
-          ) : (
+          {showAdapterTypeField && (
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
                 disabledTypes={disabledTypes}
-                onChange={handleAdapterTypeChange}
+                onChange={(t) => {
+                  if (isCreate) {
+                    // Reset all adapter-specific fields to defaults when switching adapter type
+                    const { adapterType: _at, ...defaults } = defaultCreateValues;
+                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+                    if (t === "codex_local") {
+                      nextValues.dangerouslyBypassSandbox =
+                        DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                    } else if (t === "gemini_local") {
+                      nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "cursor") {
+                      nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+                    } else if (t === "opencode_local") {
+                      nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    }
+                    set!(nextValues);
+                  } else {
+                    // Clear all adapter config and explicitly blank out model + effort/mode keys
+                    // so the old adapter's values don't bleed through via eff()
+                    setOverlay((prev) => ({
+                      ...prev,
+                      adapterType: t,
+                      modelProfiles: { cheap: { cleared: true } },
+                      adapterConfig: {
+                        model:
+                          t === "gemini_local"
+                            ? DEFAULT_GEMINI_LOCAL_MODEL
+                            : t === "opencode_local"
+                              ? DEFAULT_OPENCODE_LOCAL_MODEL
+                            : t === "cursor"
+                              ? DEFAULT_CURSOR_LOCAL_MODEL
+                              : "",
+                        effort: "",
+                        modelReasoningEffort: "",
+                        variant: "",
+                        mode: "",
+                        ...(t === "codex_local"
+                          ? {
+                              dangerouslyBypassApprovalsAndSandbox:
+                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+                            }
+                          : {}),
+                      },
+                    }));
+                  }
+                }}
               />
             </Field>
-          ))}
+          )}
 
           {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1144,7 +1168,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
+          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+
+          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
       </div>
@@ -1166,9 +1192,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           "adapterConfig",
                           adapterCommandField,
                           String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
+                            config.command ?? "",
                           ),
                         )
                   }
@@ -1192,43 +1216,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {/* In managed mode the primary model is chosen inside the
-                  "Advanced: runtime & model" disclosure above, so this duplicate
-                  picker is suppressed. */}
-              {!managed && (
-                <>
-                  {supportsModelProfiles && (
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
-                  )}
-                  <ModelDropdown
-                    models={models}
-                    value={currentModelId}
-                    onChange={handleModelChange}
-                    open={modelOpen}
-                    onOpenChange={setModelOpen}
-                    allowDefault={adapterType !== "opencode_local"}
-                    required={adapterType === "opencode_local"}
-                    groupByProvider={adapterType === "opencode_local"}
-                    creatable
-                    detectedModel={detectedModel}
-                    detectedModelCandidates={[]}
-                    onDetectModel={adapterType === "opencode_local"
-                      ? undefined
-                      : async () => {
-                          const result = await refetchDetectedModel();
-                          return result.data?.model ?? null;
-                        }}
-                    onRefreshModels={
-                      supportsAdapterModelRefresh(adapterType)
-                        ? handleRefreshModels
-                        : undefined
-                    }
-                    refreshingModels={refreshingModels}
-                    detectModelLabel="Detect model"
-                    emptyDetectHint="No model detected. Select or enter one manually."
-                  />
-                </>
+              {supportsModelProfiles && (
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
               )}
+              <ModelDropdown
+                models={models}
+                value={currentModelId}
+                onChange={(v) =>
+                  isCreate
+                    ? set!({ model: v })
+                    : mark("adapterConfig", "model", v || undefined)
+                }
+                open={modelOpen}
+                onOpenChange={setModelOpen}
+                allowDefault={adapterType !== "opencode_local"}
+                required={adapterType === "opencode_local"}
+                groupByProvider={adapterType === "opencode_local"}
+                creatable
+                detectedModel={detectedModel}
+                detectedModelCandidates={[]}
+                onDetectModel={adapterType === "opencode_local"
+                  ? undefined
+                  : async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }}
+                onRefreshModels={
+                  supportsAdapterModelRefresh(adapterType)
+                    ? handleRefreshModels
+                    : undefined
+                }
+                refreshingModels={refreshingModels}
+                detectModelLabel="Detect model"
+                emptyDetectHint="No model detected. Select or enter one manually."
+              />
               {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
@@ -1937,46 +1958,6 @@ function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
-  );
-}
-
-/**
- * Managed-mode primary model picker, shown inside the "Advanced: runtime &
- * model" disclosure. Thin wrapper over ModelDropdown that keeps the curated
- * cloud behaviour (no live detect/refresh, no provider grouping unless
- * opencode) so the disclosure stays simple. The lower Permissions &
- * Configuration model dropdown is suppressed in managed mode so the model is
- * chosen in exactly one place.
- */
-function ManagedModelField({
-  models,
-  value,
-  onChange,
-  open,
-  onOpenChange,
-  adapterType,
-}: {
-  models: AdapterModel[];
-  value: string;
-  onChange: (id: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  adapterType: string;
-}) {
-  return (
-    <ModelDropdown
-      models={models}
-      value={value}
-      onChange={onChange}
-      open={open}
-      onOpenChange={onOpenChange}
-      allowDefault={adapterType !== "opencode_local"}
-      required={adapterType === "opencode_local"}
-      groupByProvider={adapterType === "opencode_local"}
-      creatable
-      detectedModel={null}
-      detectedModelCandidates={[]}
-    />
   );
 }
 

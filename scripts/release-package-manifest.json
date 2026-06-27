@@ -40,6 +40,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/hermes",
+    "name": "@paperclipai/hermes-paperclip-adapter",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes-gateway",
+    "name": "@paperclipai/adapter-hermes-gateway",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -115,11 +125,6 @@
     "publishFromCi": true
   },
   {
-    "dir": "packages/plugins/sandbox-providers/kubernetes",
-    "name": "@paperclipai/plugin-kubernetes",
-    "publishFromCi": true
-  },
-  {
     "dir": "packages/plugins/sandbox-providers/exe-dev",
     "name": "@paperclipai/plugin-exe-dev",
     "publishFromCi": true
@@ -132,6 +137,11 @@
   {
     "dir": "packages/plugins/sandbox-providers/modal",
     "name": "@paperclipai/plugin-modal",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/plugins/sandbox-providers/kubernetes",
+    "name": "@paperclipai/plugin-kubernetes",
     "publishFromCi": true
   },
   {
