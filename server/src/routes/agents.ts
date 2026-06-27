@@ -103,10 +103,6 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
-import {
-  resolveManagedAgentDefaults,
-  applyManagedAgentDefaults,
-} from "../services/managed-agent-defaults.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -144,7 +140,6 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
-    hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -1083,7 +1078,10 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
-      { strictMode: strictSecretsMode },
+      {
+        strictMode: strictSecretsMode,
+        adapterType: input.adapterType ?? null,
+      },
     );
     await assertAdapterConfigConstraints(
       input.adapterType,
@@ -1608,7 +1606,7 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+      await assertCanCreateAgentsForCompany(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
@@ -1621,11 +1619,13 @@ export function agentRoutes(
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
-        { strictMode: strictSecretsMode },
+        { strictMode: strictSecretsMode, adapterType: type },
       );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
+        undefined,
+        { adapterType: type },
       );
 
       const { executionTarget, environmentName, fallbackChecks, release } =
@@ -1947,6 +1947,18 @@ export function agentRoutes(
       res.json(buildLowTrustSelfView(agent));
       return;
     }
+    if (req.actor.keyScope?.kind === "task_bridge") {
+      res.json({
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        status: agent.status,
+        keyScope: req.actor.keyScope,
+      });
+      return;
+    }
     res.json(await buildAgentDetail(agent));
   });
 
@@ -2190,14 +2202,8 @@ export function agentRoutes(
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-    const managedDefaults = resolveManagedAgentDefaults();
-    const managedApplied = applyManagedAgentDefaults({
-      requestedAdapterType: hireInput.adapterType,
-      adapterConfig: (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
-      managed: managedDefaults,
-    });
-    hireInput.adapterType = assertKnownAdapterType(managedApplied.adapterType);
-    const rawHireAdapterConfig = managedApplied.adapterConfig;
+    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
@@ -2389,14 +2395,8 @@ export function agentRoutes(
       instructionsBundle,
       ...createInput
     } = req.body;
-    const managedDefaults = resolveManagedAgentDefaults();
-    const managedApplied = applyManagedAgentDefaults({
-      requestedAdapterType: createInput.adapterType,
-      adapterConfig: (createInput.adapterConfig ?? {}) as Record<string, unknown>,
-      managed: managedDefaults,
-    });
-    createInput.adapterType = assertKnownAdapterType(managedApplied.adapterType);
-    const rawCreateAdapterConfig = managedApplied.adapterConfig;
+    createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -2543,6 +2543,7 @@ export function agentRoutes(
       entityId: agent.id,
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
+        canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
@@ -2587,7 +2588,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     const actor = getActorInfo(req);
     const agent = await svc.update(
@@ -2658,7 +2659,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -2726,7 +2727,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       result.adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -3199,7 +3200,7 @@ export function agentRoutes(
     if (!agent) {
       return;
     }
-    const key = await svc.createApiKey(id, req.body.name);
+    const key = await svc.createApiKey(id, req.body.name, req.body.scope);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3208,7 +3209,7 @@ export function agentRoutes(
       action: "agent.key_created",
       entityType: "agent",
       entityId: agent.id,
-      details: { keyId: key.id, name: key.name },
+      details: { keyId: key.id, name: key.name, scope: key.scope },
     });
 
     res.status(201).json(key);

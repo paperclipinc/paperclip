@@ -16,7 +16,6 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -39,6 +38,11 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
+  findActiveServerAdapter: () => ({
+    type: "codex_local",
+    execute: adapterExecute,
+    supportsLocalAgentJwt: false,
+  }),
   listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));
@@ -53,28 +57,17 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("heartbeat plugin environments", () => {
-  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
   const tempRoots: string[] = [];
-  // Heartbeat instances created per test, so their detached executeRun chains
-  // can be drained before the next test / before the DB client is closed.
-  const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
-
-  function makeHeartbeat(options?: Parameters<typeof heartbeatService>[1]) {
-    const heartbeat = heartbeatService(db, options);
-    heartbeats.push(heartbeat);
-    return heartbeat;
-  }
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
-    db = createDb(tempDb.connectionString);
+    const started = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
+    stopDb = started.stop;
+    db = createDb(started.connectionString);
   }, 20_000);
 
   afterEach(async () => {
-    while (heartbeats.length > 0) {
-      await heartbeats.pop()?.drain();
-    }
     adapterExecute.mockClear();
     while (tempRoots.length > 0) {
       const root = tempRoots.pop();
@@ -83,8 +76,8 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
   });
 
   afterAll(async () => {
-    await closeDbClient(db);
-    await tempDb?.cleanup();
+    await db.$client.end();
+    await stopDb?.();
   });
 
   it("acquires plugin environment leases through the heartbeat execution path", async () => {
@@ -201,7 +194,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       updatedAt: new Date(),
     });
 
-    const heartbeat = makeHeartbeat({ pluginWorkerManager: workerManager });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
     const run = await heartbeat.wakeup(agentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -227,7 +220,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       // Pins the HEARTBEAT-path lease call forwarding the AGENT's adapter type
       // (per-run adapter / mixed-harness envs). environment-runtime.ts has two
       // drivers calling environmentAcquireLease; regressions here previously
-      // shipped twice by editing only the non-heartbeat one (#113, #126).
+      // shipped by editing only the non-heartbeat one.
       adapterType: "codex_local",
     });
     await vi.waitFor(() => {
@@ -655,7 +648,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       updatedAt: new Date(),
     });
 
-    const heartbeat = makeHeartbeat({ pluginWorkerManager: workerManager });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
     const run = await heartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "manual",

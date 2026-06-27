@@ -47,55 +47,42 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
+      enablePipelines: parsed.data.enablePipelines ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
+      enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      managedExperience: parsed.data.managedExperience ?? (process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true"),
+      cloudBilling: parsed.data.cloudBilling ?? (process.env.PAPERCLIP_CLOUD_BILLING === "true"),
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-      managedExperience: parsed.data.managedExperience ?? false,
-      cloudBilling: parsed.data.cloudBilling ?? false,
     };
   }
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
+    enablePipelines: false,
     enableConferenceRoomChat: false,
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableCloudSync: false,
     enableExternalObjects: false,
+    enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    managedExperience: process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true",
+    cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-    managedExperience: false,
-    cloudBilling: false,
   };
-}
-
-export function applyManagedExperienceEnvOverride(
-  settings: InstanceExperimentalSettings,
-  env: Record<string, string | undefined> = process.env,
-): InstanceExperimentalSettings {
-  let out = settings;
-  if (env.PAPERCLIP_MANAGED_EXPERIENCE === "true") {
-    out = { ...out, managedExperience: true };
-  }
-  // cloudBilling: hosted-only flag that routes a company budget-raise through a
-  // payment checkout instead of the direct write. Self-hosters leave the env
-  // unset (default false); our cloud Instance sets PAPERCLIP_CLOUD_BILLING=true.
-  if (env.PAPERCLIP_CLOUD_BILLING === "true") {
-    out = { ...out, cloudBilling: true };
-  }
-  return out;
 }
 
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
@@ -103,7 +90,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
     id: row.id,
     defaultEnvironmentId: row.defaultEnvironmentId ?? null,
     general: normalizeGeneralSettings(row.general),
-    experimental: applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental)),
+    experimental: normalizeExperimentalSettings(row.experimental),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as InstanceSettings;
@@ -174,7 +161,7 @@ export function instanceSettingsService(db: Db) {
 
     getExperimental: async (): Promise<InstanceExperimentalSettings> => {
       const row = await getOrCreateRow();
-      return applyManagedExperienceEnvOverride(normalizeExperimentalSettings(row.experimental));
+      return normalizeExperimentalSettings(row.experimental);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {

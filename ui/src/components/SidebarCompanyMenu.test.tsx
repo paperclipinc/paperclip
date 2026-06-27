@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,33 +25,16 @@ const mockSidebarPreferencesApi = vi.hoisted(() => ({
   updateCompanyOrder: vi.fn(),
 }));
 
-// Team-centric copy ("Create new team...") ships behind the Conference Room
-// Chat experimental flag (PAP-139). This suite was written against the NUX
-// copy, so the flag is seeded ON; one test flips it OFF for master's copy.
-const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
-vi.mock("@/hooks/useConferenceRoomChatEnabled", () => ({
-  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
-}));
-
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
-
-// Deployment mode drives whether "Add company" opens the native onboarding wizard
-// (local_trusted) or the cloud create dialog (authenticated). Default to local;
-// the cloud test overrides it.
-const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("@/api/health", () => ({ healthApi: mockHealthApi }));
-
-const mockCloudCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
-vi.mock("@/api/cloudCompanies", () => ({ cloudCompaniesApi: mockCloudCompaniesApi }));
 
 vi.mock("@/api/sidebarPreferences", () => ({
   sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to, ...props }: { children: React.ReactNode; to: string }) => (
+  Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
   useLocation: () => mockLocation,
@@ -115,11 +99,13 @@ vi.mock("../context/SidebarContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+function act(callback: () => void) {
+  flushSync(callback);
+}
+
 async function flushReact() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  await Promise.resolve();
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
 }
 
 describe("SidebarCompanyMenu", () => {
@@ -146,25 +132,21 @@ describe("SidebarCompanyMenu", () => {
       updatedAt: null,
     });
     mockLocation.pathname = "/PAP/dashboard";
-    // Default: self-hosted (local_trusted) — keep the native onboarding flow.
-    mockHealthApi.get.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
   });
 
   afterEach(() => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
-    conferenceRoomChatFlag.enabled = true;
   });
 
-  it("keeps master's 'Add company...' copy when the Conference Room Chat flag is off (PAP-139)", async () => {
-    conferenceRoomChatFlag.enabled = false;
+  it("uses company-centric create copy without the chat flag", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -174,18 +156,18 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Add company...");
-    expect(document.body.textContent).not.toContain("Create new team...");
+    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).not.toContain("Add company...");
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });
@@ -196,7 +178,7 @@ describe("SidebarCompanyMenu", () => {
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -208,20 +190,20 @@ describe("SidebarCompanyMenu", () => {
 
     expect(container.textContent).toContain("Acme Labs");
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch workspace");
+    expect(document.body.textContent).toContain("Switch company");
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Create new team...");
+    expect(document.body.textContent).toContain("Create new company...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
@@ -230,25 +212,25 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Sign out"));
     expect(signOutButton).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });
 
-  it("toggles company order editing without selecting a workspace", async () => {
+  it("toggles company order editing without selecting a company", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -258,10 +240,10 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -271,7 +253,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent === "Edit");
     expect(editButton).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -285,7 +267,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Strata"));
     expect(strataItem).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -293,19 +275,19 @@ describe("SidebarCompanyMenu", () => {
     expect(mockSetSelectedCompanyId).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
 
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });
 
-  it("navigates to the selected workspace dashboard from company-prefixed routes", async () => {
+  it("navigates to the selected company dashboard from company-prefixed routes", async () => {
     mockLocation.pathname = "/PAP/issues";
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
-    await act(async () => {
+    act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SidebarCompanyMenu />
@@ -315,10 +297,10 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
     await flushReact();
 
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
     expect(trigger).not.toBeNull();
 
-    await act(async () => {
+    act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -328,7 +310,7 @@ describe("SidebarCompanyMenu", () => {
       .find((element) => element.textContent?.includes("Strata"));
     expect(strataItem).toBeTruthy();
 
-    await act(async () => {
+    act(() => {
       strataItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -336,52 +318,7 @@ describe("SidebarCompanyMenu", () => {
     expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
     expect(mockNavigate).toHaveBeenCalledWith("/STR/dashboard");
 
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("in cloud mode 'Add company' opens the cloud create dialog instead of the native onboarding wizard", async () => {
-    mockHealthApi.get.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarCompanyMenu />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs workspace switcher"]');
-    await act(async () => {
-      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
-      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    // Cloud copy on the add item; no native "Add company..."/"Create new team...".
-    expect(document.body.textContent).toContain("Create company...");
-
-    const addItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Create company..."));
-    expect(addItem).toBeTruthy();
-
-    await act(async () => {
-      addItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    // The native onboarding wizard is NOT used in cloud; the cloud dialog opens.
-    expect(mockOpenOnboarding).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Start a new company in your account");
-
-    await act(async () => {
+    act(() => {
       root.unmount();
     });
   });

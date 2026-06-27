@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -192,6 +192,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
+      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
@@ -291,10 +292,6 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       status: "active",
     });
 
-  // Seed the company-role permission grants the authorization engine reads
-  // (idempotent — insertMissing). Without this the cloud_tenant owner has a
-  // membership but no grants, so every assertCompanyPermission check (e.g.
-  // joins:approve on the dashboard's pending-approvals widget) 403s.
   await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
@@ -302,12 +299,6 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     grantedByUserId: userId,
   });
 
-  // Resolve the user's REAL active company memberships — exactly the query the
-  // session actor uses above — so a cloud_tenant user sees every company they own
-  // or were invited to, not just the one derived from their stack id. The
-  // stack-company auto-create above guarantees this set always contains the
-  // current stack company on first request; from then on the injected stackId is
-  // only a default/current-company hint, no longer the access list itself.
   const memberships = await db
     .select({
       companyId: companyMemberships.companyId,
@@ -335,10 +326,6 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   };
 }
 
-// Lightweight cloud_tenant auth for contexts that only have raw Node headers and
-// cannot run the Express actor middleware (e.g. WebSocket upgrades). Validates the
-// trusted gateway token and derives the company id from the stack id exactly like
-// resolveCloudTenantActor. Returns null when this is not a (valid) cloud_tenant call.
 export function resolveCloudTenantWsAuth(
   headers: Record<string, string | string[] | undefined>,
 ): { userId: string; companyId: string } | null {
@@ -379,14 +366,11 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-// Cloud tenants land on a first-run onboarding wizard where they rename their
-// company, but the auto-created default should still read like a real company
-// (not `${stackId} Paperclip`). Derive a friendly default from the user: prefer
-// a real display name, otherwise the capitalized email local-part.
 function friendlyCloudCompanyName(userName: string, userEmail: string): string {
   const trimmedName = userName?.trim();
   if (trimmedName && trimmedName !== userEmail && !trimmedName.includes("@")) {
-    return `${trimmedName}'s company`;
+    const capitalized = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
+    return `${capitalized}'s company`;
   }
   const localPart = userEmail.split("@")[0]?.trim();
   if (localPart) {

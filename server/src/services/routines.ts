@@ -46,6 +46,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isValidRoutineDateString,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -102,6 +103,17 @@ function assertTimeZone(timeZone: string) {
   }
 }
 
+function floorToMinute(date: Date) {
+  const copy = new Date(date.getTime());
+  copy.setUTCSeconds(0, 0);
+  return copy;
+}
+
+// Constructing an Intl.DateTimeFormat costs ~1ms of ICU work, and
+// computeNextRun calls getZonedMinuteParts once per minute-step (up to
+// 366*24*60*5 iterations for sparse schedules), which can block the event
+// loop for minutes per scheduler tick. Formatter instances are immutable,
+// so cache one per timezone. See #8033.
 const zonedMinuteFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getZonedMinuteFormatter(timeZone: string) {
@@ -120,12 +132,6 @@ function getZonedMinuteFormatter(timeZone: string) {
     zonedMinuteFormatterCache.set(timeZone, formatter);
   }
   return formatter;
-}
-
-function floorToMinute(date: Date) {
-  const copy = new Date(date.getTime());
-  copy.setUTCSeconds(0, 0);
-  return copy;
 }
 
 function getZonedMinuteParts(date: Date, timeZone: string) {
@@ -218,10 +224,22 @@ function parseNumberVariableValue(name: string, raw: unknown) {
   throw unprocessable(`Variable "${name}" must be a number`);
 }
 
+function parseDateVariableValue(name: string, raw: unknown) {
+  if (typeof raw !== "string") {
+    throw unprocessable(`Variable "${name}" must be a YYYY-MM-DD date`);
+  }
+  const normalized = raw.trim();
+  if (!isValidRoutineDateString(normalized)) {
+    throw unprocessable(`Variable "${name}" must be a valid YYYY-MM-DD date`);
+  }
+  return normalized;
+}
+
 function normalizeRoutineVariableValue(variable: RoutineVariable, raw: unknown): string | number | boolean | null {
   if (raw == null) return null;
   if (variable.type === "boolean") return parseBooleanVariableValue(variable.name, raw);
   if (variable.type === "number") return parseNumberVariableValue(variable.name, raw);
+  if (variable.type === "date") return parseDateVariableValue(variable.name, raw);
 
   const normalized = stringifyRoutineVariableValue(raw);
   if (variable.type === "select") {
@@ -384,6 +402,7 @@ function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
 function createRoutineDispatchFingerprint(input: {
   payload: Record<string, unknown> | null;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   assigneeAgentId: string | null;
   routineRevisionId: string | null;
   routineEnvFingerprint: string | null;
@@ -1372,14 +1391,17 @@ export function routineService(
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
     projectId?: string | null;
+    projectWorkspaceId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    descriptionAppendix?: string | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
+    const projectWorkspaceId = input.projectWorkspaceId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
@@ -1411,7 +1433,10 @@ export function routineService(
     });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
-    const description = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const description = [baseDescription, input.descriptionAppendix]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join("\n\n");
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -1423,6 +1448,7 @@ export function routineService(
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
+      projectWorkspaceId,
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
       routineEnvFingerprint: createRoutineEnvFingerprint(input.routine.env),
@@ -1515,6 +1541,7 @@ export function routineService(
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
+            projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title,
@@ -2420,12 +2447,39 @@ export function routineService(
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
         projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        actor,
+      });
+    },
+
+    runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
+      const routine = await getRoutineById(id);
+      if (!routine) throw notFound("Routine not found");
+      if (routine.status === "archived") throw conflict("Routine is archived");
+      await assertProject(routine.companyId, input.projectId ?? null);
+      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
+      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
+      return dispatchRoutineRun({
+        routine,
+        trigger: null,
+        source: "api",
+        payload: input.payload as Record<string, unknown> | null | undefined,
+        variables: input.variables as Record<string, unknown> | null | undefined,
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        assigneeAgentId: input.assigneeAgentId ?? null,
+        idempotencyKey: input.idempotencyKey,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+        executionWorkspaceSettings:
+          (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        descriptionAppendix: input.descriptionAppendix ?? null,
         actor,
       });
     },

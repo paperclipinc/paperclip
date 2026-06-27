@@ -30,7 +30,6 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -51,6 +50,11 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
+    type: "codex_local",
+    execute: adapterExecute,
+    supportsLocalAgentJwt: false,
+  }),
+  findActiveServerAdapter: () => ({
     type: "codex_local",
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
@@ -83,15 +87,6 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const tempRoots: string[] = [];
-  // Drain per-test heartbeat instances before the idle-poll / row cleanup so
-  // detached executeRun chains never query a torn-down socket.
-  const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
-
-  function makeHeartbeat(...args: Parameters<typeof heartbeatService>) {
-    const heartbeat = heartbeatService(...args);
-    heartbeats.push(heartbeat);
-    return heartbeat;
-  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-workspace-");
@@ -99,9 +94,6 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   }, 20_000);
 
   afterEach(async () => {
-    while (heartbeats.length > 0) {
-      await heartbeats.pop()?.drain();
-    }
     adapterExecute.mockClear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -151,7 +143,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   });
 
   afterAll(async () => {
-    await closeDbClient(db);
+    await db.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -317,7 +309,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -492,7 +484,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -648,7 +640,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -789,7 +781,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",

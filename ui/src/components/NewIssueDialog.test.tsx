@@ -62,7 +62,6 @@ const mockProjectsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
-  adapterModelProfiles: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -335,7 +334,6 @@ describe("NewIssueDialog", () => {
     ]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
@@ -1136,9 +1134,7 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  // PAP-139/PAP-140: work-mode labels and status hues branch on the Conference
-  // Room Chat experimental flag — OFF (default) must match master exactly.
-  describe("Conference Room Chat flag parity (PAP-140)", () => {
+  describe("graduated work-mode labels and status hues", () => {
     function workModeOption(value: string) {
       return container.querySelector(`[data-issue-work-mode="${value}"]`);
     }
@@ -1155,29 +1151,7 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses master's work-mode labels and status hues when the flag is off (default)", async () => {
-      const { root } = renderDialog(container);
-      await flush();
-
-      expect(workModeOption("standard")?.textContent).toContain("Standard");
-      expect(workModeOption("standard")?.textContent).not.toContain("Agent mode");
-      expect(workModeOption("ask")?.textContent).toContain("Ask");
-      expect(workModeOption("planning")?.textContent).toContain("Planning");
-      expect(workModeOption("planning")?.textContent).not.toContain("Plan mode");
-
-      // Master palette: todo → blue, in_progress → yellow.
-      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-blue-600");
-      expect(statusOptionIconClass("In Progress")).toContain("text-yellow-600");
-
-      act(() => root.unmount());
-    });
-
-    it("uses NUX work-mode labels and brand status hues when the flag is on", async () => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-        enableConferenceRoomChat: true,
-        enableIsolatedWorkspaces: false,
-      });
-
+    it("uses agent-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
       await waitForAssertion(() => {
         expect(workModeOption("standard")?.textContent).toContain("Agent mode");
@@ -1187,80 +1161,8 @@ describe("NewIssueDialog", () => {
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
-      // PAP-75 brand palette: todo → amber, in_progress → blue.
       expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
-
-      act(() => root.unmount());
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // Managed experience: per-task Model lane gate
-  // ---------------------------------------------------------------------------
-  describe("managed experience — Model lane gate", () => {
-    const CLAUDE_LOCAL_AGENT = {
-      id: "agent-claude",
-      name: "Claude Agent",
-      role: "dev",
-      title: null,
-      adapterType: "claude_local",
-      icon: null,
-      permissions: null,
-    };
-
-    it("hides the Model lane radiogroup when managedExperience is true", async () => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-        managedExperience: true,
-      });
-      mockAgentsApi.list.mockResolvedValue([CLAUDE_LOCAL_AGENT]);
-      dialogState.newIssueDefaults = {
-        assigneeAgentId: CLAUDE_LOCAL_AGENT.id,
-      };
-
-      const { root } = renderDialog(container);
-      await flush();
-
-      // Even with a claude_local assignee (which normally enables the Model
-      // lane), managed mode must suppress the radiogroup entirely.
-      expect(container.querySelector('[aria-label="Model lane"]')).toBeNull();
-
-      act(() => root.unmount());
-    });
-
-    it("shows the Model lane radiogroup when managedExperience is false with a compatible assignee", async () => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-        managedExperience: false,
-      });
-      mockAgentsApi.list.mockResolvedValue([CLAUDE_LOCAL_AGENT]);
-      mockAgentsApi.adapterModels.mockResolvedValue([]);
-      mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
-      dialogState.newIssueDefaults = {
-        assigneeAgentId: CLAUDE_LOCAL_AGENT.id,
-      };
-
-      const { root } = renderDialog(container);
-      await flush();
-
-      // Wait for the agents query to resolve so supportsAssigneeOverrides is true.
-      await waitForAssertion(() => {
-        const toggle = [...container.querySelectorAll("button")].find(
-          (button) => button.textContent?.includes("options"),
-        );
-        expect(toggle).not.toBeUndefined();
-      });
-
-      // The agent options section is collapsed by default; click the toggle to expand it.
-      const toggle = [...container.querySelectorAll("button")].find(
-        (button) => button.textContent?.includes("options"),
-      )!;
-      await act(async () => {
-        toggle.click();
-      });
-      await flush();
-
-      // After expanding, the Model lane radiogroup must be present.
-      expect(container.querySelector('[aria-label="Model lane"]')).not.toBeNull();
 
       act(() => root.unmount());
     });
