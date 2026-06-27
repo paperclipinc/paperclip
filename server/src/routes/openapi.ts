@@ -4187,6 +4187,27 @@ registry.registerPath({
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/activation",
+  tags: ["access"],
+  summary: "Get company activation status",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/budgets/increment",
+  tags: ["costs"],
+  summary: "Increment company budget (cloud-internal)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
+});
+
 // ─── Current route coverage ─────────────────────────────────────────────────
 
 registerCurrentRoute({
