@@ -12504,5 +12504,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1);
       return run ?? null;
     },
+
+    drain: async (_options: { timeoutMs?: number; maxPasses?: number } = {}): Promise<boolean> => {
+      return true;
+    },
   };
 }

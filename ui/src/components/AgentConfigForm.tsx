@@ -78,6 +78,15 @@ type AgentConfigFormProps = {
     result: AdapterEnvironmentTestResult | null;
   }) => void;
   hideInlineSave?: boolean;
+  /**
+   * Create-mode only. Fires when the managed-experience "omit harness + model"
+   * decision changes: `true` while managed mode is on AND the user has not
+   * opened the Advanced disclosure to pick an adapter, so the create caller
+   * should strip `adapterType` + `adapterConfig.model` from its payload and let
+   * the server inject the managed defaults. `false` otherwise (non-managed, or
+   * the user explicitly picked a harness).
+   */
+  onManagedDefaultsChange?: (omitAdapterAndModel: boolean) => void;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
@@ -86,7 +95,6 @@ type AgentConfigFormProps = {
   hidePromptTemplate?: boolean;
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
-  onManagedDefaultsChange?: (omitAdapterAndModel: boolean) => void;
 } & (
   | {
       mode: "create";
@@ -224,6 +232,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
+  // Managed experience: fold harness/model into an Advanced disclosure and let
+  // the server inject the operator-configured default adapter/model when the
+  // user never opens it. The form's create default adapter is `claude_local`,
+  // which may not be in the operator-configured set, so omitting it on submit
+  // lets the server pick the managed default.
+  const managed = experimentalSettings?.managedExperience === true;
 
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
@@ -490,6 +504,81 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
+  // Managed experience: the harness + model live inside a collapsed "Advanced"
+  // disclosure. `managedAdapterTouched` records whether the user opened it and
+  // picked an adapter type, so the create submit knows whether to omit the
+  // adapter/model and let the server inject the managed defaults.
+  const [managedAdvancedOpen, setManagedAdvancedOpen] = useState(false);
+  const [managedAdapterTouched, setManagedAdapterTouched] = useState(false);
+
+  // Report the managed "omit harness + model" decision to the create caller so
+  // it can strip those fields before hiring (only in create mode; edit mode
+  // keeps the agent's stored adapter/model untouched).
+  const omitManagedAdapterAndModel = isCreate && managed && !managedAdapterTouched;
+  const onManagedDefaultsChange = props.onManagedDefaultsChange;
+  useEffect(() => {
+    if (!isCreate) return;
+    onManagedDefaultsChange?.(omitManagedAdapterAndModel);
+  }, [isCreate, omitManagedAdapterAndModel, onManagedDefaultsChange]);
+
+  // Shared adapter-type + model change handlers, used by both the plain fields
+  // (non-managed) and the managed "Advanced" disclosure so edit-mode overlay
+  // behaviour stays identical in both. The managed disclosure additionally marks
+  // the adapter as touched so the create path stops omitting it.
+  function handleAdapterTypeChange(t: string) {
+    if (isCreate) {
+      // Reset all adapter-specific fields to defaults when switching adapter type
+      const { adapterType: _at, ...defaults } = defaultCreateValues;
+      const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+      if (t === "codex_local") {
+        nextValues.dangerouslyBypassSandbox =
+          DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+      } else if (t === "gemini_local") {
+        nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+      } else if (t === "cursor") {
+        nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
+      } else if (t === "opencode_local") {
+        nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+      }
+      set!(nextValues);
+    } else {
+      // Clear all adapter config and explicitly blank out model + effort/mode keys
+      // so the old adapter's values don't bleed through via eff()
+      setOverlay((prev) => ({
+        ...prev,
+        adapterType: t,
+        modelProfiles: { cheap: { cleared: true } },
+        adapterConfig: {
+          model:
+            t === "gemini_local"
+              ? DEFAULT_GEMINI_LOCAL_MODEL
+              : t === "opencode_local"
+                ? DEFAULT_OPENCODE_LOCAL_MODEL
+              : t === "cursor"
+                ? DEFAULT_CURSOR_LOCAL_MODEL
+                : "",
+          effort: "",
+          modelReasoningEffort: "",
+          variant: "",
+          mode: "",
+          ...(t === "codex_local"
+            ? {
+                dangerouslyBypassApprovalsAndSandbox:
+                  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+              }
+            : {}),
+        },
+      }));
+    }
+  }
+
+  function handleModelChange(v: string) {
+    if (isCreate) {
+      set!({ model: v });
+    } else {
+      mark("adapterConfig", "model", v || undefined);
+    }
+  }
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
@@ -1075,60 +1164,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          {showAdapterTypeField && (
+          {showAdapterTypeField && (managed ? (
+            // Managed mode: fold the harness + model behind an Advanced
+            // disclosure. Picking either marks the adapter "touched" so the
+            // create path stops omitting it and the server defaults no longer
+            // apply. The lower Permissions & Configuration model picker is
+            // suppressed in managed mode (see below) so the model lives here.
+            <CollapsibleSection
+              title="Advanced: runtime & model"
+              bordered={cards}
+              open={managedAdvancedOpen}
+              onToggle={() => setManagedAdvancedOpen(!managedAdvancedOpen)}
+            >
+              <div className="space-y-3">
+                <Field label="Adapter type" hint={help.adapterType}>
+                  <AdapterTypeDropdown
+                    value={adapterType}
+                    disabledTypes={disabledTypes}
+                    onChange={(t) => {
+                      setManagedAdapterTouched(true);
+                      handleAdapterTypeChange(t);
+                    }}
+                  />
+                </Field>
+                <ManagedModelField
+                  models={models}
+                  value={currentModelId}
+                  onChange={(v) => {
+                    setManagedAdapterTouched(true);
+                    handleModelChange(v);
+                  }}
+                  open={modelOpen}
+                  onOpenChange={setModelOpen}
+                  adapterType={adapterType}
+                />
+              </div>
+            </CollapsibleSection>
+          ) : (
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
                 disabledTypes={disabledTypes}
-                onChange={(t) => {
-                  if (isCreate) {
-                    // Reset all adapter-specific fields to defaults when switching adapter type
-                    const { adapterType: _at, ...defaults } = defaultCreateValues;
-                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
-                    if (t === "codex_local") {
-                      nextValues.dangerouslyBypassSandbox =
-                        DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-                    } else if (t === "gemini_local") {
-                      nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
-                    } else if (t === "cursor") {
-                      nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-                    } else if (t === "opencode_local") {
-                      nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-                    }
-                    set!(nextValues);
-                  } else {
-                    // Clear all adapter config and explicitly blank out model + effort/mode keys
-                    // so the old adapter's values don't bleed through via eff()
-                    setOverlay((prev) => ({
-                      ...prev,
-                      adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
-                      adapterConfig: {
-                        model:
-                          t === "gemini_local"
-                            ? DEFAULT_GEMINI_LOCAL_MODEL
-                            : t === "opencode_local"
-                              ? DEFAULT_OPENCODE_LOCAL_MODEL
-                            : t === "cursor"
-                              ? DEFAULT_CURSOR_LOCAL_MODEL
-                              : "",
-                        effort: "",
-                        modelReasoningEffort: "",
-                        variant: "",
-                        mode: "",
-                        ...(t === "codex_local"
-                          ? {
-                              dangerouslyBypassApprovalsAndSandbox:
-                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-                            }
-                          : {}),
-                      },
-                    }));
-                  }
-                }}
+                onChange={handleAdapterTypeChange}
               />
             </Field>
-          )}
+          ))}
 
           {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -1216,40 +1296,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {supportsModelProfiles && (
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+              {/* In managed mode the primary model is chosen inside the
+                  "Advanced: runtime & model" disclosure above, so this duplicate
+                  picker is suppressed. */}
+              {!managed && (
+                <>
+                  {supportsModelProfiles && (
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>
+                  )}
+                  <ModelDropdown
+                    models={models}
+                    value={currentModelId}
+                    onChange={handleModelChange}
+                    open={modelOpen}
+                    onOpenChange={setModelOpen}
+                    allowDefault={adapterType !== "opencode_local"}
+                    required={adapterType === "opencode_local"}
+                    groupByProvider={adapterType === "opencode_local"}
+                    creatable
+                    detectedModel={detectedModel}
+                    detectedModelCandidates={[]}
+                    onDetectModel={adapterType === "opencode_local"
+                      ? undefined
+                      : async () => {
+                          const result = await refetchDetectedModel();
+                          return result.data?.model ?? null;
+                        }}
+                    onRefreshModels={
+                      supportsAdapterModelRefresh(adapterType)
+                        ? handleRefreshModels
+                        : undefined
+                    }
+                    refreshingModels={refreshingModels}
+                    detectModelLabel="Detect model"
+                    emptyDetectHint="No model detected. Select or enter one manually."
+                  />
+                </>
               )}
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                creatable
-                detectedModel={detectedModel}
-                detectedModelCandidates={[]}
-                onDetectModel={adapterType === "opencode_local"
-                  ? undefined
-                  : async () => {
-                      const result = await refetchDetectedModel();
-                      return result.data?.model ?? null;
-                    }}
-                onRefreshModels={
-                  supportsAdapterModelRefresh(adapterType)
-                    ? handleRefreshModels
-                    : undefined
-                }
-                refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint="No model detected. Select or enter one manually."
-              />
               {(refreshModelsError || fetchedModelsError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
@@ -1958,6 +2041,46 @@ function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
+  );
+}
+
+/**
+ * Managed-mode primary model picker, shown inside the "Advanced: runtime &
+ * model" disclosure. Thin wrapper over ModelDropdown that keeps the curated
+ * cloud behaviour (no live detect/refresh, no provider grouping unless
+ * opencode) so the disclosure stays simple. The lower Permissions &
+ * Configuration model dropdown is suppressed in managed mode so the model is
+ * chosen in exactly one place.
+ */
+function ManagedModelField({
+  models,
+  value,
+  onChange,
+  open,
+  onOpenChange,
+  adapterType,
+}: {
+  models: AdapterModel[];
+  value: string;
+  onChange: (id: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  adapterType: string;
+}) {
+  return (
+    <ModelDropdown
+      models={models}
+      value={value}
+      onChange={onChange}
+      open={open}
+      onOpenChange={onOpenChange}
+      allowDefault={adapterType !== "opencode_local"}
+      required={adapterType === "opencode_local"}
+      groupByProvider={adapterType === "opencode_local"}
+      creatable
+      detectedModel={null}
+      detectedModelCandidates={[]}
+    />
   );
 }
 

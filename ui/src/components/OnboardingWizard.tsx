@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -8,8 +8,7 @@ import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
-import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -32,18 +31,13 @@ import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
-import {
-  buildOnboardingIssuePayload,
-  buildOnboardingProjectPayload,
-  selectDefaultCompanyGoalId,
-  selectReusableOnboardingProject,
-} from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import { markCloudOnboardingComplete } from "../lib/cloud-onboarding";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -81,14 +75,6 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
 }
 
 const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
-
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
-const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
-  "Onboarding state is incomplete. Please restart onboarding and try again.";
 
 function loadSavedState(): Record<string, unknown> | null {
   try {
@@ -134,6 +120,10 @@ export function OnboardingWizard() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
+  // Cloud first-run onboarding opens at Step 1 with a pre-existing (auto-created)
+  // company: the Company step RENAMES it in place instead of creating a new one,
+  // and completion is tracked in localStorage so the wizard never reopens.
+  const cloudRenameFlow = Boolean(existingCompanyId) && initialStep === 1;
 
   // Restore saved state from localStorage (read once on mount)
   const saved = useMemo(loadSavedState, []);
@@ -186,15 +176,6 @@ export function OnboardingWizard() {
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>((saved?.createdAgentId as string) ?? null);
-  const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
-    (saved?.createdCompanyGoalId as string) ?? null
-  );
-  const [createdProjectId, setCreatedProjectId] = useState<string | null>(
-    (saved?.createdProjectId as string) ?? null
-  );
-  const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(
-    (saved?.createdIssueRef as string) ?? null
-  );
 
   // Reset the route-dismissed flag when navigating to a different path.
   useEffect(() => {
@@ -226,6 +207,20 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // Cloud rename flow: pre-fill the Company step with the auto-created company's
+  // current name (once per company) so the user edits it in place. Tracks
+  // whether the rename + goal step has already run to avoid a duplicate goal.
+  const companyStepDoneRef = useRef(false);
+  const prefilledCompanyIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !cloudRenameFlow || !createdCompanyId) return;
+    if (prefilledCompanyIdRef.current === createdCompanyId) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (!company) return;
+    setCompanyName(company.name);
+    prefilledCompanyIdRef.current = createdCompanyId;
+  }, [effectiveOnboardingOpen, cloudRenameFlow, createdCompanyId, companies]);
+
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -233,7 +228,6 @@ export function OnboardingWizard() {
       step, companyName, companyGoal, missionPath, missionConfirmed,
       q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
-      createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
     };
     localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
@@ -241,7 +235,6 @@ export function OnboardingWizard() {
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
-    createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
   ]);
 
@@ -260,6 +253,15 @@ export function OnboardingWizard() {
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
+  // Managed experience: when on, the instance picks the harness + model for the
+  // user, so the wizard hides the adapter/model pickers and omits those fields
+  // from the launch payload (the server injects the managed defaults).
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
+
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -271,6 +273,7 @@ export function OnboardingWizard() {
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
+    adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
@@ -297,6 +300,7 @@ export function OnboardingWizard() {
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
+    hermes_local: "hermes",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
@@ -388,12 +392,16 @@ export function OnboardingWizard() {
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
-    setCreatedCompanyGoalId(null);
-    setCreatedProjectId(null);
-    setCreatedIssueRef(null);
+    companyStepDoneRef.current = false;
+    prefilledCompanyIdRef.current = null;
   }
 
   function handleClose() {
+    // Cloud first-run: dismissing the wizard still counts as "onboarded" so it
+    // never reopens for this company.
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
+    }
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -403,67 +411,14 @@ export function OnboardingWizard() {
     setRouteDismissed(true);
   }
 
-  async function handleLaunchToDashboard() {
-    if (!createdCompanyId || !createdAgentId) {
-      setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
-      return;
+  function handleLaunchToChat() {
+    const prefix = createdCompanyPrefix;
+    if (cloudRenameFlow && createdCompanyId) {
+      markCloudOnboardingComplete(createdCompanyId);
     }
-    setLoading(true);
-    setError(null);
-    try {
-      let goalId = createdCompanyGoalId;
-      if (!goalId) {
-        const goals = await goalsApi.list(createdCompanyId);
-        goalId = selectDefaultCompanyGoalId(goals);
-        setCreatedCompanyGoalId(goalId);
-      }
-
-      let projectId = createdProjectId;
-      if (!projectId) {
-        const projects = await projectsApi.list(createdCompanyId);
-        const existingOnboardingProject = selectReusableOnboardingProject(projects);
-        if (existingOnboardingProject) {
-          projectId = existingOnboardingProject.id;
-        } else {
-          const project = await projectsApi.create(
-            createdCompanyId,
-            buildOnboardingProjectPayload(goalId)
-          );
-          projectId = project.id;
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.projects.list(createdCompanyId)
-          });
-        }
-        setCreatedProjectId(projectId);
-      }
-
-      if (!createdIssueRef) {
-        const issue = await issuesApi.create(
-          createdCompanyId,
-          buildOnboardingIssuePayload({
-            title: DEFAULT_TASK_TITLE,
-            description: DEFAULT_TASK_DESCRIPTION,
-            assigneeAgentId: createdAgentId,
-            projectId,
-            goalId
-          })
-        );
-        setCreatedIssueRef(issue.identifier ?? issue.id);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.list(createdCompanyId)
-        });
-      }
-
-      const prefix = createdCompanyPrefix;
-      setSelectedCompanyId(createdCompanyId);
-      reset();
-      closeOnboarding();
-      navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch first task");
-    } finally {
-      setLoading(false);
-    }
+    reset();
+    closeOnboarding();
+    navigate(prefix ? `/${prefix}/board-chat` : "/dashboard");
   }
 
   function buildAdapterConfig(): Record<string, unknown> {
@@ -537,21 +492,30 @@ export function OnboardingWizard() {
   // goal, then advance to naming the team lead. Guarded so revisiting the
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
-    if (createdCompanyId) {
+    // Cloud first-run: the company already exists (auto-created), so RENAME it
+    // in place to whatever the user typed instead of short-circuiting to step 3
+    // with the auto-generated name. Once the rename + goal have run for this
+    // company, revisiting the step just advances (no duplicate goal).
+    if (createdCompanyId && (!cloudRenameFlow || companyStepDoneRef.current)) {
       setStep(3);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company =
+        cloudRenameFlow && createdCompanyId
+          ? await companiesApi.update(createdCompanyId, {
+              name: companyName.trim(),
+            })
+          : await companiesApi.create({ name: companyName.trim() });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       const parsedGoal = parseOnboardingGoalInput(companyGoal);
-      const goal = await goalsApi.create(company.id, {
+      await goalsApi.create(company.id, {
         title: parsedGoal.title,
         ...(parsedGoal.description
           ? { description: parsedGoal.description }
@@ -559,11 +523,11 @@ export function OnboardingWizard() {
         level: "company",
         status: "active"
       });
-      setCreatedCompanyGoalId(goal.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.goals.list(company.id)
       });
 
+      companyStepDoneRef.current = true;
       setStep(3); // → Create your team lead
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create company");
@@ -584,49 +548,62 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        const selectedModelId = model.trim();
-        if (!isValidOpenCodeModelId(selectedModelId)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
-          return;
+      // In managed mode the user never chose a harness/model, so the
+      // adapter-specific preflight (OpenCode model validation, the local
+      // adapter environment probe) does not apply — the server injects the
+      // managed default adapter + model for this hire.
+      if (!managed) {
+        if (adapterType === "opencode_local") {
+          const selectedModelId = model.trim();
+          if (!isValidOpenCodeModelId(selectedModelId)) {
+            setError(
+              "OpenCode requires an explicit model in provider/model format."
+            );
+            return;
+          }
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models."
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError(
+              "OpenCode models are still loading. Please wait and try again."
+            );
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`
+            );
+            return;
+          }
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models."
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
-          );
-          return;
-        }
-      }
 
-      if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
+        if (isLocalAdapter) {
+          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+          if (!result) return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
+        // When managed, omit adapterType + adapterConfig entirely so the server
+        // injects the managed default harness + model. Sending them (even
+        // "process") would pin an inert adapter instead.
+        ...(managed
+          ? {}
+          : {
+              adapterType,
+              adapterConfig: buildAdapterConfig(),
+            }),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -736,14 +713,11 @@ export function OnboardingWizard() {
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim()) handleGiveHeartbeat();
-      else if (step === 5) handleLaunchToDashboard();
+      else if (step === 5) handleLaunchToChat();
     }
   }
 
   if (!effectiveOnboardingOpen) return null;
-
-  const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
-  const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
 
   return (
     <Dialog
@@ -962,7 +936,7 @@ export function OnboardingWizard() {
                 </div>
               )}
 
-              {/* Step 1: Name your company (both paths) */}
+              {/* Step 1: Name your team (both paths) */}
               {step === 1 && (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 mb-1">
@@ -970,9 +944,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">Name your team</h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your company?
+                        What should we call your team?
                       </p>
                     </div>
                   </div>
@@ -985,7 +959,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      Team name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1204,7 +1178,7 @@ export function OnboardingWizard() {
                     className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => setStep(1)}
                   >
-                    ← Change company name
+                    ← Change team name
                   </button>
                 </div>
               )}
@@ -1236,7 +1210,9 @@ export function OnboardingWizard() {
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {/* Adapter type radio cards */}
+                  {/* Adapter type radio cards — hidden in managed mode, where
+                      the instance picks the harness for the user. */}
+                  {!managed && (
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
                       Adapter type
@@ -1336,9 +1312,11 @@ export function OnboardingWizard() {
                       </div>
                     )}
                   </div>
+                  )}
 
-                  {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
+                  {/* Conditional adapter fields — Model picker hidden in managed
+                      mode (the instance picks the model for the user). */}
+                  {!managed && isLocalAdapter && (
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs text-muted-foreground mb-1 block">
@@ -1587,7 +1565,7 @@ export function OnboardingWizard() {
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
                     {[
-                      { label: "Company name", done: Boolean(companyName.trim()) },
+                      { label: "Team name", done: Boolean(companyName.trim()) },
                       { label: "Mission", done: Boolean(companyGoal.trim()) },
                       { label: "Agent created", done: Boolean(createdAgentId) },
                       { label: "Model connected", done: Boolean(createdAgentId) },
@@ -1616,15 +1594,15 @@ export function OnboardingWizard() {
                     </p>
                   )}
                   <p className="text-xs text-muted-foreground text-center">
-                    We'll create the first task for {agentName} and take you to the dashboard.
+                    Start a conversation with {agentName} to discuss strategy and plan who to bring on.
                   </p>
                 </div>
               )}
 
               {/* Error */}
-              {visibleError && (
+              {error && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">{visibleError}</p>
+                  <p className="text-xs text-destructive">{error}</p>
                 </div>
               )}
 
@@ -1696,17 +1674,9 @@ export function OnboardingWizard() {
                     </Button>
                   )}
                   {step === 5 && (
-                    <Button
-                      size="sm"
-                      onClick={handleLaunchToDashboard}
-                      disabled={loading || launchStateIncomplete}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Launching..." : "Get started"}
+                    <Button size="sm" onClick={handleLaunchToChat}>
+                      <ArrowRight className="h-3.5 w-3.5 mr-1" />
+                      Get started
                     </Button>
                   )}
                 </div>
@@ -1719,7 +1689,7 @@ export function OnboardingWizard() {
               name + mission steps) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-[width,opacity] duration-500 ease-in-out",
               step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
