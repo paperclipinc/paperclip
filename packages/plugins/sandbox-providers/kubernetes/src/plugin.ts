@@ -27,6 +27,10 @@ import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
+import {
+  resolveCompanyInferenceKey,
+  applyCompanyInferenceKey,
+} from "./inference-key-resolver.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
@@ -34,7 +38,7 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
-import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -50,15 +54,30 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota defaults applied to every tenant namespace (tunable via
-// config in a future iteration).
-const DEFAULT_RESOURCE_QUOTA = {
-  pods: "20",
-  requestsCpu: "10",
-  requestsMemory: "20Gi",
-  limitsCpu: "20",
-  limitsMemory: "40Gi",
-};
+// Resource quota + LimitRange defaults applied to every tenant namespace.
+// Defaults match the historical hard-coded values, so when none of the
+// PAPERCLIP_K8S_QUOTA_* / PAPERCLIP_K8S_LIMITRANGE_* env vars are set the
+// emitted manifests are byte-for-byte unchanged (self-host parity). Operators
+// may override individual fields via env without touching code.
+function envQuota() {
+  return {
+    pods: process.env.PAPERCLIP_K8S_QUOTA_PODS ?? "20",
+    requestsCpu: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_CPU ?? "10",
+    requestsMemory: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_MEMORY ?? "20Gi",
+    limitsCpu: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_CPU ?? "20",
+    limitsMemory: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_MEMORY ?? "40Gi",
+  };
+}
+function envLimitRange() {
+  return {
+    defaultCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_CPU ?? "1",
+    defaultMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_MEMORY ?? "2Gi",
+    defaultRequestCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_CPU ?? "250m",
+    defaultRequestMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_MEMORY ?? "512Mi",
+    maxCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_CPU ?? "4",
+    maxMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_MEMORY ?? "8Gi",
+  };
+}
 
 function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: string): string {
   // TODO: future versions could thread companyName through AcquireLeaseParams
@@ -108,6 +127,11 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
+
+// The default realized workspace cwd. The agent pod mounts /workspace as an
+// emptyDir at scheduling time (see pod-spec-builder); onEnvironmentRealizeWorkspace
+// hands this back and the lease metadata carries it from acquisition.
+const REALIZED_WORKSPACE_CWD = "/workspace";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -249,7 +273,8 @@ const plugin = definePlugin({
       egressMode: config.egressMode,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
-      resourceQuota: DEFAULT_RESOURCE_QUOTA,
+      resourceQuota: envQuota(),
+      limitRange: envLimitRange(),
     });
 
     const jobName = `pc-${newRunUlidDns()}`;
@@ -306,7 +331,25 @@ const plugin = definePlugin({
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
-    const adapterEnv = buildAdapterEnv(adapterDefaults);
+    let adapterEnv = buildAdapterEnv(adapterDefaults);
+
+    // Cloud per-company inference key (Bifrost virtual key). When a control-plane
+    // resolver URL is configured, replace the shared platform inference auth keys
+    // (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) with the company's OWN
+    // virtual key so each company's runs land in their own inference cache bucket /
+    // spend ledger. FAIL-CLOSED: a configured-but-failing resolve throws (rejects
+    // the lease); we NEVER fall back to the shared key here (that would put this
+    // run in the shared cache bucket = a cross-tenant leak). When the resolver URL
+    // is unset (OSS / local / non-cloud), this block is skipped and the inherited
+    // env is used unchanged.
+    if (config.cloudInferenceKeyResolverUrl) {
+      const companyKey = await resolveCompanyInferenceKey({
+        resolverUrl: config.cloudInferenceKeyResolverUrl,
+        companyId: params.companyId,
+      });
+      adapterEnv = applyCompanyInferenceKey(adapterEnv, companyKey);
+    }
+
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
@@ -335,6 +378,12 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Carry the realized workspace cwd on the lease from acquisition, matching
+      // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
+      // Daytona providers do the same: a lease that knows its own cwd makes the
+      // execution target correct even if the orchestrator's separate cwd
+      // threading regresses. Defense-in-depth for the C1 remoteCwd fix.
+      remoteCwd: REALIZED_WORKSPACE_CWD,
     };
 
     return {
@@ -424,7 +473,7 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : "/workspace";
+        : REALIZED_WORKSPACE_CWD;
     return {
       cwd,
       metadata: {
@@ -456,6 +505,12 @@ const plugin = definePlugin({
         : config.backend;
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+    // acquireLease names the per-run Secret `${jobName}-env` and uses jobName as
+    // the providerLeaseId, so the suffix fallback reconstructs it exactly.
+    const secretName =
+      typeof params.leaseMetadata?.secretName === "string"
+        ? params.leaseMetadata.secretName
+        : `${params.providerLeaseId}-env`;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -471,6 +526,13 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+
+    // Explicitly delete the per-run Secret on release too. Normal release relies
+    // on the Sandbox CR / Job ownerRef cascade to remove it, but a wedged
+    // controller or broken ownerRef would otherwise strand per-run inference-vk
+    // Secrets in tenant namespaces. Best-effort + 404-tolerant so release never
+    // fails on a cleanup race. SECURITY-relevant. See deleteLeaseSecretBestEffort.
+    await deleteLeaseSecretBestEffort(clients, namespace, secretName);
   },
 
   async onEnvironmentDestroyLease(
@@ -777,6 +839,30 @@ const plugin = definePlugin({
             podName,
           },
         };
+      }
+
+      // OBSERVABILITY: every harness command (opencode run, the callback-bridge
+      // poll, the workspace tar) flows through this single execInPod. Failures
+      // bubble up to the adapter as an opaque "exit code N" with the detail often
+      // lost (restoreWorkspace teardown masks the real result; opencode wraps its
+      // own errors). Log the full exec result (command + exit + stdout/stderr
+      // tails) server-side so the actual cause — why a build makes 0 inference, why
+      // tar exits 2 — is greppable from server logs without racing the ephemeral
+      // sandbox pod. Always on for non-zero exits; full dumps (incl. exit 0) gated
+      // behind PAPERCLIP_K8S_EXEC_DEBUG to avoid noise.
+      const execDebug = ["1", "true", "yes"].includes(
+        (process.env.PAPERCLIP_K8S_EXEC_DEBUG ?? "").toLowerCase(),
+      );
+      if (execResult.exitCode !== 0 || execDebug) {
+        const tail = (s: string, n: number) =>
+          typeof s === "string" && s.length > n ? s.slice(-n) : (s ?? "");
+        console.warn(
+          `[paperclip][k8s-exec] sandbox=${lease.providerLeaseId} pod=${podName} ns=${namespace} ` +
+            `exit=${execResult.exitCode} cmd=${JSON.stringify(execCommand).slice(0, 400)} ` +
+            `stdoutLen=${execResult.stdout?.length ?? 0} stderrLen=${execResult.stderr?.length ?? 0}\n` +
+            `  stdoutTail=${JSON.stringify(tail(execResult.stdout, 1500))}\n` +
+            `  stderrTail=${JSON.stringify(tail(execResult.stderr, 3000))}`,
+        );
       }
 
       return {

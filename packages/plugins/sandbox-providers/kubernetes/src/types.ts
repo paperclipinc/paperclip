@@ -54,6 +54,28 @@ export const kubernetesProviderConfigSchema = z
     adapters: adapterRegistrySchema.optional(),
 
     /**
+     * Optional cloud control-plane URL for resolving a per-company inference
+     * key (Bifrost virtual key). When set, the plugin resolves the company's
+     * own virtual key from the control-plane immediately before writing the
+     * per-run Secret and overrides the secret inference auth env vars
+     * (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) with it, so each
+     * company's runs use a key scoped to that company (separate cache bucket /
+     * spend ledger). Resolution is FAIL-CLOSED: if this is configured but the
+     * control-plane call fails or returns no key, the lease is rejected — the
+     * run is NEVER allowed to fall back to the shared platform key (which would
+     * place it in the shared inference cache bucket = a cross-tenant leak).
+     *
+     * The control-plane must expose `POST <url>/internal/bifrost-key` accepting
+     * JSON `{ "companyId": "<id>" }` and returning `200 { "keyValue": "<vk>" }`.
+     *
+     * When UNSET (OSS / local / non-cloud), the plugin behaves exactly as
+     * before: the inherited process-env keys (the shared platform key, if any)
+     * are used unchanged. This keeps the per-company behavior strictly
+     * cloud-gated and upstream-safe.
+     */
+    cloudInferenceKeyResolverUrl: z.string().url().optional(),
+
+    /**
      * The sandbox backend to use.
      *
      * - `"sandbox-cr"` (default, alpha) — uses the kubernetes-sigs/agent-sandbox
@@ -90,4 +112,11 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
+   * acquisition. Lets the execution target resolve the correct cwd from the
+   * lease itself, matching the SSH/Daytona providers. Optional for backward
+   * compatibility with leases acquired before this field existed.
+   */
+  remoteCwd?: string;
 }

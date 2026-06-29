@@ -24,6 +24,18 @@ describe("adapter-defaults (built-in)", () => {
     expect(d.probeCommand).toEqual(["codex", "--version"]);
   });
 
+  it("allowlists the provider base-url env so a custom OpenAI-compatible endpoint can be set", () => {
+    // Without the base-url key in envKeys it is stripped before the sandbox Job,
+    // so the agent always hits the default public endpoint and cannot be routed
+    // through a self-hosted / OpenAI-compatible gateway.
+    expect(getAdapterDefaults("claude_local").envKeys).toContain("ANTHROPIC_BASE_URL");
+    expect(getAdapterDefaults("codex_local").envKeys).toContain("OPENAI_BASE_URL");
+    expect(getAdapterDefaults("opencode_local").envKeys).toEqual(
+      expect.arrayContaining(["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENROUTER_BASE_URL"]),
+    );
+    expect(getAdapterDefaults("gemini_local").envKeys).toContain("GOOGLE_GEMINI_BASE_URL");
+  });
+
   it("throws on unknown adapter type", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
@@ -47,7 +59,7 @@ describe("getAdapterDefaults", () => {
   it("returns built-in defaults when no registry is supplied", () => {
     const d = getAdapterDefaults("claude_local");
     expect(d.runtimeImage).toContain("agent-runtime-claude");
-    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     expect(d.defaultEnv).toBeUndefined();
   });
 

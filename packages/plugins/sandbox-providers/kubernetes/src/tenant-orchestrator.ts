@@ -17,6 +17,14 @@ export interface EnsureTenantInput {
     limitsCpu: string;
     limitsMemory: string;
   };
+  limitRange: {
+    defaultCpu: string;
+    defaultMemory: string;
+    defaultRequestCpu: string;
+    defaultRequestMemory: string;
+    maxCpu: string;
+    maxMemory: string;
+  };
 }
 
 const SERVICE_ACCOUNT_NAME = "paperclip-tenant-sa";
@@ -191,13 +199,13 @@ async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput):
             limits: [
               {
                 type: "Container",
-                max: { cpu: "4", memory: "8Gi" },
+                max: { cpu: input.limitRange.maxCpu, memory: input.limitRange.maxMemory },
                 min: { cpu: "100m", memory: "128Mi" },
                 // The k8s client-node type names this `_default` but the actual
                 // Kubernetes API field is `default`. We produce a JSON-shape
                 // manifest so the cast is safe.
-                default: { cpu: "1", memory: "2Gi" },
-                defaultRequest: { cpu: "250m", memory: "512Mi" },
+                default: { cpu: input.limitRange.defaultCpu, memory: input.limitRange.defaultMemory },
+                defaultRequest: { cpu: input.limitRange.defaultRequestCpu, memory: input.limitRange.defaultRequestMemory },
               },
             ],
           },
