@@ -49,7 +49,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Name your company" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
+  await page.locator('input[placeholder="Name your company"]').fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
   await expect(page.getByRole("heading", { name: "Define your mission" })).toBeVisible({ timeout: 30_000 });

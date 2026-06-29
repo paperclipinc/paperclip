@@ -57,7 +57,7 @@ test.describe("Onboarding wizard", () => {
     await expect(
       page.getByRole("heading", { name: "Name your company" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
+    await page.getByPlaceholder("Name your company").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
 
     // Step 2 — Define your mission (direct entry is the default path).

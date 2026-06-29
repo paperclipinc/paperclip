@@ -68,7 +68,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await expect(
       page.getByRole("heading", { name: "Name your company" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Acme Corp").fill("QA Robotics");
+    await page.getByPlaceholder("Name your company").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
 
     await page.getByRole("button", { name: /^Next/ }).click();
@@ -122,7 +122,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await expect(
       page.getByRole("heading", { name: "Name your company" }),
     ).toBeVisible({ timeout: 10_000 });
-    await page.getByPlaceholder("Acme Corp").fill("QA Robotics Grow");
+    await page.getByPlaceholder("Name your company").fill("QA Robotics Grow");
     await page.getByRole("button", { name: /^Next/ }).click();
     await expect(
       page.getByRole("heading", { name: /Tell us about your team/ }),
