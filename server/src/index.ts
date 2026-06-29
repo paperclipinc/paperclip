@@ -1,9 +1,4 @@
 /// <reference path="./types/express.d.ts" />
-// Kicks off the OTel bootstrap as early as possible (no-op unless
-// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
-// instrumentationReady before opening DB connections or constructing the
-// HTTP server, so trace coverage does not depend on incidental timing.
-import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -35,6 +30,11 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  configureLiveEventsTransport,
+  resolveLiveEventsRedisUrl,
+  resolveLiveEventsTransportMode,
+} from "./services/live-events.js";
+import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
@@ -49,6 +49,7 @@ import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
+import { warnIfManagedExperienceMisconfigured } from "./services/managed-agent-defaults.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -101,9 +102,6 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
-  // Tracing must be active (or have failed and logged) before the first DB
-  // connection or the HTTP server exists — see instrumentation.ts.
-  await instrumentationReady;
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -699,6 +697,20 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
+  // Cross-replica live-events transport. Default: Postgres LISTEN/NOTIFY
+  // against the same database the server already uses — no new infra.
+  // Operators who run Redis can opt in via PAPERCLIP_LIVE_EVENTS_TRANSPORT=redis.
+  // Single-replica deployments are unaffected: in-process delivery has
+  // always worked locally and the transport is purely additive.
+  const liveEventsTransportMode = resolveLiveEventsTransportMode();
+  void configureLiveEventsTransport({
+    mode: liveEventsTransportMode,
+    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
+    redisUrl: resolveLiveEventsRedisUrl(),
+  }).catch((err) => {
+    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
+  });
+
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -882,10 +894,20 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "routine scheduler tick failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Periodically reap orphaned runs and make sure persisted queued work is
+      // still being driven forward. The staleness threshold (default 5 min) is the
+      // max wall-clock a "running" run can go without its updatedAt advancing before
+      // it is treated as orphaned and reaped. A long agent build executes as a single
+      // multi-minute sandbox exec that does NOT refresh updatedAt mid-flight, so the
+      // 5-min default reaps real in-progress builds (SIGKILL, exit 137). Make it
+      // configurable via PAPERCLIP_HEARTBEAT_REAP_STALE_MS so cloud/sandbox
+      // deployments can allow for long autonomous builds.
+      const reapStaleMs = (() => {
+        const raw = Number(process.env.PAPERCLIP_HEARTBEAT_REAP_STALE_MS);
+        return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
+      })();
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ staleThresholdMs: reapStaleMs })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
@@ -976,6 +998,11 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  const managedMisconfigWarning = warnIfManagedExperienceMisconfigured();
+  if (managedMisconfigWarning) {
+    logger.warn(managedMisconfigWarning);
+  }
+
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
       server.off("error", onError);
@@ -1056,10 +1083,6 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
-
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
-      await shutdownInstrumentation();
 
       process.exit(0);
     };

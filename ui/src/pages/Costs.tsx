@@ -10,8 +10,9 @@ import type {
   QuotaWindow,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
-import { budgetsApi } from "../api/budgets";
+import { budgetsApi, resolveCloudBudgetAction } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -26,6 +27,8 @@ import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
+import { useSearchParams } from "@/lib/router";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
@@ -150,6 +153,8 @@ export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
@@ -199,6 +204,16 @@ export function Costs() {
     staleTime: 5_000,
   });
 
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  // Cloud-hosted billing: the company budget is a recurring monthly wallet funded
+  // through the hosted checkout (Paddle) that carries over month to month, not a
+  // direct limit write. Self-hosters leave this off and keep the existing direct
+  // PATCH/POST write.
+  const cloudBilling = experimentalSettings?.cloudBilling === true;
+
   const invalidateBudgetViews = () => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
@@ -207,20 +222,91 @@ export function Costs() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
   };
 
+  // Hosted-checkout return for a cloud budget top-up. The buyer comes back to this
+  // page with ?billing=ok|cancel. The funded amount lands via the billing webhook a
+  // few seconds later, so on success we confirm with a toast and refresh the wallet
+  // a handful of times (the overview otherwise only polls every 30s) so the new
+  // balance appears without a manual reload. Then we strip the param so a reload
+  // does not re-toast.
+  const billingReturnHandled = useRef(false);
+  useEffect(() => {
+    if (billingReturnHandled.current) return;
+    const billing = searchParams.get("billing");
+    if (!billing) return;
+    billingReturnHandled.current = true;
+
+    if (billing === "ok") {
+      pushToast({ title: "Budget top-up received", body: "Updating your wallet balance.", tone: "success" });
+      let n = 0;
+      const tick = () => {
+        invalidateBudgetViews();
+        if (++n < 6) setTimeout(tick, 2500);
+      };
+      tick();
+    } else if (billing === "cancel") {
+      pushToast({ title: "Checkout canceled", body: "You have not been charged.", tone: "info" });
+    }
+
+    setSearchParams(
+      (current) => {
+        const params = new URLSearchParams(current);
+        params.delete("billing");
+        return params;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams, pushToast]);
+
+  // Under cloudBilling the company budget is the recurring carry-over wallet. Its
+  // current funded amount (cap) tells us first-time-set vs change: a wallet with
+  // amount > 0 already has a budget subscription, so a change PATCHes the
+  // subscription quantity (prorated); otherwise we start a fresh checkout.
+  const currentCompanyBudgetCents = useMemo(() => {
+    const companyPolicy = (budgetData?.policies ?? []).find(
+      (policy) => policy.scopeType === "company",
+    );
+    return companyPolicy?.amount ?? 0;
+  }, [budgetData?.policies]);
+
   const policyMutation = useMutation({
-    mutationFn: (input: {
+    mutationFn: async (input: {
       scopeType: BudgetPolicySummary["scopeType"];
       scopeId: string;
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
-    }) =>
-      budgetsApi.upsertPolicy(companyId, {
+    }) => {
+      if (cloudBilling) {
+        if (resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
+          // Existing recurring budget: update the subscription quantity in place.
+          await budgetsApi.updateRecurringBudget(companyId, input.amount);
+          return;
+        }
+        // First-time set: create the recurring budget subscription via checkout.
+        // Pass this Costs page as the return path so the buyer comes back here
+        // after paying, instead of bouncing to the account page.
+        const { checkoutUrl } = await budgetsApi.setRecurringBudget(
+          companyId,
+          input.amount,
+          window.location.pathname,
+        );
+        window.location.assign(checkoutUrl);
+        return;
+      }
+      await budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
         amount: input.amount,
         windowKind: input.windowKind,
-      }),
-    onSuccess: invalidateBudgetViews,
+      });
+    },
+    onSuccess: () => {
+      // A first-time cloud budget navigates to checkout (the funded amount lands
+      // via webhook later), so refreshing budget views then is unnecessary. A
+      // recurring-budget change stays on the page, so refresh as usual.
+      if (!cloudBilling || resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
+        invalidateBudgetViews();
+      }
+    },
   });
 
   const incidentMutation = useMutation({
@@ -842,7 +928,9 @@ export function Costs() {
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    {cloudBilling
+                      ? "Your company budget is funded monthly and carries over. Hard-stop spend limits for agents and projects apply on top. Provider subscription quota stays separate and appears under Providers."
+                      : "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers."}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
@@ -910,7 +998,9 @@ export function Costs() {
                         <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
                         <p className="text-sm text-muted-foreground">
                           {scopeType === "company"
-                            ? "Company-wide monthly policy."
+                            ? cloudBilling
+                              ? "Funded monthly and rolls over. Unused budget carries into next month."
+                              : "Company-wide monthly policy."
                             : scopeType === "agent"
                               ? "Recurring monthly spend policies for individual agents."
                               : "Lifetime spend policies for execution-bound projects."}

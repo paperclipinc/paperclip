@@ -14,6 +14,7 @@ export const createCompanyInviteSchema = z.object({
   humanRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
   defaultsPayload: z.record(z.string(), z.unknown()).optional().nullable(),
   agentMessage: z.string().max(4000).optional().nullable(),
+  email: z.string().email().optional().nullable(),
 });
 
 export type CreateCompanyInvite = z.infer<typeof createCompanyInviteSchema>;
@@ -180,7 +181,10 @@ const profileImageSchema = z
 export const currentUserProfileSchema = z.object({
   id: z.string().min(1),
   email: z.string().email().nullable(),
-  name: z.string().min(1).max(120).nullable(),
+  name: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().min(1).max(120).nullable(),
+  ),
   image: profileImageSchema.nullable(),
 });
 

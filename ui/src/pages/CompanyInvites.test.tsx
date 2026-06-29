@@ -199,6 +199,7 @@ describe("CompanyInvites", () => {
       allowedJoinTypes: "human",
       humanRole: "viewer",
       agentMessage: null,
+      email: null,
     });
     expect(clipboardWriteTextMock).toHaveBeenCalledWith("https://paperclip.local/invite/new-token");
     expect(container.textContent).toContain("Latest invite link");
@@ -324,6 +325,95 @@ describe("CompanyInvites", () => {
         },
       ],
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("sends the typed recipient email to createCompanyInvite", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <CompanyInvites />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const emailInput = container.querySelector(
+      'input[aria-label="Invitee email"]',
+    ) as HTMLInputElement | null;
+    expect(emailInput).toBeTruthy();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(emailInput, "teammate@example.com");
+      emailInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Create invite",
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(createCompanyInviteMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ email: "teammate@example.com" }),
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("sends email: null when the recipient field is left blank", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <CompanyInvites />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Create invite",
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(createCompanyInviteMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ email: null }),
+    );
 
     await act(async () => {
       root.unmount();

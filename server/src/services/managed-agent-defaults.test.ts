@@ -1,0 +1,120 @@
+import { describe, expect, it } from "vitest";
+import {
+  resolveManagedAgentDefaults,
+  applyManagedAgentDefaults,
+  warnIfManagedExperienceMisconfigured,
+} from "./managed-agent-defaults.js";
+
+describe("resolveManagedAgentDefaults", () => {
+  it("returns null when no managed adapter env is set", () => {
+    expect(resolveManagedAgentDefaults({})).toBeNull();
+  });
+
+  it("reads adapter and model from env", () => {
+    expect(
+      resolveManagedAgentDefaults({
+        PAPERCLIP_MANAGED_DEFAULT_ADAPTER: "opencode_local",
+        PAPERCLIP_MANAGED_DEFAULT_MODEL: "anthropic/tensorix/deepseek/deepseek-v4-pro",
+      }),
+    ).toEqual({
+      adapterType: "opencode_local",
+      model: "anthropic/tensorix/deepseek/deepseek-v4-pro",
+    });
+  });
+
+  it("model is null when only the adapter is set", () => {
+    expect(
+      resolveManagedAgentDefaults({ PAPERCLIP_MANAGED_DEFAULT_ADAPTER: "opencode_local" }),
+    ).toEqual({ adapterType: "opencode_local", model: null });
+  });
+});
+
+describe("warnIfManagedExperienceMisconfigured", () => {
+  it("returns a non-null message when flag=true and adapter is unset", () => {
+    const result = warnIfManagedExperienceMisconfigured({
+      PAPERCLIP_MANAGED_EXPERIENCE: "true",
+    });
+    expect(result).not.toBeNull();
+    expect(result).toContain("PAPERCLIP_MANAGED_DEFAULT_ADAPTER");
+  });
+
+  it("returns null when flag=true and adapter is set", () => {
+    const result = warnIfManagedExperienceMisconfigured({
+      PAPERCLIP_MANAGED_EXPERIENCE: "true",
+      PAPERCLIP_MANAGED_DEFAULT_ADAPTER: "opencode_local",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("returns null when flag is unset", () => {
+    const result = warnIfManagedExperienceMisconfigured({});
+    expect(result).toBeNull();
+  });
+});
+
+describe("applyManagedAgentDefaults", () => {
+  const managed = {
+    adapterType: "opencode_local",
+    model: "anthropic/tensorix/deepseek/deepseek-v4-pro",
+  };
+
+  it("injects adapter + model when the request omits the adapter", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: undefined,
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("opencode_local");
+    expect(out.adapterConfig.model).toBe(
+      "anthropic/tensorix/deepseek/deepseek-v4-pro",
+    );
+  });
+
+  it("does not override an explicitly chosen adapter (Advanced power user)", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: "codex_local",
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("codex_local");
+    expect(out.adapterConfig.model).toBeUndefined();
+  });
+
+  it("does not override a model the user already supplied", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: undefined,
+      adapterConfig: { model: "anthropic/tensorix/z-ai/glm-4.7" },
+      managed,
+    });
+    expect(out.adapterConfig.model).toBe("anthropic/tensorix/z-ai/glm-4.7");
+  });
+
+  it("injects when adapterType is the schema default sentinel 'process'", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: "process",
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("opencode_local");
+    expect(out.adapterConfig.model).toBe("anthropic/tensorix/deepseek/deepseek-v4-pro");
+  });
+
+  it("treats whitespace-only adapterType as unspecified", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: "   ",
+      adapterConfig: {},
+      managed,
+    });
+    expect(out.adapterType).toBe("opencode_local");
+  });
+
+  it("is a no-op when managed is null", () => {
+    const out = applyManagedAgentDefaults({
+      requestedAdapterType: undefined,
+      adapterConfig: {},
+      managed: null,
+    });
+    expect(out.adapterType).toBeUndefined();
+    expect(out.adapterConfig).toEqual({});
+  });
+});

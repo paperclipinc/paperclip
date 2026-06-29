@@ -10,6 +10,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -260,6 +261,15 @@ export function OnboardingWizard() {
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
+  // Managed experience: when on, the instance picks the harness + model for the
+  // user, so the wizard hides the adapter/model pickers on the heartbeat step
+  // and omits those fields from the hire payload (the server injects the managed
+  // defaults). Off by default, so the unconfigured product is unchanged.
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const managed = experimentalSettings?.managedExperience === true;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -584,49 +594,62 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      if (adapterType === "opencode_local") {
-        const selectedModelId = model.trim();
-        if (!isValidOpenCodeModelId(selectedModelId)) {
-          setError(
-            "OpenCode requires an explicit model in provider/model format."
-          );
-          return;
+      // In managed mode the user never chose a harness/model, so the
+      // adapter-specific preflight (OpenCode model validation, the local
+      // adapter environment probe) does not apply — the server injects the
+      // managed default adapter + model for this hire.
+      if (!managed) {
+        if (adapterType === "opencode_local") {
+          const selectedModelId = model.trim();
+          if (!isValidOpenCodeModelId(selectedModelId)) {
+            setError(
+              "OpenCode requires an explicit model in provider/model format."
+            );
+            return;
+          }
+          if (adapterModelsError) {
+            setError(
+              adapterModelsError instanceof Error
+                ? adapterModelsError.message
+                : "Failed to load OpenCode models."
+            );
+            return;
+          }
+          if (adapterModelsLoading || adapterModelsFetching) {
+            setError(
+              "OpenCode models are still loading. Please wait and try again."
+            );
+            return;
+          }
+          const discoveredModels = adapterModels ?? [];
+          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+            setError(
+              discoveredModels.length === 0
+                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+                : `Configured OpenCode model is unavailable: ${selectedModelId}`
+            );
+            return;
+          }
         }
-        if (adapterModelsError) {
-          setError(
-            adapterModelsError instanceof Error
-              ? adapterModelsError.message
-              : "Failed to load OpenCode models."
-          );
-          return;
-        }
-        if (adapterModelsLoading || adapterModelsFetching) {
-          setError(
-            "OpenCode models are still loading. Please wait and try again."
-          );
-          return;
-        }
-        const discoveredModels = adapterModels ?? [];
-        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-          setError(
-            discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-              : `Configured OpenCode model is unavailable: ${selectedModelId}`
-          );
-          return;
-        }
-      }
 
-      if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-        if (!result) return;
+        if (isLocalAdapter) {
+          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+          if (!result) return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        adapterType,
-        adapterConfig: buildAdapterConfig(),
+        // When managed, omit adapterType + adapterConfig entirely so the server
+        // injects the managed default harness + model. Sending them (even
+        // "process") would pin an inert adapter instead.
+        ...(managed
+          ? {}
+          : {
+              adapterType,
+              adapterConfig: buildAdapterConfig(),
+            }),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -1236,6 +1259,14 @@ export function OnboardingWizard() {
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
+                  {managed ? (
+                    <div className="rounded-md border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
+                      Your workspace runs a managed runtime and model, so there's
+                      nothing to choose here. Give your lead a heartbeat to bring
+                      it online.
+                    </div>
+                  ) : (
+                  <>
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
@@ -1578,6 +1609,8 @@ export function OnboardingWizard() {
                       />
                     </div>
                   )}
+                  </>
+                  )}
                 </div>
               )}
 
@@ -1719,7 +1752,7 @@ export function OnboardingWizard() {
               name + mission steps) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-[#1d1d1d] transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-muted transition-[width,opacity] duration-500 ease-in-out",
               step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >

@@ -62,6 +62,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    managedExperience: false,
+    cloudBilling: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
   };
 }

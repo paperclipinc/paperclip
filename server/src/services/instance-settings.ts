@@ -57,6 +57,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      managedExperience: parsed.data.managedExperience ?? (process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true"),
+      cloudBilling: parsed.data.cloudBilling ?? (process.env.PAPERCLIP_CLOUD_BILLING === "true"),
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -76,6 +78,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    managedExperience: process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true",
+    cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };

@@ -561,6 +561,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
@@ -615,6 +616,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
+  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -4183,6 +4185,27 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/activation",
+  tags: ["access"],
+  summary: "Get company activation status",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/budgets/increment",
+  tags: ["costs"],
+  summary: "Increment company budget (cloud-internal)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────

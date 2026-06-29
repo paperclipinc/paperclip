@@ -782,6 +782,9 @@ importers:
       pino-pretty:
         specifier: ^13.1.3
         version: 13.1.3
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
       sharp:
         specifier: ^0.34.5
         version: 0.34.5

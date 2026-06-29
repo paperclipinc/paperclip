@@ -75,6 +75,10 @@ export function NewAgent() {
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // Managed experience: when on and the user never opened the form's "Advanced"
+  // disclosure to pick a harness, omit adapterType + model from the hire payload
+  // so the server injects the operator-configured default adapter/model.
+  const [omitManagedAdapterAndModel, setOmitManagedAdapterAndModel] = useState(false);
   const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
   const [testAgentState, setTestAgentState] = useState({ disabled: true, pending: false });
   const [testAgentFeedback, setTestAgentFeedback] = useState<{
@@ -161,24 +165,30 @@ export function NewAgent() {
   function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     setFormError(null);
-    if (configValues.adapterType === "opencode_local") {
+    // When omitting the harness/model for managed defaults, the user never chose
+    // a model, so the opencode-specific preflight does not apply (the server
+    // injects the curated default).
+    if (!omitManagedAdapterAndModel && configValues.adapterType === "opencode_local") {
       if (!isValidOpenCodeModelId(configValues.model)) {
         setFormError("OpenCode requires an explicit model in provider/model format.");
         return;
       }
     }
-    createAgent.mutate(
-      buildNewAgentHirePayload({
-        name,
-        effectiveRole,
-        title,
-        reportsTo,
-        selectedSkillKeys,
-        configValues,
-        adapterConfig: buildAdapterConfig(),
-        permissions,
-      }),
-    );
+    const payload = buildNewAgentHirePayload({
+      name,
+      effectiveRole,
+      title,
+      reportsTo,
+      selectedSkillKeys,
+      configValues,
+      adapterConfig: buildAdapterConfig(),
+      permissions,
+    }) as Record<string, unknown>;
+    if (omitManagedAdapterAndModel) {
+      delete payload.adapterType;
+      delete payload.adapterConfig;
+    }
+    createAgent.mutate(payload);
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));
@@ -198,6 +208,10 @@ export function NewAgent() {
 
   const handleTestAgentStateChange = useCallback((state: { disabled: boolean; pending: boolean }) => {
     setTestAgentState(state);
+  }, []);
+
+  const handleManagedDefaultsChange = useCallback((omit: boolean) => {
+    setOmitManagedAdapterAndModel(omit);
   }, []);
 
   const handleTestAgentFeedbackChange = useCallback((feedback: {
@@ -300,6 +314,7 @@ export function NewAgent() {
           mode="create"
           values={configValues}
           onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+          onManagedDefaultsChange={handleManagedDefaultsChange}
           onTestActionChange={handleTestAgentActionChange}
           onTestActionStateChange={handleTestAgentStateChange}
           onTestFeedbackChange={handleTestAgentFeedbackChange}

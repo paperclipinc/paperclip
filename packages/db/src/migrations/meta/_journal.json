@@ -876,6 +876,13 @@
       "when": 1782440000000,
       "tag": "0124_agent_api_key_scope_config",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1781903000000,
+      "tag": "0125_activation_events",
+      "breakpoints": true
     }
   ]
 }

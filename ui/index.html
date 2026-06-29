@@ -21,13 +21,14 @@
         const key = "paperclip.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
+        // Deployer-configurable default (server injects this meta from
+        // PAPERCLIP_DEFAULT_THEME). Absent -> "dark", the built-in default.
+        const metaDefault = document.querySelector('meta[name="paperclip-default-theme"]');
+        const defaultTheme =
+          metaDefault && metaDefault.getAttribute("content") === "light" ? "light" : "dark";
         try {
           const stored = window.localStorage.getItem(key);
-          const prefersDark =
-            typeof window.matchMedia === "function" &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const fallback = prefersDark ? "dark" : "light";
-          const theme = stored === "light" || stored === "dark" ? stored : fallback;
+          const theme = stored === "light" || stored === "dark" ? stored : defaultTheme;
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";
@@ -36,11 +37,22 @@
             themeColorMeta.setAttribute("content", isDark ? darkThemeColor : lightThemeColor);
           }
         } catch {
-          document.documentElement.classList.add("dark");
-          document.documentElement.style.colorScheme = "dark";
+          const isDark = defaultTheme === "dark";
+          document.documentElement.classList.toggle("dark", isDark);
+          document.documentElement.style.colorScheme = isDark ? "dark" : "light";
         }
       })();
     </script>
+    <!--
+      Runtime brand stylesheet hook. When PAPERCLIP_BRAND_DIR is set, the server
+      (see server/src/ui-branding.ts) injects a brand stylesheet link just before
+      the closing head tag, after Vite's bundled stylesheet, so deployer-supplied
+      CSS variable overrides win the cascade. Nothing is emitted when the env var
+      is unset, keeping the default build unbranded. NOTE: do not write a literal
+      closing-head tag or asset tag in this comment -- Vite injects the bundled
+      entry script before the FIRST closing head tag it finds, so a literal one
+      here buries the app script inside this comment and the SPA never boots.
+    -->
   </head>
   <body>
     <div id="root"></div>

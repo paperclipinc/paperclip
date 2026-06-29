@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
-FROM paperclipai/agent-runtime-base:${BASE_TAG}
+FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
 USER root
 RUN npm install -g @anthropic-ai/claude-code@latest \
-    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+    && chown -R 1000:1000 /usr/lib/node_modules \
+    || true
 
-# @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'.
-# Resolve the real install path and fail the build if claude is missing.
-RUN CLAUDE_BIN="$(command -v claude)" \
-    && ln -s "$CLAUDE_BIN" /usr/bin/claude-code
+# @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'
+RUN command -v claude >/dev/null 2>&1 && ln -s /usr/bin/claude /usr/bin/claude-code || true
 
 USER 1000:1000
 

@@ -53,8 +53,13 @@ import {
   conflict,
   notFound,
   unauthorized,
-  badRequest
+  badRequest,
+  tooManyRequests
 } from "../errors.js";
+import {
+  createInviteRateLimiter,
+  type InviteRateLimiter,
+} from "../services/invite-rate-limit.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { collectReachableInterfaceHosts } from "../runtime-api.js";
@@ -73,6 +78,16 @@ import {
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
+  createDrizzleActivationStore,
+  hasActivationForCompany,
+} from "../services/activation.js";
+import {
+  getInviteEmailTransport,
+  inviteEmailHook,
+  type InviteEmailPayload,
+} from "../services/invite-email.js";
+import { assertSeatAvailable } from "../services/seat-limit.js";
+import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
@@ -90,8 +105,12 @@ function hashToken(token: string) {
 }
 
 const INVITE_TOKEN_PREFIX = "pcp_invite_";
-const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
-const INVITE_TOKEN_SUFFIX_LENGTH = 8;
+// 32 random bytes = 256 bits of entropy, base64url-encoded (43 chars). The
+// invite token is public (anyone with the link can GET/accept the invite), so
+// it must not be brute-forceable. The previous 8-char base36 suffix carried only
+// ~41 bits, which is online-enumerable. The token is stored hashed (sha256) in
+// `invites.tokenHash`; the raw value is only returned once on creation.
+const INVITE_TOKEN_ENTROPY_BYTES = 32;
 const INVITE_TOKEN_MAX_RETRIES = 5;
 const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 const INVITE_RESOLUTION_DNS_TIMEOUT_MS = 3_000;
@@ -101,12 +120,8 @@ type MemberGrantPayload = {
   scope?: Record<string, unknown> | null;
 };
 
-function createInviteToken() {
-  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
-  let suffix = "";
-  for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
-    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
-  }
+export function createInviteToken() {
+  const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
   return `${INVITE_TOKEN_PREFIX}${suffix}`;
 }
 
@@ -2598,6 +2613,7 @@ export function accessRoutes(
     bindHost: string;
     allowedHostnames: string[];
     inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
+    inviteRateLimiter?: InviteRateLimiter;
   }
 ) {
   const router = Router();
@@ -2607,6 +2623,27 @@ export function accessRoutes(
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
+
+  // Per-IP rate limit for the public, unauthenticated invite-token endpoints
+  // (`/invites/:token*`). The token is looked up by hash, so without a limit the
+  // token space would be online-enumerable. Applied as a router-level middleware
+  // so every current and future `/invites/:token` sub-route is covered.
+  const inviteRateLimiter = opts.inviteRateLimiter ?? createInviteRateLimiter();
+  router.use("/invites/:token", (req, res, next) => {
+    const result = inviteRateLimiter.consume(requestIp(req));
+    res.setHeader("X-RateLimit-Limit", String(result.limit));
+    res.setHeader("X-RateLimit-Remaining", String(result.remaining));
+    if (!result.allowed) {
+      res.setHeader("Retry-After", String(result.retryAfterSeconds));
+      next(
+        tooManyRequests("Too many invite requests", {
+          retryAfterSeconds: result.retryAfterSeconds,
+        }),
+      );
+      return;
+    }
+    next();
+  });
 
   async function assertInstanceAdmin(req: Request) {
     if (req.actor.type !== "board") throw unauthorized();
@@ -3276,6 +3313,10 @@ export function accessRoutes(
         }
       });
 
+      // Billing seat insertion point (Billing workstream owns enforcement;
+      // launch default is unlimited).
+      await assertSeatAvailable(db, created.companyId);
+
       const companyBranding = await getInviteCompanyBranding(created.companyId, token);
       const inviteSummary = toInviteSummaryResponse(
         req,
@@ -3283,6 +3324,17 @@ export function accessRoutes(
         created,
         companyBranding
       );
+
+      // Optional email delivery: when a recipient email is present and the
+      // Email workstream has registered a transport, send the invite. Otherwise
+      // the copyable inviteUrl below is the unchanged fallback.
+      await inviteEmailHook(getInviteEmailTransport(), {
+        email: (req.body.email as string | null | undefined) ?? null,
+        inviteUrl: inviteSummary.inviteUrl,
+        companyName: companyBranding.name ?? null,
+        role: (req.body.humanRole as InviteEmailPayload["role"]) ?? null,
+      });
+
       res.status(201).json({
         ...created,
         token,
@@ -4409,6 +4461,14 @@ export function accessRoutes(
     assertCompanyAccess(req, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
     res.json({ users });
+  });
+
+  router.get("/companies/:companyId/activation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const store = createDrizzleActivationStore(db);
+    const activated = await hasActivationForCompany(store, companyId);
+    res.json({ activated });
   });
 
   router.patch(
