@@ -14,10 +14,6 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
 
-const mockAccessApi = vi.hoisted(() => ({
-  listMembers: vi.fn(),
-}));
-
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
@@ -204,10 +200,6 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
-vi.mock("../api/access", () => ({
-  accessApi: mockAccessApi,
-}));
-
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
 }));
@@ -252,17 +244,6 @@ describe("Layout", () => {
     });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
-    });
-    // Default: viewer is a non-owner (invited member) so the cloud first-run
-    // onboarding wizard never auto-opens in these layout-structure tests.
-    mockAccessApi.listMembers.mockResolvedValue({
-      members: [],
-      access: {
-        currentUserRole: "member",
-        canManageMembers: false,
-        canInviteUsers: false,
-        canApproveJoinRequests: false,
-      },
     });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;

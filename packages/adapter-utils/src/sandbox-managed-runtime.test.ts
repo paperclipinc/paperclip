@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -663,6 +663,8 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
     await writeFile(path.join(localAssetsDir, "skill.md"), "skill\n", "utf8");
 
+    // Drive byte progress in 100 fine (1%) increments so the throttle has many
+    // chances to emit; the reporter must collapse them to ~one line per 10% step.
     const driveProgress = async (
       total: number,
       onProgress: ((done: number, total: number | null) => void | Promise<void>) | undefined,
@@ -720,7 +722,9 @@ describe("sandbox managed runtime", () => {
     const uploadAssetLines = lines.filter((line) => line.includes("Syncing skills to sandbox"));
     expect(uploadWorkspaceLines.length).toBeGreaterThan(0);
     expect(uploadAssetLines.length).toBeGreaterThan(0);
+    // 100 reported increments must be throttled to at most ~one line per 10% step.
     expect(uploadWorkspaceLines.length).toBeLessThanOrEqual(11);
+    // Reaches 100% and shows the MB breakdown.
     expect(uploadWorkspaceLines.some((line) => line.includes("100%"))).toBe(true);
     expect(uploadWorkspaceLines.every((line) => /\(\d+\.\d\/\d+\.\d MB\)/.test(line))).toBe(true);
 
@@ -729,68 +733,6 @@ describe("sandbox managed runtime", () => {
     expect(restoreLines.length).toBeGreaterThan(0);
     expect(restoreLines.length).toBeLessThanOrEqual(11);
     expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);
-  });
-
-  it("tolerates a tar exit code 1 (benign 'file changed as we read it') when restoring the workspace", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-tarexit1-"));
-    cleanupDirs.push(rootDir);
-    const localWorkspaceDir = path.join(rootDir, "local-workspace");
-    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
-    const fakeBinDir = path.join(rootDir, "fakebin");
-    await mkdir(localWorkspaceDir, { recursive: true });
-    await mkdir(fakeBinDir, { recursive: true });
-    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
-
-    const realTar = (await execFile("sh", ["-c", "command -v tar"]))
-      .stdout.trim();
-    const tarShimPath = path.join(fakeBinDir, "tar");
-    await writeFile(
-      tarShimPath,
-      `#!/bin/sh\n${realTar} "$@"\nstatus=$?\nif [ "$status" -eq 0 ]; then exit 1; fi\nexit "$status"\n`,
-      "utf8",
-    );
-    await chmod(tarShimPath, 0o755);
-
-    const client: SandboxManagedRuntimeClient = {
-      makeDir: async (remotePath) => {
-        await mkdir(remotePath, { recursive: true });
-      },
-      writeFile: async (remotePath, bytes) => {
-        await mkdir(path.dirname(remotePath), { recursive: true });
-        await writeFile(remotePath, Buffer.from(bytes));
-      },
-      readFile: async (remotePath) => await readFile(remotePath),
-      listFiles: async () => [],
-      remove: async (remotePath) => {
-        await rm(remotePath, { recursive: true, force: true });
-      },
-      run: async (command) => {
-        await execFile("sh", ["-c", command], {
-          maxBuffer: 32 * 1024 * 1024,
-          env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH ?? ""}` },
-        }).catch((err: NodeJS.ErrnoException & { code?: number }) => {
-          throw new Error(`run failed with exit code ${err.code ?? "null"}`);
-        });
-      },
-    };
-
-    const prepared = await prepareSandboxManagedRuntime({
-      spec: {
-        transport: "sandbox",
-        provider: "test",
-        sandboxId: "sandbox-1",
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-        apiKey: null,
-      },
-      adapterKey: "test-adapter",
-      client,
-      workspaceLocalDir: localWorkspaceDir,
-    });
-
-    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote\n", "utf8");
-    await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
-    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("remote\n");
   });
 
   it("creates a valid empty workspace tarball when the local workspace is empty", async () => {

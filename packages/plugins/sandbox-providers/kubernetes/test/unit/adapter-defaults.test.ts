@@ -59,7 +59,7 @@ describe("getAdapterDefaults", () => {
   it("returns built-in defaults when no registry is supplied", () => {
     const d = getAdapterDefaults("claude_local");
     expect(d.runtimeImage).toContain("agent-runtime-claude");
-    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
     expect(d.defaultEnv).toBeUndefined();
   });
 

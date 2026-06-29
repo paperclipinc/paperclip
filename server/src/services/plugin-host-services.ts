@@ -865,16 +865,19 @@ export function buildHostServices(
   };
 
   const INVITE_TOKEN_PREFIX = "pcp_invite_";
-  // 256 bits of entropy, base64url-encoded. Keep in sync with createInviteToken
-  // in routes/access.ts. The token is public, so it must not be brute-forceable.
-  const INVITE_TOKEN_ENTROPY_BYTES = 32;
+  const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const INVITE_TOKEN_SUFFIX_LENGTH = 8;
   const INVITE_TOKEN_MAX_RETRIES = 5;
   const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 
   const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
   const createInviteToken = () => {
-    const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
+    const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
+    let suffix = "";
+    for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
+      suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
+    }
     return `${INVITE_TOKEN_PREFIX}${suffix}`;
   };
 

@@ -57,13 +57,6 @@ export interface KubernetesEnvironmentConfigInput {
    */
   timeoutMs?: number;
   adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
-  /**
-   * Optional cloud control-plane base URL for resolving a per-company inference
-   * key (Bifrost virtual key). Stored verbatim in the environment config and
-   * validated by the sandbox config schema (`cloudInferenceKeyResolverUrl`).
-   * When unset the plugin uses the inherited shared platform key unchanged.
-   */
-  cloudInferenceKeyResolverUrl?: string;
   [key: string]: unknown;
 }
 

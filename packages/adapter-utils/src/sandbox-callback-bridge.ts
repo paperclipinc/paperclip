@@ -11,13 +11,6 @@ const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
-// A transient queue-listing/processing error mid-run (a flaky exec/WebSocket
-// blip surfacing as "list .../queue/requests failed with exit code 1") must NOT
-// permanently settle the worker — that kills every remaining callback for the
-// run. We back off and continue, only giving up after this many CONSECUTIVE
-// failures (each separated by a short backoff), which still bounds a genuinely
-// wedged queue.
-const DEFAULT_BRIDGE_MAX_CONSECUTIVE_FAILURES = 10;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
@@ -604,20 +597,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
     body?: string;
   }>;
   maxBodyBytes?: number | null;
-  /**
-   * Number of CONSECUTIVE listing/processing failures the worker tolerates
-   * (with backoff) before it gives up and settles. A single transient blip
-   * resets to zero on the next successful poll, so this only trips on a
-   * genuinely wedged queue. Defaults to {@link DEFAULT_BRIDGE_MAX_CONSECUTIVE_FAILURES}.
-   */
-  maxConsecutiveFailures?: number | null;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
-  const maxConsecutiveFailures = normalizeTimeoutMs(
-    input.maxConsecutiveFailures,
-    DEFAULT_BRIDGE_MAX_CONSECUTIVE_FAILURES,
-  );
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   await input.client.makeDir(directories.rootDir);
   await input.client.makeDir(directories.requestsDir);
@@ -731,60 +713,27 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 
   const loop = (async () => {
-    // Count of CONSECUTIVE failed iterations. A transient listing/processing
-    // error is NOT fatal: the queue lives over a flaky exec/WebSocket channel,
-    // so one `listJsonFiles` (or per-request) throw is expected to recover. We
-    // log, back off, and continue — resetting the counter on the next clean
-    // iteration. The loop only settles on stop() or after maxConsecutiveFailures
-    // back-to-back failures, which still bounds a genuinely wedged queue.
-    let consecutiveFailures = 0;
     try {
       while (true) {
-        try {
-          const fileNames = await input.client.listJsonFiles(directories.requestsDir);
-          if (fileNames.length === 0) {
-            if (stopping) {
-              break;
-            }
-            consecutiveFailures = 0;
-            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-            continue;
-          }
-          for (const fileName of fileNames) {
-            if (stopping && Date.now() >= stopDeadline) break;
-            inFlight += 1;
-            try {
-              await processRequestFile(fileName);
-            } finally {
-              inFlight -= 1;
-            }
-          }
-          // A full clean iteration: the channel is healthy again.
-          consecutiveFailures = 0;
-          if (stopping && Date.now() >= stopDeadline) {
-            break;
-          }
-        } catch (iterationError) {
-          // Once we're stopping, a listing error during drain is benign — let
-          // the stop()/finally path handle pending requests rather than treating
-          // it as a run-killing failure.
+        const fileNames = await input.client.listJsonFiles(directories.requestsDir);
+        if (fileNames.length === 0) {
           if (stopping) {
             break;
           }
-          consecutiveFailures += 1;
-          const message = buildWorkerFailureMessage(iterationError);
-          if (consecutiveFailures >= maxConsecutiveFailures) {
-            // Genuine giveup: re-throw so the outer catch fails pending requests
-            // and settles the worker.
-            throw iterationError;
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+          continue;
+        }
+        for (const fileName of fileNames) {
+          if (stopping && Date.now() >= stopDeadline) break;
+          inFlight += 1;
+          try {
+            await processRequestFile(fileName);
+          } finally {
+            inFlight -= 1;
           }
-          console.warn(
-            `[paperclip] ${message} (transient; attempt ${consecutiveFailures}/${maxConsecutiveFailures}, retrying)`,
-          );
-          // Back off up to a few poll intervals so we don't hot-loop on a
-          // persistently failing channel while it has a chance to recover.
-          const backoffMs = pollIntervalMs * Math.min(consecutiveFailures, 5);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        }
+        if (stopping && Date.now() >= stopDeadline) {
+          break;
         }
       }
     } catch (error) {

@@ -826,16 +826,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
-      // Bill partial tokens IF a terminal `result` event was emitted before the
-      // wall-clock timeout. Unlike opencode/pi/codex/gemini, the Claude CLI's
-      // stream-json only carries cumulative usage in its final `result` line
-      // (the streamed `assistant` events do not), so when the timeout kills it
-      // mid-turn there is genuinely no partial usage to bill — parsedStream.usage
-      // is null in that case and we simply omit it. When a result DID arrive
-      // (e.g. the kill raced the terminal event), attach it so heartbeat still
-      // writes the cost_event. (H1)
-      const timeoutUsage = parsedStream.usage;
-      const timeoutCostUsd = parsedStream.costUsd;
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
@@ -843,16 +833,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: `Timed out after ${timeoutSec}s`,
         errorCode: "timeout",
         errorMeta,
-        ...(timeoutUsage
-          ? {
-              usage: timeoutUsage,
-              provider: "anthropic" as const,
-              biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-              model: parsedStream.model || model,
-              billingType,
-              costUsd: timeoutCostUsd ?? null,
-            }
-          : {}),
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }
@@ -939,11 +919,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        // Persist the HOST workspace cwd. Heartbeat reads
-        // previousSessionParams.cwd as the local workspace dir for the next
-        // run; using effectiveExecutionCwd here would leak the remote pod
-        // cwd (e.g. "/tmp") into host workspace resolution and cause the
-        // next run to walk/tar the entire host /tmp.
         cwd,
         promptBundleKey: promptBundle.bundleKey,
         ...(executionTargetIsRemote

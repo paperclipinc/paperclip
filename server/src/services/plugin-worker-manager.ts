@@ -61,18 +61,8 @@ import { logger } from "../middleware/logger.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/**
- * Hard upper bound for any RPC timeout (default 15 minutes). Prevents unbounded
- * waits. Configurable via PAPERCLIP_PLUGIN_MAX_RPC_TIMEOUT_MS because an autonomous
- * agent build runs as a single long `environmentExecute` RPC into the sandbox; the
- * 15-min default caps that exec, killing the run (exit 137) before it can persist
- * the workspace or record token usage. Cloud/sandbox deployments raise this so long
- * builds complete, persist, and bill correctly.
- */
-const MAX_RPC_TIMEOUT_MS = (() => {
-  const raw = Number(process.env.PAPERCLIP_PLUGIN_MAX_RPC_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 15 * 60 * 1_000;
-})();
+/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
