@@ -270,6 +270,10 @@ export function OnboardingWizard() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const managed = experimentalSettings?.managedExperience === true;
+  // Progress-bar segments mirror the steps the user actually walks through. In
+  // managed mode the "Connect a model" step (4) hides its picker (the instance
+  // chooses the harness + model), so it must not show a phantom segment.
+  const progressSteps: Step[] = managed ? [1, 2, 3, 5] : [1, 2, 3, 4, 5];
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -548,6 +552,53 @@ export function OnboardingWizard() {
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
+      // The company already exists: either auto-created in cloud_tenant mode
+      // (where the collection create is blocked by the gateway with a 409
+      // use_cloud_company_create) or carried in from the "add another agent"
+      // entry point. Never hit the blocked create here — when the user named
+      // the company on the company step, RENAME the existing company and
+      // ensure it has a company-level goal, then advance.
+      if (companyName.trim()) {
+        setLoading(true);
+        setError(null);
+        try {
+          const trimmedName = companyName.trim();
+          const current = companies.find((c) => c.id === createdCompanyId);
+          if (!current || current.name !== trimmedName) {
+            const updated = await companiesApi.update(createdCompanyId, {
+              name: trimmedName
+            });
+            setCreatedCompanyPrefix(updated.issuePrefix);
+            setSelectedCompanyId(updated.id);
+            queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+          }
+
+          if (!createdCompanyGoalId) {
+            const parsedGoal = parseOnboardingGoalInput(companyGoal);
+            const goal = await goalsApi.create(createdCompanyId, {
+              title: parsedGoal.title,
+              ...(parsedGoal.description
+                ? { description: parsedGoal.description }
+                : {}),
+              level: "company",
+              status: "active"
+            });
+            setCreatedCompanyGoalId(goal.id);
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.goals.list(createdCompanyId)
+            });
+          }
+
+          setStep(3);
+        } catch (err) {
+          setError(
+            err instanceof Error ? err.message : "Failed to update company"
+          );
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
       setStep(3);
       return;
     }
@@ -811,10 +862,10 @@ export function OnboardingWizard() {
             )}
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
-                  filled once step ≥ N. Completed segments jump back. */}
+              {/* Progress bar (brand .wsteps/.wstep) — one segment per visible
+                  step, filled once step ≥ N. Completed segments jump back. */}
               <div className="flex items-center gap-1.5 mb-8">
-                {([1, 2, 3, 4, 5] as const).map((s) => {
+                {progressSteps.map((s) => {
                   const filled = step >= s;
                   const canJump = s < step;
                   return (
@@ -1012,7 +1063,7 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder="Name your company"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
