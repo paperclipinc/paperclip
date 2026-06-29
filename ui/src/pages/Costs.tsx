@@ -27,6 +27,8 @@ import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
+import { useSearchParams } from "@/lib/router";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
@@ -151,6 +153,8 @@ export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
@@ -218,6 +222,41 @@ export function Costs() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
   };
 
+  // Hosted-checkout return for a cloud budget top-up. The buyer comes back to this
+  // page with ?billing=ok|cancel. The funded amount lands via the billing webhook a
+  // few seconds later, so on success we confirm with a toast and refresh the wallet
+  // a handful of times (the overview otherwise only polls every 30s) so the new
+  // balance appears without a manual reload. Then we strip the param so a reload
+  // does not re-toast.
+  const billingReturnHandled = useRef(false);
+  useEffect(() => {
+    if (billingReturnHandled.current) return;
+    const billing = searchParams.get("billing");
+    if (!billing) return;
+    billingReturnHandled.current = true;
+
+    if (billing === "ok") {
+      pushToast({ title: "Budget top-up received", body: "Updating your wallet balance.", tone: "success" });
+      let n = 0;
+      const tick = () => {
+        invalidateBudgetViews();
+        if (++n < 6) setTimeout(tick, 2500);
+      };
+      tick();
+    } else if (billing === "cancel") {
+      pushToast({ title: "Checkout canceled", body: "You have not been charged.", tone: "info" });
+    }
+
+    setSearchParams(
+      (current) => {
+        const params = new URLSearchParams(current);
+        params.delete("billing");
+        return params;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams, pushToast]);
+
   // Under cloudBilling the company budget is the recurring carry-over wallet. Its
   // current funded amount (cap) tells us first-time-set vs change: a wallet with
   // amount > 0 already has a budget subscription, so a change PATCHes the
@@ -243,7 +282,13 @@ export function Costs() {
           return;
         }
         // First-time set: create the recurring budget subscription via checkout.
-        const { checkoutUrl } = await budgetsApi.setRecurringBudget(companyId, input.amount);
+        // Pass this Costs page as the return path so the buyer comes back here
+        // after paying, instead of bouncing to the account page.
+        const { checkoutUrl } = await budgetsApi.setRecurringBudget(
+          companyId,
+          input.amount,
+          window.location.pathname,
+        );
         window.location.assign(checkoutUrl);
         return;
       }

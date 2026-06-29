@@ -120,11 +120,6 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
-function isTruthyEnvFlag(value: string | undefined | null): boolean {
-  if (typeof value !== "string") return false;
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
 function resolveCodexBillingType(env: Record<string, string>): "api" | "subscription" {
   // Codex uses API-key auth when OPENAI_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "OPENAI_API_KEY") ? "api" : "subscription";
@@ -582,19 +577,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!hasExplicitApiKey && authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
-    // Optional diagnostic: surface Codex's own logs on stderr (captured into the
-    // run result) so failures Codex otherwise wraps opaquely can be diagnosed in
-    // remote/sandbox runs where its log file is unreachable post-hoc. Mirrors
-    // opencode's PAPERCLIP_OPENCODE_PRINT_LOGS -> --print-logs; Codex (a Rust
-    // CLI) has no such flag but honors RUST_LOG, which writes to stderr. Toggle
-    // via PAPERCLIP_CODEX_PRINT_LOGS (run env, then process env). A user-supplied
-    // RUST_LOG in adapter env is left untouched. (L1)
-    if (
-      !hasNonEmptyEnvValue(env, "RUST_LOG") &&
-      isTruthyEnvFlag(env.PAPERCLIP_CODEX_PRINT_LOGS ?? process.env.PAPERCLIP_CODEX_PRINT_LOGS)
-    ) {
-      env.RUST_LOG = "debug";
-    }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
@@ -981,23 +963,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
       if (attempt.proc.timedOut) {
-        // Bill the partial tokens accumulated before the wall-clock timeout.
-        // Codex reports per-turn usage on `turn.completed`, so
-        // parseCodexJsonl(proc.stdout) holds the usage for every turn that
-        // completed before we killed the process. Without this the timeout
-        // result carries no usage and heartbeat writes no cost_event, so real
-        // tokens are billed to nobody. (H1)
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
-          usage: attempt.parsed.usage,
-          provider: "openai",
-          biller: resolveCodexBiller(effectiveEnv, billingType),
-          model,
-          billingType,
-          costUsd: null,
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -1022,19 +992,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-      // Treat a parsed/structured error as a failure even when the process
-      // exited 0: Codex can emit an `error`/`turn.failed` event and still exit
-      // cleanly, which previously surfaced as a false success (the run was
-      // marked succeeded with no error). Synthesize exitCode -> 1 in that case,
-      // mirroring opencode/pi (and claude's parsed.is_error handling). (M2)
-      const rawExitCode = attempt.proc.exitCode;
-      const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
-        `Codex exited with code ${rawExitCode ?? -1}`;
+        `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
       const transientRetryNotBefore =
-        (effectiveExitCode ?? 0) !== 0
+        (attempt.proc.exitCode ?? 0) !== 0
           ? extractCodexRetryNotBefore({
               stdout: attempt.proc.stdout,
               stderr: attempt.proc.stderr,
@@ -1042,7 +1005,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             })
           : null;
       const transientUpstream =
-        (effectiveExitCode ?? 0) !== 0 &&
+        (attempt.proc.exitCode ?? 0) !== 0 &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1050,11 +1013,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
 
       return {
-        exitCode: effectiveExitCode,
+        exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage:
-          (effectiveExitCode ?? 0) === 0
+          (attempt.proc.exitCode ?? 0) === 0
             ? null
             : fallbackErrorMessage,
         errorCode:

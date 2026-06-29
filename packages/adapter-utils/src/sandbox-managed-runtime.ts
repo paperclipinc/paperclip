@@ -171,24 +171,13 @@ async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): 
 }
 
 async function execTar(args: string[]): Promise<void> {
-  try {
-    await execFile("tar", args, {
-      env: {
-        ...process.env,
-        COPYFILE_DISABLE: "1",
-      },
-      maxBuffer: 32 * 1024 * 1024,
-    });
-  } catch (err) {
-    // tar exits 1 for benign warnings ("file changed as we read it" when
-    // archiving a live workspace, "Removing leading '/'", etc). That is not a
-    // failure for our archive/extract use — only exit code 2 is a real error.
-    // Swallow exactly exit 1; rethrow anything else (including spawn errors,
-    // which carry no numeric `code`).
-    const code = (err as { code?: unknown }).code;
-    if (code === 1) return;
-    throw err;
-  }
+  await execFile("tar", args, {
+    env: {
+      ...process.env,
+      COPYFILE_DISABLE: "1",
+    },
+    maxBuffer: 32 * 1024 * 1024,
+  });
 }
 
 async function createTarballFromDirectory(input: {
@@ -365,6 +354,10 @@ async function removeDeletedPathsInSandbox(input: {
   );
 }
 
+// Bridge a single byte-level transfer to the throttled progress reporter. The
+// transport reports decoded bytes via `options.onProgress`; the reporter turns
+// them into a throttled, fully-formatted log line. `finish()` emits the terminal
+// completion line (idempotent) once the transfer returns.
 function makeTransferProgress(
   sink: RuntimeProgressSink | undefined,
   phase: RuntimeProgressPhase,
@@ -389,52 +382,6 @@ function makeTransferProgress(
       await reporter.complete();
     },
   };
-}
-
-const DEFAULT_MAX_WORKSPACE_DOWNLOAD_BYTES = 32 * 1024 * 1024; // 32 MiB
-
-function resolveMaxWorkspaceDownloadBytes(): number {
-  const raw = process.env.PAPERCLIP_MAX_WORKSPACE_DOWNLOAD_BYTES;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  }
-  return DEFAULT_MAX_WORKSPACE_DOWNLOAD_BYTES;
-}
-
-async function assertRemoteArchiveWithinCap(
-  client: SandboxManagedRuntimeClient,
-  remoteTarPath: string,
-  timeoutMs: number,
-): Promise<void> {
-  const cap = resolveMaxWorkspaceDownloadBytes();
-  const sidecar = `${remoteTarPath}.size`;
-  await client.run(
-    `sh -c ${shellQuote(`wc -c < ${shellQuote(remoteTarPath)} | tr -d ' \\n' > ${shellQuote(sidecar)}`)}`,
-    { timeoutMs },
-  );
-  let sizeText = "";
-  try {
-    const sizeBytes = await client.readFile(sidecar);
-    sizeText = toBuffer(sizeBytes).toString("utf8").trim();
-  } finally {
-    await client.remove(sidecar).catch(() => undefined);
-  }
-  const size = Number(sizeText);
-  if (!Number.isFinite(size)) return;
-  if (size > cap) {
-    await client.remove(remoteTarPath).catch(() => undefined);
-    throw new Error(
-      `Workspace download (${size} bytes) exceeds the ${cap}-byte cap. The current restore ` +
-        `path buffers the whole archive in memory; reduce the workspace size (e.g. add ` +
-        `.gitignore-style excludes) or raise PAPERCLIP_MAX_WORKSPACE_DOWNLOAD_BYTES. ` +
-        `Streamed download for large workspaces is tracked under audit H2/M6.`,
-    );
-  }
-}
-
-function tolerantTar(tarCommand: string): string {
-  return `{ ${tarCommand}; __pc_tar_rc=$?; [ "$__pc_tar_rc" -le 1 ]; }`;
 }
 
 export async function prepareSandboxManagedRuntime(input: {
@@ -501,7 +448,7 @@ export async function prepareSandboxManagedRuntime(input: {
           `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
               `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([".paperclip-runtime"])} -exec rm -rf -- {} + && ` +
-              `${tolerantTar(`tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
+              `tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
               `rm -f ${shellQuote(remoteGitTar)}`,
           )}`,
           { timeoutMs: input.spec.timeoutMs },
@@ -537,11 +484,11 @@ export async function prepareSandboxManagedRuntime(input: {
     await workspaceUpload.finish();
     const extractWorkspaceTarCommand = gitSnapshot
       ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `${tolerantTar(`tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
+        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
         `rm -f ${shellQuote(remoteWorkspaceTar)}`
       : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
         `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
-        `${tolerantTar(`tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
+        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
         `rm -f ${shellQuote(remoteWorkspaceTar)}`;
     await input.client.run(
       `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
@@ -575,7 +522,7 @@ export async function prepareSandboxManagedRuntime(input: {
         `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
             `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
-            `${tolerantTar(`tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)}`)} && ` +
+            `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
             `rm -f ${shellQuote(remoteAssetTar)}`,
         )}`,
         { timeoutMs: input.spec.timeoutMs },
@@ -641,15 +588,11 @@ export async function prepareSandboxManagedRuntime(input: {
           await input.client.run(
             `sh -c ${shellQuote(
               `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
-                `__pc_ifr=""; tar --ignore-failed-read --version >/dev/null 2>&1 && __pc_ifr=--ignore-failed-read; ` +
-                tolerantTar(
-                  `tar $__pc_ifr -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
-                    `${tarExcludeFlags(restoreExclude)} .`,
-                ),
+                `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
+                `${tarExcludeFlags(restoreExclude)} .`,
             )}`,
             { timeoutMs: input.spec.timeoutMs },
           );
-          await assertRemoteArchiveWithinCap(input.client, remoteWorkspaceTar, input.spec.timeoutMs);
           const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
           const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
           await workspaceRestore.finish();
