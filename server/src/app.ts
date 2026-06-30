@@ -363,8 +363,23 @@ export async function createApp(
       // reasonably fast. Override for `index.html` specifically — it is
       // served by this middleware for `/` and `/index.html`, and it must
       // never outlive the asset hashes it points at.
+      // The HTML shell MUST go through the branded fallback below, which injects
+      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
+      // script reads. Serving the RAW index.html here (Express's default
+      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
+      // bypasses that injection -> no theme meta -> the script defaults to dark ->
+      // a dark->light flash on first paint until a branded route loads. So disable
+      // directory-index serving AND route an explicit `/index.html` to the fallback.
+      app.get("/index.html", (_req, res) => {
+        res
+          .status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(readBrandedStaticIndexHtml(uiDist));
+      });
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
