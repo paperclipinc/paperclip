@@ -33,7 +33,12 @@ function resolveModelRate(table: CloudPriceTable, model: string): ModelRate | un
 }
 
 export function priceCloudTokens(table: CloudPriceTable, input: PriceInput): number | null {
-  if (typeof input.costUsd === "number" && Number.isFinite(input.costUsd)) return input.costUsd;
+  // Trust an adapter-reported cost ONLY when it is POSITIVE. The opencode adapter sums
+  // part.cost from the stream, which via our Bifrost vk is always 0 (Tensorix returns no
+  // per-token cost) with billingType "unknown" -- a literal 0 means "no cost signal", NOT
+  // "this run was free", so we must fall through to the wholesale table. (Trusting the 0
+  // here metered every managed run to 0 -> 100% bleed, even after the prefix-key fix.)
+  if (typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd > 0) return input.costUsd;
   if (input.billingType === "subscription_included") return null;
   const rate = resolveModelRate(table, input.model);
   if (!rate) return null;
