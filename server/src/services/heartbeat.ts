@@ -217,7 +217,7 @@ import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-pres
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
 import { computeCostUsdForRun } from "./kubecost-client.js";
-import { billedCostCents, parseMargin } from "./run-cost.js";
+import { billedCostCents, parseMargin, parseComputeRatePerHour, resolveComputeUsd } from "./run-cost.js";
 import {
   resolveManagedRunDefaults,
   overrideAgentForManagedRun,
@@ -230,6 +230,12 @@ import {
 const cloudPriceTable = parsePriceTable(process.env.PAPERCLIP_CLOUD_PRICE_TABLE);
 const cloudMargin = parseMargin(process.env.PAPERCLIP_CLOUD_MARGIN_MULTIPLIER);
 const kubecostCfg = { baseUrl: process.env.KUBECOST_URL ?? "" };
+// Deterministic compute floor (wholesale pod-USD/hour). Kubecost-by-run-id is
+// preferred when it reports a positive cost, but it is fragile in cloud_tenant
+// mode (kube-state-metrics must expose the paperclip.io/run-id label, and short
+// runs round to 0 against the Prometheus scrape interval), so without this floor
+// every managed run metered 0 compute. Unset -> 0 -> safe degrade.
+const cloudComputeRatePerHour = parseComputeRatePerHour(process.env.PAPERCLIP_CLOUD_COMPUTE_USD_PER_HOUR);
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -8408,17 +8414,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       cachedInputTokens,
       outputTokens,
     });
-    // No k8s namespace is resolvable server-side in cloud_tenant mode (the
-    // tenant->namespace mapping lives in the gateway/operator, not the product
-    // DB), so pass ""; computeCostUsdForRun then degrades to 0 (and to 0
-    // outright when KUBECOST_URL is unset). Compute is only queried for a
-    // metered run (modelUsd !== null).
-    const computeUsd = modelUsd === null ? 0 : await computeCostUsdForRun(kubecostCfg, {
-      runId: run.id,
-      namespace: "",
-      start: run.startedAt ?? run.createdAt ?? new Date(),
-      end: run.finishedAt ?? new Date(),
-    });
+    // Compute cost is only attributed for a metered run (modelUsd !== null;
+    // BYOK/subscription_included/unpriced runs skip it). No k8s namespace is
+    // resolvable server-side in cloud_tenant mode (the tenant->namespace mapping
+    // lives in the gateway/operator, not the product DB), so pass ""; the
+    // Kubecost client then filters by the globally-unique paperclip.io/run-id
+    // label alone. Kubecost is the PREFERRED source when it returns a positive
+    // cost, but it is fragile here (KSM must expose the run-id label; short runs
+    // round to 0 vs the scrape interval), so resolveComputeUsd falls through to
+    // a deterministic duration x pod-hour floor -- a managed run is NEVER metered
+    // with 0 compute (which is what every run did before this floor).
+    let computeUsd = 0;
+    if (modelUsd !== null) {
+      const runStart = run.startedAt ?? run.createdAt ?? new Date();
+      const runEnd = run.finishedAt ?? new Date();
+      const kubecostUsd = await computeCostUsdForRun(kubecostCfg, {
+        runId: run.id,
+        namespace: "",
+        start: runStart,
+        end: runEnd,
+      });
+      computeUsd = resolveComputeUsd({
+        kubecostUsd,
+        durationSec: (runEnd.getTime() - runStart.getTime()) / 1000,
+        ratePerHour: cloudComputeRatePerHour,
+      });
+    }
     const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const provider = result.provider ?? "unknown";
