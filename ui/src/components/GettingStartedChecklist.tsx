@@ -7,7 +7,10 @@ import { accessApi } from "@/api/access";
 import { inboxDismissalsApi } from "@/api/inboxDismissals";
 import { queryKeys } from "@/lib/queryKeys";
 
-const DISMISS_KEY = "getting-started";
+// Namespaced with the `checklist:` prefix the server inbox-dismissal validator
+// allows (see server/src/routes/inbox-dismissals.ts). The bare "getting-started"
+// failed the regex -> POST 400 -> Dismiss silently did nothing.
+const DISMISS_KEY = "checklist:getting-started";
 
 export interface GettingStartedChecklistProps {
   companyId: string;

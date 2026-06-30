@@ -5,8 +5,12 @@ import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { inboxDismissalService, logActivity } from "../services/index.js";
 
-const inboxDismissalSchema = z.object({
-  itemKey: z.string().trim().min(1).regex(/^(approval|join|run):.+$/, "Unsupported inbox item key"),
+// itemKey namespaces: approval/join/run are upstream inbox items; `checklist`
+// is the onboarding "Getting started" card (GettingStartedChecklist) whose
+// Dismiss posts `checklist:getting-started`. The key MUST be in this allow-list
+// or `validate` 400s the POST -> the mutation throws -> the card never hides.
+export const inboxDismissalSchema = z.object({
+  itemKey: z.string().trim().min(1).regex(/^(approval|join|run|checklist):.+$/, "Unsupported inbox item key"),
 });
 
 export function inboxDismissalRoutes(db: Db) {
