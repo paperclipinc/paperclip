@@ -20,6 +20,18 @@ describe("priceCloudTokens", () => {
     });
     expect(usd).toBe(0.42);
   });
+  it("falls through to the price table when the adapter reports costUsd 0 (Bifrost/Tensorix return no per-token cost)", () => {
+    // The opencode adapter sums part.cost from the stream; via our Bifrost vk that is
+    // always 0, with billingType "unknown". A literal 0 must NOT be trusted as "this
+    // run was free" -- it means the adapter had no cost signal, so we price from the
+    // wholesale table. (Bug: an exact `typeof costUsd === number` short-circuit returned
+    // that 0 and skipped the table -> every managed run metered to 0 -> 100% bleed.)
+    const usd = priceCloudTokens(table, {
+      model: "deepseek/deepseek-v4-pro", billingType: "unknown", costUsd: 0,
+      inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0,
+    });
+    expect(usd).toBeCloseTo(0.6, 6);
+  });
   it("returns null (skip metering) for a BYOK/subscription_included run", () => {
     expect(priceCloudTokens(table, {
       model: "deepseek/deepseek-v4-pro", billingType: "subscription_included", costUsd: null,
