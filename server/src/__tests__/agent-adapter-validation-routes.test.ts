@@ -407,6 +407,61 @@ describe("agent routes adapter validation", () => {
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
+  it("materializes the default instructions bundle for a managed-experience lead agent created without an adapter", async () => {
+    // Managed experience: onboarding hires the lead agent omitting adapterType
+    // so the server injects the managed harness at RUN time. The schema defaults
+    // the stored adapterType to the inert "process" sentinel, but the run
+    // overrides it onto the managed default adapter (opencode_local) which reads
+    // an AGENTS.md. The default bundle must therefore be materialized at create.
+    const previousExperience = process.env.PAPERCLIP_MANAGED_EXPERIENCE;
+    const previousAdapter = process.env.PAPERCLIP_MANAGED_DEFAULT_ADAPTER;
+    process.env.PAPERCLIP_MANAGED_EXPERIENCE = "true";
+    process.env.PAPERCLIP_MANAGED_DEFAULT_ADAPTER = "opencode_local";
+    try {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Chief of staff",
+            role: "ceo",
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalled();
+      const files = mockAgentInstructionsService.materializeManagedBundle.mock.calls.at(-1)?.[1] as Record<string, string>;
+      expect(Object.keys(files)).toContain("AGENTS.md");
+    } finally {
+      if (previousExperience === undefined) delete process.env.PAPERCLIP_MANAGED_EXPERIENCE;
+      else process.env.PAPERCLIP_MANAGED_EXPERIENCE = previousExperience;
+      if (previousAdapter === undefined) delete process.env.PAPERCLIP_MANAGED_DEFAULT_ADAPTER;
+      else process.env.PAPERCLIP_MANAGED_DEFAULT_ADAPTER = previousAdapter;
+    }
+  });
+
+  it("does not materialize a default instructions bundle for an inert process agent outside managed experience", async () => {
+    const previousExperience = process.env.PAPERCLIP_MANAGED_EXPERIENCE;
+    delete process.env.PAPERCLIP_MANAGED_EXPERIENCE;
+    try {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl)
+          .post("/api/companies/company-1/agents")
+          .send({
+            name: "Inert Worker",
+            adapterType: "process",
+          }),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+    } finally {
+      if (previousExperience === undefined) delete process.env.PAPERCLIP_MANAGED_EXPERIENCE;
+      else process.env.PAPERCLIP_MANAGED_EXPERIENCE = previousExperience;
+    }
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

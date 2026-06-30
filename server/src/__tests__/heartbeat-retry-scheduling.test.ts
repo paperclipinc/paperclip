@@ -1288,6 +1288,59 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
+  it("honors an adapter-supplied transientRetryMaxAttempts cap tighter than the default", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+
+    // Within the per-run cap of 2: nextAttempt (2) <= cap (2) -> still schedules.
+    const withinCapRunId = randomUUID();
+    await seedRetryFixture({
+      runId: withinCapRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "inference_model_unavailable",
+      scheduledRetryAttempt: 1,
+      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
+    });
+
+    const withinCap = await heartbeat.scheduleBoundedRetry(withinCapRunId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(withinCap.outcome).toBe("scheduled");
+
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agents);
+    await db.delete(companies);
+
+    // Past the per-run cap of 2: nextAttempt (3) > cap (2) -> exhausted now,
+    // even though the default bounded backoff would still allow attempt 3.
+    const pastCapRunId = randomUUID();
+    await seedRetryFixture({
+      runId: pastCapRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "inference_model_unavailable",
+      scheduledRetryAttempt: 2,
+      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
+    });
+
+    const pastCap = await heartbeat.scheduleBoundedRetry(pastCapRunId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(pastCap).toEqual({
+      outcome: "retry_exhausted",
+      attempt: 3,
+      maxAttempts: 2,
+    });
+  });
+
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
     const fallbackModes = [
       "same_session",
