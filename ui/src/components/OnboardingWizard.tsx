@@ -5,6 +5,9 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { cloudCompaniesApi } from "../api/cloudCompanies";
+import { healthApi } from "../api/health";
+import { ApiError } from "../api/client";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -270,6 +273,20 @@ export function OnboardingWizard() {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const managed = experimentalSettings?.managedExperience === true;
+  // Cloud (authenticated) mode: the native POST /api/companies collection-create
+  // is blocked by the hosting gateway (409 use_cloud_company_create). Creating an
+  // ADDITIONAL company in cloud must go through the gateway's POST
+  // /api/cloud/companies, which provisions a separate control-plane tenant on its
+  // own stack and returns a URL to navigate to. So the wizard's inline
+  // create-then-goal-then-hire flow (which assumes one stack) cannot run in cloud:
+  // when the user starts a brand-new company, we hand off to the cloud endpoint and
+  // full-page navigate to the new tenant, where its own first-run wizard takes over.
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const isCloud = health?.deploymentMode === "authenticated";
   // Progress-bar segments mirror the steps the user actually walks through. In
   // managed mode the "Connect a model" step (4) hides its picker (the instance
   // chooses the harness + model), so it must not show a phantom segment.
@@ -600,6 +617,34 @@ export function OnboardingWizard() {
         return;
       }
       setStep(3);
+      return;
+    }
+    if (isCloud) {
+      // Cloud: never call the gateway-blocked native create. Provision a new
+      // control-plane tenant via POST /api/cloud/companies and hard-navigate to
+      // it (a client-side navigate would not trigger the gateway to inject the
+      // new company's stack). The new tenant's own first-run wizard then handles
+      // naming + goal + lead agent in rename mode, so we do not continue inline.
+      setLoading(true);
+      setError(null);
+      try {
+        const created = await cloudCompaniesApi.create({ name: companyName.trim() });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        window.location.assign(created.url);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 402) {
+          setError(
+            "Creating more companies is a Pro feature. Upgrade your plan to run more companies.",
+          );
+        } else if (err instanceof ApiError && err.status === 409) {
+          setError("You've reached your plan's company limit.");
+        } else {
+          setError(
+            err instanceof Error ? err.message : "Failed to create company",
+          );
+        }
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);

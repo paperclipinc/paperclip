@@ -46,6 +46,54 @@ export function warnIfManagedExperienceMisconfigured(
   );
 }
 
+/**
+ * Resolve the managed defaults that a RUN must be forced onto, but only when the
+ * managed experience is actually enabled (PAPERCLIP_MANAGED_EXPERIENCE=true).
+ *
+ * Unlike {@link resolveManagedAgentDefaults} (which only requires the default
+ * adapter env to be set, and is used at agent-CREATE time to fill an unspecified
+ * adapter), this gate is what the run path uses to decide whether to OVERRIDE a
+ * stored adapter. In managed mode the only adapter/model that is actually
+ * provisioned is the managed one, so a legacy agent created with a different
+ * adapter (e.g. codex_local, before managed mode was fixed) would otherwise fail
+ * at run time ("no Codex credentials provisioned ... OPENAI_API_KEY is empty").
+ */
+export function resolveManagedRunDefaults(
+  env: Record<string, string | undefined> = process.env,
+): ManagedAgentDefaults | null {
+  if (env.PAPERCLIP_MANAGED_EXPERIENCE !== "true") return null;
+  return resolveManagedAgentDefaults(env);
+}
+
+/**
+ * Force an agent's effective adapter/model onto the managed defaults for a run.
+ *
+ * This is applied at run-resolution time only — it returns a NEW object and never
+ * mutates the stored agent row. When `managed` is null (managed experience off or
+ * misconfigured) it is a no-op and returns the agent unchanged, so non-managed
+ * deployments behave exactly as before.
+ *
+ * The override is unconditional (unlike the soft fill in
+ * {@link applyManagedAgentDefaults}): the stored adapterType is REPLACED with the
+ * managed adapter and `adapterConfig.model` is REPLACED with the managed model,
+ * regardless of what the agent row stores. This makes a legacy Codex/Claude/etc.
+ * agent transparently run on the managed adapter + model.
+ */
+export function overrideAgentForManagedRun<
+  T extends { adapterType: string; adapterConfig: Record<string, unknown> | null },
+>(agent: T, managed: ManagedAgentDefaults | null): T {
+  if (!managed) return agent;
+  const adapterConfig: Record<string, unknown> = { ...(agent.adapterConfig ?? {}) };
+  if (managed.model) {
+    adapterConfig.model = managed.model;
+  }
+  if (agent.adapterType === managed.adapterType && agent.adapterConfig?.model === adapterConfig.model) {
+    // Already on the managed adapter + model; avoid allocating a changed row.
+    return agent;
+  }
+  return { ...agent, adapterType: managed.adapterType, adapterConfig };
+}
+
 export function applyManagedAgentDefaults(args: {
   requestedAdapterType: string | null | undefined;
   adapterConfig: Record<string, unknown>;
