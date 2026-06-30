@@ -57,6 +57,7 @@ import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { decideBundledPluginAction } from "./services/bundled-plugin-heal.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -496,25 +497,74 @@ export async function createApp(
     const pluginPath =
       process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
       "/app/packages/plugins/sandbox-providers/kubernetes";
+    const bundleManifestPath = path.join(pluginPath, "dist", "manifest.js");
     try {
-      // Idempotent: skip if already installed (any non-uninstalled status).
       const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
-      if (existing) {
+      const action = decideBundledPluginAction({
+        existingStatus: existing?.status ?? null,
+        bundlePresent: fs.existsSync(bundleManifestPath),
+      });
+
+      if (action === "skip-ready") {
+        // Healthy. loadAll() (which runs right after this) lists ready plugins
+        // and (re)starts their workers, so nothing to do here.
         logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
-          "kubernetes sandbox plugin already installed; skipping auto-install",
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
+          "kubernetes sandbox plugin already installed and ready; skipping auto-install",
         );
         return;
       }
-      // Skip silently when the bundle is absent (e.g. local dev or an image
-      // built without the plugin). Not an error condition.
-      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
+      if (action === "skip-uninstalled") {
+        // An admin explicitly removed it; respect that and do not silently
+        // reinstall the bundle on every boot.
+        logger.info(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
+          "kubernetes sandbox plugin is uninstalled; respecting that and skipping auto-install",
+        );
+        return;
+      }
+      if (action === "self-heal-blocked-bundle-missing") {
+        logger.warn(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status, pluginPath },
+          "kubernetes sandbox plugin is stuck in a non-ready status but its bundle is missing; cannot self-heal",
+        );
+        return;
+      }
+      if (action === "self-heal" && existing) {
+        // SELF-HEAL: the bundled plugin exists in the DB but is NOT ready, so
+        // loadAll() (which only activates 'ready' plugins) would leave the
+        // kubernetes sandbox provider dead and agents could never acquire a lease.
+        // This commonly happens when an earlier boot marked it 'error' (e.g. the
+        // manifest was missing before the image shipped it). Now that the bundle
+        // is on disk, drive it back to 'ready' so loadAll() re-activates it
+        // (activation re-reads the manifest from disk, so a stale record heals).
+        try {
+          // lifecycle.load() transitions <status> -> ready (error/installed/
+          // disabled/upgrade_pending are all valid sources). The actual worker
+          // start is performed by loader.loadAll() immediately after.
+          await lifecycle.load(existing.id);
+          logger.info(
+            { pluginId: existing.id, pluginKey: existing.pluginKey, previousStatus: existing.status },
+            "re-activated stuck kubernetes sandbox plugin (-> ready); loadAll() will start its worker",
+          );
+        } catch (healErr) {
+          logger.error(
+            { err: healErr, pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
+            "Failed to self-heal stuck kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
+          );
+        }
+        return;
+      }
+      if (action === "skip-bundle-missing") {
+        // Skip silently when the bundle is absent (e.g. local dev or an image
+        // built without the plugin). Not an error condition.
         logger.info(
           { pluginPath },
           "kubernetes sandbox plugin bundle not present; skipping auto-install",
         );
         return;
       }
+      // action === "install"
       logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
       const discovered = await loader.installPlugin({ localPath: pluginPath });
       if (!discovered.manifest) {

@@ -34,6 +34,12 @@ const mockGoalsApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockHealthApi = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+const mockCloudCompaniesApi = vi.hoisted(() => ({
+  create: vi.fn(),
+}));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/", search: "", hash: "", state: null }),
@@ -47,6 +53,8 @@ vi.mock("../context/CompanyContext", () => ({
   useCompany: () => mockCompany,
 }));
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
+vi.mock("../api/cloudCompanies", () => ({ cloudCompaniesApi: mockCloudCompaniesApi }));
+vi.mock("../api/health", () => ({ healthApi: mockHealthApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
@@ -134,6 +142,14 @@ describe("OnboardingWizard cloud first-run", () => {
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    // Default to the self-hosted (local_trusted) product so the OSS paths are
+    // exercised unless a test opts into cloud.
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+    mockCloudCompaniesApi.create.mockResolvedValue({
+      productSlug: "PCnew",
+      url: "/PCnew/dashboard",
+      name: "Fresh Co",
+    });
     mockCompaniesApi.create.mockResolvedValue({
       id: "created",
       name: "Created Co",
@@ -238,6 +254,46 @@ describe("OnboardingWizard cloud first-run", () => {
 
     expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Fresh Co" });
     expect(mockCompaniesApi.update).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("routes a brand-new company through the cloud endpoint in cloud mode (never the blocked native create)", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    // jsdom does not implement navigation; capture the hard-redirect target.
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, assign },
+    });
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "Fresh Co",
+        companyGoal: "Ship it",
+        missionPath: "direct",
+      }),
+    );
+    // No companyId → no existing/auto-created company → the create branch runs.
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The gateway-owned cloud endpoint is used, NOT the blocked native create.
+    expect(mockCloudCompaniesApi.create).toHaveBeenCalledWith({ name: "Fresh Co" });
+    expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+    expect(assign).toHaveBeenCalledWith("/PCnew/dashboard");
 
     await act(async () => {
       root.unmount();
