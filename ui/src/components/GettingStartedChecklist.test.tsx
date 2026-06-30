@@ -102,7 +102,7 @@ describe("GettingStartedChecklist", () => {
 
   it("renders nothing once already dismissed", async () => {
     mockInboxDismissalsApi.list.mockResolvedValue([
-      { itemKey: "getting-started" },
+      { itemKey: "checklist:getting-started" },
     ]);
     const root = await render({
       companyId: "c1",
@@ -126,7 +126,7 @@ describe("GettingStartedChecklist", () => {
     await flushReact();
     expect(mockInboxDismissalsApi.dismiss).toHaveBeenCalledWith(
       "c1",
-      "getting-started",
+      "checklist:getting-started",
     );
     flushSync(() => root.unmount());
   });
