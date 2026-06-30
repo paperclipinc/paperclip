@@ -28,7 +28,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
+import { describeRunFailure, redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
@@ -3348,12 +3348,32 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
-            {run.error && (
-              <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
-              </div>
-            )}
+            {(() => {
+              const failure = describeRunFailure(run.errorCode);
+              if (failure) {
+                return (
+                  <div className="text-xs space-y-1">
+                    <div className="text-red-600 dark:text-red-400">{failure.message}</div>
+                    <div className="text-muted-foreground">{failure.action}</div>
+                    {!failure.internal && run.error && (
+                      <details className="text-muted-foreground">
+                        <summary className="cursor-pointer">Details</summary>
+                        <span className="break-all">
+                          {run.error}
+                          {run.errorCode && ` (${run.errorCode})`}
+                        </span>
+                      </details>
+                    )}
+                  </div>
+                );
+              }
+              return run.error ? (
+                <div className="text-xs">
+                  <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                  {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+                </div>
+              ) : null;
+            })()}
             {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
               <div className="space-y-2">
                 <Button

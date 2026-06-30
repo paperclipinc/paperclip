@@ -2,7 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  classifyInferenceFailure,
+  inferenceFailureErrorCode,
+  inferenceFailureRetryPolicy,
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -659,12 +666,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
+      const failed = (synthesizedExitCode ?? 0) !== 0;
+
+      // OpenCode wraps upstream inference errors (Bifrost vk 401, Tensorix
+      // budget exceeded, model timeout/000/504, 429, 5xx) as one opaque
+      // failure. Classify them so retry can be correct and the user message
+      // can be plain. We keep the raw cause; we just stop discarding the class.
+      const inferenceFailure = failed
+        ? classifyInferenceFailure({
+            errorMessage: fallbackErrorMessage,
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            exitCode: synthesizedExitCode,
+          })
+        : null;
+      const inferenceRetry = inferenceFailure
+        ? inferenceFailureRetryPolicy(inferenceFailure.code)
+        : null;
 
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage: failed ? fallbackErrorMessage : null,
+        ...(inferenceFailure
+          ? {
+              errorCode: inferenceFailureErrorCode(inferenceFailure.code),
+              errorFamily: inferenceRetry?.family ?? null,
+              errorMeta: {
+                inferenceErrorCode: inferenceFailure.code,
+                inferenceCause: inferenceFailure.cause,
+              },
+            }
+          : {}),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -681,6 +715,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(inferenceFailure
+            ? {
+                inferenceErrorCode: inferenceFailure.code,
+                ...(inferenceRetry?.family ? { errorFamily: inferenceRetry.family } : {}),
+                ...(inferenceRetry?.retry
+                  ? { transientRetryMaxAttempts: inferenceRetry.maxAttempts }
+                  : {}),
+              }
+            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

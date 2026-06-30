@@ -96,6 +96,7 @@ import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/serv
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
+  shouldMaterializeDefaultInstructionsBundle,
 } from "../services/default-agent-instructions.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -1265,7 +1266,13 @@ export function agentRoutes(
     agent: T,
     input?: { files: Record<string, string>; entryFile?: string },
   ): Promise<T> {
-    if (!adapterSupportsInstructionsBundle(agent.adapterType)) {
+    // Gate on the adapter that will actually CONSUME the bundle at run time. Under
+    // managed experience the stored adapter is often the inert "process" sentinel
+    // (the create schema default when onboarding omits the harness), but the run
+    // overrides it onto the managed default adapter which reads AGENTS.md — so the
+    // default bundle must still be materialized here. See
+    // shouldMaterializeDefaultInstructionsBundle.
+    if (!shouldMaterializeDefaultInstructionsBundle(agent.adapterType)) {
       return agent;
     }
 

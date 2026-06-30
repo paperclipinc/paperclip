@@ -389,6 +389,14 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function readTransientRetryMaxAttemptsFromRun(run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">) {
+  const resultJson = parseObject(run.resultJson);
+  const value = resultJson.transientRetryMaxAttempts;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const attempts = Math.floor(value);
+  return attempts > 0 ? attempts : null;
+}
+
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -396,6 +404,7 @@ function readTransientRecoveryContractFromRun(
     ? {
         errorFamily: "transient_upstream" as const,
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
+        maxAttempts: readTransientRetryMaxAttemptsFromRun(run),
       }
     : null;
 }
@@ -6617,7 +6626,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
+    // Allow the adapter to request a tighter attempt cap than the default
+    // bounded backoff (e.g. a cold/unavailable model should not retry as many
+    // times as a rate limit). An explicit opts.maxAttempts still wins.
+    const maxAttempts = Math.max(
+      0,
+      Math.floor(opts?.maxAttempts ?? transientRecovery?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+    );
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const baseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -6631,10 +6650,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null
       : nextAttempt <= maxAttempts
         ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
-        : null;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" && transientRecovery

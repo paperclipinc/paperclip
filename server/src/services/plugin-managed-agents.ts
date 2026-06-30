@@ -17,6 +17,11 @@ import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
+  shouldMaterializeDefaultInstructionsBundle,
+} from "./default-agent-instructions.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -330,13 +335,30 @@ export function pluginManagedAgentService(
   ): Promise<Agent> {
     const variables = await optionsForInstructionVariables(companyId);
     const declared = declaredInstructionFiles(declaration, variables);
-    if (!declared) return agent;
+
+    // When the plugin declaration provides no instructions, fall back to the
+    // default AGENTS.md bundle so a managed agent still ships with a persona
+    // instead of running with none (which makes the run hit ENOENT). Only do so
+    // for agents whose effective run-time adapter actually reads the bundle.
+    let files: Record<string, string>;
+    let entryFile: string;
+    if (declared) {
+      files = declared.files;
+      entryFile = declared.entryFile;
+    } else if (shouldMaterializeDefaultInstructionsBundle(agent.adapterType)) {
+      files = await loadDefaultAgentInstructionsBundle(
+        resolveDefaultAgentInstructionsBundleRole(agent.role),
+      );
+      entryFile = "AGENTS.md";
+    } else {
+      return agent;
+    }
 
     const materialized = await instructions.materializeManagedBundle(
       agent,
-      declared.files,
+      files,
       {
-        entryFile: declared.entryFile,
+        entryFile,
         replaceExisting: materializeOptions.replaceExisting,
         clearLegacyPromptTemplate: true,
       },

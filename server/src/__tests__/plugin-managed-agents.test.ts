@@ -311,6 +311,41 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     }
   });
 
+  it("materializes a default AGENTS.md when a managed agent declares no instructions", async () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const previousInstance = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-managed-agent-default-home-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    try {
+      // The base manifest agent declares NO `instructions`, but runs on a
+      // bundle-consuming adapter. A managed lead agent created this way must
+      // still ship with a default AGENTS.md persona instead of a silently
+      // missing instructions file (which makes the run hit ENOENT and execute
+      // with no task framing).
+      const pluginManifest = manifest();
+      pluginManifest.agents![0] = {
+        ...pluginManifest.agents![0]!,
+        adapterType: "claude_local",
+        adapterConfig: {},
+      };
+      const { companyId, services } = await seedCompanyAndPlugin({ manifest: pluginManifest });
+
+      const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+
+      const instructionsFilePath = created.agent?.adapterConfig.instructionsFilePath;
+      expect(typeof instructionsFilePath).toBe("string");
+      const content = await fs.readFile(instructionsFilePath as string, "utf8");
+      expect(content).toContain("You are an agent at Paperclip company.");
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstance;
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("repairs a missing binding by relinking a same-company managed agent marker", async () => {
     const { companyId, pluginId, pluginManifest, services } = await seedCompanyAndPlugin();
     const agentId = randomUUID();
