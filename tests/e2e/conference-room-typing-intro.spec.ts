@@ -64,7 +64,7 @@ test.describe("Dashboard launch after onboarding wizard", () => {
     if (await frontDoor.count()) await frontDoor.first().click();
 
     // Step 1: company name.
-    await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
+    await page.getByPlaceholder("Name your company").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
 
     // Step 2: mission (direct path default).

@@ -57,8 +57,18 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
-      managedExperience: parsed.data.managedExperience ?? (process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true"),
-      cloudBilling: parsed.data.cloudBilling ?? (process.env.PAPERCLIP_CLOUD_BILLING === "true"),
+      // The operator env is AUTHORITATIVE for a managed deployment: when
+      // PAPERCLIP_MANAGED_EXPERIENCE=true, force it on regardless of any stored
+      // setting. Previously `stored ?? env` let a stale/seeded stored `false`
+      // silently un-manage a managed cloud (false ?? true === false), dumping
+      // users into the raw adapter picker. Env-true now wins; otherwise the
+      // stored toggle (default false) applies. Same for cloudBilling.
+      managedExperience:
+        process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true" ||
+        (parsed.data.managedExperience ?? false),
+      cloudBilling:
+        process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
+        (parsed.data.cloudBilling ?? false),
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
