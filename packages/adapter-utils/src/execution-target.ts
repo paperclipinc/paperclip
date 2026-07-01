@@ -454,6 +454,9 @@ export async function runAdapterExecutionTargetProcess(
         // The tail loop already streams incremental chunks; suppress the
         // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
+        // Forward the run id so a streaming sandbox runner can bridge worker
+        // output chunks back to onLog live (across the plugin worker boundary).
+        runId,
         // Live-output sink (native push streaming from the runner). Only wired
         // up when the poll-based run-log tail is NOT active — the two live
         // paths would otherwise deliver every chunk twice. A runner that
@@ -577,6 +580,9 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
+      // Forward the run id so a streaming sandbox runner can bridge worker
+      // output chunks back to onLog live (across the plugin worker boundary).
+      runId,
       // Route streamed chunks to the same log tail; a streaming runner sets
       // `streamed` so the buffered dump is suppressed upstream (no double log).
       onOutput: (stream, text) => {
