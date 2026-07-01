@@ -230,6 +230,12 @@ import {
   resolveManagedRunDefaults,
   overrideAgentForManagedRun,
 } from "./managed-agent-defaults.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import {
+  adapterConsumesInstructionsBundle,
+  loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
+} from "./default-agent-instructions.js";
 
 // Cloud cost-plus billing inputs. All degrade safely to today's behaviour
 // when unset: an empty price table -> priceCloudTokens returns null ->
@@ -10771,6 +10777,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(agent.adapterType);
+      // Self-heal a managed agent's instructions bundle before the adapter reads
+      // it. The managed bundle lives under the (possibly ephemeral) instance
+      // root, so an app-pod restart on an emptyDir wipes it; without this the run
+      // would inject no persona/tools/hiring guidance. Restore prefers the
+      // durable snapshot (keeps hand edits), falls back to the role default
+      // template, and is best-effort: it never fails the run.
+      if (adapterConsumesInstructionsBundle(agent.adapterType)) {
+        try {
+          const ensured = await agentInstructionsService().ensureManagedInstructionsMaterialized(agent, {
+            durableSnapshot: agent.managedInstructionsSnapshot ?? null,
+            loadDefaults: (role) =>
+              loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(role)),
+          });
+          if (ensured.snapshotToPersist) {
+            await db
+              .update(agents)
+              .set({ managedInstructionsSnapshot: ensured.snapshotToPersist, updatedAt: new Date() })
+              .where(eq(agents.id, agent.id));
+          }
+          if (ensured.status === "restored") {
+            // Observability: the bundle was missing on disk and had to be
+            // re-materialized. The run proceeds normally WITH instructions; this
+            // signal lets us detect the underlying instance-root wipe.
+            logger.warn(
+              {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                runId: run.id,
+                adapterType: agent.adapterType,
+                source: ensured.source,
+              },
+              "re-materialized missing managed instructions bundle before run",
+            );
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "instructions.rematerialized",
+              stream: "system",
+              level: "warn",
+              message: "Re-materialized missing managed instructions bundle before run",
+              payload: { source: ensured.source, entryPath: ensured.entryPath },
+            });
+          }
+        } catch (err) {
+          // Never let the self-heal guard turn a recoverable situation into a
+          // user-visible failure. Log and continue; the adapter still runs.
+          logger.warn(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to ensure managed instructions bundle; continuing without self-heal",
+          );
+        }
+      }
       const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
         : null;
