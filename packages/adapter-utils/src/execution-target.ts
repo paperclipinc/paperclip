@@ -420,6 +420,13 @@ export async function runAdapterExecutionTargetProcess(
       stdin: options.stdin,
       timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
       onLog: options.onLog,
+      // Live-output sink: route each streamed chunk to the same log tail. A
+      // runner that streams sets `streamed` on its result so the buffered dump
+      // is suppressed upstream (no double logging). Sync fire-and-forget — do
+      // not await onLog on the live path so a chunk never stalls the stream.
+      onOutput: (stream, text) => {
+        void options.onLog(stream, text);
+      },
       onSpawn: options.onSpawn
         ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
         : undefined,
@@ -522,6 +529,11 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
+      // Route streamed chunks to the same log tail; a streaming runner sets
+      // `streamed` so the buffered dump is suppressed upstream (no double log).
+      onOutput: (stream, text) => {
+        void onLog(stream, text);
+      },
     });
   }
 
