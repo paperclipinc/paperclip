@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
+  PluginContext,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
@@ -133,8 +134,15 @@ const RESUME_READY_POLL_MS = 1_000;
 // hands this back and the lease metadata carries it from acquisition.
 const REALIZED_WORKSPACE_CWD = "/workspace";
 
+// Captured at setup() so the environment handlers (which receive only their
+// params, not the context) can reach `ctx.streams` to push live output back to
+// the host over the plugin worker RPC boundary. One worker process runs a
+// single plugin instance, so a module-level singleton is correct here.
+let pluginContext: PluginContext | null = null;
+
 const plugin = definePlugin({
   async setup(ctx) {
+    pluginContext = ctx;
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
   },
 
@@ -585,25 +593,69 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentExecuteResult> {
     const { lease, timeoutMs } = params;
 
-    // Live-output sink. When present (in-process callers only; not delivered
-    // over the plugin worker RPC boundary), forward each stdout/stderr chunk as
-    // the command produces it so the caller can live-tail progress instead of
-    // only seeing the buffered output at the end. `onChunk` is a sync,
-    // fire-and-forget shim over the possibly-async `onOutput`: it must not be
-    // awaited inside the exec data handler (that would stall the stream) and a
-    // throwing consumer must never break capture — hence the guard here and in
-    // execInPod. Providers that receive `onOutput` set `streamed: true` on the
-    // result so the caller can suppress the trailing buffered log dump.
+    // Live-output streaming. Two independent sinks, either or both of which may
+    // be active for a single exec:
+    //
+    // 1. In-process `params.onOutput` callback. Only present when the plugin is
+    //    called in-process (not over the worker RPC boundary — a function can't
+    //    be serialized), e.g. some tests. Called per chunk.
+    //
+    // 2. Worker→host `ctx.streams` bridge. On the real cloud path the plugin
+    //    runs in a worker, so `onOutput` is absent; instead the host passes the
+    //    serializable `runId` + `streamOutput: true` and subscribes to the
+    //    stream channel `env-exec-output:${runId}`. We open that channel, emit
+    //    each chunk on it (delivered to the host as a `streams.emit` JSON-RPC
+    //    notification), and close it in a finally. This is the RPC-safe
+    //    replacement for the callback.
+    //
+    // `onChunk` is a sync, fire-and-forget shim: it must not be awaited inside
+    // the exec data handler (that would stall the stream) and a throwing
+    // consumer must never break capture — hence the guards. Whenever a chunk
+    // sink is active the result is flagged `streamed: true` so the caller
+    // suppresses the trailing buffered log dump (no double logging).
     const onOutput = params.onOutput;
-    const onChunk = onOutput
-      ? (stream: "stdout" | "stderr", text: string) => {
-          try {
-            void onOutput(stream, text);
-          } catch {
-            /* best-effort live streaming; buffered result is authoritative */
+    const streams = pluginContext?.streams;
+    const streamViaCtx = Boolean(
+      params.streamOutput && params.runId && params.companyId && streams,
+    );
+    const outputChannel = streamViaCtx ? `env-exec-output:${params.runId}` : null;
+    const onChunk =
+      onOutput || streamViaCtx
+        ? (stream: "stdout" | "stderr", text: string) => {
+            if (onOutput) {
+              try {
+                void onOutput(stream, text);
+              } catch {
+                /* best-effort live streaming; buffered result is authoritative */
+              }
+            }
+            if (streamViaCtx && streams && outputChannel) {
+              try {
+                streams.emit(outputChannel, { stream, text });
+              } catch {
+                /* best-effort live streaming; buffered result is authoritative */
+              }
+            }
           }
+        : undefined;
+    const openOutputChannel = () => {
+      if (streamViaCtx && streams && outputChannel) {
+        try {
+          streams.open(outputChannel, params.companyId);
+        } catch {
+          /* best-effort; a failed open must not abort execution */
         }
-      : undefined;
+      }
+    };
+    const closeOutputChannel = () => {
+      if (streamViaCtx && streams && outputChannel) {
+        try {
+          streams.close(outputChannel);
+        } catch {
+          /* best-effort; close is idempotent on the host side */
+        }
+      }
+    };
 
     if (!lease.providerLeaseId) {
       return {
@@ -832,26 +884,75 @@ const plugin = definePlugin({
         effectiveTimeoutMs - (Date.now() - executeStartedAt),
       );
 
-      let execResult: { exitCode: number; stdout: string; stderr: string };
+      // Open the live-output channel just before the exec (chunks only flow
+      // from execInPod) and close it in a finally so it is torn down on the
+      // success, timeout, and error return paths alike — no leaked channel.
+      openOutputChannel();
       try {
-        execResult = await execInPod(
-          kc,
-          namespace,
-          podName,
-          "agent",
-          execCommand,
-          typeof params.stdin === "string" ? params.stdin : undefined,
-          remainingTimeoutMs,
-          onChunk,
+        let execResult: { exitCode: number; stdout: string; stderr: string };
+        try {
+          execResult = await execInPod(
+            kc,
+            namespace,
+            podName,
+            "agent",
+            execCommand,
+            typeof params.stdin === "string" ? params.stdin : undefined,
+            remainingTimeoutMs,
+            onChunk,
+          );
+        } catch (err) {
+          // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
+          // the caller can retry instead of hanging forever.
+          return {
+            exitCode: null,
+            timedOut: true,
+            stdout: "",
+            stderr: err instanceof Error ? err.message : String(err),
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+              podName,
+            },
+          };
+        }
+
+        // OBSERVABILITY: every harness command (opencode run, the callback-bridge
+        // poll, the workspace tar) flows through this single execInPod. Failures
+        // bubble up to the adapter as an opaque "exit code N" with the detail often
+        // lost (restoreWorkspace teardown masks the real result; opencode wraps its
+        // own errors). Log the full exec result (command + exit + stdout/stderr
+        // tails) server-side so the actual cause — why a build makes 0 inference, why
+        // tar exits 2 — is greppable from server logs without racing the ephemeral
+        // sandbox pod. Always on for non-zero exits; full dumps (incl. exit 0) gated
+        // behind PAPERCLIP_K8S_EXEC_DEBUG to avoid noise.
+        const execDebug = ["1", "true", "yes"].includes(
+          (process.env.PAPERCLIP_K8S_EXEC_DEBUG ?? "").toLowerCase(),
         );
-      } catch (err) {
-        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-        // the caller can retry instead of hanging forever.
+        if (execResult.exitCode !== 0 || execDebug) {
+          const tail = (s: string, n: number) =>
+            typeof s === "string" && s.length > n ? s.slice(-n) : (s ?? "");
+          console.warn(
+            `[paperclip][k8s-exec] sandbox=${lease.providerLeaseId} pod=${podName} ns=${namespace} ` +
+              `exit=${execResult.exitCode} cmd=${JSON.stringify(execCommand).slice(0, 400)} ` +
+              `stdoutLen=${execResult.stdout?.length ?? 0} stderrLen=${execResult.stderr?.length ?? 0}\n` +
+              `  stdoutTail=${JSON.stringify(tail(execResult.stdout, 1500))}\n` +
+              `  stderrTail=${JSON.stringify(tail(execResult.stderr, 3000))}`,
+          );
+        }
+
+
         return {
-          exitCode: null,
-          timedOut: true,
-          stdout: "",
-          stderr: err instanceof Error ? err.message : String(err),
+          exitCode: execResult.exitCode,
+          timedOut: false,
+          stdout: execResult.stdout,
+          stderr: execResult.stderr,
+          // Output was delivered live via onChunk (params.onOutput and/or the
+          // ctx.streams bridge); flag it so the caller suppresses the trailing
+          // buffered log dump (no double logging).
+          ...(onChunk ? { streamed: true } : {}),
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",
@@ -860,48 +961,9 @@ const plugin = definePlugin({
             podName,
           },
         };
+      } finally {
+        closeOutputChannel();
       }
-
-      // OBSERVABILITY: every harness command (opencode run, the callback-bridge
-      // poll, the workspace tar) flows through this single execInPod. Failures
-      // bubble up to the adapter as an opaque "exit code N" with the detail often
-      // lost (restoreWorkspace teardown masks the real result; opencode wraps its
-      // own errors). Log the full exec result (command + exit + stdout/stderr
-      // tails) server-side so the actual cause — why a build makes 0 inference, why
-      // tar exits 2 — is greppable from server logs without racing the ephemeral
-      // sandbox pod. Always on for non-zero exits; full dumps (incl. exit 0) gated
-      // behind PAPERCLIP_K8S_EXEC_DEBUG to avoid noise.
-      const execDebug = ["1", "true", "yes"].includes(
-        (process.env.PAPERCLIP_K8S_EXEC_DEBUG ?? "").toLowerCase(),
-      );
-      if (execResult.exitCode !== 0 || execDebug) {
-        const tail = (s: string, n: number) =>
-          typeof s === "string" && s.length > n ? s.slice(-n) : (s ?? "");
-        console.warn(
-          `[paperclip][k8s-exec] sandbox=${lease.providerLeaseId} pod=${podName} ns=${namespace} ` +
-            `exit=${execResult.exitCode} cmd=${JSON.stringify(execCommand).slice(0, 400)} ` +
-            `stdoutLen=${execResult.stdout?.length ?? 0} stderrLen=${execResult.stderr?.length ?? 0}\n` +
-            `  stdoutTail=${JSON.stringify(tail(execResult.stdout, 1500))}\n` +
-            `  stderrTail=${JSON.stringify(tail(execResult.stderr, 3000))}`,
-        );
-      }
-
-      return {
-        exitCode: execResult.exitCode,
-        timedOut: false,
-        stdout: execResult.stdout,
-        stderr: execResult.stderr,
-        // Output was delivered live via onChunk -> onOutput; flag it so the
-        // caller suppresses the trailing buffered log dump (no double logging).
-        ...(onChunk ? { streamed: true } : {}),
-        metadata: {
-          provider: "kubernetes",
-          backend: "sandbox-cr",
-          namespace,
-          sandboxName: lease.providerLeaseId,
-          podName,
-        },
-      };
     } else {
       // ── Job backend (legacy / stable fallback) ──────────────────────────────
       // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
@@ -910,69 +972,77 @@ const plugin = definePlugin({
       //
       // params.command / params.args / params.stdin are intentionally ignored.
 
-      let status;
-      let timedOut = false;
+      // Open the live-output channel around the whole wait+log-scrape region so
+      // it is closed on the success and timeout paths and if the orchestrator
+      // throws — no leaked channel.
+      openOutputChannel();
       try {
-        status = await jobOrchestrator.waitForCompletion(
-          clients,
-          namespace,
-          lease.providerLeaseId,
-          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
-        );
-      } catch (err) {
-        if (err instanceof JobTimeoutError) {
-          timedOut = true;
-          status = null;
-        } else {
-          throw err;
+        let status;
+        let timedOut = false;
+        try {
+          status = await jobOrchestrator.waitForCompletion(
+            clients,
+            namespace,
+            lease.providerLeaseId,
+            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+          );
+        } catch (err) {
+          if (err instanceof JobTimeoutError) {
+            timedOut = true;
+            status = null;
+          } else {
+            throw err;
+          }
         }
-      }
 
-      // Collect logs from the pod.
-      const podName =
-        typeof lease.metadata?.podName === "string"
-          ? lease.metadata.podName
-          : await jobOrchestrator.findPod(
-              clients,
-              namespace,
-              lease.providerLeaseId,
-            );
+        // Collect logs from the pod.
+        const podName =
+          typeof lease.metadata?.podName === "string"
+            ? lease.metadata.podName
+            : await jobOrchestrator.findPod(
+                clients,
+                namespace,
+                lease.providerLeaseId,
+              );
 
-      const stdoutChunks: string[] = [];
-      const stderrChunks: string[] = [];
+        const stdoutChunks: string[] = [];
+        const stderrChunks: string[] = [];
 
-      if (podName) {
-        await jobOrchestrator.streamLogs(
-          clients,
-          namespace,
-          podName,
-          async (stream, text) => {
-            if (stream === "stdout") stdoutChunks.push(text);
-            else stderrChunks.push(text);
-            // Forward each streamed log chunk live so the caller can tail Job
-            // output as it arrives, not only after the Job completes.
-            onChunk?.(stream, text);
+        if (podName) {
+          await jobOrchestrator.streamLogs(
+            clients,
+            namespace,
+            podName,
+            async (stream, text) => {
+              if (stream === "stdout") stdoutChunks.push(text);
+              else stderrChunks.push(text);
+              // Forward each streamed log chunk live so the caller can tail Job
+              // output as it arrives, not only after the Job completes.
+              onChunk?.(stream, text);
+            },
+          );
+        }
+
+        return {
+          exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+          timedOut,
+          stdout: stdoutChunks.join(""),
+          stderr: stderrChunks.join(""),
+          // Chunks were forwarded live above; flag it so the caller does not log
+          // the buffered output a second time.
+          ...(onChunk ? { streamed: true } : {}),
+          metadata: {
+            provider: "kubernetes",
+            backend: "job",
+            namespace,
+            jobName: lease.providerLeaseId,
+            podName: podName ?? null,
+            phase: status?.phase ?? null,
           },
-        );
+        };
+      } finally {
+        closeOutputChannel();
       }
-
-      return {
-        exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
-        timedOut,
-        stdout: stdoutChunks.join(""),
-        stderr: stderrChunks.join(""),
-        // Chunks were forwarded live above; flag it so the caller does not log
-        // the buffered output a second time.
-        ...(onChunk ? { streamed: true } : {}),
-        metadata: {
-          provider: "kubernetes",
-          backend: "job",
-          namespace,
-          jobName: lease.providerLeaseId,
-          podName: podName ?? null,
-          phase: status?.phase ?? null,
-        },
-      };
     }
   },
 });
