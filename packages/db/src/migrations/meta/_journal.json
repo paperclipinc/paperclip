@@ -897,6 +897,13 @@
       "when": 1782440200000,
       "tag": "0127_agent_managed_instructions_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
+      "when": 1782526400000,
+      "tag": "0126_issue_comment_derived_attribution",
+      "breakpoints": true
     }
   ]
 }
