@@ -237,6 +237,9 @@ export const queryKeys = {
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
+  cloudBilling: {
+    summary: ["cloud-billing", "summary"] as const,
+  },
   activation: {
     status: (companyId: string) =>
       ["activation", "status", companyId] as const,
