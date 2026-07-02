@@ -18,11 +18,12 @@ import {
   issueService,
   heartbeatService,
   accessService,
+  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
@@ -63,6 +64,25 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const settings = instanceSettingsService(db);
+
+  // Money-safety: in the managed cloud a tenant user is a board member of their
+  // own company, so the board-gated budget mutation routes would let them grant
+  // themselves budget without paying (raise the wallet cap, overwrite the
+  // lifetime wallet policy, drop the hard stop, or self-resume after a hard
+  // stop). When the `cloudBilling` instance flag is on, company budgets are
+  // funded exclusively through the billing checkout: the control plane credits
+  // the wallet via the cloud-internal /budgets/increment route below.
+  // Self-hosters leave the flag off and keep full board budget control.
+  async function assertBudgetsNotManagedByBilling() {
+    const experimental = await settings.getExperimental();
+    if (experimental.cloudBilling === true) {
+      throw forbidden(
+        "Company budgets are managed by billing. Use the billing checkout to raise your budget.",
+        { code: "budget_managed_by_billing" },
+      );
+    }
+  }
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -304,6 +324,7 @@ export function costRoutes(
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
+      await assertBudgetsNotManagedByBilling();
       const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
       res.json(summary);
     },
@@ -317,6 +338,11 @@ export function costRoutes(
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
+      // Only the budget-raising resolution is a self-grant; keep_paused stays
+      // available so a board member can still acknowledge an incident.
+      if (req.body.action === "raise_budget_and_resume") {
+        await assertBudgetsNotManagedByBilling();
+      }
       const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
       res.json(incident);
     },
@@ -359,6 +385,7 @@ export function costRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertBudgetsNotManagedByBilling();
     const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!company) {
       res.status(404).json({ error: "Company not found" });

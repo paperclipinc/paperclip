@@ -25,6 +25,11 @@ vi.mock("../services/index.js", () => {
     issueService: noop,
     heartbeatService: () => ({ cancelBudgetScopeWork: vi.fn() }),
     accessService: noop,
+    // The increment route is deliberately NOT gated on cloudBilling (it is the
+    // cloud funding path); keep the flag on here to pin that.
+    instanceSettingsService: () => ({
+      getExperimental: async () => ({ cloudBilling: true }),
+    }),
     logActivity: vi.fn(),
   };
 });

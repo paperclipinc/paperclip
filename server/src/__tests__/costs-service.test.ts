@@ -118,6 +118,9 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     issueService: () => mockIssueService,
     heartbeatService: () => mockHeartbeatService,
+    instanceSettingsService: () => ({
+      getExperimental: async () => ({ cloudBilling: false }),
+    }),
     logActivity: mockLogActivity,
   }));
 
