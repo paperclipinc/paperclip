@@ -65,9 +65,18 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
   }
 
   const error = createCompany.error;
-  const isUpgradeRequired = error instanceof ApiError && error.status === 402;
+  const errorCode =
+    error instanceof ApiError ? (error.body as { error?: string } | null)?.error : undefined;
+  // Both come back as 402: the plan gate (upgrade_required) and a failed
+  // per-company billing update for an already-paying user (billing_update_failed).
+  // Only the former is an upsell.
+  const isBillingUpdateFailed =
+    error instanceof ApiError && error.status === 402 && errorCode === "billing_update_failed";
+  const isUpgradeRequired =
+    error instanceof ApiError && error.status === 402 && !isBillingUpdateFailed;
   const isLimitReached = error instanceof ApiError && error.status === 409;
-  const isGenericError = error != null && !isUpgradeRequired && !isLimitReached;
+  const isGenericError =
+    error != null && !isBillingUpdateFailed && !isUpgradeRequired && !isLimitReached;
 
   return (
     <Dialog
@@ -108,6 +117,16 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
                 See plans
               </a>
             </p>
+          </div>
+        )}
+
+        {isBillingUpdateFailed && (
+          <div
+            role="alert"
+            className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground"
+          >
+            We could not update your billing for the new company. No company was created and you
+            have not been charged. Try again or contact support.
           </div>
         )}
 

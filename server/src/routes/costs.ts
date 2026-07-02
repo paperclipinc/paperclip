@@ -74,6 +74,11 @@ export function costRoutes(
   // funded exclusively through the billing checkout: the control plane credits
   // the wallet via the cloud-internal /budgets/increment route below.
   // Self-hosters leave the flag off and keep full board budget control.
+  //
+  // The gate applies to COMPANY-scope mutations only. Agent- and project-scope
+  // policies are not self-grants: they only sub-cap spending inside the company
+  // wallet, which getInvocationBlock and evaluateCostEvent enforce first and
+  // independently of any agent/project policy.
   async function assertBudgetsNotManagedByBilling() {
     const experimental = await settings.getExperimental();
     if (experimental.cloudBilling === true) {
@@ -82,6 +87,12 @@ export function costRoutes(
         { code: "budget_managed_by_billing" },
       );
     }
+  }
+
+  // Fail closed: anything that is not explicitly an agent or project scope is
+  // treated as a company-scope mutation and gated.
+  function isWalletSubCapScope(scopeType: unknown): scopeType is "agent" | "project" {
+    return scopeType === "agent" || scopeType === "project";
   }
 
   async function resolveIssueByRef(rawId: string) {
@@ -324,7 +335,9 @@ export function costRoutes(
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      await assertBudgetsNotManagedByBilling();
+      if (!isWalletSubCapScope(req.body?.scopeType)) {
+        await assertBudgetsNotManagedByBilling();
+      }
       const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
       res.json(summary);
     },
@@ -338,10 +351,16 @@ export function costRoutes(
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
-      // Only the budget-raising resolution is a self-grant; keep_paused stays
-      // available so a board member can still acknowledge an incident.
+      // Only a COMPANY budget-raising resolution is a self-grant; keep_paused
+      // stays available so a board member can still acknowledge an incident,
+      // and agent/project incident raises only move a sub-cap inside the
+      // wallet. The scope comes from the stored incident row (never client
+      // input); an unknown incident fails closed as company scope.
       if (req.body.action === "raise_budget_and_resume") {
-        await assertBudgetsNotManagedByBilling();
+        const incidentScopeType = await budgets.getIncidentScopeType(companyId, incidentId);
+        if (!isWalletSubCapScope(incidentScopeType)) {
+          await assertBudgetsNotManagedByBilling();
+        }
       }
       const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
       res.json(incident);

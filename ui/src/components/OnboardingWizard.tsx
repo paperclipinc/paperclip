@@ -633,8 +633,14 @@ export function OnboardingWizard() {
         window.location.assign(created.url);
       } catch (err) {
         if (err instanceof ApiError && err.status === 402) {
+          // Both come back as 402: the plan gate (upgrade_required) and a failed
+          // per-company billing update for an already-paying user
+          // (billing_update_failed). Only the former is an upsell.
+          const code = (err.body as { error?: string } | null)?.error;
           setError(
-            "Creating more companies is a Pro feature. Upgrade your plan to run more companies.",
+            code === "billing_update_failed"
+              ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
+              : "Creating more companies is a Pro feature. Upgrade your plan to run more companies.",
           );
         } else if (err instanceof ApiError && err.status === 409) {
           setError("You've reached your plan's company limit.");

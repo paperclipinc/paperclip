@@ -50,3 +50,23 @@ export const budgetsApi = {
 export function resolveCloudBudgetAction(currentBudgetCents: number): "checkout" | "update" {
   return currentBudgetCents > 0 ? "update" : "checkout";
 }
+
+// The single cloud company-budget flow (shared by the Costs page policy save and
+// the budget incident card): update the existing recurring budget in place, or
+// start a checkout for a first-time set and redirect to it. `returnTo` is the
+// same-origin path the buyer lands back on after checkout. Returns "checkout"
+// when the browser is navigating away so callers can skip local refreshes.
+export async function applyCloudCompanyBudget(
+  companyId: string,
+  amountCents: number,
+  currentBudgetCents: number,
+  returnTo?: string,
+): Promise<"updated" | "checkout"> {
+  if (resolveCloudBudgetAction(currentBudgetCents) === "update") {
+    await budgetsApi.updateRecurringBudget(companyId, amountCents);
+    return "updated";
+  }
+  const { checkoutUrl } = await budgetsApi.setRecurringBudget(companyId, amountCents, returnTo);
+  window.location.assign(checkoutUrl);
+  return "checkout";
+}
