@@ -15,9 +15,16 @@ const mockAuthApi = vi.hoisted(() => ({
 }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -71,6 +78,8 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
+    // Self-hosted default: no cloud billing.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: false });
   });
 
   afterEach(() => {
@@ -132,6 +141,57 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-[277px]");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  async function renderOpenMenu() {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="authenticated" open onOpenChange={() => {}} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  it("links Plan & billing to /account on a cloud instance, above Sign out", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
+    const root = await renderOpenMenu();
+
+    const billing = document.body.querySelector('a[href="/account"]');
+    expect(billing).not.toBeNull();
+    expect(billing?.textContent).toContain("Plan & billing");
+    // Same-tab navigation out of the SPA (the account page is not an app route).
+    expect(billing?.getAttribute("target")).toBeNull();
+
+    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
+    const billingPos = menuText.indexOf("Plan & billing");
+    const signOutPos = menuText.indexOf("Sign out");
+    expect(billingPos).toBeGreaterThan(-1);
+    expect(signOutPos).toBeGreaterThan(-1);
+    expect(billingPos).toBeLessThan(signOutPos);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the billing entry off-cloud (self-hosted default)", async () => {
+    const root = await renderOpenMenu();
+
+    expect(document.body.textContent).not.toContain("Plan & billing");
+    expect(document.body.textContent).toContain("Sign out");
 
     await act(async () => {
       root.unmount();
