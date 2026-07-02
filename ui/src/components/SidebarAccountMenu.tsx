@@ -24,6 +24,9 @@ import { SidebarServerInfo } from "./SidebarServerInfo";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+// Cloud-only: feedback from managed tenants goes to the hosting company's
+// support inbox, not the upstream project's feedback form.
+const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
 // Cloud-only: the hosting layer's account page (plan, billing, usage budget).
 // Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
 const CLOUD_ACCOUNT_PATH = "/account";
@@ -230,9 +233,9 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Feedback"
-                description="Share feedback or report an issue."
+                description={cloudBilling ? "Email us. A human reads every message." : "Share feedback or report an issue."}
                 icon={Megaphone}
-                href={FEEDBACK_URL}
+                href={cloudBilling ? CLOUD_FEEDBACK_MAILTO : FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
