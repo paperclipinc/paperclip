@@ -11,7 +11,7 @@ function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
 }
 
-function parseDollarInput(value: string) {
+function parseAmountInput(value: string) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.round(parsed * 100);
@@ -46,7 +46,7 @@ export function BudgetIncidentCard({
   const [draftAmount, setDraftAmount] = useState(
     centsInputValue(Math.max(incident.amountObserved + 1000, incident.amountLimit)),
   );
-  const parsed = parseDollarInput(draftAmount);
+  const parsed = parseAmountInput(draftAmount);
   const stateLabel = incidentStateLabel(incident);
 
   return (
