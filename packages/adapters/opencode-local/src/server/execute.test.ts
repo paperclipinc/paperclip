@@ -20,9 +20,11 @@ describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skilltest-"));
     cleanupDirs.push(root);
     const createAgentSource = path.join(root, "paperclip-create-agent");
-    const otherSource = path.join(root, "paperclip");
+    const coordinationSource = path.join(root, "paperclip");
+    const memorySource = path.join(root, "para-memory-files");
     await mkdir(createAgentSource, { recursive: true });
-    await mkdir(otherSource, { recursive: true });
+    await mkdir(coordinationSource, { recursive: true });
+    await mkdir(memorySource, { recursive: true });
     // Runtime skills are configured directly on the adapter config so the helper
     // resolves them without touching the packaged skills directory.
     return {
@@ -35,7 +37,12 @@ describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
         {
           key: "paperclipai/paperclip/paperclip",
           runtimeName: "paperclip",
-          source: otherSource,
+          source: coordinationSource,
+        },
+        {
+          key: "paperclipai/paperclip/para-memory-files",
+          runtimeName: "para-memory-files",
+          source: memorySource,
         },
       ],
     } as Record<string, unknown>;
@@ -54,6 +61,49 @@ describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
     const dir = await buildOpenCodeSkillsDir(config, { canCreateAgents: false });
     cleanupDirs.push(path.dirname(dir));
     const entries = await readdir(dir);
+    expect(entries).not.toContain("paperclip-create-agent");
+  });
+
+  // Managed agents run instruction bundles (ceo/AGENTS.md, HEARTBEAT.md) that
+  // MANDATE the coordination (`paperclip`) and memory (`para-memory-files`)
+  // skills. Those skills are never in a managed agent's explicit desiredSkills,
+  // so they must be force-included whenever the agent is managed.
+  it("includes coordination + memory + create-agent skills for a managed agent that can hire", async () => {
+    const config = await makeConfigWithSkills();
+    const dir = await buildOpenCodeSkillsDir(config, {
+      canCreateAgents: true,
+      managed: true,
+    });
+    cleanupDirs.push(path.dirname(dir));
+    const entries = await readdir(dir);
+    expect(entries).toContain("paperclip");
+    expect(entries).toContain("para-memory-files");
+    expect(entries).toContain("paperclip-create-agent");
+  });
+
+  it("includes coordination + memory but NOT create-agent for a managed agent that cannot hire", async () => {
+    const config = await makeConfigWithSkills();
+    const dir = await buildOpenCodeSkillsDir(config, {
+      canCreateAgents: false,
+      managed: true,
+    });
+    cleanupDirs.push(path.dirname(dir));
+    const entries = await readdir(dir);
+    expect(entries).toContain("paperclip");
+    expect(entries).toContain("para-memory-files");
+    expect(entries).not.toContain("paperclip-create-agent");
+  });
+
+  it("does NOT force coordination/memory skills on a non-managed (BYO) agent", async () => {
+    const config = await makeConfigWithSkills();
+    const dir = await buildOpenCodeSkillsDir(config, {
+      canCreateAgents: false,
+      managed: false,
+    });
+    cleanupDirs.push(path.dirname(dir));
+    const entries = await readdir(dir);
+    expect(entries).not.toContain("paperclip");
+    expect(entries).not.toContain("para-memory-files");
     expect(entries).not.toContain("paperclip-create-agent");
   });
 });

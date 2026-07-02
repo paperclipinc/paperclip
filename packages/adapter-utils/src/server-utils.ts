@@ -2440,6 +2440,23 @@ function canonicalizeDesiredPaperclipSkillReference(
  */
 export const PAPERCLIP_CREATE_AGENT_SKILL_KEY = "paperclip-create-agent";
 
+/**
+ * Runtime slug of the coordination skill that documents how an agent talks to
+ * the Paperclip control plane (tasks, comments, delegation). The managed
+ * instruction bundles mandate its use ("Always use the Paperclip skill for
+ * coordination"), so a managed agent needs it mounted even without an explicit
+ * desiredSkills entry.
+ */
+export const PAPERCLIP_COORDINATION_SKILL_KEY = "paperclip";
+
+/**
+ * Runtime slug of the file-based memory skill. The managed instruction bundles
+ * mandate its use ("You MUST use the `para-memory-files` skill for all memory
+ * operations"), so a managed agent needs it mounted even without an explicit
+ * desiredSkills entry.
+ */
+export const PARA_MEMORY_FILES_SKILL_KEY = "para-memory-files";
+
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
