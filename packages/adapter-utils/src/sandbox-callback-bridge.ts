@@ -114,6 +114,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  // Exactly-once semantics for retried mutating calls (e.g. routine runs, hires).
+  // Without this the server can't dedupe an agent's retry and may double-execute.
+  "idempotency-key",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {
