@@ -6,6 +6,7 @@ import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
+import { budgetsApi } from "../api/budgets";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
@@ -20,6 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
+import { describeCompanyBudgetForSpend, resolveCompanyBudgetDisplay } from "../lib/company-budget-display";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { GettingStartedChecklist } from "../components/GettingStartedChecklist";
@@ -76,6 +78,15 @@ export function Dashboard() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  // The summary's month budget only knows the MONTHLY cap; a company capped by
+  // a lifetime policy (the cloud wallet) needs the policy itself so the spend
+  // card never claims "Unlimited budget" while the Budgets tab shows a cap.
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(selectedCompanyId!),
+    queryFn: () => budgetsApi.overview(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -289,9 +300,10 @@ export function Dashboard() {
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {describeCompanyBudgetForSpend(resolveCompanyBudgetDisplay(budgetOverview?.policies, {
+                    budgetCents: data.costs.monthBudgetCents,
+                    utilizationPercent: data.costs.monthUtilizationPercent,
+                  }))}
                 </span>
               }
             />
