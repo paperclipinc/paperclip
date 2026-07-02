@@ -187,6 +187,21 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
+  it("points Feedback at the cloud support inbox on a cloud instance (never the upstream form)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
+    const root = await renderOpenMenu();
+
+    const feedback = document.body.querySelector('a[href^="mailto:support@paperclip.inc"]');
+    expect(feedback).not.toBeNull();
+    expect(feedback?.textContent).toContain("Feedback");
+    // The upstream project's feedback form must not appear for cloud tenants.
+    expect(document.body.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("hides the billing entry off-cloud (self-hosted default)", async () => {
     const root = await renderOpenMenu();
 
