@@ -61,6 +61,7 @@ import {
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { getDisplayCurrency } from "../lib/display-currency";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import {
@@ -1231,7 +1232,7 @@ function IssueDetailActivityTab({
                   <span className="font-medium text-foreground">
                     Including sub-tasks {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
                       style: "currency",
-                      currency: "USD",
+                      currency: getDisplayCurrency(),
                       minimumFractionDigits: 4,
                       maximumFractionDigits: 4,
                     })}

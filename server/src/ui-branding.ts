@@ -222,15 +222,34 @@ export function resolveDefaultTheme(env: NodeJS.ProcessEnv = process.env): "ligh
   return nonEmpty(env.PAPERCLIP_DEFAULT_THEME)?.toLowerCase() === "light" ? "light" : "dark";
 }
 
+const DEFAULT_DISPLAY_CURRENCY = "USD";
+
+/**
+ * The ISO 4217 currency code monetary amounts should be DISPLAYED in. Reads
+ * PAPERCLIP_DISPLAY_CURRENCY (e.g. "EUR" for a deployment that bills in euros);
+ * falls back to "USD" (the product's built-in default) so the unconfigured
+ * build is unchanged. Display-only: stored cent amounts are never converted.
+ * The UI reads the injected meta tag (see ui/src/lib/display-currency.ts).
+ */
+export function resolveDisplayCurrency(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = nonEmpty(env.PAPERCLIP_DISPLAY_CURRENCY)?.toUpperCase();
+  return raw && /^[A-Z]{3}$/.test(raw) ? raw : DEFAULT_DISPLAY_CURRENCY;
+}
+
 export function renderRuntimeBrandingMeta(
   branding: WorktreeUiBranding,
   defaultTheme: "light" | "dark" = "dark",
+  displayCurrency: string = DEFAULT_DISPLAY_CURRENCY,
 ): string {
   const parts: string[] = [];
   // Only emit the default-theme meta when it differs from the built-in "dark",
   // so the unconfigured default build stays byte-for-byte identical.
   if (defaultTheme !== "dark") {
     parts.push(`<meta name="paperclip-default-theme" content="${defaultTheme}" />`);
+  }
+  // Same deal for the display currency: only a non-USD instance emits the meta.
+  if (displayCurrency !== DEFAULT_DISPLAY_CURRENCY) {
+    parts.push(`<meta name="paperclip-display-currency" content="${escapeHtmlAttribute(displayCurrency)}" />`);
   }
   if (branding.enabled && branding.name && branding.color && branding.textColor) {
     parts.push('<meta name="paperclip-worktree-enabled" content="true" />');
@@ -264,7 +283,7 @@ export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.e
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,
     RUNTIME_BRANDING_BLOCK_END,
-    renderRuntimeBrandingMeta(branding, resolveDefaultTheme(env)),
+    renderRuntimeBrandingMeta(branding, resolveDefaultTheme(env), resolveDisplayCurrency(env)),
   );
   // Inject the runtime brand stylesheet last so it lands after the bundled
   // stylesheet (Vite emits that at the end of <head>) and its CSS variable

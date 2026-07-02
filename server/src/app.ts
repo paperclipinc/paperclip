@@ -49,7 +49,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -116,6 +116,24 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+/**
+ * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
+ * /branding — the stylesheet link applyUiBranding injects points here. Without
+ * this route the request falls through to the SPA fallback and comes back as
+ * text/html, which the browser refuses to apply as a stylesheet. A missing
+ * brand asset 404s for the same reason. No-op when no brand dir is configured,
+ * so the default build's routing is unchanged.
+ */
+export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
+  const brandDir = getBrandDir(env);
+  if (!brandDir) return false;
+  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
+  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
+    res.status(404).end();
+  });
+  return true;
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -341,6 +359,9 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+  // Deployer-mounted brand assets (must come before the SPA fallback / vite
+  // middleware so /branding/brand.css never resolves to the HTML shell).
+  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {

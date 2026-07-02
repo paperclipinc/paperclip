@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
+  CreditCard,
   LogOut,
   Megaphone,
   type LucideIcon,
@@ -11,6 +12,7 @@ import {
 import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -22,6 +24,9 @@ import { SidebarServerInfo } from "./SidebarServerInfo";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+// Cloud-only: the hosting layer's account page (plan, billing, usage budget).
+// Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
+const CLOUD_ACCOUNT_PATH = "/account";
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
@@ -37,6 +42,8 @@ interface MenuActionProps {
   onClick?: () => void;
   href?: string;
   external?: boolean;
+  // Same-tab full-page navigation for destinations outside the SPA router.
+  nativeAnchor?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -61,7 +68,7 @@ function deriveUserSlug(name: string | null | undefined, email: string | null | 
   return "me";
 }
 
-function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
+function MenuAction({ label, description, icon: Icon, onClick, href, external = false, nativeAnchor = false }: MenuActionProps) {
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -81,6 +88,14 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
     if (external) {
       return (
         <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    if (nativeAnchor) {
+      return (
+        <a href={href} className={className} onClick={onClick}>
           {content}
         </a>
       );
@@ -117,6 +132,13 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
+  // instances have no /account page, so no entry.
+  const cloudBilling = experimentalSettings?.cloudBilling === true;
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -215,6 +237,16 @@ export function SidebarAccountMenu({
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+              {cloudBilling ? (
+                <MenuAction
+                  label="Plan & billing"
+                  description="Manage your plan, seats, and usage budget."
+                  icon={CreditCard}
+                  href={CLOUD_ACCOUNT_PATH}
+                  nativeAnchor
+                  onClick={closeNavigationChrome}
+                />
+              ) : null}
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

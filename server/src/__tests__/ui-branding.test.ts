@@ -11,6 +11,7 @@ import {
   renderFaviconLinks,
   renderRuntimeBrandingMeta,
   resolveDefaultTheme,
+  resolveDisplayCurrency,
 } from "../ui-branding.js";
 
 const TEMPLATE = `<!doctype html>
@@ -149,6 +150,25 @@ describe("ui branding", () => {
     // Default (dark) build stays free of the meta.
     expect(applyUiBranding(tpl, {})).not.toContain("paperclip-default-theme");
     expect(applyUiBranding(tpl, { PAPERCLIP_DEFAULT_THEME: "dark" })).not.toContain("paperclip-default-theme");
+  });
+
+  it("resolveDisplayCurrency reads PAPERCLIP_DISPLAY_CURRENCY, defaulting to USD", () => {
+    expect(resolveDisplayCurrency({})).toBe("USD");
+    expect(resolveDisplayCurrency({ PAPERCLIP_DISPLAY_CURRENCY: "EUR" })).toBe("EUR");
+    expect(resolveDisplayCurrency({ PAPERCLIP_DISPLAY_CURRENCY: "eur" })).toBe("EUR");
+    expect(resolveDisplayCurrency({ PAPERCLIP_DISPLAY_CURRENCY: "  " })).toBe("USD");
+    expect(resolveDisplayCurrency({ PAPERCLIP_DISPLAY_CURRENCY: "EURO" })).toBe("USD");
+    expect(resolveDisplayCurrency({ PAPERCLIP_DISPLAY_CURRENCY: "12$" })).toBe("USD");
+  });
+
+  it("injects a paperclip-display-currency meta only for a non-USD instance", () => {
+    const branded = applyUiBranding(TEMPLATE, { PAPERCLIP_DISPLAY_CURRENCY: "EUR" });
+    expect(branded).toContain('<meta name="paperclip-display-currency" content="EUR" />');
+    // The USD default build stays byte-for-byte free of the meta.
+    expect(applyUiBranding(TEMPLATE, {})).not.toContain("paperclip-display-currency");
+    expect(applyUiBranding(TEMPLATE, { PAPERCLIP_DISPLAY_CURRENCY: "USD" })).not.toContain(
+      "paperclip-display-currency",
+    );
   });
 
   // Regression guard for the brand-hook outage: a head comment in ui/index.html
