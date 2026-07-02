@@ -647,6 +647,13 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
+    onError: (error) => {
+      pushToast({
+        title: "Could not update the project budget",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
+    },
   });
 
   if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {

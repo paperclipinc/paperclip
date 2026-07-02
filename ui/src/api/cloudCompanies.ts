@@ -10,8 +10,10 @@ import { api } from "./client";
 // Plan-gating lives in the gateway (the product does not know the account plan):
 //   200 -> { productSlug, url, name }      (Pro / Enterprise)
 //   402 -> { error:"upgrade_required", capability:"create_company" }   (Starter)
+//   402 -> { error:"billing_update_failed" }  (paying user; the per-company billing bump failed, nothing created or charged)
 //   409 -> { error:"company_limit_reached", limit }                    (at plan cap)
-// Callers read those via the thrown ApiError (status + body) from ./client.
+// Callers read those via the thrown ApiError (status + body) from ./client;
+// branch on body.error, not just the status (both 402s share it).
 
 export type CloudCompanyCreateResult = {
   /** The product slug of the newly provisioned company. */

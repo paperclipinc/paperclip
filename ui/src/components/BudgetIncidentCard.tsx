@@ -29,11 +29,18 @@ export function BudgetIncidentCard({
   incident,
   onRaiseAndResume,
   onKeepPaused,
+  onRaiseViaBilling,
+  billingManaged,
   isMutating,
 }: {
   incident: BudgetIncident;
   onRaiseAndResume: (amountCents: number) => void;
   onKeepPaused: () => void;
+  // Cloud billing: the company budget is funded through billing (EUR), so the
+  // raise goes through the recurring-budget billing flow instead of a direct
+  // policy write (which the server rejects with budget_managed_by_billing).
+  onRaiseViaBilling?: (amountCents: number) => void;
+  billingManaged?: boolean;
   isMutating?: boolean;
 }) {
   const [draftAmount, setDraftAmount] = useState(
@@ -77,8 +84,13 @@ export function BudgetIncidentCard({
 
         <div className="rounded-xl border border-border/60 bg-background/60 p-3">
           <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            New budget (USD)
+            {billingManaged ? "New budget (EUR)" : "New budget (USD)"}
           </label>
+          {billingManaged ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Raise your budget through billing. Work resumes once the budget is updated.
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Input
               value={draftAmount}
@@ -90,11 +102,17 @@ export function BudgetIncidentCard({
               className="gap-2"
               disabled={isMutating || parsed === null || parsed <= incident.amountObserved}
               onClick={() => {
-                if (typeof parsed === "number") onRaiseAndResume(parsed);
+                if (typeof parsed !== "number") return;
+                if (billingManaged) onRaiseViaBilling?.(parsed);
+                else onRaiseAndResume(parsed);
               }}
             >
               <ArrowUpRight className="h-4 w-4" />
-              {isMutating ? "Applying..." : "Raise budget & resume"}
+              {isMutating
+                ? "Applying..."
+                : billingManaged
+                  ? "Raise budget through billing"
+                  : "Raise budget & resume"}
             </Button>
           </div>
           {parsed !== null && parsed <= incident.amountObserved ? (

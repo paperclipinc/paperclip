@@ -10,7 +10,7 @@ import type {
   QuotaWindow,
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
-import { budgetsApi, resolveCloudBudgetAction } from "../api/budgets";
+import { applyCloudCompanyBudget, budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -222,6 +222,18 @@ export function Costs() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
   };
 
+  // A billed budget change lands via the billing webhook a few seconds later, so
+  // refresh the wallet a handful of times (the overview otherwise only polls
+  // every 30s) so the new balance appears without a manual reload.
+  const refreshBudgetViewsRepeatedly = () => {
+    let n = 0;
+    const tick = () => {
+      invalidateBudgetViews();
+      if (++n < 6) setTimeout(tick, 2500);
+    };
+    tick();
+  };
+
   // Hosted-checkout return for a cloud budget top-up. The buyer comes back to this
   // page with ?billing=ok|cancel. The funded amount lands via the billing webhook a
   // few seconds later, so on success we confirm with a toast and refresh the wallet
@@ -237,12 +249,7 @@ export function Costs() {
 
     if (billing === "ok") {
       pushToast({ title: "Budget top-up received", body: "Updating your wallet balance.", tone: "success" });
-      let n = 0;
-      const tick = () => {
-        invalidateBudgetViews();
-        if (++n < 6) setTimeout(tick, 2500);
-      };
-      tick();
+      refreshBudgetViewsRepeatedly();
     } else if (billing === "cancel") {
       pushToast({ title: "Checkout canceled", body: "You have not been charged.", tone: "info" });
     }
@@ -275,22 +282,19 @@ export function Costs() {
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
     }) => {
-      if (cloudBilling) {
-        if (resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
-          // Existing recurring budget: update the subscription quantity in place.
-          await budgetsApi.updateRecurringBudget(companyId, input.amount);
-          return;
-        }
-        // First-time set: create the recurring budget subscription via checkout.
-        // Pass this Costs page as the return path so the buyer comes back here
-        // after paying, instead of bouncing to the account page.
-        const { checkoutUrl } = await budgetsApi.setRecurringBudget(
+      // Cloud billing manages the COMPANY wallet only. Agent and project
+      // policies are plain sub-caps inside the wallet, so they keep the direct
+      // policy write; routing them through billing would rewrite the company's
+      // recurring budget subscription (a real charge) at the sub-cap amount.
+      if (cloudBilling && input.scopeType === "company") {
+        // Pass this Costs page as the return path so a first-time checkout
+        // brings the buyer back here, instead of bouncing to the account page.
+        return applyCloudCompanyBudget(
           companyId,
           input.amount,
+          currentCompanyBudgetCents,
           window.location.pathname,
         );
-        window.location.assign(checkoutUrl);
-        return;
       }
       await budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
@@ -299,13 +303,29 @@ export function Costs() {
         windowKind: input.windowKind,
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       // A first-time cloud budget navigates to checkout (the funded amount lands
       // via webhook later), so refreshing budget views then is unnecessary. A
-      // recurring-budget change stays on the page, so refresh as usual.
-      if (!cloudBilling || resolveCloudBudgetAction(currentCompanyBudgetCents) === "update") {
-        invalidateBudgetViews();
+      // recurring-budget change stays on the page and lands via webhook, so keep
+      // refreshing until the new balance shows up.
+      if (result === "checkout") return;
+      if (result === "updated") {
+        pushToast({
+          title: "Budget update sent to billing",
+          body: "Work resumes once the new budget is applied.",
+          tone: "success",
+        });
+        refreshBudgetViewsRepeatedly();
+        return;
       }
+      invalidateBudgetViews();
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Could not update the budget",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
     },
   });
 
@@ -313,6 +333,13 @@ export function Costs() {
     mutationFn: (input: { incidentId: string; action: "keep_paused" | "raise_budget_and_resume"; amount?: number }) =>
       budgetsApi.resolveIncident(companyId, input.incidentId, input),
     onSuccess: invalidateBudgetViews,
+    onError: (error) => {
+      pushToast({
+        title: "Could not resolve the budget incident",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
+    },
   });
 
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
@@ -727,13 +754,21 @@ export function Costs() {
                     <BudgetIncidentCard
                       key={incident.id}
                       incident={incident}
-                      isMutating={incidentMutation.isPending}
+                      isMutating={incidentMutation.isPending || policyMutation.isPending}
+                      billingManaged={cloudBilling && incident.scopeType === "company"}
                       onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                       onRaiseAndResume={(amount) =>
                         incidentMutation.mutate({
                           incidentId: incident.id,
                           action: "raise_budget_and_resume",
                           amount,
+                        })}
+                      onRaiseViaBilling={(amount) =>
+                        policyMutation.mutate({
+                          scopeType: "company",
+                          scopeId: companyId,
+                          amount,
+                          windowKind: incident.windowKind,
                         })}
                     />
                   ))}
@@ -974,13 +1009,21 @@ export function Costs() {
                       <BudgetIncidentCard
                         key={incident.id}
                         incident={incident}
-                        isMutating={incidentMutation.isPending}
+                        isMutating={incidentMutation.isPending || policyMutation.isPending}
+                        billingManaged={cloudBilling && incident.scopeType === "company"}
                         onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                         onRaiseAndResume={(amount) =>
                           incidentMutation.mutate({
                             incidentId: incident.id,
                             action: "raise_budget_and_resume",
                             amount,
+                          })}
+                        onRaiseViaBilling={(amount) =>
+                          policyMutation.mutate({
+                            scopeType: "company",
+                            scopeId: companyId,
+                            amount,
+                            windowKind: incident.windowKind,
                           })}
                       />
                     ))}

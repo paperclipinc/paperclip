@@ -151,6 +151,55 @@ describe("NewCompanyDialog", () => {
     container.remove();
   });
 
+  it("shows the billing-failure message (not the upgrade prompt) on a 402 billing_update_failed", async () => {
+    // An already-paying user whose per-company base-quantity bump failed at the
+    // billing provider gets a 402 too; that is a billing error, not a plan gate.
+    mockCloudCompaniesApi.create.mockRejectedValue(
+      new ApiError("billing_update_failed", 402, { error: "billing_update_failed" }),
+    );
+    const { container, root, queryClient, onOpenChange } = renderDialog();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewCompanyDialog open onOpenChange={onOpenChange} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const input = document.body.querySelector('input[aria-label="Company name"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, "New Co");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create company",
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain(
+      "We could not update your billing for the new company.",
+    );
+    expect(document.body.textContent).toContain("you have not been charged");
+    expect(document.body.textContent).not.toContain("Creating more companies is a Pro feature");
+    expect(assignSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("shows the inline limit message on a 409 and does NOT navigate", async () => {
     mockCloudCompaniesApi.create.mockRejectedValue(
       new ApiError("company_limit_reached", 409, { error: "company_limit_reached" }),

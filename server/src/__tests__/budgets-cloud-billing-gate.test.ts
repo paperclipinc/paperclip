@@ -6,13 +6,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // company, so the board-gated budget mutation routes would let them grant
 // themselves budget without paying (raise the wallet cap, overwrite the lifetime
 // wallet policy, drop the hard stop, or self-resume after a hard stop). When the
-// `cloudBilling` instance flag is on, those routes must 403 with
+// `cloudBilling` instance flag is on, COMPANY-scope mutations must 403 with
 // `budget_managed_by_billing`; the wallet is funded exclusively through the
-// cloud-internal /budgets/increment path, which must keep working. With the flag
-// off (self-hosters) board budget control is unchanged.
+// cloud-internal /budgets/increment path, which must keep working. Agent- and
+// project-scope policies are NOT self-grants: they only sub-cap spending inside
+// the company wallet (getInvocationBlock enforces the company policy first and
+// independently), so they stay open under cloud billing. With the flag off
+// (self-hosters) board budget control is unchanged.
 
 const upsertPolicy = vi.hoisted(() => vi.fn(async () => ({ id: "policy-1" })));
 const resolveIncident = vi.hoisted(() => vi.fn(async () => ({ id: "incident-1" })));
+const incidentScopeType = vi.hoisted(() => ({ value: "company" as string | null }));
+const getIncidentScopeType = vi.hoisted(() => vi.fn(async () => incidentScopeType.value));
 const incrementCompanyBudget = vi.hoisted(() =>
   vi.fn(async (_companyId: string, deltaCents: number) => ({ amount: deltaCents })),
 );
@@ -24,7 +29,7 @@ const cloudBillingEnabled = vi.hoisted(() => ({ value: false }));
 vi.mock("../services/index.js", () => {
   const noop = () => ({});
   return {
-    budgetService: () => ({ upsertPolicy, resolveIncident, incrementCompanyBudget }),
+    budgetService: () => ({ upsertPolicy, resolveIncident, incrementCompanyBudget, getIncidentScopeType }),
     costService: noop,
     financeService: noop,
     companyService: () => ({ update: companyUpdate }),
@@ -41,6 +46,8 @@ vi.mock("../services/index.js", () => {
 
 const companyId = "22222222-2222-4222-8222-222222222222";
 const incidentId = "33333333-3333-4333-8333-333333333333";
+const agentId = "44444444-4444-4444-8444-444444444444";
+const projectId = "55555555-5555-4555-8555-555555555555";
 
 async function createApp() {
   const [{ costRoutes }, { errorHandler }] = await Promise.all([
@@ -70,6 +77,7 @@ async function createApp() {
 beforeEach(() => {
   vi.clearAllMocks();
   cloudBillingEnabled.value = false;
+  incidentScopeType.value = "company";
 });
 
 describe("cloud billing budget self-grant gate", () => {
@@ -104,15 +112,85 @@ describe("cloud billing budget self-grant gate", () => {
       expect(res.status).toBe(200);
       expect(upsertPolicy).toHaveBeenCalledTimes(1);
     });
+
+    it("allows agent-scope policies when cloud billing is on (sub-cap inside the wallet)", async () => {
+      cloudBillingEnabled.value = true;
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/budgets/policies`)
+        .send({
+          scopeType: "agent",
+          scopeId: agentId,
+          windowKind: "calendar_month_utc",
+          amount: 2000,
+        });
+
+      expect(res.status).toBe(200);
+      expect(upsertPolicy).toHaveBeenCalledTimes(1);
+    });
+
+    it("allows project-scope policies when cloud billing is on (sub-cap inside the wallet)", async () => {
+      cloudBillingEnabled.value = true;
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/budgets/policies`)
+        .send({
+          scopeType: "project",
+          scopeId: projectId,
+          windowKind: "lifetime",
+          amount: 2000,
+        });
+
+      expect(res.status).toBe(200);
+      expect(upsertPolicy).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("POST /api/companies/:companyId/budget-incidents/:incidentId/resolve", () => {
-    it("403s raise_budget_and_resume when cloud billing is on", async () => {
+    it("403s raise_budget_and_resume on a company-scope incident when cloud billing is on", async () => {
       cloudBillingEnabled.value = true;
+      incidentScopeType.value = "company";
       const app = await createApp();
       const res = await request(app)
         .post(`/api/companies/${companyId}/budget-incidents/${incidentId}/resolve`)
         .send({ action: "raise_budget_and_resume", amount: 100000000 });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("budget_managed_by_billing");
+      expect(resolveIncident).not.toHaveBeenCalled();
+    });
+
+    it("allows raise_budget_and_resume on an agent-scope incident when cloud billing is on", async () => {
+      cloudBillingEnabled.value = true;
+      incidentScopeType.value = "agent";
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/budget-incidents/${incidentId}/resolve`)
+        .send({ action: "raise_budget_and_resume", amount: 5000 });
+
+      expect(res.status).toBe(200);
+      expect(resolveIncident).toHaveBeenCalledTimes(1);
+    });
+
+    it("allows raise_budget_and_resume on a project-scope incident when cloud billing is on", async () => {
+      cloudBillingEnabled.value = true;
+      incidentScopeType.value = "project";
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/budget-incidents/${incidentId}/resolve`)
+        .send({ action: "raise_budget_and_resume", amount: 5000 });
+
+      expect(res.status).toBe(200);
+      expect(resolveIncident).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails closed (403) when the incident scope cannot be resolved and cloud billing is on", async () => {
+      cloudBillingEnabled.value = true;
+      incidentScopeType.value = null;
+      const app = await createApp();
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/budget-incidents/${incidentId}/resolve`)
+        .send({ action: "raise_budget_and_resume", amount: 5000 });
 
       expect(res.status).toBe(403);
       expect(res.body.code).toBe("budget_managed_by_billing");

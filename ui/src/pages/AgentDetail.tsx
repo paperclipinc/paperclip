@@ -828,12 +828,16 @@ export function AgentDetail() {
         windowKind: "calendar_month_utc",
       }),
     onSuccess: () => {
+      setActionError(null);
       if (!resolvedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to update the budget");
     },
   });
 
