@@ -103,6 +103,8 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
+  formatManagedGitWorktreeBranchInspection,
+  inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
@@ -310,6 +312,9 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
 const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -1195,14 +1200,59 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
-function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailure {
-  return error instanceof WorkspaceValidationFailure;
+type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
+  code: typeof WORKSPACE_VALIDATION_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+};
+
+function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailureLike {
+  if (error instanceof WorkspaceValidationFailure) return true;
+  const maybe = error as { code?: unknown; resultJson?: unknown } | null;
+  return Boolean(
+    maybe &&
+      maybe.code === WORKSPACE_VALIDATION_FAILURE_CODE &&
+      maybe.resultJson &&
+      typeof maybe.resultJson === "object" &&
+      !Array.isArray(maybe.resultJson),
+  );
 }
 
 function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+function stableStringifyForFingerprint(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringifyForFingerprint(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForFingerprint(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintFinalizeWorkspaceBranchValidation(input: {
+  issueId: string | null;
+  executionWorkspaceId: string;
+  inspection: ReturnType<typeof formatManagedGitWorktreeBranchInspection>;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForFingerprint({
+      version: 1,
+      reason: "git_worktree_branch_mismatch_after_run",
+      issueId: input.issueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: input.inspection.worktreePath ? path.resolve(input.inspection.worktreePath) : null,
+      repoRoot: input.inspection.repoRoot ? path.resolve(input.inspection.repoRoot) : null,
+      expectedBranchName: input.inspection.expectedBranchName,
+      actualBranchName: input.inspection.actualBranchName,
+      reasonCode: input.inspection.reasonCode,
+    }))
+    .digest("hex");
+  return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
 }
 
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
@@ -1427,6 +1477,27 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
       "missing_git_metadata",
       `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
     );
+  }
+
+  const expectedManagedBranchName =
+    readNonEmptyString(input.persistedExecutionWorkspace?.branchName) ??
+    readNonEmptyString(input.executionWorkspace.branchName);
+  if (
+    input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
+    effectiveCwd &&
+    expectedManagedBranchName
+  ) {
+    const inspection = await inspectManagedGitWorktreeBranch({
+      worktreePath: effectiveCwd,
+      expectedBranchName: expectedManagedBranchName,
+    });
+    if (!inspection.valid) {
+      fail(
+        "git_worktree_branch_mismatch",
+        `Issue ${issue.identifier ?? issue.id} expected git worktree branch "${expectedManagedBranchName}" at "${effectiveCwd}", but ${inspection.reason ?? "the checked-out branch could not be verified"}.`,
+        { managedGitWorktreeBranch: formatManagedGitWorktreeBranchInspection(inspection) },
+      );
+    }
   }
 }
 
@@ -2009,7 +2080,10 @@ function summarizeRunFailureForIssueComment(
 
 function didAutomaticRecoveryFail(
   latestRun: Pick<typeof heartbeatRuns.$inferSelect, "status" | "contextSnapshot"> | null,
-  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
+  expectedRetryReason:
+    | "assignment_recovery"
+    | "issue_continuation_needed"
+    | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
 ) {
   if (!latestRun) return false;
 
@@ -2020,6 +2094,27 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
+  );
+}
+
+function isExecutionReviewParticipantRecoveryRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  if (!run) return false;
+  const context = parseObject(run.contextSnapshot);
+  return readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
+}
+
+function isExecutionReviewParticipantRecoveryEligibleRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  if (!run) return false;
+  const context = parseObject(run.contextSnapshot);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  return (
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    isExecutionReviewParticipantRecoveryRun(run)
   );
 }
 
@@ -2371,6 +2466,7 @@ export function shouldResetTaskSessionForWake(
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
+    wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
     // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
@@ -2483,6 +2579,9 @@ export function describeSessionResetReason(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+  if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
+    return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
+  }
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
@@ -10073,6 +10172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await ensurePersistedExecutionWorkspaceAvailable({
           base: executionWorkspaceBase,
           workspace: {
+            id: existingExecutionWorkspace.id,
             mode: existingExecutionWorkspace.mode,
             strategyType: existingExecutionWorkspace.strategyType,
             cwd: existingExecutionWorkspace.cwd,
@@ -10847,11 +10947,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
+      const inspectFinalizeWorkspaceBranch = async () => {
+        const workspaceRecord = persistedExecutionWorkspace?.id
+          ? await executionWorkspacesSvc.getById(persistedExecutionWorkspace.id)
+          : persistedExecutionWorkspace;
+        if (workspaceRecord?.strategyType !== "git_worktree") return null;
+
+        const worktreePath =
+          readNonEmptyString(workspaceRecord.providerRef) ??
+          readNonEmptyString(workspaceRecord.cwd) ??
+          readNonEmptyString(executionWorkspace.worktreePath) ??
+          readNonEmptyString(executionWorkspace.cwd);
+        const expectedBranchName =
+          readNonEmptyString(workspaceRecord.branchName) ??
+          readNonEmptyString(executionWorkspace.branchName);
+        if (!worktreePath || !expectedBranchName) return null;
+
+        const inspection = await inspectManagedGitWorktreeBranch({
+          worktreePath,
+          expectedBranchName,
+        });
+        return { workspaceRecord, inspection };
+      };
       const recordWorkspaceFinalize = async (
         status: "succeeded" | "failed",
         metadata?: Record<string, unknown>,
       ) => {
         if (adapterFinalizeOutcome) return;
+        let finalizeBranchMetadata: Record<string, unknown> | null = null;
+        if (status === "succeeded") {
+          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          if (branchInspection) {
+            const managedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(branchInspection.inspection);
+            finalizeBranchMetadata = {
+              executionWorkspaceId: branchInspection.workspaceRecord.id,
+              ...managedGitWorktreeBranch,
+            };
+            if (!branchInspection.inspection.valid) {
+              const workspaceValidationFingerprint = fingerprintFinalizeWorkspaceBranchValidation({
+                issueId: issueRef?.id ?? null,
+                executionWorkspaceId: branchInspection.workspaceRecord.id,
+                inspection: managedGitWorktreeBranch,
+              });
+              await workspaceOperationRecorder.recordOperation({
+                phase: "workspace_finalize",
+                cwd: executionWorkspace.cwd,
+                metadata: {
+                  adapterType: agent.adapterType,
+                  executionTargetKind: executionTarget?.kind ?? "local",
+                  ...metadata,
+                  managedGitWorktreeBranch: finalizeBranchMetadata,
+                },
+                run: async () => ({
+                  status: "failed",
+                  stderr: `Managed git worktree branch check failed: ${branchInspection.inspection.reason ?? "unknown branch mismatch"}\n`,
+                }),
+              });
+              adapterFinalizeOutcome = "failed";
+              throw new WorkspaceValidationFailure(
+                `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${branchInspection.inspection.expectedBranchName}" at "${branchInspection.inspection.worktreePath}", but ${branchInspection.inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
+                {
+                  workspaceValidation: {
+                    reason: "git_worktree_branch_mismatch_after_run",
+                    fingerprint: workspaceValidationFingerprint,
+                    adapterType: agent.adapterType,
+                    issueId: issueRef?.id ?? null,
+                    issueIdentifier: issueRef?.identifier ?? null,
+                    persistedExecutionWorkspaceId: branchInspection.workspaceRecord.id,
+                    executionWorkspaceCwd: executionWorkspace.cwd,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
+                  },
+                },
+              );
+            }
+          }
+        }
         await workspaceOperationRecorder.recordOperation({
           phase: "workspace_finalize",
           cwd: executionWorkspace.cwd,
@@ -10859,6 +11029,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             adapterType: agent.adapterType,
             executionTargetKind: executionTarget?.kind ?? "local",
             ...metadata,
+            ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
           },
           run: async () => ({ status }),
         });
@@ -11383,8 +11554,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
           // recovery path routes it to a human owner instead of looping retries.
+          const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
-          const setupFailureErrorCode = configurationIncompleteSetupFailure?.code ?? "setup_failed";
+          const setupFailureErrorCode =
+            workspaceValidationSetupFailure?.code ?? configurationIncompleteSetupFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
@@ -11395,7 +11568,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
-                resultJson: configurationIncompleteSetupFailure?.resultJson ?? null,
+                resultJson:
+                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -11494,6 +11668,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
       `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
+    );
+  }
+
+  function buildExecutionReviewParticipantRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip retried the pending execution-review participant once, but the review stage still has no completed decision " +
+      `or live reviewer run.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
+      "restore the review stage, or record an intentional manual resolution."
     );
   }
 
@@ -11878,6 +12064,149 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const findExistingExecutionPath = (agentId?: string | null) =>
+        tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+              agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+      const issueHasScheduledMonitor =
+        issue.monitorNextCheckAt instanceof Date &&
+        issue.monitorNextCheckAt.getTime() > Date.now();
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const currentParticipant = executionState?.status === "pending"
+        ? executionState.currentParticipant
+        : null;
+      const issueNeedsReviewParticipantRecovery =
+        issue.status === "in_review" &&
+        !issue.assigneeUserId &&
+        currentParticipant?.type === "agent" &&
+        currentParticipant.agentId === run.agentId &&
+        isExecutionReviewParticipantRecoveryEligibleRun(run) &&
+        HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          run.status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        );
+
+      if (issueNeedsReviewParticipantRecovery) {
+        const existingReviewParticipantExecutionPath = await findExistingExecutionPath(currentParticipant.agentId);
+        if (
+          options.suppressImmediateRecovery ||
+          existingReviewParticipantExecutionPath ||
+          issueHasScheduledMonitor ||
+          await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
+        ) {
+          return { kind: "released" as const };
+        }
+
+        if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
+          return {
+            kind: "blocked_recovery_in_place" as const,
+            issue,
+            previousStatus: issue.status,
+          };
+        }
+
+        const shouldBlockReviewRecovery =
+          !recoveryAgentInvokable ||
+          !recoveryAgent ||
+          isExecutionReviewParticipantRecoveryRun(run);
+        if (shouldBlockReviewRecovery) {
+          return {
+            kind: "blocked" as const,
+            issue,
+            previousStatus: issue.status,
+            comment: buildExecutionReviewParticipantRecoveryComment({ latestRun: run }),
+            recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+            recoveryOwnerAgentId: currentParticipant.agentId,
+          };
+        }
+
+        const now = new Date();
+        const wakeupRequest = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: issue.companyId,
+            agentId: recoveryAgent.id,
+            source: "automation",
+            triggerDetail: "system",
+            reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+            payload: withRecoveryModelProfileHint({
+              issueId: issue.id,
+              retryOfRunId: run.id,
+              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+              currentStageId: executionState?.currentStageId ?? null,
+              currentStageType: executionState?.currentStageType ?? null,
+            }, "normal_model"),
+            status: "queued",
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        const queuedRun = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: issue.companyId,
+            agentId: recoveryAgent.id,
+            invocationSource: "automation",
+            triggerDetail: "system",
+            status: "queued",
+            wakeupRequestId: wakeupRequest.id,
+            contextSnapshot: withRecoveryModelProfileHint({
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+              source: "issue.execution_review_recovery",
+              retryOfRunId: run.id,
+              currentStageId: executionState?.currentStageId ?? null,
+              currentStageType: executionState?.currentStageType ?? null,
+              reviewRecoveryInstruction:
+                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+            }, "normal_model"),
+            sessionIdBefore: recoverySessionBefore,
+            retryOfRunId: run.id,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            runId: queuedRun.id,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: queuedRun.id,
+            executionAgentNameKey: recoveryAgentNameKey,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, issue.id));
+
+        return {
+          kind: "queued_recovery" as const,
+          run: queuedRun,
+        };
+      }
+
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
@@ -11891,19 +12220,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
-      const existingExecutionPath = await tx
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, issue.companyId),
-            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-            sql`${heartbeatRuns.id} <> ${run.id}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const existingExecutionPath = await findExistingExecutionPath();
       if (existingExecutionPath) {
         return { kind: "released" as const };
       }
@@ -12026,7 +12343,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({
         issue: promotionResult.issue,
-        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
         comment: promotionResult.comment,
         recoveryCause:
@@ -12034,7 +12351,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
+                ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
               : undefined,
+        recoveryOwnerAgentId: promotionResult.recoveryOwnerAgentId,
       });
       return;
     }
@@ -12042,7 +12362,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (promotionResult?.kind === "blocked_recovery_in_place") {
       await recovery.escalateStrandedRecoveryIssueInPlace({
         issue: promotionResult.issue,
-        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
       });
       return;

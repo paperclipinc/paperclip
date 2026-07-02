@@ -926,8 +926,7 @@ export async function startSandboxCallbackBridgeServer(input: {
       [
         `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
         `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
-        `nohup env ${Object.entries(env).map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} ` +
-          `${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
+        `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
           `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
         "pid=$!",
         `printf '%s\\n' \"$pid\" > ${shellQuote(directories.pidFile)}`,
@@ -937,6 +936,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     cwd: input.remoteCwd,
     env: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+      ...env,
     },
     timeoutMs,
   });
