@@ -46,6 +46,7 @@ import {
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
+  resolvePluginExecuteBudget,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
@@ -1279,6 +1280,13 @@ function createSandboxEnvironmentDriver(
           // ask the worker to stream (streamOutput flag) since the onOutput
           // callback itself can't cross the boundary. Falls back to buffered
           // output when onOutput/runId/streamBus are unavailable.
+          // Resolve BOTH budgets together so the plugin-side timeout always
+          // undercuts the host RPC timer by the overhead buffer (see
+          // resolvePluginExecuteBudget).
+          const execBudget = resolvePluginExecuteBudget({
+            requestedTimeoutMs: input.timeoutMs,
+            config: sanitizedConfig,
+          });
           return await withPluginExecOutputStream({
             streamBus: pluginWorkerManager.streamBus,
             pluginId,
@@ -1302,13 +1310,10 @@ function createSandboxEnvironmentDriver(
                 cwd: input.cwd,
                 env: input.env,
                 stdin: input.stdin,
-                timeoutMs: input.timeoutMs,
+                timeoutMs: execBudget.pluginTimeoutMs ?? input.timeoutMs,
                 runId,
                 ...(streaming ? { streamOutput: true } : {}),
-              }, resolvePluginExecuteRpcTimeoutMs({
-                requestedTimeoutMs: input.timeoutMs,
-                config: sanitizedConfig,
-              })),
+              }, execBudget.rpcTimeoutMs),
           });
         }
       }
