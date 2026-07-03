@@ -587,6 +587,16 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeCheckboxSelection = {
+  prompt: string | null;
+  selectedOptionIds: string[];
+  selectedOptions: Array<{
+    id: string;
+    label: string;
+    description: string | null;
+  }>;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -603,6 +613,7 @@ type PaperclipWakePayload = {
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
+  checkboxSelection: PaperclipWakeCheckboxSelection | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
@@ -935,6 +946,42 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
+function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeCheckboxSelection | null {
+  const selection = parseObject(value);
+  const hasExplicitSelection =
+    Object.prototype.hasOwnProperty.call(selection, "prompt") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptionIds") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptions");
+  const prompt = asString(selection.prompt, "").trim() || null;
+  const selectedOptionIds = Array.isArray(selection.selectedOptionIds)
+    ? selection.selectedOptionIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const selectedOptions = Array.isArray(selection.selectedOptions)
+    ? selection.selectedOptions
+        .map((entry) => {
+          const option = parseObject(entry);
+          const id = asString(option.id, "").trim();
+          if (!id) return null;
+          return {
+            id,
+            label: asString(option.label, id).trim() || id,
+            description: asString(option.description, "").trim() || null,
+          };
+        })
+        .filter((entry): entry is { id: string; label: string; description: string | null } => Boolean(entry))
+    : [];
+
+  if (!hasExplicitSelection && selectedOptionIds.length === 0 && selectedOptions.length === 0 && !prompt) return null;
+  const optionById = new Map(selectedOptions.map((option) => [option.id, option]));
+  return {
+    prompt,
+    selectedOptionIds,
+    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
+  };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -1119,7 +1166,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !normalizePaperclipWakeIssue(payload.issue)) {
+  const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1140,6 +1188,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     taskWatchdog,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    checkboxSelection,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -1244,6 +1293,21 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.checkboxSelection) {
+    if (normalized.checkboxSelection.prompt) {
+      lines.push(`- checkbox prompt: ${normalized.checkboxSelection.prompt}`);
+    }
+    const selectedOptionIds = normalized.checkboxSelection.selectedOptionIds.join(", ") || "(none)";
+    const selectedOptions = normalized.checkboxSelection.selectedOptions
+      .map((option) => {
+        const label = option.label && option.label !== option.id ? ` (${option.label})` : "";
+        const description = option.description ? ` - ${option.description}` : "";
+        return `${option.id}${label}${description}`;
+      })
+      .join(", ") || "(none)";
+    lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
+    lines.push(`- checkbox selection options: ${selectedOptions}`);
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;
