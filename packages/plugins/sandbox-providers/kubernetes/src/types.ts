@@ -44,6 +44,16 @@ export const kubernetesProviderConfigSchema = z
     podUnschedulableGraceSec: z.number().int().positive().default(120),
 
     /**
+     * Budget for the wait-for-Ready phase on the first exec of a lease
+     * (sandbox-cr backend only). Independent of the exec budget: a pod that
+     * needs longer than this to come up is an infrastructure problem, and
+     * failing the readiness wait early keeps most of the caller's exec budget
+     * out of the blast radius. The exec/streaming phase continues to use the
+     * remaining share of the caller's overall budget.
+     */
+    podReadyTimeoutSec: z.number().int().positive().default(300),
+
+    /**
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.

@@ -577,6 +577,17 @@ const plugin = definePlugin({
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
+      // The readiness wait has its OWN budget (podReadyTimeoutSec), never
+      // more than the caller's whole exec budget. Before this cap the wait
+      // shared the full exec budget, so a pod that was never coming up burned
+      // the entire window before the (host-side) timer produced a contentless
+      // RPC timeout. The exec/streaming phase below keeps the remaining share
+      // of the caller's budget.
+      const readyTimeoutMs = Math.min(
+        config.podReadyTimeoutSec * 1000,
+        effectiveTimeoutMs,
+      );
+
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
@@ -584,7 +595,7 @@ const plugin = definePlugin({
             namespace,
             lease.providerLeaseId,
             {
-              timeoutMs: effectiveTimeoutMs,
+              timeoutMs: readyTimeoutMs,
               pollMs: 2000,
               unschedulableGraceMs: config.podUnschedulableGraceSec * 1000,
             },
@@ -615,16 +626,19 @@ const plugin = definePlugin({
             };
           }
           if (err instanceof SandboxCrTimeoutError) {
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
             return {
               exitCode: null,
               timedOut: true,
               stdout: "",
-              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+              stderr: `Sandbox pod did not become Ready within ${readyTimeoutMs}ms`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
                 namespace,
                 sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_not_ready",
               },
             };
           }
