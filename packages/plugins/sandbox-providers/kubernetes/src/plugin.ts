@@ -32,6 +32,7 @@ import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
+  SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
@@ -582,10 +583,37 @@ const plugin = definePlugin({
             clients,
             namespace,
             lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+            {
+              timeoutMs: effectiveTimeoutMs,
+              pollMs: 2000,
+              unschedulableGraceMs: config.podUnschedulableGraceSec * 1000,
+            },
           );
           readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
+          if (err instanceof SandboxSchedulingError) {
+            // The scheduler cannot place the pod (cluster out of capacity /
+            // autoscaler outage). Fail fast with an actionable message and a
+            // distinct error code instead of burning the whole exec budget.
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
+            return {
+              exitCode: 1,
+              timedOut: false,
+              stdout: "",
+              stderr:
+                "Sandbox pod could not be scheduled: cluster has no capacity for it. " +
+                "This is an infrastructure issue, not a problem with your task. " +
+                `(${err.message})`,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_unschedulable",
+              },
+            };
+          }
           if (err instanceof SandboxCrTimeoutError) {
             return {
               exitCode: null,

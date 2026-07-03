@@ -34,6 +34,16 @@ export const kubernetesProviderConfigSchema = z
     podActivityDeadlineSec: z.number().int().positive().default(3600),
 
     /**
+     * How long a sandbox pod may sit with PodScheduled=False reason
+     * Unschedulable before the readiness wait fails fast with a distinct
+     * scheduling error (sandbox-cr backend only). A pod the scheduler cannot
+     * place (cluster out of capacity, autoscaler outage) will never become
+     * Ready by waiting inside the same exec budget; the grace period only
+     * absorbs normal autoscaler scale-up latency.
+     */
+    podUnschedulableGraceSec: z.number().int().positive().default(120),
+
+    /**
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.

@@ -36,4 +36,23 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it("defaults podUnschedulableGraceSec to 120", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true });
+    expect(parsed.podUnschedulableGraceSec).toBe(120);
+  });
+
+  it("accepts a custom podUnschedulableGraceSec", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      podUnschedulableGraceSec: 30,
+    });
+    expect(parsed.podUnschedulableGraceSec).toBe(30);
+  });
+
+  it("rejects a non-positive podUnschedulableGraceSec", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, podUnschedulableGraceSec: 0 }),
+    ).toThrow();
+  });
 });
