@@ -229,6 +229,81 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
+  it("lets an existing company confirm the mission without a manual rename (route entry drops on step 2)", async () => {
+    // Reproduces the stuck-onboarding report: a cloud tenant whose company was
+    // auto-created lands directly on the mission step (initialStep 2) via the
+    // /<prefix>/onboarding route. The company name was never typed, so the old
+    // guard `!companyName.trim()` left "Confirm mission" greyed out forever
+    // (and localStorage persisted the dead state across reloads and logins).
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "",
+        companyGoal: "Land my first few clients",
+        missionPath: "direct",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockDialog.onboardingOptions = { initialStep: 2, companyId: "c1" };
+    mockCompany.companies = [
+      { id: "c1", name: "Yesod Digital", issuePrefix: "PAP" },
+    ];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    expect(confirm).toBeTruthy();
+    // The button must be clickable even though no name was typed: the company
+    // already exists.
+    expect(confirm!.disabled).toBe(false);
+
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The existing company's real name is backfilled, so a same-name update is
+    // a no-op (never a blank rename) and we advance by creating the goal.
+    expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+    expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+    expect(mockGoalsApi.create.mock.calls[0][0]).toBe("c1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers a Back button on the mission step so typed answers are recoverable", async () => {
+    // Second half of the same report: "no back buttons ... you have to start
+    // all over." The footer Back was hidden whenever step === initialStep, so a
+    // route entry on step 2 had no way back to adjust the company name.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "",
+        companyGoal: "Land my first few clients",
+        missionPath: "direct",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockDialog.onboardingOptions = { initialStep: 2, companyId: "c1" };
+    mockCompany.companies = [
+      { id: "c1", name: "Yesod Digital", issuePrefix: "PAP" },
+    ];
+
+    const { root } = await mount();
+
+    const back = findButton("Back");
+    expect(back).toBeTruthy();
+    expect(back!.disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("creates a new company in the non-cloud first-run path (OSS unchanged)", async () => {
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
