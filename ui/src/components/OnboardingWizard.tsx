@@ -230,6 +230,20 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // When onboarding skips the naming step (initialStep >= 2: an existing/auto-
+  // created company entered via the /<prefix>/onboarding route), the company
+  // already has a name. Backfill it so the mission header, the "Confirm mission"
+  // guard, and the review checklist reflect the real name instead of a blank.
+  // We never prefill on the initialStep 1 rename path — there the user names it
+  // fresh.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || initialStep < 2 || companyName || !createdCompanyId) {
+      return;
+    }
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (company?.name) setCompanyName(company.name);
+  }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
+
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -1766,7 +1780,7 @@ export function OnboardingWizard() {
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && step > (effectiveOnboardingOptions.initialStep ?? 0) && (
+                  {step > 1 && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1795,7 +1809,7 @@ export function OnboardingWizard() {
                   {step === 2 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim() || !companyGoal.trim() || loading}
+                      disabled={(!companyName.trim() && !createdCompanyId) || !companyGoal.trim() || loading}
                       onClick={handleConfirmMission}
                     >
                       {loading ? (
