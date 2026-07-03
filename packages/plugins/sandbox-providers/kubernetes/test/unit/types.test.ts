@@ -55,4 +55,20 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, podUnschedulableGraceSec: 0 }),
     ).toThrow();
   });
+
+  it("defaults podReadyTimeoutSec to 300", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true });
+    expect(parsed.podReadyTimeoutSec).toBe(300);
+  });
+
+  it("accepts a custom podReadyTimeoutSec", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: 60 });
+    expect(parsed.podReadyTimeoutSec).toBe(60);
+  });
+
+  it("rejects a non-positive podReadyTimeoutSec", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: -5 }),
+    ).toThrow();
+  });
 });

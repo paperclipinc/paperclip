@@ -143,3 +143,68 @@ describe("onEnvironmentExecute scheduling failure (sandbox-cr)", () => {
     );
   });
 });
+
+describe("onEnvironmentExecute readiness budget (sandbox-cr)", () => {
+  it("caps the wait-for-Ready phase at podReadyTimeoutSec (default 300s), independent of the exec budget", async () => {
+    h.waitForCompletion.mockResolvedValue({ phase: "Running" });
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    await plugin.definition.onEnvironmentExecute!(
+      executeParams({ lease: leaseWith("pc-ready-1"), timeoutMs: 600_000 }),
+    );
+
+    expect(h.waitForCompletion).toHaveBeenCalledWith(
+      expect.anything(),
+      "paperclip-acme",
+      "pc-ready-1",
+      expect.objectContaining({ timeoutMs: 300_000 }),
+    );
+  });
+
+  it("never lets the readiness wait exceed the caller's whole exec budget", async () => {
+    h.waitForCompletion.mockResolvedValue({ phase: "Running" });
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    await plugin.definition.onEnvironmentExecute!(
+      executeParams({ lease: leaseWith("pc-ready-2"), timeoutMs: 60_000 }),
+    );
+
+    expect(h.waitForCompletion).toHaveBeenCalledWith(
+      expect.anything(),
+      "paperclip-acme",
+      "pc-ready-2",
+      expect.objectContaining({ timeoutMs: 60_000 }),
+    );
+  });
+
+  it("keeps (nearly) the whole exec budget for the exec phase after a fast readiness wait", async () => {
+    h.waitForCompletion.mockResolvedValue({ phase: "Running" });
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    await plugin.definition.onEnvironmentExecute!(
+      executeParams({ lease: leaseWith("pc-ready-3"), timeoutMs: 600_000 }),
+    );
+
+    // execInPod timeout (7th positional arg) must come from the FULL exec
+    // budget, not the readiness cap: > podReadyTimeoutSec * 1000.
+    const execTimeoutMs = h.execInPod.mock.calls[0][6] as number;
+    expect(execTimeoutMs).toBeGreaterThan(500_000);
+    expect(execTimeoutMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it("maps a readiness timeout to the graceful did-not-become-Ready result with errorCode sandbox_not_ready", async () => {
+    h.waitForCompletion.mockRejectedValue(
+      new h.SandboxCrTimeoutError("paperclip-acme", "pc-ready-4", 300_000),
+    );
+
+    const result = await plugin.definition.onEnvironmentExecute!(
+      executeParams({ lease: leaseWith("pc-ready-4"), timeoutMs: 600_000 }),
+    );
+
+    expect(result.exitCode).toBeNull();
+    expect(result.timedOut).toBe(true);
+    expect(result.stderr).toContain("Sandbox pod did not become Ready within 300000ms");
+    expect(result.metadata).toMatchObject({ errorCode: "sandbox_not_ready" });
+    expect(h.execInPod).not.toHaveBeenCalled();
+  });
+});
