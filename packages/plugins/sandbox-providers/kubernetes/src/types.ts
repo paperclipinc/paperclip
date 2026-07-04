@@ -93,6 +93,18 @@ export const kubernetesProviderConfigSchema = z
       message:
         "kubernetes provider requires one of `inCluster` or `kubeconfig`",
     },
+  )
+  .refine(
+    (cfg) => cfg.podUnschedulableGraceSec < cfg.podReadyTimeoutSec,
+    {
+      // The readiness wait is bounded by podReadyTimeoutSec; a grace period
+      // at or above it would expire the wait before the unschedulable
+      // fail-fast path can ever trigger, silently reclassifying capacity
+      // failures as generic sandbox_not_ready. Reject at config-parse time.
+      message:
+        "podUnschedulableGraceSec must be less than podReadyTimeoutSec (otherwise the readiness wait times out before unschedulable detection can fire)",
+      path: ["podUnschedulableGraceSec"],
+    },
   );
 
 export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;

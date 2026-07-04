@@ -58,6 +58,18 @@ describe("resolvePluginExecuteBudget", () => {
     expect(budget.rpcTimeoutMs).toBe(1_800_000);
   });
 
+  it("keeps pluginTimeoutMs positive when the host cap is misconfigured at or below the buffer", () => {
+    for (const cap of ["5000", "30000", "1"]) {
+      vi.stubEnv("PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS", cap);
+      const budget = resolvePluginExecuteBudget({ requestedTimeoutMs: 60_000, config: {} });
+      // cap - buffer is <= 0 here; the plugin must still receive a positive
+      // budget instead of a zero/negative duration.
+      expect(budget.pluginTimeoutMs).toBe(1);
+      expect(budget.rpcTimeoutMs).toBe(1 + BUFFER_MS);
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("ignores non-positive requested timeouts (same contract as before)", () => {
     const budget = resolvePluginExecuteBudget({ requestedTimeoutMs: 0, config: {} });
     expect(budget.pluginTimeoutMs).toBeUndefined();

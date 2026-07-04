@@ -62,13 +62,51 @@ describe("kubernetesProviderConfigSchema", () => {
   });
 
   it("accepts a custom podReadyTimeoutSec", () => {
-    const parsed = parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: 60 });
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      podReadyTimeoutSec: 60,
+      podUnschedulableGraceSec: 30,
+    });
     expect(parsed.podReadyTimeoutSec).toBe(60);
+    expect(parsed.podUnschedulableGraceSec).toBe(30);
   });
 
   it("rejects a non-positive podReadyTimeoutSec", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: -5 }),
     ).toThrow();
+  });
+
+  it("rejects podUnschedulableGraceSec >= podReadyTimeoutSec (would silently disable unschedulable detection)", () => {
+    // Grace raised above the ready timeout: the readiness wait would expire first.
+    expect(() =>
+      parseKubernetesProviderConfig({
+        inCluster: true,
+        podUnschedulableGraceSec: 400,
+        podReadyTimeoutSec: 300,
+      }),
+    ).toThrow(/podUnschedulableGraceSec must be less than podReadyTimeoutSec/);
+    // Equal values: grace can never elapse strictly before the deadline.
+    expect(() =>
+      parseKubernetesProviderConfig({
+        inCluster: true,
+        podUnschedulableGraceSec: 300,
+        podReadyTimeoutSec: 300,
+      }),
+    ).toThrow(/podUnschedulableGraceSec must be less than podReadyTimeoutSec/);
+    // Ready timeout lowered below the default grace without adjusting it.
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: 60 }),
+    ).toThrow(/podUnschedulableGraceSec must be less than podReadyTimeoutSec/);
+  });
+
+  it("accepts a raised podUnschedulableGraceSec when podReadyTimeoutSec is raised with it", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      podUnschedulableGraceSec: 400,
+      podReadyTimeoutSec: 900,
+    });
+    expect(parsed.podUnschedulableGraceSec).toBe(400);
+    expect(parsed.podReadyTimeoutSec).toBe(900);
   });
 });

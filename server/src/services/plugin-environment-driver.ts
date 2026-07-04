@@ -492,6 +492,13 @@ export function resolvePluginExecuteRpcTimeoutMs(input: {
  * Invariant: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS <= rpcTimeoutMs <= cap.
  * When neither a requested nor a config timeout exists, both budgets stay
  * undefined and legacy behavior is preserved.
+ *
+ * Pathological cap: if PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS is misconfigured
+ * to <= RPC_OVERHEAD_BUFFER_MS, the subtraction above would go non-positive.
+ * pluginTimeoutMs is clamped to >= 1 so a plugin that trusts the received
+ * budget is never handed a zero/negative duration; the plugin-side graceful
+ * timeout then fires (near-)immediately, still ahead of the host timer (the
+ * worker manager re-clamps rpcTimeoutMs to the cap at call time).
  */
 export function resolvePluginExecuteBudget(input: {
   requestedTimeoutMs?: number;
@@ -502,6 +509,6 @@ export function resolvePluginExecuteBudget(input: {
     return { pluginTimeoutMs: undefined, rpcTimeoutMs: undefined };
   }
   const maxRpcTimeoutMs = resolveMaxRpcTimeoutMs();
-  const pluginTimeoutMs = Math.min(baseMs, maxRpcTimeoutMs - RPC_OVERHEAD_BUFFER_MS);
+  const pluginTimeoutMs = Math.max(1, Math.min(baseMs, maxRpcTimeoutMs - RPC_OVERHEAD_BUFFER_MS));
   return { pluginTimeoutMs, rpcTimeoutMs: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS };
 }
