@@ -378,6 +378,99 @@ describe("DELETE /api/plugins/:pluginId (replication)", () => {
     expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
     expect(heldSessionLocks.size).toBe(0);
   });
+
+  it("heals a failed publish on soft-uninstall retry: already-uninstalled row republishes, emits the live event, and returns 200", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    const { badRequest } = await import("../errors.js");
+    const uninstalledRow = { ...pluginRow, status: "uninstalled" };
+    // The prior uninstall soft-deleted the row but its publish failed; the
+    // retry's unload rejects the already-uninstalled row before the wrapper
+    // can publish.
+    mockRegistry.getById.mockResolvedValue(uninstalledRow);
+    mockLifecycle.unload.mockRejectedValue(
+      badRequest("Plugin acme.test is already uninstalled. Use removeData=true to permanently delete it."),
+    );
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(PLUGIN_ID);
+    expect(res.body.status).toBe("uninstalled");
+    // The heal's whole point: the wrapper still publishes on the way out so
+    // a generation row finally records the uninstall for peers.
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    // The original request 500'd before emitting, so the healed retry is the
+    // uninstall's only success response — it must fire the fast reconcile
+    // trigger too.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "uninstalled" },
+    });
+  });
+
+  it("does not heal when the row is not uninstalled: the unload error propagates without a publish", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    mockLifecycle.unload.mockRejectedValue(new Error("worker shutdown failed"));
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("worker shutdown failed");
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("heals a failed publish on purge retry: missing row with purge=true republishes and returns 200/null", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    // The prior purge hard-deleted the row but its publish failed; the retry
+    // resolves no plugin at all.
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}?purge=true`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(mockLifecycle.unload).not.toHaveBeenCalled();
+    // Lock → reconcile (no-op) → publish, same discipline as a real mutation.
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledWith(LOCK_URL, "plugin-install");
+    expect(replication.reconcile).toHaveBeenCalledTimes(1);
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    expect(heldSessionLocks.size).toBe(0);
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "uninstalled" },
+    });
+  });
+
+  it("returns 404 for a missing plugin without purge (no lock, no publish)", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a missing plugin with purge when replication is inactive", async () => {
+    const replication = createReplication({ isActive: () => false });
+    const { app } = await createApp(replication);
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}?purge=true`);
+
+    expect(res.status).toBe(404);
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
