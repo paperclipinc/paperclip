@@ -947,6 +947,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       };
     },
 
+    // Cloud-internal read for the control-plane's lifecycle sweep: every company
+    // currently paused by the budget hard-stop (status=paused AND
+    // pause_reason=budget), with when it paused. Companies paused for other
+    // reasons (archived, manual) are excluded. Read-only; the caller (the
+    // /api/cloud/budget-paused route) is gated on the trusted cloud-credit header.
+    listBudgetPausedCompanies: async (): Promise<{ companyId: string; pausedAt: Date | null }[]> => {
+      return db
+        .select({ companyId: companies.id, pausedAt: companies.pausedAt })
+        .from(companies)
+        .where(and(eq(companies.status, "paused"), eq(companies.pauseReason, "budget")));
+    },
+
     // Scope lookup for the cloud-billing gate on the incident resolve route:
     // company-scope raises are wallet self-grants, agent/project-scope raises
     // only adjust a sub-cap inside the wallet. Returns null when the incident
