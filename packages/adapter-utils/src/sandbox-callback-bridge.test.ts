@@ -944,6 +944,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/llms/agent-configuration" },
       { method: "GET", path: "/llms/secrets.txt" },
       { method: "POST", path: "/api/companies/co-1/agent-hires/ap-1" },
+      { method: "POST", path: "/api/issues/issue-1/approvals/ap-1" },
       { method: "POST", path: "/api/agents/agent-1/pause" },
       { method: "POST", path: "/api/agents/agent-1/terminate" },
       { method: "POST", path: "/api/agents/agent-1/keys" },
