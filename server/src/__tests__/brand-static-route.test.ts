@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { registerBrandStaticRoute } from "../app.js";
 
 // The deployer (e.g. the operator) mounts a brand directory and sets
@@ -49,5 +49,42 @@ describe("registerBrandStaticRoute", () => {
     const res = await request(app).get("/branding/brand.css");
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/html");
+  });
+
+  it("warns at startup when the brand dir does not exist, but still registers the route", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const registered = registerBrandStaticRoute(express(), {
+        PAPERCLIP_BRAND_DIR: path.join(brandDir, "does-not-exist"),
+      });
+      expect(registered).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toContain("PAPERCLIP_BRAND_DIR");
+      expect(warn.mock.calls[0]?.[0]).toContain("does-not-exist");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("warns at startup when the brand dir is a file, not a directory", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      registerBrandStaticRoute(express(), {
+        PAPERCLIP_BRAND_DIR: path.join(brandDir, "brand.css"),
+      });
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn when the brand dir exists", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      registerBrandStaticRoute(express(), { PAPERCLIP_BRAND_DIR: brandDir });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

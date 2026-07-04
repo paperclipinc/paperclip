@@ -128,6 +128,14 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
 export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
   const brandDir = getBrandDir(env);
   if (!brandDir) return false;
+  // Surface misconfiguration at startup: express.static resolves per-request,
+  // so a bad path would otherwise just 404 every /branding/* asset silently.
+  // Warn (don't throw) — the directory may be a mount that appears later.
+  if (!fs.existsSync(brandDir) || !fs.statSync(brandDir).isDirectory()) {
+    console.warn(
+      `[paperclip] PAPERCLIP_BRAND_DIR is set to "${brandDir}" but it is not an existing directory — brand assets will 404`,
+    );
+  }
   app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
   app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
     res.status(404).end();
@@ -380,9 +388,7 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // reasonably fast.
       // The HTML shell MUST go through the branded fallback below, which
       // injects runtime branding: the brand stylesheet link and the
       // `paperclip-default-theme` meta the pre-paint theme script reads.
@@ -398,15 +404,13 @@ export async function createApp(
           .set("Cache-Control", "no-cache")
           .end(readBrandedStaticIndexHtml(uiDist));
       });
+      // No index.html special-casing here: with `index: false` and the
+      // explicit `/index.html` route above, this middleware never serves the
+      // HTML shell — its no-cache headers are set by those handlers instead.
       app.use(
         express.static(uiDist, {
           index: false,
           maxAge: "1h",
-          setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
-            }
-          },
         }),
       );
       // SPA fallback. Only for non-asset routes — if the browser asks for
