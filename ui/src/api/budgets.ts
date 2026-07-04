@@ -5,7 +5,7 @@ import type {
   BudgetPolicySummary,
   BudgetPolicyUpsertInput,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 
 export const budgetsApi = {
   overview: (companyId: string) =>
@@ -45,10 +45,14 @@ export const budgetsApi = {
 
 // Decide whether raising the cloud budget is a first-time set (start a recurring
 // budget subscription via checkout) or a change to an existing one (PATCH the
-// subscription quantity). A company whose wallet already has a funded amount has
-// a budget subscription, so a change updates it in place; otherwise we checkout.
-export function resolveCloudBudgetAction(currentBudgetCents: number): "checkout" | "update" {
-  return currentBudgetCents > 0 ? "update" : "checkout";
+// subscription quantity). The signal is whether a REAL recurring budget
+// subscription exists, NOT the wallet amount: a Pro trial carries EUR 1 of
+// INCLUDED budget (wallet > 0) yet has no budget subscription, so its first raise
+// must go through checkout to create the subscription. Deciding from the wallet
+// amount routed the trial to "update", which then failed against a non-existent
+// subscription ("budget update failed").
+export function resolveCloudBudgetAction(hasBudgetSubscription: boolean): "checkout" | "update" {
+  return hasBudgetSubscription ? "update" : "checkout";
 }
 
 // The single cloud company-budget flow (shared by the Costs page policy save and
@@ -59,14 +63,33 @@ export function resolveCloudBudgetAction(currentBudgetCents: number): "checkout"
 export async function applyCloudCompanyBudget(
   companyId: string,
   amountCents: number,
-  currentBudgetCents: number,
+  hasBudgetSubscription: boolean,
   returnTo?: string,
 ): Promise<"updated" | "checkout"> {
-  if (resolveCloudBudgetAction(currentBudgetCents) === "update") {
-    await budgetsApi.updateRecurringBudget(companyId, amountCents);
-    return "updated";
+  if (resolveCloudBudgetAction(hasBudgetSubscription) === "update") {
+    try {
+      await budgetsApi.updateRecurringBudget(companyId, amountCents);
+      return "updated";
+    } catch (err) {
+      // Money-safety fallback: if the flag was stale/loading and the company has NO
+      // recurring budget subscription, the control plane returns a typed 409
+      // (no_budget_subscription) instead of a real charge. Create the subscription
+      // via checkout rather than surfacing a generic failure. Any other error
+      // (e.g. a 502 provider failure) propagates unchanged.
+      if (!isNoBudgetSubscription(err)) throw err;
+    }
   }
   const { checkoutUrl } = await budgetsApi.setRecurringBudget(companyId, amountCents, returnTo);
   window.location.assign(checkoutUrl);
   return "checkout";
+}
+
+// A typed "this company has no recurring budget subscription; create one via
+// checkout" signal from the control plane (POST /cloud-billing/budget).
+function isNoBudgetSubscription(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 409 &&
+    (err.body as { code?: string } | null)?.code === "no_budget_subscription"
+  );
 }
