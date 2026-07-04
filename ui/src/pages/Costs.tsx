@@ -1068,20 +1068,46 @@ export function Costs() {
                         </p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">
-                        {rows.map((summary) => (
-                          <BudgetPolicyCard
-                            key={summary.policyId}
-                            summary={summary}
-                            isSaving={policyMutation.isPending}
-                            onSave={(amount) =>
-                              policyMutation.mutate({
-                                scopeType: summary.scopeType,
-                                scopeId: summary.scopeId,
-                                amount,
-                                windowKind: summary.windowKind,
-                              })}
-                          />
-                        ))}
+                        {rows.map((summary) => {
+                          // A cloud company with no recurring budget subscription (e.g. a
+                          // Pro trial with only the EUR 1 INCLUDED budget) cannot fund a
+                          // per-company budget yet: that is a paid purchase needing a
+                          // subscription + the EU consent gate on /account. Show an upgrade
+                          // CTA instead of an editable field that cannot be saved. Once
+                          // subscribed the editable card returns (in-place PATCH).
+                          if (cloudBilling && summary.scopeType === "company" && !hasBudgetSubscription) {
+                            return (
+                              <Card key={summary.policyId}>
+                                <CardHeader>
+                                  <CardTitle>Company budget</CardTitle>
+                                  <CardDescription>
+                                    Your Pro trial includes EUR 1 of usage. Upgrade to a paid plan to set
+                                    your own company budget.
+                                  </CardDescription>
+                                </CardHeader>
+                                <CardContent>
+                                  <Button asChild>
+                                    <a href="/account">Upgrade to Pro</a>
+                                  </Button>
+                                </CardContent>
+                              </Card>
+                            );
+                          }
+                          return (
+                            <BudgetPolicyCard
+                              key={summary.policyId}
+                              summary={summary}
+                              isSaving={policyMutation.isPending}
+                              onSave={(amount) =>
+                                policyMutation.mutate({
+                                  scopeType: summary.scopeType,
+                                  scopeId: summary.scopeId,
+                                  amount,
+                                  windowKind: summary.windowKind,
+                                })}
+                            />
+                          );
+                        })}
                       </div>
                     </section>
                   );
