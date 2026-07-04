@@ -554,9 +554,6 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
-// Routes and the scheduler construct separate heartbeatService instances, but
-// they must agree on in-process adapter executions when reaping stale runs.
-const activeRunExecutions = new Set<string>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -8853,8 +8850,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       checkCostCap: true,
     });
     if (dailyCapBlock) {
-      await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
-      return null;
+      const cancelled = await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
 
     const issueId = readNonEmptyString(context.issueId);
