@@ -55,16 +55,23 @@ export function resolveCloudBudgetAction(hasBudgetSubscription: boolean): "check
   return hasBudgetSubscription ? "update" : "checkout";
 }
 
+// The hosting layer's account page (plan, billing, usage budget), served by the
+// gateway OUTSIDE the SPA -> a full-page navigation. It carries the EU withdrawal
+// consent gate that a first-time paid purchase legally requires.
+const CLOUD_ACCOUNT_PATH = "/account";
+
 // The single cloud company-budget flow (shared by the Costs page policy save and
-// the budget incident card): update the existing recurring budget in place, or
-// start a checkout for a first-time set and redirect to it. `returnTo` is the
-// same-origin path the buyer lands back on after checkout. Returns "checkout"
-// when the browser is navigating away so callers can skip local refreshes.
+// the budget incident card): update the existing recurring budget in place, or,
+// when there is no recurring budget subscription yet (e.g. a Pro trial with only
+// INCLUDED budget), send the buyer to the plan-upgrade page. A first-time paid
+// budget legally needs the EU withdrawal-consent gate, which ONLY the hosted
+// /account plan checkout collects; the bare budget checkout API is rejected with
+// `consent_required`, so we never call it from the SPA. Returns "checkout" when the
+// browser is navigating away so callers can skip local refreshes.
 export async function applyCloudCompanyBudget(
   companyId: string,
   amountCents: number,
   hasBudgetSubscription: boolean,
-  returnTo?: string,
 ): Promise<"updated" | "checkout"> {
   if (resolveCloudBudgetAction(hasBudgetSubscription) === "update") {
     try {
@@ -73,14 +80,13 @@ export async function applyCloudCompanyBudget(
     } catch (err) {
       // Money-safety fallback: if the flag was stale/loading and the company has NO
       // recurring budget subscription, the control plane returns a typed 409
-      // (no_budget_subscription) instead of a real charge. Create the subscription
-      // via checkout rather than surfacing a generic failure. Any other error
-      // (e.g. a 502 provider failure) propagates unchanged.
+      // (no_budget_subscription) instead of a real charge. Route to the plan-upgrade
+      // page rather than surfacing a generic failure. Any other error (e.g. a 502
+      // provider failure) propagates unchanged.
       if (!isNoBudgetSubscription(err)) throw err;
     }
   }
-  const { checkoutUrl } = await budgetsApi.setRecurringBudget(companyId, amountCents, returnTo);
-  window.location.assign(checkoutUrl);
+  window.location.assign(CLOUD_ACCOUNT_PATH);
   return "checkout";
 }
 

@@ -305,14 +305,10 @@ export function Costs() {
       // policy write; routing them through billing would rewrite the company's
       // recurring budget subscription (a real charge) at the sub-cap amount.
       if (cloudBilling && input.scopeType === "company") {
-        // Pass this Costs page as the return path so a first-time checkout
-        // brings the buyer back here, instead of bouncing to the account page.
-        return applyCloudCompanyBudget(
-          companyId,
-          input.amount,
-          hasBudgetSubscription,
-          window.location.pathname,
-        );
+        // Updates an existing recurring budget in place; a company with no budget
+        // subscription yet (e.g. a Pro trial) is sent to the plan-upgrade page,
+        // which carries the EU consent gate a first paid purchase requires.
+        return applyCloudCompanyBudget(companyId, input.amount, hasBudgetSubscription);
       }
       await budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
