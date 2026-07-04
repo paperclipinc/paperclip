@@ -11,6 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { applyCloudCompanyBudget, budgetsApi } from "../api/budgets";
+import { cloudBillingApi } from "../api/cloudBilling";
 import { costsApi } from "../api/costs";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
@@ -219,6 +220,29 @@ export function Costs() {
   // PATCH/POST write.
   const cloudBilling = experimentalSettings?.cloudBilling === true;
 
+  // Cloud billing: the authoritative first-time-set vs change signal is whether the
+  // company already has a recurring budget SUBSCRIPTION, sourced from the hosting
+  // control plane (a trial with only INCLUDED budget has none). Deciding from the
+  // wallet amount instead sent a trial's first raise to "update", which failed
+  // against a non-existent subscription ("budget update failed").
+  const { data: cloudBillingSummary } = useQuery({
+    queryKey: queryKeys.cloudBilling.summary,
+    queryFn: () => cloudBillingApi.summary(),
+    enabled: cloudBilling && !!selectedCompanyId,
+  });
+  const hasBudgetSubscription = useMemo(() => {
+    // Bias to "update" until we have a definitive per-company answer. A wrong
+    // update is caught by the control plane's typed 409 and falls back to checkout
+    // (no charge); a wrong checkout would create a DUPLICATE budget subscription
+    // (a real double charge). So default true when the summary is still loading or
+    // the field is absent (older control plane), and only read false once we have
+    // the companies list and the company is confirmed to have no subscription.
+    const companies = cloudBillingSummary?.companies;
+    if (!companies) return true;
+    const entry = companies.find((company) => company.companyId === companyId);
+    return entry ? entry.hasBudgetSubscription : true;
+  }, [cloudBillingSummary?.companies, companyId]);
+
   const invalidateBudgetViews = () => {
     if (!selectedCompanyId) return;
     queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(selectedCompanyId) });
@@ -269,17 +293,6 @@ export function Costs() {
     );
   }, [searchParams, setSearchParams, pushToast]);
 
-  // Under cloudBilling the company budget is the recurring carry-over wallet. Its
-  // current funded amount (cap) tells us first-time-set vs change: a wallet with
-  // amount > 0 already has a budget subscription, so a change PATCHes the
-  // subscription quantity (prorated); otherwise we start a fresh checkout.
-  const currentCompanyBudgetCents = useMemo(() => {
-    const companyPolicy = (budgetData?.policies ?? []).find(
-      (policy) => policy.scopeType === "company",
-    );
-    return companyPolicy?.amount ?? 0;
-  }, [budgetData?.policies]);
-
   const policyMutation = useMutation({
     mutationFn: async (input: {
       scopeType: BudgetPolicySummary["scopeType"];
@@ -297,7 +310,7 @@ export function Costs() {
         return applyCloudCompanyBudget(
           companyId,
           input.amount,
-          currentCompanyBudgetCents,
+          hasBudgetSubscription,
           window.location.pathname,
         );
       }
