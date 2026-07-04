@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_ADAPTER_TYPES,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  createEnvironmentCustomImageTerminalSessionTokenSchema,
   createEnvironmentSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   getEnvironmentCapabilities,
@@ -21,6 +22,16 @@ import {
   logActivity,
   projectService,
 } from "../services/index.js";
+import {
+  environmentCustomImageTerminalConnectionRegistry,
+  environmentCustomImageTerminalSessionStore,
+  validateCustomImageSetupSshPayload,
+  type EnvironmentCustomImageTerminalPayloadValidationResult,
+} from "../services/environment-custom-image-terminal-sessions.js";
+import {
+  readCustomImageSetupSessionCompanyId,
+  requireFutureCustomImageSetupExpiry,
+} from "../services/environment-custom-image-setup-session-utils.js";
 import {
   collectEnvironmentSecretRefs,
   normalizeEnvironmentConfigForPersistence,
@@ -180,6 +191,18 @@ export function environmentRoutes(
     throw unprocessable("companyId query parameter is required for environment customImage setup.");
   }
 
+  async function resolveCustomImageSessionCompanyId(
+    req: Request,
+    session: { metadata?: Record<string, unknown> | null },
+  ): Promise<string> {
+    const metadataCompanyId = readCustomImageSetupSessionCompanyId(session);
+    if (metadataCompanyId) {
+      assertCustomImageCompanyAccess(req, metadataCompanyId);
+      return metadataCompanyId;
+    }
+    return await resolveCustomImageCompanyId(req);
+  }
+
   async function resolveEnvironmentSecretContextCompanyId(
     req: Request,
     environmentId: string,
@@ -293,6 +316,15 @@ export function environmentRoutes(
     });
   }
 
+  function throwTerminalPayloadValidationFailure(
+    failure: Extract<EnvironmentCustomImageTerminalPayloadValidationResult, { ok: false }>,
+  ): never {
+    if (failure.status === 409) {
+      throw conflict(failure.message);
+    }
+    throw unprocessable(failure.message);
+  }
+
   router.get("/companies/:companyId/environments", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const rows = await svc.list({
@@ -339,9 +371,8 @@ export function environmentRoutes(
 
   router.get("/environments/:environmentId/custom-image-template", async (req, res) => {
     assertCanAccessInstanceEnvironments(req);
-    const companyId = await resolveCustomImageCompanyId(req);
+    await resolveCustomImageCompanyId(req);
     const overview = await customImages.getOverview({
-      companyId,
       environmentId: req.params.environmentId as string,
     });
     res.json(overview);
@@ -355,7 +386,6 @@ export function environmentRoutes(
       const companyId = await resolveCustomImageCompanyId(req);
       const actor = getActorInfo(req);
       const result = await customImages.startSetupSession({
-        companyId,
         environmentId: req.params.environmentId as string,
         templateId: req.body.templateId ?? null,
         ttlSeconds: req.body.ttlSeconds ?? null,
@@ -363,6 +393,7 @@ export function environmentRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
           agentId: actor.agentId,
         },
+        secretContextCompanyId: companyId,
       });
       await logEnvironmentCustomImageActivity({
         actor,
@@ -382,13 +413,78 @@ export function environmentRoutes(
       res.status(404).json({ error: "Environment customImage setup session not found" });
       return;
     }
-    assertCustomImageCompanyAccess(req, session.companyId);
+    await resolveCustomImageSessionCompanyId(req, session);
     const result = await customImages.refreshSetupSession({
       sessionId: session.id,
       includeConnectionPayload: true,
     });
     res.json(result);
   });
+
+  router.post(
+    "/environment-custom-image-setup-sessions/:sessionId/terminal-session-token",
+    validate(createEnvironmentCustomImageTerminalSessionTokenSchema),
+    async (req, res) => {
+      assertCanAccessInstanceEnvironments(req);
+      const session = await customImages.getSessionById(req.params.sessionId as string);
+      if (!session) {
+        res.status(404).json({ error: "Environment customImage setup session not found" });
+        return;
+      }
+      const companyId = await resolveCustomImageSessionCompanyId(req, session);
+
+      const refreshed = await customImages.refreshSetupSession({
+        sessionId: session.id,
+        includeConnectionPayload: true,
+      });
+      const now = new Date();
+      if (refreshed.session.status !== "waiting_for_user") {
+        throw conflict(`Cannot create terminal session token from setup status "${refreshed.session.status}".`);
+      }
+      const setupExpiresAt = requireFutureCustomImageSetupExpiry(refreshed.session, now);
+      const payloadValidation = validateCustomImageSetupSshPayload(refreshed.connectionPayload, now);
+      if (!payloadValidation.ok) {
+        throwTerminalPayloadValidationFailure(payloadValidation);
+      }
+
+      const minted = environmentCustomImageTerminalSessionStore.create({
+        setupSessionId: refreshed.session.id,
+        companyId,
+        environmentId: refreshed.session.environmentId,
+        provider: refreshed.session.provider,
+        ssh: payloadValidation.ssh,
+        setupExpiresAt,
+        connectionExpiresAt: payloadValidation.connectionExpiresAt,
+        now,
+      });
+      const actor = getActorInfo(req);
+      await logEnvironmentCustomImageActivity({
+        actor,
+        companyId,
+        action: "environment.custom_image_terminal_session_token.created",
+        entityId: refreshed.session.environmentId,
+        details: {
+          session: setupSessionActivityDetails(refreshed.session),
+          terminalSession: {
+            connectionType: "ssh",
+            connectExpiresAt: minted.session.connectExpiresAt.toISOString(),
+            sessionExpiresAt: minted.session.sessionExpiresAt.toISOString(),
+          },
+        },
+      });
+      res.status(201).json({
+        id: minted.session.id,
+        token: minted.token,
+        expiresAt: minted.session.connectExpiresAt.toISOString(),
+        setupSessionId: minted.session.setupSessionId,
+        environmentId: minted.session.environmentId,
+        connectionType: "ssh",
+        websocketPath:
+          `/api/environment-custom-image-setup-sessions/${encodeURIComponent(minted.session.setupSessionId)}/terminal/ws`
+          + `?terminalSessionId=${encodeURIComponent(minted.session.id)}`,
+      });
+    },
+  );
 
   router.post(
     "/environment-custom-image-setup-sessions/:sessionId/finish",
@@ -400,15 +496,17 @@ export function environmentRoutes(
         res.status(404).json({ error: "Environment customImage setup session not found" });
         return;
       }
-      assertCustomImageCompanyAccess(req, session.companyId);
+      const companyId = await resolveCustomImageSessionCompanyId(req, session);
       const actor = getActorInfo(req);
       const result = await customImages.finishSetupSession({
         sessionId: session.id,
         metadata: req.body.metadata,
       });
+      environmentCustomImageTerminalSessionStore.deleteBySetupSessionId(session.id);
+      environmentCustomImageTerminalConnectionRegistry.closeBySetupSessionId(session.id, "setup_finished");
       await logEnvironmentCustomImageActivity({
         actor,
-        companyId: session.companyId,
+        companyId,
         action: "environment.custom_image_setup.finished",
         entityId: result.session.environmentId,
         details: {
@@ -430,15 +528,17 @@ export function environmentRoutes(
         res.status(404).json({ error: "Environment customImage setup session not found" });
         return;
       }
-      assertCustomImageCompanyAccess(req, session.companyId);
+      const companyId = await resolveCustomImageSessionCompanyId(req, session);
       const actor = getActorInfo(req);
       const cancelled = await customImages.cancelSetupSession({
         sessionId: session.id,
         reason: req.body.reason ?? null,
       });
+      environmentCustomImageTerminalSessionStore.deleteBySetupSessionId(session.id);
+      environmentCustomImageTerminalConnectionRegistry.closeBySetupSessionId(session.id, "setup_cancelled");
       await logEnvironmentCustomImageActivity({
         actor,
-        companyId: session.companyId,
+        companyId,
         action: "environment.custom_image_setup.cancelled",
         entityId: cancelled.environmentId,
         details: setupSessionActivityDetails(cancelled),
@@ -452,7 +552,6 @@ export function environmentRoutes(
     const companyId = await resolveCustomImageCompanyId(req);
     const actor = getActorInfo(req);
     const result = await customImages.rollbackTemplate({
-      companyId,
       environmentId: req.params.environmentId as string,
     });
     await logEnvironmentCustomImageActivity({
@@ -473,7 +572,6 @@ export function environmentRoutes(
     const companyId = await resolveCustomImageCompanyId(req);
     const actor = getActorInfo(req);
     const template = await customImages.disableTemplate({
-      companyId,
       environmentId: req.params.environmentId as string,
       deleteProviderTemplate: req.query.deleteProviderTemplate === "true",
     });
@@ -715,6 +813,7 @@ export function environmentRoutes(
     const probe = await probeEnvironment(db, environment, {
       companyId: companyIdForSecrets,
       pluginWorkerManager: options.pluginWorkerManager,
+      applyCustomImageTemplate: environment.driver === "sandbox",
     });
     await logInstanceEnvironmentActivity({
       actor,
