@@ -37,6 +37,7 @@ import {
 } from "@paperclipai/db";
 import type {
   PluginApiRouteDeclaration,
+  PluginRecord,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
@@ -641,6 +642,73 @@ export function pluginRoutes(
     }
   }
 
+  /**
+   * Read the installed version of a plugin package from the plugin tree ON
+   * DISK, or null when the package (or its package.json) is absent or
+   * unreadable.
+   *
+   * The publish-heal branches below MUST gate on this, not only on the
+   * registry row: the row lives in the shared database and always survives a
+   * failed snapshot publish, but the DISK tree is per-generation. If a peer
+   * replica published a generation between the failed mutation and its retry,
+   * the `reconcile()` at the top of `withReplicatedPluginMutation` swaps in
+   * that snapshot — which was built from a tree that pre-dates the failed
+   * mutation — silently reverting the local disk while the row still claims
+   * the mutation happened. And the damage outlives that one retry: once the
+   * peer generation is absorbed, later reconciles no-op (`applied: false`)
+   * with the disk still contradicting the row, so gating on the reconcile
+   * result alone would not catch it either. Only the disk itself is ground
+   * truth for what a healed publish would spread cluster-wide.
+   */
+  async function readInstalledPackageVersion(
+    packageName: string,
+    packagePath?: string | null,
+  ): Promise<string | null> {
+    const packageDir =
+      packagePath ?? path.join(loader.getLocalPluginDir(), "node_modules", ...packageName.split("/"));
+    try {
+      const raw = await readFile(path.join(packageDir, "package.json"), "utf8");
+      const parsed = JSON.parse(raw) as { version?: unknown };
+      return typeof parsed.version === "string" ? parsed.version : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remove plugin packages present in the managed tree that have no live
+   * (non-uninstalled) registry row.
+   *
+   * Used by the purge publish-heal: the purged row is hard-deleted, so the
+   * request's identifier can no longer be mapped to a package directory —
+   * instead the whole tree is swept. Candidates come from the plugin dir's
+   * own package.json `dependencies`: the loader `npm install --save`s every
+   * plugin there and nothing else writes to it, so plugin DEPENDENCIES
+   * (which live in the same node_modules) can never be candidates and a
+   * matching live row protects every legitimately installed plugin.
+   * `cleanupInstallArtifacts` is idempotent when the files are already gone.
+   */
+  async function removeOrphanedPluginPackages(): Promise<void> {
+    let dependencies: Record<string, unknown>;
+    try {
+      const raw = await readFile(path.join(loader.getLocalPluginDir(), "package.json"), "utf8");
+      dependencies = (JSON.parse(raw) as { dependencies?: Record<string, unknown> }).dependencies ?? {};
+    } catch {
+      return; // No managed-install manifest — nothing to sweep.
+    }
+    const liveRows = (await registry.listInstalled()) as Array<{ packageName: string }>;
+    const livePackages = new Set(liveRows.map((row) => row.packageName));
+    for (const packageName of Object.keys(dependencies)) {
+      if (livePackages.has(packageName)) continue;
+      await loader.cleanupInstallArtifacts({
+        id: packageName,
+        pluginKey: packageName,
+        packageName,
+        packagePath: null,
+      } as PluginRecord);
+    }
+  }
+
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
     const normalize = (value: string) => value.replace(/\/+$/, "") || "/";
@@ -1217,9 +1285,16 @@ export function pluginRoutes(
           // Publish-heal: a prior install applied locally but its snapshot
           // publish failed (the handler returned 500 and asked the caller to
           // retry). The retry then hits the registry's "already installed"
-          // conflict. When the existing row matches the requested package,
-          // treat the retry as idempotent success — the wrapper re-publishes
-          // the snapshot on the way out, which is exactly the missing half.
+          // conflict. When the existing row matches the requested package
+          // AND the post-reconcile disk still carries its files, treat the
+          // retry as idempotent success — the wrapper re-publishes the
+          // snapshot on the way out, which is exactly the missing half.
+          // When the disk does NOT match the row (a peer generation
+          // published in between reverted the tree — see
+          // readInstalledPackageVersion), installPlugin cannot repair (the
+          // row 409s forever) but lifecycle.upgrade can: it re-fetches the
+          // package onto the reconciled tree, re-activates, and the wrapper
+          // publishes a tree that finally matches the registry.
           if (
             err instanceof HttpError &&
             err.status === 409 &&
@@ -1229,8 +1304,13 @@ export function pluginRoutes(
             const rows = await registry.listInstalled();
             const match = rows.find((r) => r.packageName === trimmedPackage);
             if (match) {
-              const healed = await registry.getById(match.id);
-              return { kind: "healed", existingPlugin: healed, updated: healed } as const;
+              const diskVersion = await readInstalledPackageVersion(match.packageName, match.packagePath);
+              if (diskVersion !== null && diskVersion === match.version) {
+                const healed = await registry.getById(match.id);
+                return { kind: "healed", existingPlugin: healed, updated: healed } as const;
+              }
+              const repaired = await lifecycle.upgrade(match.id, version?.trim());
+              return { kind: "healed", existingPlugin: repaired, updated: repaired } as const;
             }
           }
           throw err;
@@ -2057,13 +2137,20 @@ export function pluginRoutes(
         // generation would ever record the purge — peers stay on the old
         // snapshot and the next publish from any other replica would
         // silently reinstate the plugin's files cluster-wide. Re-run the
-        // wrapper with a no-op mutation: reconcile no-ops (the local
-        // generation marker still equals max(generation), so the purged
-        // local tree survives) and the publish finally writes the
-        // plugin-less snapshot. A purge of an id that never existed takes
-        // the same path — an idempotent 200/null instead of a 404 is the
-        // price of healing without a tombstone.
-        await withReplicatedPluginMutation(async () => {});
+        // wrapper, then sweep before the publish: when no peer generation
+        // was published in between, the reconcile no-ops (the local marker
+        // still equals max(generation)) and the sweep finds nothing — the
+        // purged tree is republished as-is. When a peer DID publish, the
+        // reconcile reinstates the purged plugin's files from that
+        // pre-purge tree; the row is hard-deleted so the request's
+        // identifier can no longer locate them, and the sweep removes every
+        // managed plugin package without a live registry row instead (see
+        // removeOrphanedPluginPackages). A purge of an id that never
+        // existed takes the same path — an idempotent 200/null instead of a
+        // 404 is the price of healing without a tombstone.
+        await withReplicatedPluginMutation(async () => {
+          await removeOrphanedPluginPackages();
+        });
         publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId, action: "uninstalled" } });
         res.json(null);
         return;
@@ -2079,11 +2166,18 @@ export function pluginRoutes(
           // "uninstalled" and lifecycle.unload rejects it before the wrapper
           // can publish. Treat the retry as idempotent success — the wrapper
           // re-publishes on the way out, which is exactly the missing half.
+          // First, though, re-run the artifact cleanup: a peer generation
+          // published in between makes the reconcile above reinstate the
+          // plugin's files from a pre-uninstall tree (see
+          // readInstalledPackageVersion), and republishing without removing
+          // them would spread the files cluster-wide. cleanupInstallArtifacts
+          // is idempotent when the files are already gone.
           // (A `?purge=true` retry with the row still present needs no heal:
           // lifecycle.unload hard-deletes an already-uninstalled row.)
           if (!purge && replication?.isActive()) {
             const current = await registry.getById(plugin.id);
             if (current?.status === "uninstalled") {
+              await loader.cleanupInstallArtifacts(current as PluginRecord);
               return { kind: "healed", record: current } as const;
             }
           }
@@ -2352,15 +2446,23 @@ export function pluginRoutes(
         // re-downloads the package from npm on every retry (a hard 400 if
         // the registry is unreachable, plausible in the same incident that
         // failed the publish). When the row already carries the exact
-        // requested version, the local mutation is done: skip it and let the
-        // wrapper republish, which is exactly the missing half. Unpinned or
-        // range requests never heal — their target is unknowable without
-        // asking npm, so they take the normal path.
+        // requested version AND the post-reconcile disk really has that
+        // version's files, the local mutation is done: skip it and let the
+        // wrapper republish, which is exactly the missing half. The disk
+        // check is load-bearing: the row alone can lie when a peer
+        // generation published in between reverted the tree (see
+        // readInstalledPackageVersion) — in that case fall through, and
+        // lifecycle.upgrade repairs the tree by re-fetching the target.
+        // Unpinned or range requests never heal — their target is
+        // unknowable without asking npm, so they take the normal path.
         if (replication?.isActive() && typeof version === "string") {
           const target = version.trim().replace(/^[=v]/, "");
           const current = await registry.getById(plugin.id);
           if (current && current.status === "ready" && current.version === target) {
-            return { kind: "healed", record: current } as const;
+            const diskVersion = await readInstalledPackageVersion(current.packageName, current.packagePath);
+            if (diskVersion === target) {
+              return { kind: "healed", record: current } as const;
+            }
           }
         }
         const record = await lifecycle.upgrade(plugin.id, version);
