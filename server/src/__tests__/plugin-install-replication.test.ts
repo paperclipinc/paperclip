@@ -281,7 +281,7 @@ describe("POST /api/plugins/install (replication)", () => {
     // The session lock must not leak on the failure path.
     expect(heldSessionLocks.size).toBe(0);
   });
-  it("heals a failed publish on retry: already-installed same package republishes and returns 200", async () => {
+  it("heals a failed publish on retry: already-installed same package republishes, emits the live event, and returns 200", async () => {
     const replication = createReplication();
     const { app, loader } = await createApp(replication);
     const { HttpError } = await import("../errors.js");
@@ -298,6 +298,13 @@ describe("POST /api/plugins/install (replication)", () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(PLUGIN_ID);
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    // The original request 500'd before emitting, so the healed retry is the
+    // install's only success response — it must fire the fast reconcile
+    // trigger too, not leave peers to the periodic safety tick.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "installed" },
+    });
   });
 
   it("does not heal when the conflicting package differs: conflict propagates as an error", async () => {

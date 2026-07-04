@@ -263,19 +263,22 @@ export function createPluginArtifactReplication(opts: {
         break;
       }
 
-      if (wonGeneration === null) {
-        throw new Error(
-          `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
-        );
-      }
-
-      // Best-effort cleanup of objects uploaded during lost CAS races.
-      // Awaited sequentially (same never-throw discipline as GC) so the caller
-      // observes a clean store state; a failed delete is harmless.
+      // Best-effort cleanup of objects uploaded during lost CAS races. This
+      // runs BEFORE the exhaustion check on purpose: orphans were never
+      // inserted into the DB ledger, so GC cannot reach them — this loop is
+      // their only recovery path and must cover the all-attempts-failed exit
+      // too. Awaited sequentially (same never-throw discipline as GC) so the
+      // caller observes a clean store state; a failed delete is harmless.
       for (const orphanKey of orphanedKeys) {
         await provider.deleteObject({ objectKey: orphanKey }).catch((err) => {
           logger.warn({ err, objectKey: orphanKey }, "plugin artifact snapshot lost-race object cleanup failed (ignored)");
         });
+      }
+
+      if (wonGeneration === null) {
+        throw new Error(
+          `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
+        );
       }
 
       // The local tree IS this generation now: record it and mark synced.

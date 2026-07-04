@@ -1262,6 +1262,14 @@ export function pluginRoutes(
       }
 
       if (outcome.kind === "healed") {
+        // The original request mutated disk + registry but 500'd before
+        // reaching the emit below, so no `plugin.ui.updated` was ever fired
+        // for this install. This healed retry is the install's only success
+        // response — emit here too so peers get the fast event-triggered
+        // reconcile instead of waiting for the periodic safety tick.
+        if (outcome.existingPlugin) {
+          publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: outcome.existingPlugin.id, action: "installed" } });
+        }
         res.json(outcome.updated);
         return;
       }

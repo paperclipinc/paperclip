@@ -440,6 +440,56 @@ describeEmbedded("plugin artifact replication", () => {
     expect(deletedKeys).toContain("plugin-snapshots/gen-1.tgz");
   });
 
+  it("CAS exhaustion: publishSnapshot rejects AND every orphaned object is cleaned up", async () => {
+    const deletedKeys: string[] = [];
+    const uploadedKeys: string[] = [];
+
+    await fs.writeFile(path.join(dirA, "plugin.txt"), "hello");
+
+    // Make EVERY CAS attempt lose: after each upload of gen-N, inject a gen-N
+    // row so the subsequent db.insert always hits a unique violation. The
+    // publisher must exhaust its attempts, throw, and still delete every
+    // orphaned object — they were never inserted into the ledger, so GC has
+    // no other way to reach them.
+    const alwaysCollidingProvider: StorageProvider = {
+      ...provider,
+      putObject: async (input) => {
+        const result = await provider.putObject(input);
+        uploadedKeys.push(input.objectKey);
+        const generation = Number(/gen-(\d+)\.tgz$/.exec(input.objectKey)![1]);
+        await dbA.insert(pluginArtifactGenerations).values({
+          generation,
+          storageKey: input.objectKey,
+          contentHash: "aaaa",
+          createdBy: "injected-winner",
+        });
+        return result;
+      },
+      deleteObject: async (input) => {
+        deletedKeys.push(input.objectKey);
+        return provider.deleteObject(input);
+      },
+    };
+
+    const service = createPluginArtifactReplication({
+      db: dbA,
+      provider: alwaysCollidingProvider,
+      pluginsDir: dirA,
+      replicaId: "replica-a",
+      onApplySnapshot: async () => {},
+    });
+
+    await expect(service.publishSnapshot()).rejects.toThrow(/CAS attempts \(generation contention\)/);
+
+    // Every uploaded object lost its race, so every one must have been deleted.
+    expect(uploadedKeys.length).toBeGreaterThan(0);
+    expect(deletedKeys.slice().sort()).toEqual(uploadedKeys.slice().sort());
+    // And nothing remains in the store.
+    for (const key of uploadedKeys) {
+      await expect(collectObject(provider, key)).rejects.toThrow();
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Fix 3: swap restoration on rename(2) failure
   // -------------------------------------------------------------------------
