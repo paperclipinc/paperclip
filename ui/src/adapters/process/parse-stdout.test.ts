@@ -61,6 +61,18 @@ describe("process adapter transcript parsing (OpenCode JSONL detection)", () => 
     expect(stdoutTexts.some((t) => t.includes('"type"'))).toBe(false);
   });
 
+  it("does not lock on for JSON with a matching type but a null part", () => {
+    const chunks: RunLogChunk[] = [
+      {
+        ts,
+        stream: "stdout",
+        chunk: JSON.stringify({ type: "text", part: null }) + "\n" + "still plain\n",
+      },
+    ];
+    const entries = buildTranscript(chunks, processUIAdapter);
+    expect(entries.every((e) => e.kind === "stdout")).toBe(true);
+  });
+
   it("leaves genuinely non-JSONL process output as raw stdout", () => {
     const chunks: RunLogChunk[] = [
       { ts, stream: "stdout", chunk: "plain line one\nplain line two\n" },

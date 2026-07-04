@@ -26,8 +26,9 @@ function isOpenCodeJsonlLine(line: string): boolean {
   const record = parsed as Record<string, unknown>;
   if (typeof record.type !== "string" || !OPENCODE_EVENT_TYPES.has(record.type)) return false;
   // Guard against arbitrary JSON that merely happens to carry a matching `type`:
-  // real OpenCode events always carry a `sessionID` string or a `part` payload.
-  return typeof record.sessionID === "string" || record.part !== undefined;
+  // real OpenCode events always carry a `sessionID` string or a non-null `part`
+  // payload (`part: null` is not a real OpenCode shape, so don't lock on for it).
+  return typeof record.sessionID === "string" || (record.part !== undefined && record.part !== null);
 }
 
 /**
