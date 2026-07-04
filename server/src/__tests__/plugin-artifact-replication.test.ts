@@ -36,12 +36,21 @@ function sha256Hex(body: Buffer): string {
 
 /**
  * Minimal ustar archive builder for hostile-entry tests: system tar strips
- * `../` from member names on create, so the header bytes are forged by hand.
+ * `../` from member names (and refuses hostile link targets) on create, so
+ * the header bytes are forged by hand. `typeflag` "0" = regular file,
+ * "1" = hardlink, "2" = symlink; link members carry `linkTarget` and no body.
  */
-function buildTarball(entries: Array<{ name: string; content: string }>): Buffer {
+function buildTarball(
+  entries: Array<{
+    name: string;
+    content?: string;
+    typeflag?: "0" | "1" | "2";
+    linkTarget?: string;
+  }>,
+): Buffer {
   const blocks: Buffer[] = [];
-  for (const { name, content } of entries) {
-    const body = Buffer.from(content);
+  for (const { name, content = "", typeflag = "0", linkTarget } of entries) {
+    const body = typeflag === "0" ? Buffer.from(content) : Buffer.alloc(0);
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, "utf8");
     header.write("0000644\0", 100); // mode
@@ -50,7 +59,8 @@ function buildTarball(entries: Array<{ name: string; content: string }>): Buffer
     header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124); // size
     header.write("00000000000\0", 136); // mtime
     header.write("        ", 148); // chksum field is spaces while summing
-    header.write("0", 156); // typeflag: regular file
+    header.write(typeflag, 156); // typeflag
+    if (linkTarget) header.write(linkTarget, 157, 100, "utf8"); // linkname
     header.write("ustar\0", 257); // magic
     header.write("00", 263); // version
     let checksum = 0;
@@ -248,6 +258,89 @@ describeEmbedded("plugin artifact replication", () => {
     expect(await fs.readFile(path.join(dirB, "canary.txt"), "utf8")).toBe("still here");
     await expect(fs.access(path.join(dirB, MARKER))).rejects.toThrow();
     expect(reconciler.isSynced()).toBe(false);
+  });
+
+  /** Stage a forged, hash-consistent snapshot as generation 1. */
+  async function stageForgedSnapshot(tarball: Buffer): Promise<void> {
+    const evilTar = gzipSync(tarball);
+    await provider.putObject({
+      objectKey: "plugin-snapshots/gen-1.tgz",
+      body: evilTar,
+      contentType: "application/gzip",
+      contentLength: evilTar.length,
+    });
+    await dbA.insert(pluginArtifactGenerations).values({
+      generation: 1,
+      storageKey: "plugin-snapshots/gen-1.tgz",
+      contentHash: sha256Hex(evilTar),
+      createdBy: "attacker",
+    });
+  }
+
+  it("reconcile rejects a snapshot tarball containing a symlink whose relative target escapes the plugin tree", async () => {
+    // Entry paths are all clean — only the symlink TARGET points outside the
+    // extraction root, which the name-only scan cannot see.
+    await stageForgedSnapshot(
+      buildTarball([
+        { name: "./legit.txt", content: "legit" },
+        { name: "./evil-link", typeflag: "2", linkTarget: "../../outside-canary" },
+      ]),
+    );
+    await fs.writeFile(path.join(dirB, "canary.txt"), "still here");
+    const reconciler = makeService(dbB, dirB, "replica-b");
+
+    await expect(reconciler.reconcile()).rejects.toThrow(/symlink escaping the plugin tree/);
+
+    // Local tree untouched, marker absent, replica not marked synced.
+    await expect(fs.access(path.resolve(`${dirB}.tmp-1`, "evil-link"))).rejects.toThrow();
+    expect(await fs.readFile(path.join(dirB, "canary.txt"), "utf8")).toBe("still here");
+    await expect(fs.access(path.join(dirB, MARKER))).rejects.toThrow();
+    expect(reconciler.isSynced()).toBe(false);
+  });
+
+  it("reconcile rejects a snapshot tarball containing a symlink with an absolute target", async () => {
+    await stageForgedSnapshot(
+      buildTarball([
+        { name: "./evil-abs-link", typeflag: "2", linkTarget: "/etc/passwd" },
+      ]),
+    );
+    const reconciler = makeService(dbB, dirB, "replica-b");
+
+    await expect(reconciler.reconcile()).rejects.toThrow(/symlink escaping the plugin tree/);
+    expect(reconciler.isSynced()).toBe(false);
+  });
+
+  it("reconcile rejects a snapshot tarball containing a hardlink with a traversal target", async () => {
+    await stageForgedSnapshot(
+      buildTarball([
+        { name: "./evil-hardlink", typeflag: "1", linkTarget: "../outside-file" },
+      ]),
+    );
+    const reconciler = makeService(dbB, dirB, "replica-b");
+
+    await expect(reconciler.reconcile()).rejects.toThrow(/hardlink with unsafe target/);
+    expect(reconciler.isSynced()).toBe(false);
+  });
+
+  it("reconcile accepts and preserves a legitimate relative in-tree symlink (npm .bin style)", async () => {
+    // Real npm trees link node_modules/.bin/<tool> -> ../<pkg>/bin/<tool>.js;
+    // the relative `..` stays inside the tree and must survive the round trip.
+    await fs.mkdir(path.join(dirA, "node_modules", ".bin"), { recursive: true });
+    await fs.mkdir(path.join(dirA, "node_modules", "pkg", "bin"), { recursive: true });
+    await fs.writeFile(path.join(dirA, "node_modules", "pkg", "bin", "tool.js"), "#!/usr/bin/env node\n");
+    await fs.symlink("../pkg/bin/tool.js", path.join(dirA, "node_modules", ".bin", "tool"));
+    const publisher = makeService(dbA, dirA, "replica-a");
+    await publisher.publishSnapshot();
+
+    const reconciler = makeService(dbB, dirB, "replica-b");
+    const result = await reconciler.reconcile();
+
+    expect(result).toEqual({ applied: true, generation: 1 });
+    expect(await fs.readlink(path.join(dirB, "node_modules", ".bin", "tool"))).toBe("../pkg/bin/tool.js");
+    expect(await fs.readFile(path.join(dirB, "node_modules", ".bin", "tool"), "utf8")).toBe(
+      "#!/usr/bin/env node\n",
+    );
+    expect(reconciler.isSynced()).toBe(true);
   });
 
   it("GC after 4 publishes removes generation 1 (row + object) and keeps 2-4", async () => {

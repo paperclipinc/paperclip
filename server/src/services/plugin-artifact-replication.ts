@@ -323,27 +323,99 @@ export function createPluginArtifactReplication(opts: {
   }
 
   /**
-   * Reject tarball entries that could escape the extraction directory
-   * (absolute paths or `..` path components). Modern GNU tar (>= 1.29) and
-   * bsdtar already skip such members by default, but that is host-tar
-   * version-dependent behaviour — verify the member list explicitly before
-   * extracting so a crafted snapshot (attacker with object-storage AND DB
-   * write access, enough to also forge a matching contentHash) can never
-   * write outside the plugin tree regardless of the host tar. Listing
-   * (`tar -t`) writes nothing, so scanning first is safe. maxBuffer is
-   * raised because a full npm tree lists tens of thousands of paths.
+   * Extract a link target from a `tar -tv` line. The line looks like
+   * `<mode> <owner> ... <name><separator><target>`; anchoring on the exact
+   * member name (known from the plain `-t` listing) keeps the parse correct
+   * for names containing spaces. Ambiguity — separator missing, or the
+   * anchored marker appearing more than once (which a forged name/owner
+   * field could arrange) — fails closed rather than guessing.
+   */
+  function extractLinkTarget(verboseLine: string, entryName: string, separator: string): string {
+    const marker = `${entryName}${separator}`;
+    const first = verboseLine.indexOf(marker);
+    if (first === -1 || verboseLine.indexOf(marker, first + 1) !== -1) {
+      throw new Error(
+        `Plugin snapshot tarball contains link entry with unparseable target: ${JSON.stringify(entryName)}`,
+      );
+    }
+    return verboseLine.slice(first + marker.length);
+  }
+
+  /**
+   * Reject a symlink member whose target resolves outside the extraction
+   * root. Plugin trees legitimately contain RELATIVE in-tree symlinks —
+   * npm's `node_modules/.bin/*` links resolve like `../pkg/bin/tool.js` —
+   * so targets are validated by resolving them against the link's own
+   * directory rather than rejected outright for containing `..`.
+   */
+  function assertSymlinkTargetContained(entryName: string, target: string): void {
+    const reject = () => {
+      throw new Error(
+        `Plugin snapshot tarball contains symlink escaping the plugin tree: ${JSON.stringify(entryName)} -> ${JSON.stringify(target)}`,
+      );
+    };
+    if (target.length === 0 || path.posix.isAbsolute(target)) reject();
+    const linkDir = path.posix.dirname(path.posix.normalize(entryName));
+    const resolved = path.posix.normalize(path.posix.join(linkDir, target));
+    if (path.posix.isAbsolute(resolved) || resolved === ".." || resolved.startsWith("../")) reject();
+  }
+
+  /**
+   * Reject tarball members that could escape the extraction directory:
+   * entry paths that are absolute or contain `..` components, symlink
+   * members whose target resolves above the extraction root, and hardlink
+   * members whose (archive-relative) target is absolute or traverses `..`.
+   * Modern GNU tar (>= 1.29) and bsdtar already skip unsafe member paths by
+   * default, but that is host-tar version-dependent behaviour — verify
+   * explicitly before extracting so a crafted snapshot (attacker with
+   * object-storage AND DB write access, enough to also forge a matching
+   * contentHash) can never write or point outside the plugin tree
+   * regardless of the host tar. Listing (`tar -t`/`-tv`) writes nothing, so
+   * scanning first is safe, and the same host tar binary produces the
+   * listing and performs the extraction, so the listed names and link
+   * targets are exactly what extraction would apply. maxBuffer is raised
+   * because a full npm tree lists tens of thousands of paths.
    */
   async function assertTarEntriesContained(tarPath: string): Promise<void> {
-    const { stdout } = await execFileAsync("tar", ["-tzf", tarPath], {
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    for (const line of stdout.split("\n")) {
-      const entry = line.trim();
-      if (!entry) continue;
+    const listOptions = { maxBuffer: 64 * 1024 * 1024 };
+    // Two passes over the same archive: `-t` gives exact member names (one
+    // per line, no metadata to mis-split), `-tv` adds the typeflag and the
+    // ` -> target` / ` link to target` suffix for link members. Both list
+    // the members in archive order, so lines correspond 1:1.
+    const [{ stdout: nameListing }, { stdout: verboseListing }] = await Promise.all([
+      execFileAsync("tar", ["-tzf", tarPath], listOptions),
+      execFileAsync("tar", ["-tvzf", tarPath], listOptions),
+    ]);
+
+    const names = nameListing.split("\n").filter((line) => line.trim() !== "");
+    const verbose = verboseListing.split("\n").filter((line) => line.trim() !== "");
+    if (names.length !== verbose.length) {
+      throw new Error(
+        `Plugin snapshot tarball listings disagree (${names.length} names vs ${verbose.length} verbose entries)`,
+      );
+    }
+
+    for (let i = 0; i < names.length; i += 1) {
+      const entry = names[i]!.trim();
       if (path.isAbsolute(entry) || entry.split("/").includes("..")) {
         throw new Error(
           `Plugin snapshot tarball contains unsafe entry path: ${JSON.stringify(entry)}`,
         );
+      }
+
+      const typeflag = verbose[i]!.charAt(0);
+      if (typeflag === "l") {
+        assertSymlinkTargetContained(entry, extractLinkTarget(verbose[i]!, entry, " -> "));
+      } else if (typeflag === "h") {
+        // Hardlink targets are archive-relative member names (they point at
+        // an earlier member), not paths relative to the link's directory —
+        // validate them exactly like entry paths.
+        const target = extractLinkTarget(verbose[i]!, entry, " link to ");
+        if (path.isAbsolute(target) || target.split("/").includes("..")) {
+          throw new Error(
+            `Plugin snapshot tarball contains hardlink with unsafe target: ${JSON.stringify(entry)} -> ${JSON.stringify(target)}`,
+          );
+        }
       }
     }
   }

@@ -2343,7 +2343,41 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await withReplicatedPluginMutation(() => lifecycle.upgrade(plugin.id, version));
+      const outcome = await withReplicatedPluginMutation(async () => {
+        // Publish-heal (mirrors the install/uninstall heals): a prior upgrade
+        // applied locally but its snapshot publish failed (500, "retry the
+        // operation"). A bare retry through lifecycle.upgrade does re-run —
+        // ready → ready is a valid transition and the capability diff is
+        // empty because the row's manifest was already updated — but it
+        // re-downloads the package from npm on every retry (a hard 400 if
+        // the registry is unreachable, plausible in the same incident that
+        // failed the publish). When the row already carries the exact
+        // requested version, the local mutation is done: skip it and let the
+        // wrapper republish, which is exactly the missing half. Unpinned or
+        // range requests never heal — their target is unknowable without
+        // asking npm, so they take the normal path.
+        if (replication?.isActive() && typeof version === "string") {
+          const target = version.trim().replace(/^[=v]/, "");
+          const current = await registry.getById(plugin.id);
+          if (current && current.status === "ready" && current.version === target) {
+            return { kind: "healed", record: current } as const;
+          }
+        }
+        const record = await lifecycle.upgrade(plugin.id, version);
+        return { kind: "upgraded", record } as const;
+      });
+
+      if (outcome.kind === "healed") {
+        // The original request 500'd before the emit below fired, so this
+        // healed retry is the upgrade's only success response — emit here
+        // too so peers get the fast event-triggered reconcile instead of
+        // waiting for the periodic safety tick.
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
+        res.json(outcome.record);
+        return;
+      }
+
+      const result = outcome.record;
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,

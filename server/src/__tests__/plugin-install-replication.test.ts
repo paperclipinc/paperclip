@@ -536,4 +536,84 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
     expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
     expect(replication.publishSnapshot).not.toHaveBeenCalled();
   });
+
+  it("heals a failed publish on upgrade retry: row already at the target version republishes without re-running the upgrade, emits the live event, and returns 200", async () => {
+    const publishSnapshot = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("s3 unreachable"))
+      .mockResolvedValue({ generation: 2 });
+    const replication = createReplication({ publishSnapshot });
+    const { app } = await createApp(replication);
+
+    // Attempt 1: the upgrade applies locally but the publish fails → 500.
+    const first = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+    expect(first.status).toBe(500);
+    expect(first.body.error).toMatch(/snapshot replication failed/);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledTimes(1);
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+
+    // The local mutation stuck: the registry row is now at the target version.
+    mockRegistry.getById.mockResolvedValue({ ...pluginRow, version: "1.1.0" });
+
+    // Attempt 2 (the retry the 500 asked for): the heal skips the local
+    // mutation — no second npm download — and the wrapper republishes,
+    // which is exactly the missing half.
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe("1.1.0");
+    expect(mockLifecycle.upgrade).toHaveBeenCalledTimes(1); // not re-run
+    expect(publishSnapshot).toHaveBeenCalledTimes(2);
+    // The original request 500'd before emitting, so the healed retry is the
+    // upgrade's only success response — it must fire the fast reconcile
+    // trigger too.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "upgraded" },
+    });
+  });
+
+  it("does not heal when the row is at a different version: the upgrade runs normally", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not heal an upgrade_pending row even at the target version: the approval flow still runs", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    const pendingRow = { ...pluginRow, version: "1.1.0", status: "upgrade_pending" };
+    mockRegistry.getById.mockResolvedValue(pendingRow);
+    mockLifecycle.upgrade.mockResolvedValue({ ...pendingRow, status: "ready" });
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not heal an unpinned upgrade: the target is unknowable, lifecycle.upgrade runs", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const res = await request(app).post(`/api/plugins/${PLUGIN_ID}/upgrade`).send({});
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, undefined);
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
 });
