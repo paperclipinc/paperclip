@@ -28,6 +28,7 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   configureLiveEventsTransport,
@@ -698,11 +699,10 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
-  // Cross-replica live-events transport. Default: Postgres LISTEN/NOTIFY
-  // against the same database the server already uses — no new infra.
-  // Operators who run Redis can opt in via PAPERCLIP_LIVE_EVENTS_TRANSPORT=redis.
-  // Single-replica deployments are unaffected: in-process delivery has
-  // always worked locally and the transport is purely additive.
+  setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
+    pluginWorkerManager,
+  });
+
   const liveEventsTransportMode = resolveLiveEventsTransportMode();
   void configureLiveEventsTransport({
     mode: liveEventsTransportMode,
@@ -711,7 +711,6 @@ export async function startServer(): Promise<StartedServer> {
   }).catch((err) => {
     logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
   });
-
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -832,10 +831,10 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
-      if (issueGraphReconciled.escalationsCreated > 0) {
+      if (issueGraphReconciled.escalationsCreated > 0 || issueGraphReconciled.dependencyWakesHealed > 0) {
         logger.warn(
           { ...issueGraphReconciled },
-          "startup issue-graph liveness reconciliation created escalations",
+          "startup issue-graph liveness reconciliation changed issue graph state",
         );
       }
 
@@ -946,8 +945,8 @@ export async function startServer(): Promise<StartedServer> {
         })
         .then(async () => {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          if (reconciled.escalationsCreated > 0 || reconciled.dependencyWakesHealed > 0) {
+            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation changed issue graph state");
           }
         })
         .then(async () => {

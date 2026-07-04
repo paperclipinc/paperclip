@@ -48,6 +48,7 @@ interface UpgradeContext {
 }
 
 interface IncomingMessageWithContext extends IncomingMessage {
+  paperclipWebSocketHandled?: boolean;
   paperclipUpgradeContext?: UpgradeContext;
 }
 
@@ -266,6 +267,10 @@ export function setupLiveEventsWebSocketServer(
   });
 
   server.on("upgrade", (req, socket, head) => {
+    if ((req as IncomingMessageWithContext).paperclipWebSocketHandled) {
+      return;
+    }
+
     const onRawSocketError = (err: Error) => {
       logger.warn({ err, path: req.url }, "live websocket upgrade socket error");
     };
