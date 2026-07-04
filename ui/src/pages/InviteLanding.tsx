@@ -37,6 +37,13 @@ function readNestedString(value: unknown, path: string[]): string | null {
   return typeof current === "string" && current.trim().length > 0 ? current : null;
 }
 
+// A valid human invite reached while authenticated should join the user
+// without manual action. We bound the auto-retries so a persistently failing
+// accept (e.g. a genuinely revoked invite) falls back to the manual button
+// instead of hammering the endpoint, but a single transient failure (session
+// or membership not yet propagated) still recovers on its own.
+const MAX_AUTO_ACCEPT_ATTEMPTS = 2;
+
 const fieldClassName =
   "w-full border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring";
 const panelClassName = "border border-border bg-card text-card-foreground p-6";
@@ -230,12 +237,6 @@ export function InviteLandingPage() {
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [autoAcceptAttempts, setAutoAcceptAttempts] = useState(0);
   const authErrorId = "invite-auth-error";
-  // A valid human invite reached while authenticated should join the user
-  // without manual action. We bound the auto-retries so a persistently failing
-  // accept (e.g. a genuinely revoked invite) falls back to the manual button
-  // instead of hammering the endpoint, but a single transient failure (session
-  // or membership not yet propagated) still recovers on its own.
-  const MAX_AUTO_ACCEPT_ATTEMPTS = 2;
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
