@@ -4469,6 +4469,14 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/budget-paused",
+  tags: ["costs"],
+  summary: "List companies with paused budgets (cloud-internal)",
+  responses: { 200: r.ok(), 403: r.forbidden },
+});
+
 // ─── Current route coverage ─────────────────────────────────────────────────
 
 registerCurrentRoute({
