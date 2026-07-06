@@ -469,6 +469,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -527,6 +528,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeAgentId: agentId,
         checkoutRunId: runId,
         executionRunId: runId,
+        responsibleUserId: "responsible-user",
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
@@ -667,6 +669,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -736,6 +739,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           title: "Paused recovery root",
           status: "todo",
           priority: "medium",
+          responsibleUserId: "responsible-user",
           issueNumber: 1,
           identifier: `${issuePrefix}-1`,
         }]
@@ -751,6 +755,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
+        responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
         startedAt: input.status === "in_progress" ? now : null,
@@ -789,6 +794,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -849,6 +855,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionRunId: runId,
       executionAgentNameKey: "codexreviewer",
       executionLockedAt: now,
+      responsibleUserId: "responsible-user",
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionState: {
@@ -880,6 +887,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -903,6 +911,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       priority: "medium",
       assigneeAgentId: agentId,
       assigneeUserId: null,
+      responsibleUserId: "responsible-user",
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
@@ -1052,6 +1061,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -1112,6 +1122,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       assigneeAgentId: agentId,
       checkoutRunId: runId,
       executionRunId: runId,
+      responsibleUserId: "responsible-user",
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: now,
@@ -3360,6 +3371,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values([
@@ -3394,6 +3406,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "todo",
         priority: "high",
         createdByAgentId: creatorAgentId,
+        responsibleUserId: "responsible-user",
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       },
@@ -3404,6 +3417,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "blocked",
         priority: "high",
         assigneeAgentId: blockedAssigneeAgentId,
+        responsibleUserId: "responsible-user",
         issueNumber: 2,
         identifier: `${issuePrefix}-2`,
       },
@@ -3487,6 +3501,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values({
