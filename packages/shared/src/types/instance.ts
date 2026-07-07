@@ -60,6 +60,7 @@ export interface InstanceExperimentalSettings {
   enableIssueGraphLivenessAutoRecovery: boolean;
   managedExperience: boolean;
   cloudBilling: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
