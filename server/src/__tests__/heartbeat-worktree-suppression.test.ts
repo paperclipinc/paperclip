@@ -35,6 +35,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let lastHeartbeat: ReturnType<typeof heartbeatService> | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
@@ -42,6 +43,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await lastHeartbeat?.drain();
+    lastHeartbeat = null;
     await db.delete(heartbeatRunEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
@@ -136,11 +139,11 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   it("suppresses new assignment wakes in worktree instances without creating heartbeat runs", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
-    const heartbeat = heartbeatService(db, {
+    lastHeartbeat = heartbeatService(db, {
       runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
     });
 
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await lastHeartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -187,12 +190,12 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       contextSnapshot: { issueId, wakeReason: "issue_assigned" },
     });
 
-    const heartbeat = heartbeatService(db, {
+    lastHeartbeat = heartbeatService(db, {
       runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
     });
 
-    await heartbeat.resumeQueuedRuns();
-    const tick = await heartbeat.tickTimers(new Date("2026-07-07T00:10:00Z"));
+    await lastHeartbeat.resumeQueuedRuns();
+    const tick = await lastHeartbeat.tickTimers(new Date("2026-07-07T00:10:00Z"));
 
     expect(tick).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
 
@@ -215,9 +218,9 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
-    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    lastHeartbeat = heartbeatService(db, { runtimeEnv: {} });
 
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await lastHeartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
