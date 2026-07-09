@@ -65,6 +65,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
         process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
         (parsed.data.cloudBilling ?? false),
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? false,
+      enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -88,6 +89,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     managedExperience: process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true",
     cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
     enableWorkspaceBranchReconcileForward: false,
+    enableWorktreeRunExecution: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };

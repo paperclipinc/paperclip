@@ -35,6 +35,7 @@ describe("instance settings service", () => {
       managedExperience: false,
       cloudBilling: false,
       enableWorkspaceBranchReconcileForward: true,
+      enableWorktreeRunExecution: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
   });
