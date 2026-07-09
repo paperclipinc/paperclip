@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEve
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { useVisibilityRefetchInterval } from "@/lib/polling";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
@@ -1709,13 +1711,24 @@ export function IssueDetail() {
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
   });
-  const { data: companyLiveRuns } = useQuery({
-    queryKey: resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"],
-    queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
+  const companyLiveRunsRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5000 });
+  const companyLiveRunsQueryKey = resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"] as const;
+  const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
+    companyId: resolvedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: companyLiveRunsQueryKey,
     enabled: !!resolvedCompanyId,
-    refetchInterval: 5000,
+    refetchInterval: companyLiveRunsRefetchInterval,
+    leaderOnly: true,
+  });
+  const { data: companyLiveRuns, dataUpdatedAt: companyLiveRunsUpdatedAt } = useQuery({
+    queryKey: companyLiveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(resolvedCompanyId!),
+    enabled: sharedCompanyLiveRuns.enabled,
+    refetchInterval: sharedCompanyLiveRuns.refetchInterval,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(resolvedCompanyId ?? "pending"),
   });
+  usePublishSharedQueryData(sharedCompanyLiveRuns, companyLiveRuns, companyLiveRunsUpdatedAt);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
