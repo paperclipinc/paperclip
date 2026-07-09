@@ -598,6 +598,10 @@ type PaperclipWakeCheckboxSelection = {
   }>;
 };
 
+type PaperclipWakeExecutionWorkspace = {
+  branchName: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -615,6 +619,7 @@ type PaperclipWakePayload = {
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
+  executionWorkspace: PaperclipWakeExecutionWorkspace | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
@@ -1127,6 +1132,20 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipWakeExecutionWorkspace(value: unknown): PaperclipWakeExecutionWorkspace | null {
+  const workspace = parseObject(value);
+  // The branch name is interpolated into a Markdown inline-code span in the
+  // wake prompt, so strip backticks and control characters to keep a hostile
+  // ref name from breaking out of the span or injecting prompt text.
+  const branchName =
+    asString(workspace.branchName, "")
+      .replace(/[`\u0000-\u001f\u007f]/g, "")
+      .trim()
+      .slice(0, 300) || null;
+  if (!branchName) return null;
+  return { branchName };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -1168,7 +1187,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !normalizePaperclipWakeIssue(payload.issue)) {
+  const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1190,6 +1210,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
+    executionWorkspace,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -1331,6 +1352,11 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (!resumedSession && normalized.executionWorkspace?.branchName) {
+    lines.push(
+      `- execution workspace branch: you are running in an execution workspace on branch \`${normalized.executionWorkspace.branchName}\`. Do not switch, rename, or re-point this branch; keep all commits on it.`,
+    );
   }
   if (normalized.dependencyBlockedInteraction) {
     lines.push("- dependency-blocked interaction: yes");
