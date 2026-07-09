@@ -18,6 +18,8 @@ import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
+import { builtInAgentsApi, type BuiltInAgentStatus } from "../api/builtInAgents";
+import { BuiltInAgentBadge, BuiltInLifecycleChip } from "./BuiltInAgentBadges";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
@@ -112,6 +114,7 @@ function SidebarAgentItem({
   rail,
   runCount,
   setSidebarOpen,
+  builtInStatus,
   starred = false,
   onToggleStar,
   starPending = false,
@@ -127,6 +130,7 @@ function SidebarAgentItem({
   rail: boolean;
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
+  builtInStatus?: BuiltInAgentStatus;
   starred?: boolean;
   onToggleStar?: (agent: Agent, starred: boolean) => void;
   starPending?: boolean;
@@ -147,6 +151,10 @@ function SidebarAgentItem({
       : isPaused && hasInvalidOrgChain
         ? "Invalid org chain"
       : pauseResumeLabel;
+  const trailingLabel = [
+    builtInStatus ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
+    hasInvalidOrgChain ? "Invalid reporting chain" : null,
+  ].filter(Boolean).join(", ") || undefined;
 
   // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
   // share the nav-row chrome (type, active state, rail tooltip, live dot).
@@ -157,6 +165,7 @@ function SidebarAgentItem({
       iconNode={<AgentIcon icon={agent.icon} className="shrink-0 h-4 w-4" />}
       active={isActive}
       liveCount={runCount}
+      labelClassName={builtInStatus ? "min-w-(--sz-4_5rem) flex-initial" : undefined}
       className={cn(
         "min-w-0 flex-1",
         // Reserve room for the hover ⋯ menu; starred rows widen it for the
@@ -164,11 +173,21 @@ function SidebarAgentItem({
         starred && !isMobile ? "pr-14" : "pr-8",
       )}
       trailing={
-        hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        builtInStatus || hasInvalidOrgChain ? (
+          <span className="ml-1 flex shrink-0 items-center gap-1">
+            {builtInStatus ? (
+              <>
+                <BuiltInAgentBadge compact />
+                <BuiltInLifecycleChip status={builtInStatus} compact />
+              </>
+            ) : null}
+            {hasInvalidOrgChain ? (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+            ) : null}
+          </span>
         ) : undefined
       }
-      trailingLabel={hasInvalidOrgChain ? "Invalid reporting chain" : undefined}
+      trailingLabel={trailingLabel}
       liveAccessory={
         agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
       }
@@ -291,6 +310,18 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: builtInAgents } = useQuery({
+    queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
+    queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const builtInStatusByAgentId = useMemo(() => {
+    const map = new Map<string, BuiltInAgentStatus>();
+    for (const entry of builtInAgents ?? []) {
+      if (entry.agentId) map.set(entry.agentId, entry.status);
+    }
+    return map;
+  }, [builtInAgents]);
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -517,6 +548,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       rail={rail}
       runCount={liveCountByAgent.get(agent.id) ?? 0}
       setSidebarOpen={setSidebarOpen}
+      builtInStatus={builtInStatusByAgentId.get(agent.id)}
       starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}
       onToggleStar={toggleStarAgent}
       starPending={agentStarPending(agent)}
