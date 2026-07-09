@@ -888,6 +888,7 @@ type IssueDetailChatTabProps = {
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
+  liveIssueIds: ReadonlySet<string>;
   blockerAttention: Issue["blockerAttention"] | null;
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
@@ -971,6 +972,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   issueStatus,
   executionRunId,
   blockedBy,
+  liveIssueIds,
   blockerAttention,
   successfulRunHandoff,
   scheduledRetry,
@@ -1194,6 +1196,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         activeRun={resolvedActiveRun}
         issueId={issueId}
         blockedBy={blockedBy ?? []}
+        liveIssueIds={liveIssueIds}
         blockerAttention={blockerAttention}
         successfulRunHandoff={successfulRunHandoff}
         scheduledRetry={scheduledRetry}
@@ -4665,6 +4668,7 @@ export function IssueDetail() {
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
+              liveIssueIds={liveIssueIds}
               blockerAttention={issue.blockerAttention ?? null}
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
