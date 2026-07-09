@@ -71,7 +71,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     managedExperience: false,
     cloudBilling: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
-    enableWorkspaceBranchReconcileForward: false,
+    enableWorkspaceBranchReconcileForward: true,
+    enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
   };
 }

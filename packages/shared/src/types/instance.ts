@@ -63,6 +63,7 @@ export interface InstanceExperimentalSettings {
   managedExperience: boolean;
   cloudBilling: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
+  enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
