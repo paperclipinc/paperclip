@@ -322,7 +322,7 @@ function EnvironmentVariablesEditorShowcase() {
     STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
   });
   return (
-    <div className="max-w-[640px] rounded-md border border-border p-4">
+    <div className="max-w-(--sz-640px) rounded-md border border-border p-4">
       <EnvironmentVariablesEditor
         value={env}
         secrets={DESIGN_GUIDE_SECRETS}
@@ -406,7 +406,7 @@ export function DesignGuide() {
                 "command", "dialog", "dropdown-menu", "input", "label", "popover", "scroll-area",
                 "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
               ].map((name) => (
-                <Badge key={name} variant="outline" className="font-mono text-[10px]">
+                <Badge key={name} variant="outline" className="font-mono text-(length:--text-nano)">
                   {name}
                 </Badge>
               ))}
@@ -419,7 +419,7 @@ export function DesignGuide() {
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
               ].map((name) => (
-                <Badge key={name} variant="ghost" className="font-mono text-[10px]">
+                <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
                 </Badge>
               ))}
@@ -663,9 +663,9 @@ export function DesignGuide() {
               ["on_demand", "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"],
               ["automation", "bg-muted text-muted-foreground"],
             ].map(([label, cls]) => (
-              <span key={label} className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
+              <Badge variant="ghost" key={label} className={`px-1.5 text-(length:--text-nano) ${cls}`}>
                 {label}
-              </span>
+              </Badge>
             ))}
           </div>
         </SubSection>
@@ -742,7 +742,7 @@ export function DesignGuide() {
             {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
               <div key={i} className="flex flex-col items-center gap-1.5">
                 <AgentCapsule state="online" size="sm" gradient={i + 1} />
-                <span className="text-[10px] font-mono text-muted-foreground">{i + 1}</span>
+                <span className="text-(length:--text-nano) font-mono text-muted-foreground">{i + 1}</span>
               </div>
             ))}
           </div>
@@ -1379,7 +1379,7 @@ export function DesignGuide() {
               </div>
               <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                 <div
-                  className={`h-full rounded-full transition-[width,background-color] duration-150 ${color}`}
+                  className={`h-full rounded-full transition-(--tp-width-background-color) duration-150 ${color}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -1402,10 +1402,10 @@ export function DesignGuide() {
           <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-cyan-400 animate-pulse" />
-              <span className="inline-flex h-full w-full rounded-full bg-cyan-400" />
+              <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 animate-pulse" />
+              <span className="inline-flex h-full w-full rounded-full bg-blue-500" />
             </span>
-            <span className="text-cyan-400">Live</span>
+            <span className="text-blue-600 dark:text-blue-400">Live</span>
           </div>
         </div>
       </Section>
@@ -1442,7 +1442,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
-          <div className="w-60 border border-border rounded-md p-3 space-y-0.5 bg-card">
+          <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />
               Dashboard
@@ -1450,9 +1450,9 @@ export function DesignGuide() {
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <CircleDot className="h-4 w-4" />
               Issues
-              <span className="ml-auto text-xs bg-primary text-primary-foreground rounded-full px-1.5 py-0.5">
+              <Badge variant="ghost" className="ml-auto bg-primary text-primary-foreground px-1.5">
                 12
-              </span>
+              </Badge>
             </div>
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground cursor-pointer">
               <Bot className="h-4 w-4" />
@@ -1462,7 +1462,7 @@ export function DesignGuide() {
               <Hexagon className="h-4 w-4" />
               Projects
             </div>
-          </div>
+          </Card>
         </SubSection>
 
         <SubSection title="View toggle">
@@ -1621,16 +1621,16 @@ export function DesignGuide() {
         </p>
 
         <SubSection title="TeamRow (browse list)">
-          <div className="w-[28rem] rounded-md border border-border">
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="w-(--sz-28rem) rounded-md border border-border">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Bundled · 1
             </div>
             <TeamRow team={sampleTeam} selected onSelect={() => {}} />
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Optional · 2
             </div>
             <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
-            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="px-3 py-2 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               Installed · 2
             </div>
             <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
@@ -1725,7 +1725,7 @@ export function DesignGuide() {
             return (
               <div key={name as string} className="flex flex-col items-center gap-1.5 p-2">
                 <LucideIcon className="h-4 w-4 text-muted-foreground" />
-                <span className="text-[10px] text-muted-foreground font-mono">{name as string}</span>
+                <span className="text-(length:--text-nano) text-muted-foreground font-mono">{name as string}</span>
               </div>
             );
           })}

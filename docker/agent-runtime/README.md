@@ -4,9 +4,13 @@ Paperclip.inc publishes container images for remote agents. Images are named `ag
 
 ## Image Lineup
 
-- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user + shim + workspace-init.
-- **`agent-runtime-claude`**: Extends base with `@anthropic-ai/claude-code` CLI globally installed.
-- Future: Additional adapter-specific images follow the same pattern (e.g., `agent-runtime-go`, `agent-runtime-rust`).
+- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
+- **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
+- **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
+- **`agent-runtime-codex`**: Extends base with `@openai/codex`.
+- **`agent-runtime-gemini`**: Extends base with `@google/gemini-cli` plus headless auth-mode settings.
+- **`agent-runtime-claude`**: Extends base with `@anthropic-ai/claude-code` (symlinked as `claude-code`).
+- **`agent-runtime-hermes`**: Dockerfile included in the bake group, not in the default publish scope (stub until a CLI package exists).
 
 ## Base Image Contents
 
