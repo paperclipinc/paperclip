@@ -922,6 +922,7 @@ type IssueDetailChatTabProps = {
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
   externalReferences?: MarkdownExternalReferenceMap;
+  linkCaseReferences?: boolean;
 };
 
 const IssueDetailChatTab = memo(function IssueDetailChatTab({
@@ -993,6 +994,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onResumeFromBacklog,
   resumeFromBacklogPending,
   externalReferences,
+  linkCaseReferences,
 }: IssueDetailChatTabProps) {
   const ThreadComponent = IssueChatThread;
   const { data: activity } = useQuery({
@@ -1223,6 +1225,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         resumeFromBacklogPending={resumeFromBacklogPending}
         footer={footer}
         externalReferences={externalReferences}
+        linkCaseReferences={linkCaseReferences}
       />
     </div>
   );
@@ -1755,6 +1758,8 @@ export function IssueDetail() {
     retry: false,
   });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
+  // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
+  const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const showPlanDecompositionsSection =
     instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
@@ -4744,6 +4749,7 @@ export function IssueDetail() {
                 updateIssue.isPending && updateIssue.variables?.status === "todo"
               }
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+              linkCaseReferences={casesChipsEnabled}
             />
           ) : null}
         </TabsContent>
