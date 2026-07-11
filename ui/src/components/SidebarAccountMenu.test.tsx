@@ -13,11 +13,11 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
-const mockToggleTheme = vi.hoisted(() => vi.fn());
-const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockToggleTheme = vi.hoisted(() => vi.fn());
+const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
@@ -78,8 +78,7 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    // Self-hosted default: no cloud billing.
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: false, enableIsolatedWorkspaces: false });
   });
 
   afterEach(() => {

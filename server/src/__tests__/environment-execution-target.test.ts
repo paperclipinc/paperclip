@@ -140,8 +140,6 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
 
     const executeSpy = vi.fn(async (input: Record<string, unknown>) => {
-      // Simulate a streaming provider: deliver output live via onOutput and
-      // flag streamed so the runner does not re-log the buffered output.
       const onOutput = input.onOutput as
         | ((stream: "stdout" | "stderr", text: string) => void)
         | undefined;
@@ -177,10 +175,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
       },
     })) as { streamed?: boolean; stdout: string };
 
-    // onOutput was threaded into the driver execute and delivered live.
     expect(executeSpy.mock.calls[0][0]).toHaveProperty("onOutput");
     expect(outputCalls).toEqual([["stdout", "live-chunk"]]);
-    // The buffered dump is SUPPRESSED because the provider streamed the output.
     expect(logCalls).toEqual([]);
     expect(result.streamed).toBe(true);
     expect(result.stdout).toBe("live-chunk");
@@ -197,7 +193,6 @@ describe("resolveEnvironmentExecutionTarget", () => {
       timedOut: false,
       stdout: "buffered-out",
       stderr: "buffered-err",
-      // no `streamed` flag -> legacy behavior
     }));
 
     const target = await resolveEnvironmentExecutionTarget({
@@ -224,6 +219,49 @@ describe("resolveEnvironmentExecutionTarget", () => {
       ["stdout", "buffered-out"],
       ["stderr", "buffered-err"],
     ]);
+  });
+
+  it("keeps sandbox targets on callback bridge execution even when lease metadata advertises SSH access", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "claude_local",
+      environment: {
+        id: "env-1",
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+        },
+      },
+      leaseId: "lease-1",
+      leaseMetadata: {
+        remoteCwd: "/home/sandbox/paperclip-workspace",
+        sshAccess: {
+          type: "ssh",
+          host: "ssh.example.test",
+          port: 22,
+          username: "paperclip",
+        },
+      },
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd: "/home/sandbox/paperclip-workspace",
+    });
   });
 
   it("resolves SSH execution targets in bridge mode", async () => {

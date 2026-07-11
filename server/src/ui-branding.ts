@@ -16,6 +16,13 @@ export type WorktreeUiBranding = {
   color: string | null;
   textColor: string | null;
   faviconHref: string | null;
+  /**
+   * Runtime instance id for this worktree preview. Surfaced to the client so
+   * the experimental "Run tasks in this worktree" card can fail closed when a
+   * copied settings row was armed in a different instance. Null outside a
+   * worktree or when the runtime id is unset.
+   */
+  instanceId: string | null;
 };
 
 function isTruthyEnvValue(value: string | undefined): boolean {
@@ -185,6 +192,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
       color: null,
       textColor: null,
       faviconHref: null,
+      instanceId: null,
     };
   }
 
@@ -198,6 +206,7 @@ export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): Wor
     color,
     textColor,
     faviconHref: createFaviconDataUrl(color, textColor),
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID),
   };
 }
 
@@ -224,13 +233,6 @@ export function resolveDefaultTheme(env: NodeJS.ProcessEnv = process.env): "ligh
 
 const DEFAULT_DISPLAY_CURRENCY = "USD";
 
-/**
- * The ISO 4217 currency code monetary amounts should be DISPLAYED in. Reads
- * PAPERCLIP_DISPLAY_CURRENCY (e.g. "EUR" for a deployment that bills in euros);
- * falls back to "USD" (the product's built-in default) so the unconfigured
- * build is unchanged. Display-only: stored cent amounts are never converted.
- * The UI reads the injected meta tag (see ui/src/lib/display-currency.ts).
- */
 export function resolveDisplayCurrency(env: NodeJS.ProcessEnv = process.env): string {
   const raw = nonEmpty(env.PAPERCLIP_DISPLAY_CURRENCY)?.toUpperCase();
   return raw && /^[A-Z]{3}$/.test(raw) ? raw : DEFAULT_DISPLAY_CURRENCY;
@@ -242,12 +244,9 @@ export function renderRuntimeBrandingMeta(
   displayCurrency: string = DEFAULT_DISPLAY_CURRENCY,
 ): string {
   const parts: string[] = [];
-  // Only emit the default-theme meta when it differs from the built-in "dark",
-  // so the unconfigured default build stays byte-for-byte identical.
   if (defaultTheme !== "dark") {
     parts.push(`<meta name="paperclip-default-theme" content="${defaultTheme}" />`);
   }
-  // Same deal for the display currency: only a non-USD instance emits the meta.
   if (displayCurrency !== DEFAULT_DISPLAY_CURRENCY) {
     parts.push(`<meta name="paperclip-display-currency" content="${escapeHtmlAttribute(displayCurrency)}" />`);
   }
@@ -256,6 +255,9 @@ export function renderRuntimeBrandingMeta(
     parts.push(`<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`);
     parts.push(`<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`);
     parts.push(`<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`);
+    if (branding.instanceId) {
+      parts.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
+    }
   }
   return parts.join("\n");
 }

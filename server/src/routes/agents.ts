@@ -41,6 +41,7 @@ import {
   agentInstructionsService,
   accessService,
   approvalService,
+  builtInAgentService,
   companySkillService,
   budgetService,
   heartbeatService,
@@ -52,7 +53,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -82,7 +83,11 @@ import {
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
+import {
+  instanceSettingsService,
+  isTruthyRuntimeEnvValue,
+  resolveWorktreeRunExecutionActivationState,
+} from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -100,6 +105,13 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import {
+  AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
+  agentInstructionsChangeTargetKey,
+  agentProfileChangeTargetKey,
+  changeConsentGateService,
+  touchesAgentProfileChangeConsentFields,
+} from "../services/change-consent-gate.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -252,6 +264,7 @@ export function agentRoutes(
     executionTarget: AdapterExecutionTarget | null;
     environmentName: string | null;
     fallbackChecks: AdapterEnvironmentCheck[];
+    sandboxIdentityCheck?: AdapterEnvironmentCheck | null;
     release: (status?: "released" | "failed") => Promise<void>;
   }> {
     const noopRelease = async () => {};
@@ -351,11 +364,26 @@ export function agentRoutes(
     // run id to heartbeat_runs.id, and we don't want to manufacture a fake
     // run row. Cleanup goes through the driver's `releaseRunLease` directly
     // (by lease record), since the batch helper queries by heartbeatRunId.
+    //
+    // Sandbox tests boot a fresh throwaway sandbox (never resume a retained
+    // agent lease) and archive it on release instead of deleting it, so the
+    // operator can inspect the exact sandbox from the provider dashboard while
+    // provider-side expiry reaps it later.
+    const testEnvironment = environment.driver === "sandbox"
+      ? {
+          ...environment,
+          config: {
+            ...(environment.config ?? {}),
+            reuseLease: false,
+            archiveOnRelease: true,
+          },
+        }
+      : environment;
     let leaseRecord: Awaited<ReturnType<typeof environmentRuntime.acquireRunLease>>;
     try {
       leaseRecord = await environmentRuntime.acquireRunLease({
         companyId: input.companyId,
-        environment,
+        environment: testEnvironment,
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
@@ -387,7 +415,7 @@ export function agentRoutes(
       try {
         if (driver) {
           await driver.releaseRunLease({
-            environment,
+            environment: testEnvironment,
             lease: leaseRecord.lease,
             status,
           });
@@ -406,7 +434,7 @@ export function agentRoutes(
     let realizedCwd: string | null = null;
     try {
       const realized = await environmentRuntime.realizeWorkspace({
-        environment,
+        environment: testEnvironment,
         lease: leaseRecord.lease,
         // No host workspace to copy for a Test invocation; sandbox/plugin
         // realize implementations use the lease metadata's remoteCwd to
@@ -447,9 +475,9 @@ export function agentRoutes(
         companyId: input.companyId,
         adapterType: input.adapterType,
         environment: {
-          id: environment.id,
-          driver: environment.driver,
-          config: environment.config ?? null,
+          id: testEnvironment.id,
+          driver: testEnvironment.driver,
+          config: testEnvironment.config ?? null,
         },
         leaseId: leaseRecord.lease.id,
         leaseMetadata: leaseMetadataForTarget,
@@ -494,7 +522,72 @@ export function agentRoutes(
       executionTarget: target,
       environmentName: environment.name,
       fallbackChecks: [],
+      sandboxIdentityCheck: buildSandboxIdentityCheck({
+        environmentName: environment.name,
+        lease: leaseRecord.lease,
+      }),
       release: releaseLease,
+    };
+  }
+
+  function readMetadataString(metadata: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === "string" && value.trim().length > 0) return value.trim();
+    }
+    return null;
+  }
+
+  function buildSandboxIdentityCheck(input: {
+    environmentName: string;
+    lease: {
+      id: string;
+      provider?: string | null;
+      providerLeaseId?: string | null;
+      metadata?: Record<string, unknown> | null;
+    };
+  }): AdapterEnvironmentCheck {
+    const metadata = input.lease.metadata ?? {};
+    const provider = input.lease.provider ?? readMetadataString(metadata, ["provider"]);
+    const sandboxId = readMetadataString(metadata, ["sandboxId", "sandboxID", "sandbox_id", "id"]);
+    const sandboxName = readMetadataString(metadata, ["sandboxName", "sandbox_name", "name"]);
+    const snapshotRef = readMetadataString(metadata, [
+      "snapshot",
+      "snapshotId",
+      "snapshotID",
+      "snapshotRef",
+      "snapshot_ref",
+      "templateRef",
+      "template_ref",
+      "templateId",
+      "templateID",
+      "image",
+      "imageId",
+      "imageID",
+      "imageRef",
+      "image_ref",
+    ]);
+    const templateKind = readMetadataString(metadata, [
+      "templateKind",
+      "template_kind",
+      "templateRefKind",
+      "template_ref_kind",
+    ]);
+    const detailParts = [
+      `paperclipLeaseId=${input.lease.id}`,
+      input.lease.providerLeaseId ? `providerLeaseId=${input.lease.providerLeaseId}` : null,
+      provider ? `provider=${provider}` : null,
+      sandboxId ? `sandboxId=${sandboxId}` : null,
+      sandboxName ? `sandboxName=${sandboxName}` : null,
+      snapshotRef ? `${templateKind ? `${templateKind}Ref` : "snapshotOrTemplateRef"}=${snapshotRef}` : null,
+    ].filter((part): part is string => Boolean(part));
+
+    return {
+      code: "sandbox_test_identity",
+      level: "info",
+      message: `Sandbox test identity for "${input.environmentName}".`,
+      detail: detailParts.join("; "),
+      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed sandbox snapshots.",
     };
   }
 
@@ -690,30 +783,22 @@ export function agentRoutes(
     // read-only operation available to any board (human) member of the
     // company. Responses go through `redactAgentConfiguration` so secrets
     // are never exposed. Mutations and environment probes still gate on
-    // agents:create via assertCanCreateAgentsForCompany / assertCanUpdateAgent.
+    // agents:create or agents:configure via the mutating route helpers.
     //
-    // For AGENT actors we keep the previous, stricter gate: an agent must
-    // either have an explicit `agents:create` grant or the legacy
-    // `canCreateAgents` permission on its own record. Agents are
-    // non-human principals — they should not be able to introspect peer
-    // agents' configurations just by virtue of being in the same company.
+    // For AGENT actors we keep a stricter gate: an agent must have either
+    // agents:configure or agents:suggest-changes before it can inspect peer
+    // agent configuration for a proposed diff.
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const actorAgent = await svc.getById(req.actor.agentId);
-      if (!actorAgent || actorAgent.companyId !== companyId) {
-        throw forbidden("Agent key cannot access another company");
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:read",
+        resource: { type: "company", companyId },
+      });
+      if (!decision.allowed) {
+        throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      const allowedByGrant = await access.hasPermission(
-        companyId,
-        "agent",
-        actorAgent.id,
-        "agents:create",
-      );
-      if (!allowedByGrant && !canCreateAgents(actorAgent)) {
-        throw forbidden("Missing permission: can create agents");
-      }
-      return actorAgent;
+      return req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     }
     return null;
   }
@@ -733,26 +818,21 @@ export function agentRoutes(
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     // Mirrors assertCanReadConfigurations but returns a boolean instead of
-    // throwing. Board actors only need company access; agent actors must
-    // still pass the agents:create gate (explicit grant or canCreateAgents
-    // on their own record) so peer agents cannot snoop each others'
-    // configurations.
+    // throwing. Board actors only need company access; agent actors must pass
+    // the agent configuration read grant ladder so peer agents cannot snoop
+    // each others' configurations.
     try {
       assertCompanyAccess(req, companyId);
     } catch {
       return false;
     }
     if (req.actor.type === "board") return true;
-    if (!req.actor.agentId) return false;
-    const actorAgent = await svc.getById(req.actor.agentId);
-    if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgent.id,
-      "agents:create",
-    );
-    return allowedByGrant || canCreateAgents(actorAgent);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
   }
 
   async function buildSkippedWakeupResponse(
@@ -833,7 +913,7 @@ export function agentRoutes(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
-  async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
+  async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") {
       await assertCanReadConfigurations(req, targetAgent.companyId);
@@ -845,6 +925,14 @@ export function agentRoutes(
     if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) {
       throw forbidden("Agent key cannot access another company");
     }
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+    });
+    if (decision.allowed) return;
+
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   function assertKnownAdapterType(type: string | null | undefined): string {
@@ -1278,7 +1366,9 @@ export function agentRoutes(
       delete nextAdapterConfig.bootstrapPromptTemplate;
       if (!hadLegacyPrompt) return agent;
 
-      const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+      const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+        allowPendingApprovalConfigUpdate: true,
+      });
       return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
     }
 
@@ -1293,7 +1383,9 @@ export function agentRoutes(
     delete nextAdapterConfig.promptTemplate;
     delete nextAdapterConfig.bootstrapPromptTemplate;
 
-    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig });
+    const updated = await svc.update(agent.id, { adapterConfig: nextAdapterConfig }, {
+      allowPendingApprovalConfigUpdate: true,
+    });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
   }
 
@@ -1309,14 +1401,70 @@ export function agentRoutes(
     }
   }
 
-  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+  async function assertCanApplyProtectedAgentChange(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+    targetKeys: string[],
+  ) {
     assertCompanyAccess(req, targetAgent.companyId);
-    if (req.actor.type !== "board") {
-      throw forbidden(
-        "Only board-authenticated callers can manage instructions path or bundle configuration",
-      );
+    const changeScope = { requiresChangeGrant: true };
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: changeScope,
+    });
+    if (decision.allowed) {
+      return;
     }
-    await assertBoardCanManageAgentsForCompany(req, targetAgent.companyId);
+
+    if (decision.reason === "deny_missing_consent" && req.actor.type === "agent" && targetKeys.length > 0) {
+      try {
+        await changeConsentGateService(db).assertConsented({
+          companyId: targetAgent.companyId,
+          actorAgentId: req.actor.agentId,
+          actorRunId: req.actor.runId ?? null,
+          targetKeys,
+        });
+      } catch (err) {
+        if (err instanceof HttpError && err.status === 403) {
+          throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+        }
+        throw err;
+      }
+
+      const consentedDecision = await access.decide({
+        actor: req.actor,
+        action: "agent_config:update",
+        resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+        scope: { ...changeScope, consentedChange: true },
+      });
+      if (consentedDecision.allowed) {
+        return;
+      }
+      throw forbidden(consentedDecision.explanation, authorizationDeniedDetails(consentedDecision));
+    }
+
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+    await assertCanApplyProtectedAgentChange(
+      req,
+      targetAgent,
+      [agentInstructionsChangeTargetKey(targetAgent.id)],
+    );
+  }
+
+  async function assertCanApplyAgentProfileChange(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ) {
+    await assertCanApplyProtectedAgentChange(
+      req,
+      targetAgent,
+      [agentProfileChangeTargetKey(targetAgent.id)],
+    );
   }
 
   function assertNoAgentInstructionsConfigMutation(
@@ -1440,6 +1588,7 @@ export function agentRoutes(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     requestedDesiredSkills: AgentDesiredSkillEntry[] | undefined,
+    options: { tolerateUnknownDesiredSkills?: boolean } = {},
   ) {
     if (!requestedDesiredSkills) {
       return {
@@ -1450,17 +1599,25 @@ export function agentRoutes(
       };
     }
 
-    const resolvedRequestedSkillEntries = await companySkills.resolveRequestedSkillEntries(
-      companyId,
-      requestedDesiredSkills,
-    );
+    const { resolved: resolvedRequestedSkillEntries, unresolved: unresolvedDesiredSkillKeys } =
+      await companySkills.resolveRequestedSkillEntries(companyId, requestedDesiredSkills, {
+        tolerateUnknownReferences: options.tolerateUnknownDesiredSkills,
+      });
+    // Runtime materialization + version selection only ever consider skills that
+    // actually resolve to the company library; stale keys can't be materialized.
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
       versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
-    const desiredSkillEntries = resolvedRequestedSkillEntries.filter(
+    const resolvedDesiredSkillEntries = resolvedRequestedSkillEntries.filter(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
+    // Preserve stale/unresolvable keys in the persisted desired set so they stay
+    // visible (and explicitly removable) instead of vanishing on the next save.
+    const desiredSkillEntries: AgentDesiredSkillEntry[] = [
+      ...resolvedDesiredSkillEntries,
+      ...unresolvedDesiredSkillKeys.map((key) => ({ key, versionId: null })),
+    ];
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
     return {
@@ -1621,7 +1778,7 @@ export function agentRoutes(
         { adapterType: type },
       );
 
-      const { executionTarget, environmentName, fallbackChecks, release } =
+      const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
           adapterType: type,
@@ -1659,7 +1816,10 @@ export function agentRoutes(
         });
 
         if (result.status === "fail") releaseStatus = "failed";
-        res.json(result);
+        res.json({
+          ...result,
+          checks: sandboxIdentityCheck ? [sandboxIdentityCheck, ...result.checks] : result.checks,
+        });
       } catch (err) {
         releaseStatus = "failed";
         throw err;
@@ -1693,6 +1853,8 @@ export function agentRoutes(
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
       agent.adapterConfig,
+      undefined,
+      { adapterType: agent.adapterType, skipUserSecrets: true },
     );
     const runtimeSkillConfig = await buildRuntimeSkillConfig(
       agent.companyId,
@@ -1732,6 +1894,10 @@ export function agentRoutes(
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
+        // Toggling a resolvable skill must not fail just because the agent
+        // already carries stale desired keys (e.g. a skill removed from the
+        // library). Preserve those keys so they remain visible/removable.
+        { tolerateUnknownDesiredSkills: true },
       );
       if (!desiredSkills || !desiredSkillEntries || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
@@ -1755,6 +1921,8 @@ export function agentRoutes(
       const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         updated.companyId,
         updated.adapterConfig,
+        undefined,
+        { adapterType: updated.adapterType, skipUserSecrets: true },
       );
       const runtimeSkillConfig = {
         ...runtimeConfig,
@@ -1969,14 +2137,23 @@ export function agentRoutes(
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
-    const issueIds = rows.map((issue) => issue.id);
+    const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
+      getExperimental: () => instanceSettingsService(db).getExperimental(),
+    });
+    const isWorktreeRuntime = isTruthyRuntimeEnvValue(process.env.PAPERCLIP_IN_WORKTREE);
+    const eligibleRows = !isWorktreeRuntime
+      ? rows
+      : worktreeActivation.armed
+      ? rows.filter((issue) => new Date(issue.createdAt) >= new Date(worktreeActivation.cutoff))
+      : [];
+    const issueIds = eligibleRows.map((issue) => issue.id);
     const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
     ]);
 
     res.json(
-      rows.map((issue) => ({
+      eligibleRows.map((issue) => ({
         id: issue.id,
         identifier: issue.identifier,
         title: issue.title,
@@ -2466,6 +2643,7 @@ export function agentRoutes(
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
 
     if (agent.budgetMonthlyCents > 0) {
       await budgets.upsertPolicy(
@@ -2794,7 +2972,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanUpdateAgent(req, existing);
+    assertCompanyAccess(req, existing.companyId);
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
@@ -2905,6 +3083,15 @@ export function agentRoutes(
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+    }
+    const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
+    const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
+      (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
+    );
+    if (profileOnlyChange) {
+      await assertCanApplyAgentProfileChange(req, existing);
+    } else {
+      await assertCanUpdateAgent(req, existing);
     }
 
     const actor = getActorInfo(req);
