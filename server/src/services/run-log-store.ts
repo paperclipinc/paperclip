@@ -33,7 +33,7 @@ export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
@@ -163,7 +163,12 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
-      const line = JSON.stringify({ ts: event.ts, stream: event.stream, chunk: event.chunk });
+      const line = JSON.stringify({
+        ts: event.ts,
+        stream: event.stream,
+        chunk: event.chunk,
+        ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
+      });
       const persisted = `${line}\n`;
       await fs.appendFile(absPath, persisted, "utf8");
       return Buffer.byteLength(persisted, "utf8");

@@ -42,12 +42,13 @@ import {
   environmentCustomImageService,
   heartbeatService,
   instanceSettingsService,
+  reconcileBuiltInAgentsOnStartup,
   reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
-  resolveHeartbeatSchedulingSuppression,
   routineService,
 } from "./services/index.js";
+import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -765,6 +766,19 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
     });
 
+  void reconcileBuiltInAgentsOnStartup(db as any)
+    .then((result) => {
+      if (result.reconciled > 0 || result.unknown > 0 || result.duplicates > 0 || result.autoEnsured > 0) {
+        logger.warn(
+          result,
+          "startup reconciliation of built-in agents complete",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of built-in agents failed");
+    });
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
@@ -810,7 +824,17 @@ export async function startServer(): Promise<StartedServer> {
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-    const heartbeatSchedulingSuppression = resolveHeartbeatSchedulingSuppression();
+    const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
+      getExperimental: () => instanceSettingsService(db).getExperimental(),
+    });
+    logger.info(
+      {
+        state: worktreeRunExecutionActivation.armed ? "armed" : "disarmed",
+        cutoff: worktreeRunExecutionActivation.cutoff,
+      },
+      "worktree run-execution cutoff state",
+    );
+    const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
@@ -901,6 +925,10 @@ export async function startServer(): Promise<StartedServer> {
     }
 
     heartbeatSchedulerInterval = setInterval(() => {
+      // Async so the suppression checks below can honor the override-aware
+      // resolver (e.g. worktree run-execution opt-in). The gated work is still
+      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
+      void (async () => {
       if (heartbeatSchedulerStopped) return;
       const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
       if (sweptRuntimeStatuses > 0) {
@@ -910,7 +938,7 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
-      if (!resolveHeartbeatSchedulingSuppression().suppressed) {
+      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         trackHeartbeatSchedulerWork(heartbeat
           .tickTimers(new Date())
           .then((result) => {
@@ -947,7 +975,7 @@ export async function startServer(): Promise<StartedServer> {
         }));
 
       if (heartbeatSchedulerStopped) return;
-      if (!resolveHeartbeatSchedulingSuppression().suppressed) {
+      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         const reapStaleMs = (() => {
           const raw = Number(process.env.PAPERCLIP_HEARTBEAT_REAP_STALE_MS);
           return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
@@ -1006,6 +1034,7 @@ export async function startServer(): Promise<StartedServer> {
             logger.error({ err }, "periodic heartbeat recovery failed");
           }));
       }
+      })();
     }, config.heartbeatSchedulerIntervalMs);
   }
   
