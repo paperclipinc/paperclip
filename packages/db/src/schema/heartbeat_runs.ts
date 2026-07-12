@@ -13,6 +13,7 @@ export const heartbeatRuns = pgTable(
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
+    responsibleUserId: text("responsible_user_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
@@ -68,6 +69,11 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
+    ),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,
       table.livenessState,
@@ -86,5 +92,9 @@ export const heartbeatRuns = pgTable(
     queuedClaimIdx: index("heartbeat_runs_queued_claim_idx")
       .on(table.status, table.createdAt)
       .where(sql`status = 'queued'`),
+    companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
+      table.companyId,
+      table.createdAt.desc(),
+    ),
   }),
 );
