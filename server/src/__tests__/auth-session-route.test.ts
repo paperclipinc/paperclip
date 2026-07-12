@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { instanceUserRoles } from "@paperclipai/db";
+import { companies, instanceUserRoles } from "@paperclipai/db";
 import { actorMiddleware } from "../middleware/auth.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -94,27 +94,28 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      // The cloud_tenant actor resolves the user's REAL active company
-      // memberships after seeding (db.select(...).from(companyMemberships)),
-      // exactly as the session actor does. Mock it to echo back the membership
-      // rows just seeded via insert() so the actor returns a populated
-      // memberships/companyIds set instead of throwing on an undefined chain.
-      select: vi.fn(() => {
-        const chain = {
-          from: () => chain,
+      // The stack's company already exists (onboarding already ran), so the
+      // membership upsert and role-default grants below still fire. The
+      // cloud_tenant actor then resolves the user's REAL active company
+      // memberships (db.select(...).from(companyMemberships)) — mock it to
+      // echo back the membership rows just seeded via insert() so the actor
+      // returns a populated memberships/companyIds set.
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
           where: () =>
             Promise.resolve(
-              inserts
-                .filter((i) => i.values.principalType === "user")
-                .map((i) => ({
-                  companyId: i.values.companyId,
-                  membershipRole: i.values.membershipRole,
-                  status: i.values.status,
-                })),
+              table === companies
+                ? [{ id: "stack-alpha-company" }]
+                : inserts
+                    .filter((i) => i.values.principalType === "user")
+                    .map((i) => ({
+                      companyId: i.values.companyId,
+                      membershipRole: i.values.membershipRole,
+                      status: i.values.status,
+                    })),
             ),
-        };
-        return chain;
-      }),
+        }),
+      })),
     } as any;
     const app = express();
     app.use(
@@ -148,9 +149,10 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    // authUsers, companies, companyMemberships, and the role-default
+    // authUsers, companyMemberships, and the role-default
     // principalPermissionGrants seeded in place of instance-admin elevation.
-    expect(inserts).toHaveLength(4);
+    // The stack company itself is created lazily by onboarding, not here.
+    expect(inserts).toHaveLength(3);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
