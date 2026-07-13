@@ -203,6 +203,25 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the visible expand chevron as an accessible button", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const chevronButton = container?.querySelector('button[aria-label="Expand decision"]');
+    expect(chevronButton).toBeTruthy();
+    expect(chevronButton?.getAttribute("aria-expanded")).toBe("false");
+    act(() => chevronButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
   it("does not navigate on title click — the title is plain text, not a link", () => {
     render(
       <AttentionQueueRow
@@ -274,7 +293,7 @@ describe("AttentionQueueRow", () => {
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
-  it("renders collapsed inline decision verbs in the right-side action area with semantic variants", () => {
+  it("renders collapsed inline decision verbs in a dedicated action bar with semantic variants", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -298,12 +317,11 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
+    // The action bar is its own full-width band (mobile-first) that collapses to
+    // a right-aligned pill row once the row's container is wide (container query)
+    // — no longer a stretched right column.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("mt-auto");
-
-    const controls = decisionActions?.closest('[data-attention-controls="true"]');
-    expect(controls?.getAttribute("class")).toContain("self-stretch");
-    expect(controls?.getAttribute("class")).toContain("justify-between");
+    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -423,7 +441,7 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("centers thumbnails beside the full card text stack", () => {
+  it("renders evidence thumbnails in a centered context row below the text stack", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
