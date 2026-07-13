@@ -62,8 +62,12 @@ vi.mock("../api/instanceSettings", () => ({
 // The real adapter registry eagerly imports every adapter package (incl. the
 // hermes adapter, which is not built in this workspace). The model/harness
 // picker is out of scope here, so stub the adapter layer entirely.
+const mockAdapterRegistry = vi.hoisted(() => ({
+  list: [] as Array<{ type: string }>,
+  disabled: new Set<string>(),
+}));
 vi.mock("../adapters", () => ({
-  listUIAdapters: () => [],
+  listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
 }));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
@@ -77,7 +81,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
   }),
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => new Set<string>(),
+  useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({
@@ -141,6 +145,8 @@ describe("OnboardingWizard cloud first-run", () => {
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
+    mockAdapterRegistry.list = [];
+    mockAdapterRegistry.disabled = new Set<string>();
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     // Default to the self-hosted (local_trusted) product so the OSS paths are
     // exercised unless a test opts into cloud.
@@ -378,6 +384,51 @@ describe("OnboardingWizard cloud first-run", () => {
 
     const segments = document.body.querySelectorAll('[aria-label^="Step "]');
     expect(segments.length).toBe(5);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("snaps a disabled default adapterType to the first enabled adapter", async () => {
+    // A cloud sandbox registry without claude_local: the server disables it,
+    // so the wizard's claude_local default must not survive as an invisible
+    // selection (it would create an agent that can never acquire a lease).
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "opencode_local" },
+    ];
+    mockAdapterRegistry.disabled = new Set(["claude_local"]);
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("codex_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps an enabled saved adapterType untouched", async () => {
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 0, adapterType: "claude_local" }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("claude_local");
 
     await act(async () => {
       root.unmount();
