@@ -18,6 +18,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
 import { forbidden, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
@@ -386,9 +387,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
-  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyId || friendlyCloudCompanyName(userName, userEmail);
   const now = new Date();
 
   await db
@@ -421,57 +420,57 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
-      status: "active",
-      issuePrefix: issuePrefixForCloudStack(stackId),
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: companies.id,
-    });
+  // The stack's company is created lazily through the standard onboarding
+  // wizard (POST /api/companies with the deterministic stack company id) —
+  // never fabricated here. Until it exists this actor simply has no
+  // membership in it; once it exists, this upsert keeps late-joining stack
+  // users (and role changes from the gateway) in sync on every request.
+  const stackCompanyExists = await db
+    .select({ id: companies.id })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows.length > 0);
 
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const membership = await db
-    .insert(companyMemberships)
-    .values({
-      companyId,
-      principalType: "user",
-      principalId: userId,
-      status: "active",
-      membershipRole,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [
-        companyMemberships.companyId,
-        companyMemberships.principalType,
-        companyMemberships.principalId,
-      ],
-      set: {
+  if (stackCompanyExists) {
+    const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+    const membership = await db
+      .insert(companyMemberships)
+      .values({
+        companyId,
+        principalType: "user",
+        principalId: userId,
         status: "active",
         membershipRole,
         updatedAt: now,
-      },
-    })
-    .returning()
-    .then((rows) => rows[0] ?? {
+      })
+      .onConflictDoUpdate({
+        target: [
+          companyMemberships.companyId,
+          companyMemberships.principalType,
+          companyMemberships.principalId,
+        ],
+        set: {
+          status: "active",
+          membershipRole,
+          updatedAt: now,
+        },
+      })
+      .returning()
+      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
+
+    await ensureHumanRoleDefaultGrants(db, {
       companyId,
-      membershipRole,
-      status: "active",
+      principalId: userId,
+      membershipRole: membership.membershipRole,
+      grantedByUserId: userId,
     });
 
-  await ensureHumanRoleDefaultGrants(db, {
-    companyId,
-    principalId: userId,
-    membershipRole: membership.membershipRole,
-    grantedByUserId: userId,
-  });
+  }
 
+  // Fork feature (upstream lacks this): the actor's memberships are read
+  // back from ALL active company memberships for the user, not just the
+  // stack company, so tenant users retain access to any additional
+  // companies they belong to on this instance.
   const memberships = await db
     .select({
       companyId: companyMemberships.companyId,
@@ -496,6 +495,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships,
     isInstanceAdmin: false,
     source: "cloud_tenant",
+    cloudStack: { stackId, stackRole },
   };
 }
 
@@ -537,33 +537,6 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function friendlyCloudCompanyName(userName: string, userEmail: string): string {
-  const trimmedName = userName?.trim();
-  if (trimmedName && trimmedName !== userEmail && !trimmedName.includes("@")) {
-    const capitalized = trimmedName.charAt(0).toUpperCase() + trimmedName.slice(1);
-    return `${capitalized}'s company`;
-  }
-  const localPart = userEmail.split("@")[0]?.trim();
-  if (localPart) {
-    const capitalized = localPart.charAt(0).toUpperCase() + localPart.slice(1);
-    return `${capitalized}'s company`;
-  }
-  return "My company";
-}
-
-function cloudTenantCompanyId(stackId: string): string {
-  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.subarray(0, 16).toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-}
-
-function issuePrefixForCloudStack(stackId: string): string {
-  const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
-  return `PC${hash}`;
 }
 
 export function requireBoard(req: Express.Request) {

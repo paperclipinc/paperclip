@@ -7,6 +7,7 @@ import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
+  resolveClaudeAuthAdvice,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
   testClaudeAcpEnvironment,
@@ -444,5 +445,35 @@ describe("claude_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+// NOTE: upstream PR #9488 also adds resolveClaudeAcpBillingIdentity tests; that
+// function lands with upstream #9471, which this fork picks up on the next
+// routine rebase. Only the auth-advice surface is carried here.
+
+describe("resolveClaudeAuthAdvice (ACP lane)", () => {
+  it("recognizes CLAUDE_CODE_OAUTH_TOKEN as valid subscription auth", () => {
+    expect(
+      resolveClaudeAuthAdvice({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value" }),
+    ).toEqual({
+      code: "claude_acp_subscription_token_detected",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+    });
+  });
+
+  it("defers to the ANTHROPIC_API_KEY branch when both are set", () => {
+    expect(
+      resolveClaudeAuthAdvice({
+        ANTHROPIC_API_KEY: "sk-ant-api-fake",
+        CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null when neither auth signal is present (unchanged local-login guidance)", () => {
+    expect(resolveClaudeAuthAdvice({})).toBeNull();
   });
 });

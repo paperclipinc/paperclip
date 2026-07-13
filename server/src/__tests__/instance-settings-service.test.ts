@@ -42,7 +42,6 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
-      managedExperience: false,
       cloudBilling: false,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,

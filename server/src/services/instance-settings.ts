@@ -219,9 +219,6 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
-      managedExperience:
-        process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true" ||
-        (parsed.data.managedExperience ?? false),
       cloudBilling:
         process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
         (parsed.data.cloudBilling ?? false),
@@ -254,7 +251,6 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableServerInfoDebugView: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
-    managedExperience: process.env.PAPERCLIP_MANAGED_EXPERIENCE === "true",
     cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,

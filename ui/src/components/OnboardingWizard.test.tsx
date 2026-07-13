@@ -62,8 +62,12 @@ vi.mock("../api/instanceSettings", () => ({
 // The real adapter registry eagerly imports every adapter package (incl. the
 // hermes adapter, which is not built in this workspace). The model/harness
 // picker is out of scope here, so stub the adapter layer entirely.
+const mockAdapterRegistry = vi.hoisted(() => ({
+  list: [] as Array<{ type: string }>,
+  disabled: new Set<string>(),
+}));
 vi.mock("../adapters", () => ({
-  listUIAdapters: () => [],
+  listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
 }));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
@@ -77,7 +81,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
   }),
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => new Set<string>(),
+  useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({
@@ -141,6 +145,8 @@ describe("OnboardingWizard cloud first-run", () => {
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
+    mockAdapterRegistry.list = [];
+    mockAdapterRegistry.disabled = new Set<string>();
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     // Default to the self-hosted (local_trusted) product so the OSS paths are
     // exercised unless a test opts into cloud.
@@ -188,47 +194,6 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
-  it("renames the existing company instead of creating it (cloud rename path)", async () => {
-    // Seed a step-2 state with a typed name + mission for an already-existing
-    // (auto-created) company.
-    window.localStorage.setItem(
-      ONBOARDING_STORAGE_KEY,
-      JSON.stringify({
-        step: 2,
-        companyName: "Acme Rockets",
-        companyGoal: "Win the launch",
-        missionPath: "direct",
-        createdCompanyId: "c1",
-      }),
-    );
-    mockDialog.onboardingOptions = { initialStep: 2, companyId: "c1" };
-    mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];
-
-    const { root } = await mount();
-
-    const confirm = findButton("Confirm mission");
-    expect(confirm).toBeTruthy();
-    await act(async () => {
-      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockCompaniesApi.update).toHaveBeenCalledWith("c1", {
-      name: "Acme Rockets",
-    });
-    expect(mockCompaniesApi.create).not.toHaveBeenCalled();
-    // The company goal is still created on the rename path.
-    expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
-    expect(mockGoalsApi.create.mock.calls[0][0]).toBe("c1");
-    expect(mockGoalsApi.create.mock.calls[0][1]).toMatchObject({
-      level: "company",
-    });
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
   it("lets an existing company confirm the mission without a manual rename (route entry drops on step 2)", async () => {
     // Reproduces the stuck-onboarding report: a cloud tenant whose company was
     // auto-created lands directly on the mission step (initialStep 2) via the
@@ -263,11 +228,10 @@ describe("OnboardingWizard cloud first-run", () => {
     });
     await flushReact();
 
-    // The existing company's real name is backfilled, so a same-name update is
-    // a no-op (never a blank rename) and we advance by creating the goal.
+    // The company already exists, so we never hit the blocked native create or
+    // a blank rename — we just advance to naming the team lead.
     expect(mockCompaniesApi.create).not.toHaveBeenCalled();
-    expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
-    expect(mockGoalsApi.create.mock.calls[0][0]).toBe("c1");
+    expect(mockCompaniesApi.update).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
@@ -335,7 +299,41 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
-  it("routes a brand-new company through the cloud endpoint in cloud mode (never the blocked native create)", async () => {
+  it("creates the FIRST company via the native create in cloud mode (server forces the stack)", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "Fresh Co",
+        companyGoal: "Ship it",
+        missionPath: "direct",
+      }),
+    );
+    // Cloud, but the user has NO company yet → the first-company path is the
+    // native companiesApi.create (PR A makes the server create the stack
+    // company), NOT the gateway's additional-company endpoint.
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Fresh Co" });
+    expect(mockCloudCompaniesApi.create).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("routes an ADDITIONAL company through the cloud endpoint in cloud mode (never the blocked native create)", async () => {
     mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
     // jsdom does not implement navigation; capture the hard-redirect target.
     const assign = vi.fn();
@@ -352,9 +350,11 @@ describe("OnboardingWizard cloud first-run", () => {
         missionPath: "direct",
       }),
     );
-    // No companyId → no existing/auto-created company → the create branch runs.
+    // The user already has a stack company and starts a brand-new one (no
+    // createdCompanyId) → creating an ADDITIONAL company goes through the
+    // gateway endpoint and hard-navigates to the new tenant.
     mockDialog.onboardingOptions = {};
-    mockCompany.companies = [];
+    mockCompany.companies = [{ id: "existing", name: "First Co", issuePrefix: "FST" }];
 
     const { root } = await mount();
 
@@ -375,26 +375,7 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
-  it("hides the model-step progress segment in managed mode", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      managedExperience: true,
-    });
-    mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
-    mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];
-
-    const { root } = await mount();
-
-    // Managed mode walks 1 → 2 → 3 → 5 (the connect-a-model step hides its
-    // picker), so the progress bar shows 4 segments, not 5.
-    const segments = document.body.querySelectorAll('[aria-label^="Step "]');
-    expect(segments.length).toBe(4);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("shows all five progress segments in the unmanaged product", async () => {
+  it("shows all five progress segments", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
     mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];
@@ -403,6 +384,51 @@ describe("OnboardingWizard cloud first-run", () => {
 
     const segments = document.body.querySelectorAll('[aria-label^="Step "]');
     expect(segments.length).toBe(5);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("snaps a disabled default adapterType to the first enabled adapter", async () => {
+    // A cloud sandbox registry without claude_local: the server disables it,
+    // so the wizard's claude_local default must not survive as an invisible
+    // selection (it would create an agent that can never acquire a lease).
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "opencode_local" },
+    ];
+    mockAdapterRegistry.disabled = new Set(["claude_local"]);
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("codex_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps an enabled saved adapterType untouched", async () => {
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 0, adapterType: "claude_local" }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("claude_local");
 
     await act(async () => {
       root.unmount();

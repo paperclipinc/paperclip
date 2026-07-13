@@ -38,7 +38,7 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   },
   cursor_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
+    envKeys: ["CURSOR_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
     allowFqdns: ["api.anthropic.com", "api.openai.com"],
     probeCommand: ["cursor-agent", "--version"],
   },
@@ -55,6 +55,15 @@ const REGISTRY: Record<string, AdapterDefaults> = {
     probeCommand: ["pi", "--version"],
   },
 };
+
+// The cursor adapter package's `type` is "cursor" while this registry (and
+// environment configs in the wild) use "cursor_local". Normalize so a per-run
+// adapter hint carrying the package's own type string resolves.
+const ADAPTER_TYPE_ALIASES: Record<string, string> = { cursor: "cursor_local" };
+
+function normalizeAdapterType(adapterType: string): string {
+  return ADAPTER_TYPE_ALIASES[adapterType] ?? adapterType;
+}
 
 export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
 
@@ -86,6 +95,7 @@ export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
 ): AdapterDefaults {
+  adapterType = normalizeAdapterType(adapterType);
   if (registry && registry.length > 0) {
     const entry = registry.find((e) => e.adapterType === adapterType);
     if (!entry) {
@@ -110,7 +120,7 @@ export function resolveRunAdapterType(
   configAdapterType: string,
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
-  return trimmed.length > 0 ? trimmed : configAdapterType;
+  return trimmed.length > 0 ? normalizeAdapterType(trimmed) : configAdapterType;
 }
 
 /**

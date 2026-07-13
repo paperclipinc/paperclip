@@ -262,10 +262,6 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
 import { computeCostUsdForRun } from "./kubecost-client.js";
 import { billedCostCents, parseMargin, parseComputeRatePerHour, resolveComputeUsd } from "./run-cost.js";
-import {
-  resolveManagedRunDefaults,
-  overrideAgentForManagedRun,
-} from "./managed-agent-defaults.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import {
   adapterConsumesInstructionsBundle,
@@ -5476,17 +5472,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select()
       .from(agents)
       .where(eq(agents.id, agentId))
-      .then((rows) => {
-        const agent = rows[0] ?? null;
-        if (!agent) return null;
-        // In managed mode EVERY run must use the managed adapter + model,
-        // regardless of what the agent row stores (e.g. a legacy Codex agent
-        // created before managed mode was fixed). getAgent is the single
-        // execution-engine loader every run/launch entry point goes through, so
-        // overriding here covers them all. This returns a fresh object and never
-        // mutates the stored row; it is a no-op when managed mode is off.
-        return overrideAgentForManagedRun(agent, resolveManagedRunDefaults());
-      });
+      .then((rows) => rows[0] ?? null);
   }
 
   async function getAgentInvokability(agent: typeof agents.$inferSelect | null | undefined) {

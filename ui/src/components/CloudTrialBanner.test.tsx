@@ -36,7 +36,7 @@ let container: HTMLDivElement | null = null;
 let queryClient: QueryClient | null = null;
 
 function experimental(cloudBilling: boolean) {
-  return { cloudBilling, managedExperience: cloudBilling };
+  return { cloudBilling };
 }
 
 function trialingSummary(trialEndsAt: string) {

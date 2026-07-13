@@ -5,6 +5,10 @@ on:
     branches:
       - "master"
       - "main"
+      # Staging image channel: pushes to `staging` build staging-<ts>-<sha>
+      # tags that only the staging.paperclip.inc Flux ImagePolicy tracks.
+      # Prod keeps tracking main-* — promotion is merging staging -> main.
+      - "staging"
     tags:
       - "v*"
   # Manual fallback: occasionally a push event fails to trigger this workflow,
@@ -44,6 +48,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=main-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+            type=raw,value=staging-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/staging' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
