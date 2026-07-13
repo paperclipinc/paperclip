@@ -570,62 +570,21 @@ export function OnboardingWizard() {
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      // The company already exists: either auto-created in cloud_tenant mode
-      // (where the collection create is blocked by the gateway with a 409
-      // use_cloud_company_create) or carried in from the "add another agent"
-      // entry point. Never hit the blocked create here — when the user named
-      // the company on the company step, RENAME the existing company and
-      // ensure it has a company-level goal, then advance.
-      if (companyName.trim()) {
-        setLoading(true);
-        setError(null);
-        try {
-          const trimmedName = companyName.trim();
-          const current = companies.find((c) => c.id === createdCompanyId);
-          if (!current || current.name !== trimmedName) {
-            const updated = await companiesApi.update(createdCompanyId, {
-              name: trimmedName
-            });
-            setCreatedCompanyPrefix(updated.issuePrefix);
-            setSelectedCompanyId(updated.id);
-            queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-          }
-
-          if (!createdCompanyGoalId) {
-            const parsedGoal = parseOnboardingGoalInput(companyGoal);
-            const goal = await goalsApi.create(createdCompanyId, {
-              title: parsedGoal.title,
-              ...(parsedGoal.description
-                ? { description: parsedGoal.description }
-                : {}),
-              level: "company",
-              status: "active"
-            });
-            setCreatedCompanyGoalId(goal.id);
-            queryClient.invalidateQueries({
-              queryKey: queryKeys.goals.list(createdCompanyId)
-            });
-          }
-
-          setStep(3);
-        } catch (err) {
-          setError(
-            err instanceof Error ? err.message : "Failed to update company"
-          );
-        } finally {
-          setLoading(false);
-        }
-        return;
-      }
+      // The company already exists (auto-created in cloud_tenant mode, or carried
+      // in from the "add another agent" entry point). Naming + goal were handled
+      // on entry, so just advance to creating the team lead.
       setStep(3);
       return;
     }
-    if (isCloud) {
-      // Cloud: never call the gateway-blocked native create. Provision a new
-      // control-plane tenant via POST /api/cloud/companies and hard-navigate to
-      // it (a client-side navigate would not trigger the gateway to inject the
-      // new company's stack). The new tenant's own first-run wizard then handles
-      // naming + goal + lead agent in rename mode, so we do not continue inline.
+    if (isCloud && companies.length > 0) {
+      // Cloud, and the user already has a stack company: creating an ADDITIONAL
+      // company must go through the gateway's POST /api/cloud/companies, which
+      // provisions a separate control-plane tenant on its own stack and returns
+      // a URL. Hard-navigate to it (a client-side navigate would not trigger the
+      // gateway to inject the new company's stack); the new tenant's own first-run
+      // wizard then handles naming + goal + lead agent. The FIRST company instead
+      // falls through to companiesApi.create below (PR A makes the server create
+      // the stack company for the cloud tenant).
       setLoading(true);
       setError(null);
       try {

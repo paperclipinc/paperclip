@@ -1,5 +1,4 @@
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
@@ -74,8 +73,6 @@ import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
-import { healthApi } from "./api/health";
-import { queryKeys } from "./lib/queryKeys";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
   isOnboardingWizardActive,
@@ -315,12 +312,6 @@ function OnboardingRoutePage() {
   const { openOnboarding } = useDialogActions();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => healthApi.get(),
-    staleTime: 5 * 60 * 1000,
-  });
-  const isCloud = health?.deploymentMode === "authenticated";
 
   // The OnboardingWizard auto-opens on this route (and can also be opened
   // explicitly). While it is showing it covers the whole screen, so the
@@ -352,21 +343,11 @@ function OnboardingRoutePage() {
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
           <Button
-            onClick={() => {
-              // Cloud first-run: the tenant's company is auto-created, so always
-              // open on the company-name step (1) with the resolved companyId so
-              // the wizard RENAMES the existing company instead of hitting the
-              // gateway-blocked collection create.
-              const cloudCompanyId =
-                matchedCompany?.id ?? companies[0]?.id ?? null;
-              if (isCloud && cloudCompanyId) {
-                openOnboarding({ initialStep: 1, companyId: cloudCompanyId });
-              } else if (matchedCompany) {
-                openOnboarding({ initialStep: 2, companyId: matchedCompany.id });
-              } else {
-                openOnboarding();
-              }
-            }}
+            onClick={() =>
+              matchedCompany
+                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                : openOnboarding()
+            }
           >
             {matchedCompany ? "Add Agent" : "Start Onboarding"}
           </Button>
