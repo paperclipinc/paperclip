@@ -375,26 +375,7 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
-  it("hides the model-step progress segment in managed mode", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      managedExperience: true,
-    });
-    mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
-    mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];
-
-    const { root } = await mount();
-
-    // Managed mode walks 1 → 2 → 3 → 5 (the connect-a-model step hides its
-    // picker), so the progress bar shows 4 segments, not 5.
-    const segments = document.body.querySelectorAll('[aria-label^="Step "]');
-    expect(segments.length).toBe(4);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("shows all five progress segments in the unmanaged product", async () => {
+  it("shows all five progress segments", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
     mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];

@@ -13,7 +13,6 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -279,15 +278,6 @@ export function OnboardingWizard() {
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
-  // Managed experience: when on, the instance picks the harness + model for the
-  // user, so the wizard hides the adapter/model pickers on the heartbeat step
-  // and omits those fields from the hire payload (the server injects the managed
-  // defaults). Off by default, so the unconfigured product is unchanged.
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const managed = experimentalSettings?.managedExperience === true;
   // Cloud (authenticated) mode: the native POST /api/companies collection-create
   // is blocked by the hosting gateway (409 use_cloud_company_create). Creating an
   // ADDITIONAL company in cloud must go through the gateway's POST
@@ -302,10 +292,6 @@ export function OnboardingWizard() {
     staleTime: 5 * 60 * 1000,
   });
   const isCloud = health?.deploymentMode === "authenticated";
-  // Progress-bar segments mirror the steps the user actually walks through. In
-  // managed mode the "Connect a model" step (4) hides its picker (the instance
-  // chooses the harness + model), so it must not show a phantom segment.
-  const progressSteps: Step[] = managed ? [1, 2, 3, 5] : [1, 2, 3, 4, 5];
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocalAdapterCaps =
@@ -719,62 +705,49 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      // In managed mode the user never chose a harness/model, so the
-      // adapter-specific preflight (OpenCode model validation, the local
-      // adapter environment probe) does not apply — the server injects the
-      // managed default adapter + model for this hire.
-      if (!managed) {
-        if (adapterType === "opencode_local") {
-          const selectedModelId = model.trim();
-          if (!isValidOpenCodeModelId(selectedModelId)) {
-            setError(
-              "OpenCode requires an explicit model in provider/model format."
-            );
-            return;
-          }
-          if (adapterModelsError) {
-            setError(
-              adapterModelsError instanceof Error
-                ? adapterModelsError.message
-                : "Failed to load OpenCode models."
-            );
-            return;
-          }
-          if (adapterModelsLoading || adapterModelsFetching) {
-            setError(
-              "OpenCode models are still loading. Please wait and try again."
-            );
-            return;
-          }
-          const discoveredModels = adapterModels ?? [];
-          if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
-            setError(
-              discoveredModels.length === 0
-                ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
-                : `Configured OpenCode model is unavailable: ${selectedModelId}`
-            );
-            return;
-          }
+      if (adapterType === "opencode_local") {
+        const selectedModelId = model.trim();
+        if (!isValidOpenCodeModelId(selectedModelId)) {
+          setError(
+            "OpenCode requires an explicit model in provider/model format."
+          );
+          return;
         }
+        if (adapterModelsError) {
+          setError(
+            adapterModelsError instanceof Error
+              ? adapterModelsError.message
+              : "Failed to load OpenCode models."
+          );
+          return;
+        }
+        if (adapterModelsLoading || adapterModelsFetching) {
+          setError(
+            "OpenCode models are still loading. Please wait and try again."
+          );
+          return;
+        }
+        const discoveredModels = adapterModels ?? [];
+        if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
+          setError(
+            discoveredModels.length === 0
+              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+              : `Configured OpenCode model is unavailable: ${selectedModelId}`
+          );
+          return;
+        }
+      }
 
-        if (isLocalAdapter) {
-          const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
-          if (!result) return;
-        }
+      if (isLocalAdapter) {
+        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        if (!result) return;
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {
         name: agentName.trim(),
         role: "ceo",
-        // When managed, omit adapterType + adapterConfig entirely so the server
-        // injects the managed default harness + model. Sending them (even
-        // "process") would pin an inert adapter instead.
-        ...(managed
-          ? {}
-          : {
-              adapterType,
-              adapterConfig: buildAdapterConfig(),
-            }),
+        adapterType,
+        adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
@@ -936,10 +909,10 @@ export function OnboardingWizard() {
             )}
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
-              {/* Progress bar (brand .wsteps/.wstep) — one segment per visible
-                  step, filled once step ≥ N. Completed segments jump back. */}
+              {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
+                  filled once step ≥ N. Completed segments jump back. */}
               <div className="flex items-center gap-1.5 mb-8">
-                {progressSteps.map((s) => {
+                {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
                   const canJump = s < step;
                   return (
@@ -1384,14 +1357,6 @@ export function OnboardingWizard() {
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-5">
-                  {managed ? (
-                    <div className="rounded-md border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
-                      Your workspace runs a managed runtime and model, so there's
-                      nothing to choose here. Give your lead a heartbeat to bring
-                      it online.
-                    </div>
-                  ) : (
-                  <>
                   {/* Adapter type radio cards */}
                   <div>
                     <label className="text-xs text-muted-foreground mb-2 block">
@@ -1733,8 +1698,6 @@ export function OnboardingWizard() {
                         onChange={(e) => setUrl(e.target.value)}
                       />
                     </div>
-                  )}
-                  </>
                   )}
                 </div>
               )}

@@ -4,9 +4,9 @@ import { buildTranscript, type RunLogChunk } from "../transcript";
 
 const ts = "2026-06-23T12:00:00.000Z";
 
-// Managed cloud agents run with adapterType "process" (the managed-experience
-// wrapper) even though the underlying harness emits OpenCode JSONL. The process
-// wrapper prints a couple of plain stdout lines before the JSONL stream begins.
+// A process-wrapped harness runs with adapterType "process" even though the
+// underlying harness emits OpenCode JSONL. The process wrapper prints a couple
+// of plain stdout lines before the JSONL stream begins.
 // The parser must keep those plain lines as raw stdout, then detect the
 // OpenCode JSONL and render the rich "nice view" (messages, tool cards,
 // thinking) rather than dumping raw JSON.
