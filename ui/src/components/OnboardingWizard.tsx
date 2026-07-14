@@ -1630,6 +1630,7 @@ export function OnboardingWizard() {
 
                   {credentialSetup && createdCompanyId && (
                     <AdapterCredentialConnect
+                      key={adapterType}
                       companyId={createdCompanyId}
                       adapterType={adapterType}
                       setup={credentialSetup}
