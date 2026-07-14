@@ -8,6 +8,7 @@ import {
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
   resolveClaudeAuthAdvice,
+  resolveClaudeAcpBillingIdentity,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
   testClaudeAcpEnvironment,
@@ -448,9 +449,53 @@ describe("claude_local ACP lane", () => {
   });
 });
 
-// NOTE: upstream PR #9488 also adds resolveClaudeAcpBillingIdentity tests; that
-// function lands with upstream #9471, which this fork picks up on the next
-// routine rebase. Only the auth-advice surface is carried here.
+describe("resolveClaudeAcpBillingIdentity", () => {
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+  const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+  const originalBedrockBase = process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    if (originalBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = originalBedrock;
+    if (originalBedrockBase === undefined) delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    else process.env.ANTHROPIC_BEDROCK_BASE_URL = originalBedrockBase;
+  });
+
+  it("classifies an adapter-config API key as api billing", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { ANTHROPIC_API_KEY: "sk-ant-test" } } }),
+    ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "api" });
+  });
+
+  it("classifies Bedrock auth as metered_api billed to aws_bedrock", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } }),
+    ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
+  });
+
+  it("falls back to subscription without API-key or Bedrock auth", () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    expect(resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription",
+    });
+  });
+
+  it("ignores host env for remote execution targets", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
+    expect(
+      resolveClaudeAcpBillingIdentity({
+        config: {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      } as never).billingType,
+    ).toBe("subscription");
+  });
+});
 
 describe("resolveClaudeAuthAdvice (ACP lane)", () => {
   it("recognizes CLAUDE_CODE_OAUTH_TOKEN as valid subscription auth", () => {
