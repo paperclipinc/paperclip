@@ -714,6 +714,14 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
         ],
       },
     };
+    // gemini_local must be visible in the registry, or the wizard's
+    // snap-to-enabled effect (fork-only: 800195fea) would silently reset the
+    // saved gemini_local selection back to the first enabled adapter before
+    // this test ever exercises the binding filter.
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "gemini_local" },
+    ];
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
