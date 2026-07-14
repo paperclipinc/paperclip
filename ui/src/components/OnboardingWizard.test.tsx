@@ -41,6 +41,39 @@ const mockCloudCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
+// The real adapter registry eagerly imports every adapter package. The
+// model/harness picker internals are out of scope here, so stub the adapter
+// layer entirely and drive the grid through this knob. Every test in this
+// file uses claude_local, so getUIAdapter always reports its credential
+// setup descriptor (a single ANTHROPIC_API_KEY option) — that's the minimum
+// needed to exercise the step-4 connect card wiring.
+const mockAdapterRegistry = vi.hoisted(() => ({
+  list: [] as Array<{ type: string }>,
+  disabled: new Set<string>(),
+}));
+
+const mockAgentsApi = vi.hoisted(() => ({
+  adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
+  testEnvironment: vi.fn(async () => ({
+    adapterType: "claude_local",
+    status: "pass" as const,
+    checks: [] as Array<{
+      code: string;
+      level: "info" | "warn" | "error";
+      message: string;
+      detail?: string | null;
+      hint?: string | null;
+    }>,
+    testedAt: new Date().toISOString(),
+  })),
+  hire: vi.fn(async (_companyId: string, _data: Record<string, unknown>) => ({
+    agent: { id: "agent-1" },
+    approval: null,
+  })),
+  instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
+  saveInstructionsFile: vi.fn(async () => ({})),
+}));
+
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/", search: "", hash: "", state: null }),
   useNavigate: () => vi.fn(),
@@ -59,16 +92,21 @@ vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
-// The real adapter registry eagerly imports every adapter package (incl. the
-// hermes adapter, which is not built in this workspace). The model/harness
-// picker is out of scope here, so stub the adapter layer entirely.
-const mockAdapterRegistry = vi.hoisted(() => ({
-  list: [] as Array<{ type: string }>,
-  disabled: new Set<string>(),
-}));
+vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
-  getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
+  getUIAdapter: () => ({
+    buildAdapterConfig: () => ({}),
+    credentialSetup: {
+      options: [
+        {
+          envKey: "ANTHROPIC_API_KEY",
+          label: "Anthropic API key",
+          placeholder: "sk-ant-...",
+        },
+      ],
+    },
+  }),
 }));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
@@ -91,6 +129,24 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
     requiresMaterializedRuntimeSkills: false,
     supportsModelProfiles: false,
   }),
+}));
+// The credential-connect card itself is covered by its own test file
+// (AdapterCredentialConnect.test.tsx); here we only need to exercise the
+// wizard's wiring (rendering condition + onBind plumbing), so stub it down
+// to a single button that invokes onBind with fixed test values.
+vi.mock("./AdapterCredentialConnect", () => ({
+  AdapterCredentialConnect: (props: {
+    boundEnvKeys: string[];
+    onBind: (envKey: string, secretId: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="mock-credential-bind"
+      onClick={() => props.onBind("ANTHROPIC_API_KEY", "sec-1")}
+    >
+      bound:{props.boundEnvKeys.join(",")}
+    </button>
+  ),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
 vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
@@ -136,6 +192,15 @@ function findButton(text: string): HTMLButtonElement | undefined {
   return Array.from(document.body.querySelectorAll("button")).find((b) =>
     (b.textContent ?? "").includes(text),
   ) as HTMLButtonElement | undefined;
+}
+
+function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement {
+  const buttons = Array.from(container.querySelectorAll("button"));
+  const match = buttons.find((btn) => btn.textContent?.includes(text));
+  if (!match) {
+    throw new Error(`No button found with text "${text}"`);
+  }
+  return match as HTMLButtonElement;
 }
 
 describe("OnboardingWizard cloud first-run", () => {
@@ -429,6 +494,190 @@ describe("OnboardingWizard cloud first-run", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("claude_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+describe("OnboardingWizard step 4 — guided credential connect", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    mockDialog.onboardingOpen = true;
+    mockDialog.onboardingOptions = { initialStep: 4, companyId: "c1" };
+    mockCompany.companies = [{ id: "c1", name: "Test Co", issuePrefix: "TC" }];
+    mockAdapterRegistry.list = [{ type: "claude_local" }];
+    mockAdapterRegistry.disabled = new Set<string>();
+    mockAgentsApi.adapterModels.mockClear();
+    mockAgentsApi.testEnvironment.mockClear();
+    mockAgentsApi.hire.mockClear();
+    mockAgentsApi.instructionsBundle.mockClear();
+    mockAgentsApi.saveInstructionsFile.mockClear();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("renders the connect card on step 4 with a created company and empty bindings", async () => {
+    const { root } = await mount();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]'),
+    ).not.toBeNull();
+    // No bindings yet.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("persists a binding to the draft and merges it into the hire payload", async () => {
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.credentialBindings).toEqual({
+      ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-1" },
+    });
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
+      adapterConfig: { env?: Record<string, unknown> };
+    };
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "sec-1",
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("omits the env key from the hire payload when there are no bindings", async () => {
+    const { root } = await mount();
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
+      adapterConfig: Record<string, unknown>;
+    };
+    expect(hirePayload.adapterConfig).not.toHaveProperty("env");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("lists warn-level checks even when the overall status is pass", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [
+        {
+          code: "claude_subscription_auth_code",
+          level: "warn",
+          message: "Using a short-lived auth code; re-run claude login soon.",
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const testButton = findButtonByText(document.body, "Test now");
+    await act(async () => {
+      testButton.click();
+    });
+    await flushReact();
+
+    const bodyText = document.body.textContent ?? "";
+    // Exactly one green "Passed" pill — the warn rows below must not repeat
+    // the pass banner.
+    expect(bodyText.match(/Passed/g)).toHaveLength(1);
+    expect(bodyText).toContain(
+      "Using a short-lived auth code; re-run claude login soon.",
+    );
+    // The warn rows render in the house amber warn styling, outside the
+    // green pass pill.
+    const warnMessageEl = Array.from(
+      document.body.querySelectorAll("div, p, span"),
+    )
+      .filter((el) =>
+        el.textContent?.includes(
+          "Using a short-lived auth code; re-run claude login soon.",
+        ),
+      )
+      .pop();
+    expect(warnMessageEl).toBeDefined();
+    expect(warnMessageEl?.closest('[class*="amber"]')).not.toBeNull();
+    expect(warnMessageEl?.closest('[class*="green"]')).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("restores credentialBindings from a saved draft and merges them into the hire payload", async () => {
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 4,
+        agentName: "Chief of staff",
+        adapterType: "claude_local",
+        credentialBindings: {
+          ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-draft" },
+        },
+      }),
+    );
+
+    const { root } = await mount();
+
+    // The restored binding surfaces as a bound env key on the connect card.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
+      adapterConfig: { env?: Record<string, unknown> };
+    };
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "sec-draft",
+    });
 
     await act(async () => {
       root.unmount();
