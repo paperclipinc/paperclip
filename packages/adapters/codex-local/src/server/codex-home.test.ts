@@ -6,11 +6,30 @@ import {
   codexHomeHasUsableAuth,
   ensureSymlink,
   evaluateCodexCredentialReadiness,
+  mergeManagedCodexMcpGateways,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  writeManagedCodexMcpConfig,
 } from "./codex-home.js";
+
+describe("mergeManagedCodexMcpGateways", () => {
+  it("keeps runtime gateways and appends non-overlapping context gateways", () => {
+    expect(
+      mergeManagedCodexMcpGateways(
+        [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }],
+        [
+          { name: "runtime", endpointPath: "/stale", bearerToken: "stale-token" },
+          { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+        ],
+      ),
+    ).toEqual([
+      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
+      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+    ]);
+  });
+});
 
 describe("codex managed home", () => {
   afterEach(() => {
@@ -625,6 +644,65 @@ describe("evaluateCodexCredentialReadiness", () => {
       expect(result).toMatchObject({ managed: false, ready: true });
     } finally {
       await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the managed MCP block and clears stale servers for an empty runtime set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const alphaHome = path.join(root, "agent-alpha");
+      const zeroHome = path.join(root, "agent-zero");
+      await writeManagedCodexMcpConfig({
+        codexHome: alphaHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "alpha",
+          endpointPath: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+          bearerToken: "alpha-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "stale",
+          endpointPath: "/api/tool-gateway/gateways/stale/mcp",
+          bearerToken: "stale-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
+      const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
+      expect(alpha).toContain('[mcp_servers."alpha"]');
+      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(zero).not.toContain("mcp_servers.");
+      expect(zero).not.toContain("stale-token");
+      expect(alphaHome).not.toBe(zeroHome);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restricts permissions on an existing managed MCP config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      await fs.writeFile(configPath, "model = \"gpt-5\"\n", { mode: 0o644 });
+
+      await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

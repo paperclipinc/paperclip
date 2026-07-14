@@ -68,7 +68,9 @@ import {
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
+  resolveManagedClaudeRuntimeStateDir,
   resolveSharedClaudeConfigDir,
+  writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -499,6 +501,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const runtimeMcpIdentity = JSON.stringify(
+    runtimeMcpServers.map(({ name, url, connectionId }) => ({ name, url, connectionId })),
+  );
+  const claudeRuntimeStateDir = resolveManagedClaudeRuntimeStateDir(
+    process.env,
+    agent.companyId,
+    agent.id,
+  );
+  const localMcpConfigPath = await writePaperclipClaudeMcpConfig({
+    stateDir: claudeRuntimeStateDir,
+    runId,
+    servers: runtimeMcpServers,
+  });
+  const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
@@ -511,6 +528,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             { path: sharedClaudeConfigDir, access: "rw" },
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
+            { path: localMcpConfigDir, access: "ro" },
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
@@ -558,6 +576,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               localDir: promptBundle.addDir,
               followSymlinks: true,
             },
+            {
+              key: "mcp-config",
+              localDir: localMcpConfigDir,
+              followSymlinks: true,
+            },
             ...(claudeConfigSeedDir
               ? [{
                 key: "config-seed",
@@ -601,6 +624,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  const effectiveMcpConfigPath = executionTargetIsRemote
+    ? path.posix.join(
+        preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
+          path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude", "mcp-config"),
+        path.basename(localMcpConfigPath),
+      )
+    : localMcpConfigPath;
   const remoteClaudeRuntimeRoot = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
@@ -682,13 +712,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const runtimePromptBundleKey = asString(runtimeSessionParams.promptBundleKey, "");
+  const runtimeMcpServerIdentity = asString(runtimeSessionParams.mcpServerIdentity, "");
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length === 0 || runtimePromptBundleKey === promptBundle.bundleKey;
+  const hasMatchingMcpServers =
+    runtimeMcpServerIdentity.length === 0
+      ? runtimeMcpServers.length === 0
+      : runtimeMcpServerIdentity === runtimeMcpIdentity;
   const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
     isValidUuid &&
     hasMatchingPromptBundle &&
+    hasMatchingMcpServers &&
     claudeSessionCwdMatchesExecutionTarget({
       runtimeSessionCwd,
       effectiveExecutionCwd,
@@ -732,6 +768,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for prompt bundle "${runtimePromptBundleKey}" and will not be resumed with "${promptBundle.bundleKey}".\n`,
+    );
+  }
+  if (runtimeSessionId && !hasMatchingMcpServers) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" was saved with a different runtime MCP server set and will not be resumed.\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -794,6 +836,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
+    if (runtimeMcpServers.length > 0) {
+      args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
+    }
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
@@ -830,6 +875,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
+      );
+    }
+    if (runtimeMcpServers.length > 0) {
+      commandNotes.push(
+        `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`,
       );
     }
     if (onMeta) {
@@ -1011,6 +1061,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId: resolvedSessionId,
         cwd,
         promptBundleKey: promptBundle.bundleKey,
+        mcpServerIdentity: runtimeMcpIdentity,
         ...(executionTargetIsRemote
           ? {
               remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
