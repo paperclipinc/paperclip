@@ -8,7 +8,7 @@ overrides:
   rollup: '>=4.59.0'
   react: ^19.2.7
   react-dom: ^19.2.7
-  lexical: 0.46.0
+  lexical: 0.47.0
   '@lexical/clipboard': 0.46.0
   '@lexical/link': 0.46.0
   '@lexical/list': 0.46.0
@@ -914,8 +914,8 @@ importers:
         specifier: ^26.3.1
         version: 26.3.1(typescript@5.9.3)
       lexical:
-        specifier: 0.46.0
-        version: 0.46.0(typescript@5.9.3)
+        specifier: 0.47.0
+        version: 0.47.0(typescript@5.9.3)
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.7)
@@ -2694,6 +2694,14 @@ packages:
 
   '@lexical/internal@0.46.0':
     resolution: {integrity: sha512-OV1ePAAnVVd0K+Bq5SX7vOKE/LqJLYcDM4HD4zVCisbgVaznE+pTj/nDB2uWTidwf8o7QhPR65VhEi+KkUtyEw==}
+    peerDependencies:
+      typescript: '>=5.2'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
+  '@lexical/internal@0.47.0':
+    resolution: {integrity: sha512-VKDTHajXvjCkjYHwWra4Qjz8AI6PWeNPW7l6Q9AIlAwUiolAXrlkyfrBAFzdAP360IyDbC2gO9fwTb9ZvZM85Q==}
     peerDependencies:
       typescript: '>=5.2'
     peerDependenciesMeta:
@@ -6463,8 +6471,8 @@ packages:
   layout-base@2.0.1:
     resolution: {integrity: sha512-dp3s92+uNI1hWIpPGH3jK2kxE2lMjdXdr+DH8ynZHpd6PUlH6x6cbuXnoMmiNumznqaNO31xu9e79F0uuZ0JFg==}
 
-  lexical@0.46.0:
-    resolution: {integrity: sha512-oaE7OLY/FuqGKC7ihaqLJvgn/NvvRveryKBBgOwrSe+UIpBmc9IvyXf6hVcvew9M3Vc0XavHWe/ZAL7qc5DzMw==}
+  lexical@0.47.0:
+    resolution: {integrity: sha512-ZKsxsk3jUpXsRtG20EBq42z2bq8A20UHtjqvVT/kIxfsaiXwaRFBBcLSFxPa77j+hXkBF5w96C3/imwtmLoRdg==}
     peerDependencies:
       typescript: '>=5.2'
     peerDependenciesMeta:
@@ -9916,7 +9924,7 @@ snapshots:
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@types/trusted-types': 2.0.7
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9926,7 +9934,7 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9937,7 +9945,7 @@ snapshots:
       '@lexical/mark': 0.46.0(typescript@5.9.3)
       '@lexical/table': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
@@ -9946,7 +9954,7 @@ snapshots:
   '@lexical/dragon@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9955,7 +9963,7 @@ snapshots:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@preact/signals-core': 1.14.4
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9963,7 +9971,7 @@ snapshots:
     dependencies:
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9971,7 +9979,7 @@ snapshots:
     dependencies:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9981,11 +9989,15 @@ snapshots:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/internal@0.46.0(typescript@5.9.3)':
+    optionalDependencies:
+      typescript: 5.9.3
+
+  '@lexical/internal@0.47.0(typescript@5.9.3)':
     optionalDependencies:
       typescript: 5.9.3
 
@@ -9995,7 +10007,7 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10005,14 +10017,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/mark@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10026,13 +10038,13 @@ snapshots:
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/overflow@0.46.0(typescript@5.9.3)':
     dependencies:
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10043,7 +10055,7 @@ snapshots:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10067,7 +10079,7 @@ snapshots:
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@lexical/yjs': 0.46.0(typescript@5.9.3)(yjs@13.6.29)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
@@ -10082,14 +10094,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/selection@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10100,14 +10112,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/text@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10115,7 +10127,7 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10123,7 +10135,7 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
       yjs: 13.6.29
     optionalDependencies:
       typescript: 5.9.3
@@ -10264,7 +10276,7 @@ snapshots:
       codemirror: 6.0.2
       downshift: 7.6.2(react@19.2.7)
       js-yaml: 4.1.1
-      lexical: 0.46.0(typescript@5.9.3)
+      lexical: 0.47.0(typescript@5.9.3)
       mdast-util-directive: 3.1.0
       mdast-util-from-markdown: 2.0.3
       mdast-util-frontmatter: 2.0.1
@@ -13906,9 +13918,9 @@ snapshots:
 
   layout-base@2.0.1: {}
 
-  lexical@0.46.0(typescript@5.9.3):
+  lexical@0.47.0(typescript@5.9.3):
     dependencies:
-      '@lexical/internal': 0.46.0(typescript@5.9.3)
+      '@lexical/internal': 0.47.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
