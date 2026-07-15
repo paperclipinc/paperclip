@@ -76,6 +76,7 @@ import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
+  AdapterRuntimeEvent,
   AdapterRuntimeMcpAccess,
   AdapterRuntimeMcpServer,
   AdapterSessionCodec,
@@ -12965,6 +12966,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
+      const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
+        const eventType = event.eventType.trim();
+        if (!eventType) return;
+        await appendRunEvent(currentRun, seq++, {
+          eventType: eventType.slice(0, 120),
+          stream: event.stream,
+          level: event.level,
+          color: event.color,
+          message: event.message,
+          payload: event.payload,
+        });
+      };
+
       const adapter = getServerAdapter(agent.adapterType);
       if (adapterConsumesInstructionsBundle(agent.adapterType)) {
         try {
@@ -13247,6 +13261,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtimeMcp,
           onLog,
           onMeta: onAdapterMeta,
+          onEvent: onAdapterEvent,
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
