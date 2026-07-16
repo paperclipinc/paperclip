@@ -2101,12 +2101,40 @@ export type {
 } from "./environment-support.js";
 
 export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
+export type {
+  FolderKind,
+  Folder,
+  FolderListItem,
+  FolderListResult,
+  CreateFolderRequest,
+  UpdateFolderRequest,
+  MoveFolderRequest,
+  MoveFolderItemRequest,
+  EnsureMySkillFolderRequest,
+} from "./types/folder.js";
 
 export {
   adapterRegistryEntrySchema,
   adapterRegistrySchema,
   type AdapterRegistryEntryParsed,
 } from "./validators/adapter-registry.js";
+export {
+  folderKindSchema,
+  folderSlugSchema,
+  folderSchema,
+  folderListItemSchema,
+  folderListResultSchema,
+  createFolderSchema,
+  updateFolderSchema,
+  moveFolderSchema,
+  moveFolderItemSchema,
+  ensureMySkillFolderSchema,
+  type CreateFolder,
+  type UpdateFolder,
+  type MoveFolder,
+  type MoveFolderItem,
+  type EnsureMySkillFolder,
+} from "./validators/folder.js";
 
 export {
   environmentCustomImageTemplateKindSchema,
