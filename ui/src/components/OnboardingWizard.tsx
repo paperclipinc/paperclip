@@ -136,6 +136,9 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
 }
 
 const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
+// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
+const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
 const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
@@ -815,7 +818,12 @@ export function OnboardingWizard() {
         role: "ceo",
         adapterType,
         adapterConfig: mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        runtimeConfig: buildNewAgentRuntimeConfig(),
+        // The onboarding CEO's seed task is to hire the first engineer. Attach the
+        // create-agent skill so its run session exposes the governance-aware hiring
+        // flow (POST /api/companies/:id/agent-hires); without it the agent does not
+        // know the sanctioned route and hits "Route not allowed" on guessed ones.
+        desiredSkills: [ONBOARDING_CEO_SKILL_KEY],
       });
       if (hire.approval) {
         await approvalsApi.approve(

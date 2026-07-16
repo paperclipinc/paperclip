@@ -46,15 +46,37 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
     return parseAcpxStdoutLine(line, ts);
   }
 
-  if (type === "system" && parsed.subtype === "init") {
-    return [
-      {
-        kind: "init",
-        ts,
-        model: typeof parsed.model === "string" ? parsed.model : "unknown",
-        sessionId: typeof parsed.session_id === "string" ? parsed.session_id : "",
-      },
-    ];
+  // Claude Code emits high-frequency control frames alongside the message stream
+  // (rate-limit polls, partial-message token estimates). They carry no transcript
+  // value and, when rendered raw, dump JSON between the nicely-formatted messages.
+  // Suppress them in "nice" mode (raw mode still shows the full log).
+  if (type === "rate_limit_event") return [];
+
+  if (type === "system") {
+    const subtype = typeof parsed.subtype === "string" ? parsed.subtype : "";
+    if (subtype === "init") {
+      return [
+        {
+          kind: "init",
+          ts,
+          model: typeof parsed.model === "string" ? parsed.model : "unknown",
+          sessionId: typeof parsed.session_id === "string" ? parsed.session_id : "",
+        },
+      ];
+    }
+    // Streaming token-estimate deltas are pure noise (one per partial message).
+    if (subtype === "thinking_tokens") return [];
+    // Sub-task lifecycle and any other system event: render a compact one-line
+    // note instead of the raw JSON.
+    if (subtype === "task_started") {
+      const desc = typeof parsed.description === "string" ? parsed.description : "";
+      return [{ kind: "system", ts, text: desc ? `task started: ${desc}` : "task started" }];
+    }
+    if (subtype === "task_notification") {
+      const status = typeof parsed.status === "string" ? parsed.status : "";
+      return [{ kind: "system", ts, text: status ? `task ${status}` : "task update" }];
+    }
+    return [{ kind: "system", ts, text: subtype ? `system: ${subtype}` : "system event" }];
   }
 
   if (type === "assistant") {
@@ -86,7 +108,7 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
         });
       }
     }
-    return entries.length > 0 ? entries : [{ kind: "stdout", ts, text: line }];
+    return entries.length > 0 ? entries : [];
   }
 
   if (type === "user") {
@@ -118,7 +140,8 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
       }
     }
     if (entries.length > 0) return entries;
-    // fall through to stdout for user messages without recognized blocks
+    // user message with no recognized blocks: nothing to show in "nice" mode.
+    return [];
   }
 
   if (type === "result") {
@@ -145,5 +168,8 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
     }];
   }
 
-  return [{ kind: "stdout", ts, text: line }];
+  // Unrecognized JSON event: render a compact note if it is typed, otherwise drop
+  // it. Never dump raw JSON into the "nice" transcript (non-JSON plain-text lines,
+  // e.g. "[paperclip] ..." bridge messages, are handled above as stdout).
+  return type ? [{ kind: "system", ts, text: type }] : [];
 }
