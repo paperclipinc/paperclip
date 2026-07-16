@@ -617,6 +617,13 @@ export interface AdapterCredentialOption {
   setupUrl?: string;
   /** Optional placeholder text for the input field (e.g., "sk-ant-…") */
   placeholder?: string;
+  /**
+   * Optional regex (as a string) identifying values that belong to this
+   * option, so the connect UI can auto-select the right option when a value is
+   * pasted — e.g. an Anthropic API key ("^sk-ant-api") vs a Claude subscription
+   * OAuth token ("^sk-ant-oat"). Prevents binding a value to the wrong envKey.
+   */
+  valuePattern?: string;
 }
 
 /**

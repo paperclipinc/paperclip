@@ -22,6 +22,30 @@ function toKebab(value: string): string {
 }
 
 /**
+ * Auto-detect which credential option a pasted value belongs to, using each
+ * option's `valuePattern`. Returns the index of the first matching option, or
+ * -1 if none match (or the value is empty). Lets the connect card pick the
+ * right envKey for the user instead of relying on them selecting the right tab
+ * (e.g. a Claude subscription "sk-ant-oat…" token must NOT bind to
+ * ANTHROPIC_API_KEY).
+ */
+export function detectCredentialOptionIndex(
+  options: AdapterCredentialSetup["options"],
+  value: string,
+): number {
+  const trimmed = value.trim();
+  if (!trimmed) return -1;
+  return options.findIndex((option) => {
+    if (!option.valuePattern) return false;
+    try {
+      return new RegExp(option.valuePattern).test(trimmed);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Guided BYOK credential setup for one adapter (spec §3.2).
  *
  * Renders a compact "connected" summary once any of the adapter's credential
@@ -41,6 +65,7 @@ export function AdapterCredentialConnect({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [forceShowForm, setForceShowForm] = useState(false);
+  const [detectedIndex, setDetectedIndex] = useState(-1);
   const errorId = useId();
 
   const boundOption = setup.options.find((option) => boundEnvKeys.includes(option.envKey));
@@ -77,6 +102,7 @@ export function AdapterCredentialConnect({
     setActiveIndex(index);
     setValue("");
     setError(null);
+    setDetectedIndex(-1);
   }
 
   async function handleConnect() {
@@ -92,6 +118,7 @@ export function AdapterCredentialConnect({
       const created = await secretsApi.create(companyId, { name: baseName, value: trimmed });
       onBind(envKey, created.id);
       setValue("");
+      setDetectedIndex(-1);
     } catch (err) {
       // Only retry on a name conflict (409). Any other failure (network,
       // validation, auth, etc.) surfaces immediately — retrying under a new
@@ -173,8 +200,15 @@ export function AdapterCredentialConnect({
           aria-label={`${active.label} value`}
           aria-describedby={error ? errorId : undefined}
           onChange={(event) => {
-            setValue(event.target.value);
+            const next = event.target.value;
+            setValue(next);
             if (error) setError(null);
+            // Auto-select the matching credential option so a pasted value binds
+            // to the correct envKey (e.g. an "sk-ant-oat…" subscription token
+            // never lands in the ANTHROPIC_API_KEY slot).
+            const match = detectCredentialOptionIndex(setup.options, next);
+            setDetectedIndex(match);
+            if (match >= 0 && match !== activeIndex) setActiveIndex(match);
           }}
           onKeyDown={(event) => {
             if (event.key !== "Enter") return;
@@ -193,6 +227,14 @@ export function AdapterCredentialConnect({
           Connect
         </Button>
       </div>
+
+      {detectedIndex >= 0 ? (
+        <p className="text-xs text-muted-foreground">
+          <Check className="mr-1 inline h-3 w-3 text-primary" />
+          Detected {setup.options[detectedIndex]?.label} — binding to{" "}
+          <span className="font-mono text-foreground">{setup.options[detectedIndex]?.envKey}</span>.
+        </p>
+      ) : null}
 
       {error ? (
         <p id={errorId} role="alert" className="text-xs text-destructive">
