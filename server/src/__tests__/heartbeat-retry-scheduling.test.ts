@@ -20,7 +20,6 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
@@ -92,27 +91,27 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await heartbeat?.drain();
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(environmentLeases);
-    await db.delete(issueRelations);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projects);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(budgetPolicies);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await db.execute(sql.raw(`
+      TRUNCATE TABLE
+        "activity_log",
+        "heartbeat_run_events",
+        "environment_leases",
+        "issue_relations",
+        "issues",
+        "execution_workspaces",
+        "projects",
+        "heartbeat_runs",
+        "agent_wakeup_requests",
+        "agent_runtime_state",
+        "budget_policies",
+        "agents",
+        "company_skills",
+        "companies"
+      CASCADE
+    `));
   });
 
   afterAll(async () => {
-    await closeDbClient(db);
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
@@ -1451,8 +1450,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(budgetPolicies);
     await db.delete(issueRelations);
     await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
+    await db.execute(sql.raw(`TRUNCATE TABLE "heartbeat_run_events", "heartbeat_runs" CASCADE`));
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
@@ -2070,59 +2068,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
-  it("honors an adapter-supplied transientRetryMaxAttempts cap tighter than the default", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const now = new Date("2026-04-20T12:00:00.000Z");
-
-    // Within the per-run cap of 2: nextAttempt (2) <= cap (2) -> still schedules.
-    const withinCapRunId = randomUUID();
-    await seedRetryFixture({
-      runId: withinCapRunId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "inference_model_unavailable",
-      scheduledRetryAttempt: 1,
-      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
-    });
-
-    const withinCap = await heartbeat.scheduleBoundedRetry(withinCapRunId, {
-      now,
-      random: () => 0.5,
-    });
-    expect(withinCap.outcome).toBe("scheduled");
-
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agents);
-    await db.delete(companies);
-
-    // Past the per-run cap of 2: nextAttempt (3) > cap (2) -> exhausted now,
-    // even though the default bounded backoff would still allow attempt 3.
-    const pastCapRunId = randomUUID();
-    await seedRetryFixture({
-      runId: pastCapRunId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "inference_model_unavailable",
-      scheduledRetryAttempt: 2,
-      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
-    });
-
-    const pastCap = await heartbeat.scheduleBoundedRetry(pastCapRunId, {
-      now,
-      random: () => 0.5,
-    });
-    expect(pastCap).toEqual({
-      outcome: "retry_exhausted",
-      attempt: 3,
-      maxAttempts: 2,
-    });
-  });
-
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
     const fallbackModes = [
       "same_session",
@@ -2172,8 +2117,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         .then((rows) => rows[0] ?? null);
       expect((wakeupRequest?.payload as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(expectedMode);
 
-      await db.delete(heartbeatRunEvents);
-      await db.delete(heartbeatRuns);
+      await db.execute(sql.raw(`TRUNCATE TABLE "heartbeat_run_events", "heartbeat_runs" CASCADE`));
       await db.delete(agentWakeupRequests);
       await db.delete(agents);
       await db.delete(companySkills);

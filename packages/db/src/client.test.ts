@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  resetPostgresDatabase,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -44,11 +45,11 @@ const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
     new Set(["issues"]),
   ],
   [
-    "0133_repair_run_responsible_user_context_refs.sql",
+    "0131_repair_run_responsible_user_context_refs.sql",
     new Set(["heartbeat_runs"]),
   ],
   [
-    "0136_repair_run_responsible_user_updated_at_sweep.sql",
+    "0135_repair_run_responsible_user_updated_at_sweep.sql",
     new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
   ],
 ]);
@@ -87,6 +88,34 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres migration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describeEmbeddedPostgres("resetPostgresDatabase", () => {
+  it("recreates an existing database so stale tables are removed", async () => {
+    const connectionString = await createTempDatabase();
+    const adminUrl = new URL(connectionString);
+    const databaseName = adminUrl.pathname.replace(/^\//, "");
+    adminUrl.pathname = "/postgres";
+
+    const setupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await setupSql.unsafe(`CREATE TABLE stale_reseed_target_only (id integer PRIMARY KEY)`);
+    } finally {
+      await setupSql.end();
+    }
+
+    await resetPostgresDatabase(adminUrl.toString(), databaseName);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const rows = await verifySql.unsafe<{ stale_table: string | null }[]>(
+        `SELECT to_regclass('public.stale_reseed_target_only')::text AS stale_table`,
+      );
+      expect(rows[0]?.stale_table).toBeNull();
+    } finally {
+      await verifySql.end();
+    }
+  }, 30_000);
+});
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
@@ -625,7 +654,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const builtInResourcesHash = await migrationHash(
-        "0141_built_in_managed_resources.sql",
+        "0140_built_in_managed_resources.sql",
       );
       const legacyBuiltInResourcesHash = createHash("sha256")
         .update("legacy 0136_built_in_managed_resources.sql")
@@ -656,7 +685,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0141_built_in_managed_resources.sql"],
+        pendingMigrations: ["0140_built_in_managed_resources.sql"],
         reason: "pending-migrations",
       });
 
@@ -731,7 +760,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const runResponsibleUserHash = await migrationHash(
-          "0132_run_responsible_user_invariant.sql",
+          "0134_run_responsible_user_invariant.sql",
         );
 
         await sql.unsafe(`
@@ -816,7 +845,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0132_run_responsible_user_invariant.sql"],
+        pendingMigrations: ["0134_run_responsible_user_invariant.sql"],
         reason: "pending-migrations",
       });
 
@@ -862,7 +891,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const repairSweepHash = await migrationHash(
-        "0136_repair_run_responsible_user_updated_at_sweep.sql",
+        "0135_repair_run_responsible_user_updated_at_sweep.sql",
       );
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -1260,7 +1289,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const runResponsibleUserRepairHash = await migrationHash(
-          "0133_repair_run_responsible_user_context_refs.sql",
+          "0131_repair_run_responsible_user_context_refs.sql",
         );
 
         await sql.unsafe(`
@@ -1355,7 +1384,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0133_repair_run_responsible_user_context_refs.sql"],
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
         reason: "pending-migrations",
       });
 

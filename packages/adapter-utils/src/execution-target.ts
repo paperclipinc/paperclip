@@ -38,6 +38,7 @@ import {
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -108,6 +109,7 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  localProcessSandbox?: LocalProcessSandboxOptions | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -550,11 +552,9 @@ export async function runAdapterExecutionTargetProcess(
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
+        // The tail loop already streams incremental chunks; suppress the
+        // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
-        runId,
-        onOutput: runLogTail ? undefined : (stream, text) => {
-          void options.onLog(stream, text);
-        },
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
@@ -585,6 +585,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }
@@ -667,14 +668,6 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
-      // Forward the run id so a streaming sandbox runner can bridge worker
-      // output chunks back to onLog live (across the plugin worker boundary).
-      runId,
-      // Route streamed chunks to the same log tail; a streaming runner sets
-      // `streamed` so the buffered dump is suppressed upstream (no double log).
-      onOutput: (stream, text) => {
-        void onLog(stream, text);
-      },
     });
   }
 
@@ -1715,67 +1708,22 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
-        let response: Response;
-        try {
-          response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
-            method,
-            headers,
-            ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-            signal: AbortSignal.timeout(30_000),
-          });
-        } catch (error) {
-          // Map fetch failures to a faithful status the in-sandbox agent can act
-          // on, instead of letting them surface as an opaque generic 502. A
-          // timeout in particular is ambiguous on a mutating call ("did my write
-          // land?"), so it must be distinguishable — otherwise the agent tends to
-          // confabulate an outcome.
-          const name = error instanceof Error ? error.name : "";
-          if (name === "TimeoutError" || name === "AbortError") {
-            return {
-              status: 504,
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                error: "The Paperclip API did not respond within the 30s bridge timeout. The request may or may not have been applied; re-read state before retrying.",
-                code: "bridge_upstream_timeout",
-              }),
-            };
-          }
-          return {
-            status: 502,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              error: `Bridge could not reach the Paperclip API: ${error instanceof Error ? error.message : String(error)}`,
-              code: "bridge_upstream_unreachable",
-            }),
-          };
-        }
+        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+          method,
+          headers,
+          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+          signal: AbortSignal.timeout(30_000),
+        });
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
             `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
           );
         }
-        let body: string;
-        try {
-          body = await readBridgeForwardResponseBody(response, maxBodyBytes);
-        } catch (error) {
-          // Oversized response body: surface a clear 413 (not a generic 502) so
-          // the agent knows the call succeeded server-side but the payload was
-          // too large to relay, rather than assuming the operation failed.
-          return {
-            status: 413,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              error: error instanceof Error ? error.message : String(error),
-              code: "bridge_response_too_large",
-              upstreamStatus: response.status,
-            }),
-          };
-        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
-          body,
+          body: await readBridgeForwardResponseBody(response, maxBodyBytes),
         };
       },
     });

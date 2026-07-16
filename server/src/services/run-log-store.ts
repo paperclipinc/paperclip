@@ -101,12 +101,20 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     if (start > end) return { content: "", nextOffset: start };
 
     const chunks: Buffer[] = [];
-    await new Promise<void>((resolve, reject) => {
-      const stream = createReadStream(filePath, { start, end });
-      stream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-      stream.on("error", reject);
-      stream.on("end", () => resolve());
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const stream = createReadStream(filePath, { start, end });
+        stream.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        stream.on("error", reject);
+        stream.on("end", () => resolve());
+      });
+    } catch (err) {
+      // File deleted between stat() and open (pod-roll cleanup racing a read):
+      // treat as missing so the caller falls through to the S3 mirror instead
+      // of surfacing the very "Run log not found" this store exists to prevent.
+      if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+      throw err;
+    }
     const content = Buffer.concat(chunks).toString("utf8");
     const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
     return { content, nextOffset };
@@ -167,6 +175,9 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
+        // Monotonic per-run sequence so readers can dedupe and order records
+        // even when several identical chunks share the same millisecond ts
+        // (common for ACP-style token deltas).
         ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;
@@ -187,15 +198,23 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       // rolls, and a failed mirror only loses durability for that one run.
       if (s3) {
         try {
-          const body = await fs.readFile(absPath);
+          // Stream from disk instead of buffering the whole .ndjson in the
+          // heap; long agent sessions can produce large logs. The file is
+          // complete at this point, so stat.size is the exact content length.
           await s3.provider.putObject({
             objectKey: s3Key(handle.logRef),
-            body,
+            body: createReadStream(absPath),
             contentType: "application/x-ndjson",
-            contentLength: body.byteLength,
+            contentLength: stat.size,
           });
-        } catch {
-          // swallow: durability is best-effort, finalization must not break
+        } catch (err) {
+          // Best-effort: finalization must not break, but a persistently
+          // failing mirror (bad creds/bucket/endpoint) should be visible to
+          // operators before a pod roll makes the logs unreadable.
+          console.warn(
+            `[run-log-store] Failed to mirror run log to object storage (key: ${s3Key(handle.logRef)}):`,
+            err,
+          );
         }
       }
 

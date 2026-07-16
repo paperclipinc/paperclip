@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -13,6 +14,7 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -29,6 +31,8 @@ import { goalRoutes } from "./routes/goals.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
+import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -49,18 +53,19 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
+import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
-import { decideBundledPluginAction } from "./services/bundled-plugin-heal.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -122,24 +127,6 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   return req.accepts(["html"]) === "html";
 }
 
-/**
- * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
- * /branding — the stylesheet link applyUiBranding injects points here. Without
- * this route the request falls through to the SPA fallback and comes back as
- * text/html, which the browser refuses to apply as a stylesheet. A missing
- * brand asset 404s for the same reason. No-op when no brand dir is configured,
- * so the default build's routing is unchanged.
- */
-export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
-  const brandDir = getBrandDir(env);
-  if (!brandDir) return false;
-  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
-  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
-    res.status(404).end();
-  });
-  return true;
-}
-
 export function shouldEnablePrivateHostnameGuard(opts: {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -165,6 +152,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -241,21 +229,19 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(companySkillPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
@@ -267,6 +253,10 @@ export async function createApp(
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -295,6 +285,31 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
+  // Issue routes are intentionally mounted after the gateway is constructed because
+  // issue approval endpoints delegate to it. The intervening routers use distinct
+  // route prefixes, so this dependency does not change issue-route precedence.
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
+  }));
+  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
+  api.use(smokeLabRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
@@ -341,15 +356,17 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      // bridgeDeps: expose the worker manager's stream bus so the SSE bridge
-      // route (and any worker→host stream consumer) can subscribe to channels.
-      { workerManager, streamBus: workerManager.streamBus },
+      { workerManager },
+      { toolGateway },
     ),
   );
   api.use(adapterRoutes());
@@ -368,9 +385,6 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
-  // Deployer-mounted brand assets (must come before the SPA fallback / vite
-  // middleware so /branding/brand.css never resolves to the HTML shell).
-  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -395,23 +409,8 @@ export async function createApp(
       // reasonably fast. Override for `index.html` specifically — it is
       // served by this middleware for `/` and `/index.html`, and it must
       // never outlive the asset hashes it points at.
-      // The HTML shell MUST go through the branded fallback below, which injects
-      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
-      // script reads. Serving the RAW index.html here (Express's default
-      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
-      // bypasses that injection -> no theme meta -> the script defaults to dark ->
-      // a dark->light flash on first paint until a branded route loads. So disable
-      // directory-index serving AND route an explicit `/index.html` to the fallback.
-      app.get("/index.html", (_req, res) => {
-        res
-          .status(200)
-          .set("Content-Type", "text/html")
-          .set("Cache-Control", "no-cache")
-          .end(readBrandedStaticIndexHtml(uiDist));
-      });
       app.use(
         express.static(uiDist, {
-          index: false,
           maxAge: "1h",
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
@@ -544,74 +543,25 @@ export async function createApp(
     const pluginPath =
       process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
       "/app/packages/plugins/sandbox-providers/kubernetes";
-    const bundleManifestPath = path.join(pluginPath, "dist", "manifest.js");
     try {
+      // Idempotent: skip if already installed (any non-uninstalled status).
       const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
-      const action = decideBundledPluginAction({
-        existingStatus: existing?.status ?? null,
-        bundlePresent: fs.existsSync(bundleManifestPath),
-      });
-
-      if (action === "skip-ready") {
-        // Healthy. loadAll() (which runs right after this) lists ready plugins
-        // and (re)starts their workers, so nothing to do here.
+      if (existing) {
         logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
-          "kubernetes sandbox plugin already installed and ready; skipping auto-install",
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
+          "kubernetes sandbox plugin already installed; skipping auto-install",
         );
         return;
       }
-      if (action === "skip-uninstalled") {
-        // An admin explicitly removed it; respect that and do not silently
-        // reinstall the bundle on every boot.
-        logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
-          "kubernetes sandbox plugin is uninstalled; respecting that and skipping auto-install",
-        );
-        return;
-      }
-      if (action === "self-heal-blocked-bundle-missing") {
-        logger.warn(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status, pluginPath },
-          "kubernetes sandbox plugin is stuck in a non-ready status but its bundle is missing; cannot self-heal",
-        );
-        return;
-      }
-      if (action === "self-heal" && existing) {
-        // SELF-HEAL: the bundled plugin exists in the DB but is NOT ready, so
-        // loadAll() (which only activates 'ready' plugins) would leave the
-        // kubernetes sandbox provider dead and agents could never acquire a lease.
-        // This commonly happens when an earlier boot marked it 'error' (e.g. the
-        // manifest was missing before the image shipped it). Now that the bundle
-        // is on disk, drive it back to 'ready' so loadAll() re-activates it
-        // (activation re-reads the manifest from disk, so a stale record heals).
-        try {
-          // lifecycle.load() transitions <status> -> ready (error/installed/
-          // disabled/upgrade_pending are all valid sources). The actual worker
-          // start is performed by loader.loadAll() immediately after.
-          await lifecycle.load(existing.id);
-          logger.info(
-            { pluginId: existing.id, pluginKey: existing.pluginKey, previousStatus: existing.status },
-            "re-activated stuck kubernetes sandbox plugin (-> ready); loadAll() will start its worker",
-          );
-        } catch (healErr) {
-          logger.error(
-            { err: healErr, pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
-            "Failed to self-heal stuck kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
-          );
-        }
-        return;
-      }
-      if (action === "skip-bundle-missing") {
-        // Skip silently when the bundle is absent (e.g. local dev or an image
-        // built without the plugin). Not an error condition.
+      // Skip silently when the bundle is absent (e.g. local dev or an image
+      // built without the plugin). Not an error condition.
+      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
         logger.info(
           { pluginPath },
           "kubernetes sandbox plugin bundle not present; skipping auto-install",
         );
         return;
       }
-      // action === "install"
       logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
       const discovered = await loader.installPlugin({ localPath: pluginPath });
       if (!discovered.manifest) {

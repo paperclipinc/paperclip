@@ -18,12 +18,11 @@ import {
   issueService,
   heartbeatService,
   accessService,
-  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
@@ -64,36 +63,6 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
-  const settings = instanceSettingsService(db);
-
-  // Money-safety: in the managed cloud a tenant user is a board member of their
-  // own company, so the board-gated budget mutation routes would let them grant
-  // themselves budget without paying (raise the wallet cap, overwrite the
-  // lifetime wallet policy, drop the hard stop, or self-resume after a hard
-  // stop). When the `cloudBilling` instance flag is on, company budgets are
-  // funded exclusively through the billing checkout: the control plane credits
-  // the wallet via the cloud-internal /budgets/increment route below.
-  // Self-hosters leave the flag off and keep full board budget control.
-  //
-  // The gate applies to COMPANY-scope mutations only. Agent- and project-scope
-  // policies are not self-grants: they only sub-cap spending inside the company
-  // wallet, which getInvocationBlock and evaluateCostEvent enforce first and
-  // independently of any agent/project policy.
-  async function assertBudgetsNotManagedByBilling() {
-    const experimental = await settings.getExperimental();
-    if (experimental.cloudBilling === true) {
-      throw forbidden(
-        "Company budgets are managed by billing. Use the billing checkout to raise your budget.",
-        { code: "budget_managed_by_billing" },
-      );
-    }
-  }
-
-  // Fail closed: anything that is not explicitly an agent or project scope is
-  // treated as a company-scope mutation and gated.
-  function isWalletSubCapScope(scopeType: unknown): scopeType is "agent" | "project" {
-    return scopeType === "agent" || scopeType === "project";
-  }
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -212,12 +181,8 @@ export function costRoutes(
 
   router.get("/issues/:id/cost-summary", async (req, res) => {
     const rawId = req.params.id as string;
-    const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueCostReadAllowed(req, res, issue))) return;
     const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
     const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
@@ -335,9 +300,6 @@ export function costRoutes(
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      if (!isWalletSubCapScope(req.body?.scopeType)) {
-        await assertBudgetsNotManagedByBilling();
-      }
       const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
       res.json(summary);
     },
@@ -351,62 +313,10 @@ export function costRoutes(
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
-      // Only a COMPANY budget-raising resolution is a self-grant; keep_paused
-      // stays available so a board member can still acknowledge an incident,
-      // and agent/project incident raises only move a sub-cap inside the
-      // wallet. The scope comes from the stored incident row (never client
-      // input); an unknown incident fails closed as company scope.
-      if (req.body.action === "raise_budget_and_resume") {
-        const incidentScopeType = await budgets.getIncidentScopeType(companyId, incidentId);
-        if (!isWalletSubCapScope(incidentScopeType)) {
-          await assertBudgetsNotManagedByBilling();
-        }
-      }
       const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
       res.json(incident);
     },
   );
-
-  // Cloud-internal: the control-plane credits the company's recurring carry-over
-  // budget wallet here on each Paddle budget charge (and the trial/included-budget
-  // seeds). This is a server-to-server call gated on the trusted
-  // `x-paperclip-cloud-credit` header — the app is only reachable via the cloud
-  // gateway/control-plane network boundary, so a normal user actor is never
-  // present and we deliberately do NOT run assertBoard/assertCompanyAccess here.
-  // Self-hosters never set this header, so this path is inert for OSS.
-  router.post("/companies/:companyId/budgets/increment", async (req, res) => {
-    if (req.header("x-paperclip-cloud-credit") !== "1") {
-      res.status(403).json({ error: "Budget increment is a cloud-internal operation" });
-      return;
-    }
-
-    const companyId = req.params.companyId as string;
-    const deltaCents = req.body?.deltaCents;
-    if (typeof deltaCents !== "number" || !Number.isInteger(deltaCents) || deltaCents <= 0) {
-      res.status(400).json({ error: "deltaCents must be a positive integer" });
-      return;
-    }
-
-    const result = await budgets.incrementCompanyBudget(companyId, deltaCents);
-    res.json({ companyId, amount: result.amount });
-  });
-
-  // Cloud-internal: the control-plane's lifecycle sweep polls this to find
-  // companies paused by the budget hard-stop (it emails a trial that hit the
-  // wall and did not subscribe). Read-only and gated on the same trusted
-  // `x-paperclip-cloud-credit` header as /budgets/increment above (the app is
-  // only reachable via the cloud gateway/control-plane network boundary, so no
-  // user actor is present and we deliberately skip assertBoard/
-  // assertCompanyAccess). Self-hosters never set the header, so this path is
-  // inert for OSS. Returns [{ companyId, pausedAt }].
-  router.get("/cloud/budget-paused", async (req, res) => {
-    if (req.header("x-paperclip-cloud-credit") !== "1") {
-      res.status(403).json({ error: "Budget-paused listing is a cloud-internal operation" });
-      return;
-    }
-    const rows = await budgets.listBudgetPausedCompanies();
-    res.json(rows);
-  });
 
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -421,7 +331,6 @@ export function costRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    await assertBudgetsNotManagedByBilling();
     const company = await companies.update(companyId, { budgetMonthlyCents: req.body.budgetMonthlyCents });
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -454,13 +363,9 @@ export function costRoutes(
 
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
     const agentId = req.params.agentId as string;
-    const agent = await agents.getById(agentId);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
+    const agent = await getAccessibleResource(req, res, agents.getById(agentId), "Agent not found");
+    if (!agent) return;
 
-    assertCompanyAccess(req, agent.companyId);
     assertBoard(req);
 
     const updated = await agents.update(agentId, { budgetMonthlyCents: req.body.budgetMonthlyCents });

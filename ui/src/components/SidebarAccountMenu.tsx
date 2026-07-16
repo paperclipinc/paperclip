@@ -2,17 +2,15 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
-  CreditCard,
   LogOut,
   Megaphone,
   type LucideIcon,
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
-import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -25,17 +23,14 @@ import { Badge } from "@/components/ui/badge";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
-// Cloud-only: feedback from managed tenants goes to the hosting company's
-// support inbox, not the upstream project's feedback form.
-const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
-// Cloud-only: the hosting layer's account page (plan, billing, usage budget).
-// Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
-const CLOUD_ACCOUNT_PATH = "/account";
+const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
+const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  serverGit?: ServerGitInfo;
   version?: string | null;
 }
 
@@ -46,8 +41,6 @@ interface MenuActionProps {
   onClick?: () => void;
   href?: string;
   external?: boolean;
-  // Same-tab full-page navigation for destinations outside the SPA router.
-  nativeAnchor?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -72,7 +65,12 @@ function deriveUserSlug(name: string | null | undefined, email: string | null | 
   return "me";
 }
 
-function MenuAction({ label, description, icon: Icon, onClick, href, external = false, nativeAnchor = false }: MenuActionProps) {
+function sourceVersionSha(version: string): string | null {
+  const sourceVersion = version.match(SOURCE_VERSION_RE);
+  return sourceVersion?.[1] ?? null;
+}
+
+function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -97,14 +95,6 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
       );
     }
 
-    if (nativeAnchor) {
-      return (
-        <a href={href} className={className} onClick={onClick}>
-          {content}
-        </a>
-      );
-    }
-
     return (
       <Link to={href} className={className} onClick={onClick}>
         {content}
@@ -123,6 +113,7 @@ export function SidebarAccountMenu({
   deploymentMode,
   open: controlledOpen,
   onOpenChange,
+  serverGit,
   version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
@@ -136,19 +127,13 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
-  // instances have no /account page, so no entry.
-  const cloudBilling = experimentalSettings?.cloudBilling === true;
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
       setOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
   });
 
@@ -158,6 +143,12 @@ export function SidebarAccountMenu({
   const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+  const sourceSha = version ? sourceVersionSha(version) : null;
+  const sourceFullSha =
+    sourceSha && serverGit?.available && serverGit.fullSha.toLowerCase().startsWith(sourceSha.toLowerCase())
+      ? serverGit.fullSha
+      : sourceSha;
+  const sourceBranch = sourceSha && serverGit?.available ? serverGit.branchName : null;
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -203,7 +194,31 @@ export function SidebarAccountMenu({
                   </Badge>
                 </div>
                 <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
-                {version ? (
+                {sourceSha && sourceFullSha ? (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {sourceBranch ? (
+                      <a
+                        href={`${SOURCE_REPOSITORY_URL}/tree/${encodeURIComponent(sourceBranch)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block truncate transition-colors hover:text-foreground"
+                      >
+                        {sourceBranch}
+                      </a>
+                    ) : null}
+                    <p>
+                      Paperclip{" "}
+                      <a
+                        href={`${SOURCE_REPOSITORY_URL}/commit/${sourceFullSha}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="transition-colors hover:text-foreground"
+                      >
+                        {sourceSha.slice(0, 7)}
+                      </a>
+                    </p>
+                  </div>
+                ) : version ? (
                   <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
                 ) : null}
               </div>
@@ -234,23 +249,13 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Feedback"
-                description={cloudBilling ? "Email us. A human reads every message." : "Share feedback or report an issue."}
+                description="Share feedback or report an issue."
                 icon={Megaphone}
-                href={cloudBilling ? CLOUD_FEEDBACK_MAILTO : FEEDBACK_URL}
+                href={FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
-              {cloudBilling ? (
-                <MenuAction
-                  label="Plan & billing"
-                  description="Manage your plan, seats, and usage budget."
-                  icon={CreditCard}
-                  href={CLOUD_ACCOUNT_PATH}
-                  nativeAnchor
-                  onClick={closeNavigationChrome}
-                />
-              ) : null}
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

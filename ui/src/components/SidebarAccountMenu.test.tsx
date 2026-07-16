@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -24,6 +25,10 @@ vi.mock("@/api/auth", () => ({
 }));
 
 vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
@@ -78,7 +83,10 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: false, enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
+    mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -91,6 +99,10 @@ describe("SidebarAccountMenu", () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
     });
 
     await act(async () => {
@@ -141,12 +153,23 @@ describe("SidebarAccountMenu", () => {
       .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
 
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+
     await act(async () => {
       root.unmount();
     });
   });
 
-  async function renderOpenMenu() {
+  it("shows the short commit sha instead of a version for source builds", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -155,57 +178,39 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="authenticated" open onOpenChange={() => {}} />
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            version="2026.626.0+58.git.518fc71ce"
+            serverGit={{
+              available: true,
+              fullSha: "518fc71ce1234567890abcdef1234567890abcde",
+              shortSha: "518fc71",
+              branchName: "feature/source-build-label",
+              subject: "Show source build label",
+              committedAt: "2026-06-26T00:00:00.000Z",
+              localChanges: {
+                available: true,
+                hasLocalChanges: false,
+                stagedFileCount: 0,
+                unstagedFileCount: 0,
+                untrackedFileCount: 0,
+              },
+            }}
+            open
+          />
         </QueryClientProvider>,
       );
     });
     await flushReact();
-    await flushReact();
-    return root;
-  }
 
-  it("links Plan & billing to /account on a cloud instance, above Sign out", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
-    const root = await renderOpenMenu();
-
-    const billing = document.body.querySelector('a[href="/account"]');
-    expect(billing).not.toBeNull();
-    expect(billing?.textContent).toContain("Plan & billing");
-    // Same-tab navigation out of the SPA (the account page is not an app route).
-    expect(billing?.getAttribute("target")).toBeNull();
-
-    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
-    const billingPos = menuText.indexOf("Plan & billing");
-    const signOutPos = menuText.indexOf("Sign out");
-    expect(billingPos).toBeGreaterThan(-1);
-    expect(signOutPos).toBeGreaterThan(-1);
-    expect(billingPos).toBeLessThan(signOutPos);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("points Feedback at the cloud support inbox on a cloud instance (never the upstream form)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
-    const root = await renderOpenMenu();
-
-    const feedback = document.body.querySelector('a[href^="mailto:support@paperclip.inc"]');
-    expect(feedback).not.toBeNull();
-    expect(feedback?.textContent).toContain("Feedback");
-    // The upstream project's feedback form must not appear for cloud tenants.
-    expect(document.body.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("hides the billing entry off-cloud (self-hosted default)", async () => {
-    const root = await renderOpenMenu();
-
-    expect(document.body.textContent).not.toContain("Plan & billing");
-    expect(document.body.textContent).toContain("Sign out");
+    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
+    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
+      "feature/source-build-label",
+    );
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
+      "518fc71",
+    );
 
     await act(async () => {
       root.unmount();
