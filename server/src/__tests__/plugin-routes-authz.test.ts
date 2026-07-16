@@ -391,7 +391,7 @@ describe.sequential("plugin install and upgrade authz", () => {
       companyIds: [companyA],
     });
 
-    const res = await request(app).get(`/api/plugins/${pluginId}/config`);
+    const res = await request(app).get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
 
     expect(res.status).toBe(403);
     expect(mockRegistry.getById).not.toHaveBeenCalled();
@@ -406,10 +406,10 @@ describe.sequential("plugin install and upgrade authz", () => {
       userId: "admin-1",
       source: "session",
       isInstanceAdmin: true,
-      companyIds: [],
+      companyIds: [companyA],
     });
 
-    const res = await request(app).get(`/api/plugins/${pluginId}/config`);
+    const res = await request(app).get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ configJson: { foo: "bar" } });
