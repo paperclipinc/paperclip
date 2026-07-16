@@ -175,9 +175,6 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
-        // Monotonic per-run sequence so readers can dedupe and order records
-        // even when several identical chunks share the same millisecond ts
-        // (common for ACP-style token deltas).
         ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;

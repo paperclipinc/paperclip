@@ -56,6 +56,18 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
+# Build the workspace-EXCLUDED sandbox-provider plugins (kubernetes etc.) so their
+# dist/manifest.js ships in the image. The plugin-loader reads the built manifest at
+# load time (server/src/services/plugin-loader.ts) and nothing else in the image build
+# produces it -- the workspace install skips packages/plugins/sandbox-providers/**, so
+# without this the k8s plugin fails to load ("no longer exposes a Paperclip manifest").
+# Canonical standalone builder: per-package install (--ignore-workspace --no-lockfile)
+# + relink the plugin SDK + tsc. Guard that the k8s manifest is actually produced so a
+# future regression fails the build loudly instead of shipping broken agent execution.
+RUN node scripts/build-standalone-public-packages.mjs \
+  && test -f packages/plugins/sandbox-providers/kubernetes/dist/manifest.js \
+  || (echo "ERROR: sandbox-provider plugin build output missing" && exit 1)
+
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000

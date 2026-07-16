@@ -709,6 +709,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "GET /api/board-api-keys",
@@ -841,6 +842,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
+  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -1003,37 +1005,6 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      databaseBackup: z.object({
-        enabled: z.boolean(),
-        status: z.enum(["ok", "warning"]),
-        backupDir: z.string().optional(),
-        maxAgeHours: z.number().optional(),
-        latestBackup: z.object({
-          name: z.string(),
-          path: z.string(),
-          mtime: z.string().datetime(),
-          ageHours: z.number(),
-          sizeBytes: z.number(),
-        }).nullable().optional(),
-        lastFailure: z.object({
-          path: z.string(),
-          mtime: z.string().datetime(),
-          message: z.string(),
-        }).nullable().optional(),
-        warnings: z.array(z.object({
-          code: z.enum([
-            "database_backup_check_failed",
-            "database_backup_last_failure",
-            "database_backup_missing",
-            "database_backup_stale",
-          ]),
-          message: z.string(),
-        })),
-      }).optional(),
-      warnings: z.array(z.object({
-        code: z.string(),
-        message: z.string(),
-      })).optional(),
       serverInfo: z.object({
         processStartedAt: z.string().datetime(),
         git: z.union([
@@ -5081,6 +5052,35 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/activation",
+  tags: ["access"],
+  summary: "Get company activation status",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/budgets/increment",
+  tags: ["costs"],
+  summary: "Increment company budget (cloud-internal)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/budget-paused",
+  tags: ["costs"],
+  summary: "List companies with paused budgets (cloud-internal)",
+  responses: { 200: r.ok(), 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────

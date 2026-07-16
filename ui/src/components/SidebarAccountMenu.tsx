@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
+  CreditCard,
   LogOut,
   Megaphone,
   type LucideIcon,
@@ -11,6 +12,7 @@ import {
 import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -23,6 +25,12 @@ import { Badge } from "@/components/ui/badge";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+// Cloud-only: feedback from managed tenants goes to the hosting company's
+// support inbox, not the upstream project's feedback form.
+const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
+// Cloud-only: the hosting layer's account page (plan, billing, usage budget).
+// Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
+const CLOUD_ACCOUNT_PATH = "/account";
 const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
 const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
@@ -41,6 +49,8 @@ interface MenuActionProps {
   onClick?: () => void;
   href?: string;
   external?: boolean;
+  // Same-tab full-page navigation for destinations outside the SPA router.
+  nativeAnchor?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -70,7 +80,7 @@ function sourceVersionSha(version: string): string | null {
   return sourceVersion?.[1] ?? null;
 }
 
-function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
+function MenuAction({ label, description, icon: Icon, onClick, href, external = false, nativeAnchor = false }: MenuActionProps) {
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -90,6 +100,14 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
     if (external) {
       return (
         <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    if (nativeAnchor) {
+      return (
+        <a href={href} className={className} onClick={onClick}>
           {content}
         </a>
       );
@@ -127,6 +145,13 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
+  // instances have no /account page, so no entry.
+  const cloudBilling = experimentalSettings?.cloudBilling === true;
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -249,13 +274,23 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Feedback"
-                description="Share feedback or report an issue."
+                description={cloudBilling ? "Email us. A human reads every message." : "Share feedback or report an issue."}
                 icon={Megaphone}
-                href={FEEDBACK_URL}
+                href={cloudBilling ? CLOUD_FEEDBACK_MAILTO : FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+              {cloudBilling ? (
+                <MenuAction
+                  label="Plan & billing"
+                  description="Manage your plan, seats, and usage budget."
+                  icon={CreditCard}
+                  href={CLOUD_ACCOUNT_PATH}
+                  nativeAnchor
+                  onClick={closeNavigationChrome}
+                />
+              ) : null}
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

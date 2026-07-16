@@ -4,7 +4,6 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
-import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -57,7 +56,7 @@ import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gatew
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
@@ -66,6 +65,7 @@ import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { decideBundledPluginAction } from "./services/bundled-plugin-heal.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -127,6 +127,24 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   return req.accepts(["html"]) === "html";
 }
 
+/**
+ * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
+ * /branding — the stylesheet link applyUiBranding injects points here. Without
+ * this route the request falls through to the SPA fallback and comes back as
+ * text/html, which the browser refuses to apply as a stylesheet. A missing
+ * brand asset 404s for the same reason. No-op when no brand dir is configured,
+ * so the default build's routing is unchanged.
+ */
+export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
+  const brandDir = getBrandDir(env);
+  if (!brandDir) return false;
+  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
+  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
+    res.status(404).end();
+  });
+  return true;
+}
+
 export function shouldEnablePrivateHostnameGuard(opts: {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
@@ -152,7 +170,6 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
-    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -229,7 +246,6 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
-      databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
@@ -365,7 +381,9 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      { workerManager },
+      // bridgeDeps: expose the worker manager's stream bus so the SSE bridge
+      // route (and any worker->host stream consumer) can subscribe to channels.
+      { workerManager, streamBus: workerManager.streamBus },
       { toolGateway },
     ),
   );
@@ -385,6 +403,9 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+  // Deployer-mounted brand assets (must come before the SPA fallback / vite
+  // middleware so /branding/brand.css never resolves to the HTML shell).
+  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -409,8 +430,23 @@ export async function createApp(
       // reasonably fast. Override for `index.html` specifically — it is
       // served by this middleware for `/` and `/index.html`, and it must
       // never outlive the asset hashes it points at.
+      // The HTML shell MUST go through the branded fallback below, which injects
+      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
+      // script reads. Serving the RAW index.html here (Express's default
+      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
+      // bypasses that injection -> no theme meta -> the script defaults to dark ->
+      // a dark->light flash on first paint until a branded route loads. So disable
+      // directory-index serving AND route an explicit `/index.html` to the fallback.
+      app.get("/index.html", (_req, res) => {
+        res
+          .status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(readBrandedStaticIndexHtml(uiDist));
+      });
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
           setHeaders(res, filePath) {
             if (path.basename(filePath) === "index.html") {
@@ -543,25 +579,74 @@ export async function createApp(
     const pluginPath =
       process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
       "/app/packages/plugins/sandbox-providers/kubernetes";
+    const bundleManifestPath = path.join(pluginPath, "dist", "manifest.js");
     try {
-      // Idempotent: skip if already installed (any non-uninstalled status).
       const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
-      if (existing) {
+      const action = decideBundledPluginAction({
+        existingStatus: existing?.status ?? null,
+        bundlePresent: fs.existsSync(bundleManifestPath),
+      });
+
+      if (action === "skip-ready") {
+        // Healthy. loadAll() (which runs right after this) lists ready plugins
+        // and (re)starts their workers, so nothing to do here.
         logger.info(
-          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
-          "kubernetes sandbox plugin already installed; skipping auto-install",
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
+          "kubernetes sandbox plugin already installed and ready; skipping auto-install",
         );
         return;
       }
-      // Skip silently when the bundle is absent (e.g. local dev or an image
-      // built without the plugin). Not an error condition.
-      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
+      if (action === "skip-uninstalled") {
+        // An admin explicitly removed it; respect that and do not silently
+        // reinstall the bundle on every boot.
+        logger.info(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status },
+          "kubernetes sandbox plugin is uninstalled; respecting that and skipping auto-install",
+        );
+        return;
+      }
+      if (action === "self-heal-blocked-bundle-missing") {
+        logger.warn(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing?.status, pluginPath },
+          "kubernetes sandbox plugin is stuck in a non-ready status but its bundle is missing; cannot self-heal",
+        );
+        return;
+      }
+      if (action === "self-heal" && existing) {
+        // SELF-HEAL: the bundled plugin exists in the DB but is NOT ready, so
+        // loadAll() (which only activates 'ready' plugins) would leave the
+        // kubernetes sandbox provider dead and agents could never acquire a lease.
+        // This commonly happens when an earlier boot marked it 'error' (e.g. the
+        // manifest was missing before the image shipped it). Now that the bundle
+        // is on disk, drive it back to 'ready' so loadAll() re-activates it
+        // (activation re-reads the manifest from disk, so a stale record heals).
+        try {
+          // lifecycle.load() transitions <status> -> ready (error/installed/
+          // disabled/upgrade_pending are all valid sources). The actual worker
+          // start is performed by loader.loadAll() immediately after.
+          await lifecycle.load(existing.id);
+          logger.info(
+            { pluginId: existing.id, pluginKey: existing.pluginKey, previousStatus: existing.status },
+            "re-activated stuck kubernetes sandbox plugin (-> ready); loadAll() will start its worker",
+          );
+        } catch (healErr) {
+          logger.error(
+            { err: healErr, pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
+            "Failed to self-heal stuck kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
+          );
+        }
+        return;
+      }
+      if (action === "skip-bundle-missing") {
+        // Skip silently when the bundle is absent (e.g. local dev or an image
+        // built without the plugin). Not an error condition.
         logger.info(
           { pluginPath },
           "kubernetes sandbox plugin bundle not present; skipping auto-install",
         );
         return;
       }
+      // action === "install"
       logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
       const discovered = await loader.installPlugin({ localPath: pluginPath });
       if (!discovered.manifest) {
