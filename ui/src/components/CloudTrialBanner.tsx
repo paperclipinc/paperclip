@@ -64,10 +64,13 @@ export function CloudTrialBanner() {
 
   let message: string;
   if (expired) {
-    message = "Your trial has ended. Subscribe to keep your companies running.";
+    message = "Your free trial has ended.";
   } else {
     const days = trialDaysLeft(summary.trialEndsAt) ?? 0;
-    message = `Pro trial: ${days} day${days === 1 ? "" : "s"} left. EUR 1 usage budget included.`;
+    message =
+      days <= 0
+        ? "Your free trial ends today."
+        : `Your free trial ends in ${days} day${days === 1 ? "" : "s"}.`;
   }
 
   return (
@@ -77,7 +80,7 @@ export function CloudTrialBanner() {
         <span className="min-w-0 flex-1">
           {message}{" "}
           <a href="/account" className="font-semibold underline underline-offset-2 hover:opacity-80">
-            Manage plan
+            Subscribe now
           </a>
         </span>
         <button

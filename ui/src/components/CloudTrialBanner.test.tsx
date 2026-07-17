@@ -103,17 +103,26 @@ describe("trialDaysLeft", () => {
 });
 
 describe("CloudTrialBanner", () => {
-  it("shows the trial banner with days left and a manage-plan link", async () => {
+  it("shows the trial banner with days left and a subscribe-now link", async () => {
     const node = await render();
-    expect(node.textContent).toContain("Pro trial: 5 days left. EUR 1 usage budget included.");
-    const link = [...node.querySelectorAll("a")].find((a) => a.textContent?.includes("Manage plan"));
+    expect(node.textContent).toContain("Your free trial ends in 5 days.");
+    // Flat-plan cleanup: the stale usage-budget language must be gone.
+    expect(node.textContent).not.toContain("usage budget");
+    const link = [...node.querySelectorAll("a")].find((a) => a.textContent?.includes("Subscribe now"));
     expect(link?.getAttribute("href")).toBe("/account");
   });
 
   it("uses the singular form for the last day", async () => {
     mockCloudBillingApi.summary.mockResolvedValue(trialingSummary(inDays(1)));
     const node = await render();
-    expect(node.textContent).toContain("Pro trial: 1 day left.");
+    expect(node.textContent).toContain("Your free trial ends in 1 day.");
+  });
+
+  it("says 'ends today' on the final day rather than 'in 0 days'", async () => {
+    mockCloudBillingApi.summary.mockResolvedValue(trialingSummary(inDays(0)));
+    const node = await render();
+    expect(node.textContent).toContain("Your free trial ends today.");
+    expect(node.textContent).not.toContain("0 days");
   });
 
   it("shows the trial-ended banner when the trial expired", async () => {
@@ -125,8 +134,8 @@ describe("CloudTrialBanner", () => {
       entitlements: {},
     });
     const node = await render();
-    expect(node.textContent).toContain("Your trial has ended. Subscribe to keep your companies running.");
-    const link = [...node.querySelectorAll("a")].find((a) => a.textContent?.includes("Manage plan"));
+    expect(node.textContent).toContain("Your free trial has ended.");
+    const link = [...node.querySelectorAll("a")].find((a) => a.textContent?.includes("Subscribe now"));
     expect(link?.getAttribute("href")).toBe("/account");
   });
 
