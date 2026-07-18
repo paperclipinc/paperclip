@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const INBOX_ARCHIVE_AGENT_POLICIES_MIGRATION = "0172_inbox_archive_agent_policies.sql";
+const INBOX_ARCHIVE_AGENT_POLICIES_MIGRATION = "0173_inbox_archive_agent_policies.sql";
 
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
