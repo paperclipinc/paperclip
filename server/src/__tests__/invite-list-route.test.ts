@@ -36,6 +36,7 @@ vi.mock("../services/index.js", () => ({
       ],
     }),
   }),
+  companyStandingService: () => ({ getEffectiveStandings: vi.fn() }),
 }));
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

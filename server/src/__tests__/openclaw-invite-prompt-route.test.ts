@@ -49,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
   instanceSettingsService: () => mockInstanceSettingsService,
+  companyStandingService: () => ({ getEffectiveStandings: vi.fn() }),
 }));
 
 vi.mock("../storage/index.js", () => ({

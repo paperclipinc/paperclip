@@ -69,6 +69,7 @@ import {
   accessService,
   agentService,
   boardAuthService,
+  companyStandingService,
   deduplicateAgentName,
   instanceSettingsService,
   logActivity,
@@ -2612,6 +2613,7 @@ export function accessRoutes(
   const router = Router();
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
+  const companyStandings = companyStandingService(db);
   const agents = agentService(db);
   const instanceSettings = instanceSettingsService(db);
   const getExposedCompanySurfaces = async () =>
@@ -2869,8 +2871,9 @@ export function accessRoutes(
         experimental: settings.experimental,
         defaultEnvironmentId: settings.defaultEnvironmentId,
       }),
-      // Populated by PR-3 (company-standing gate); typed and empty until then.
-      companyStandings: {},
+      companyStandings: await companyStandings.getEffectiveStandings(
+        accessSnapshot.companyIds,
+      ),
     };
     res.json({
       user: accessSnapshot.user,
