@@ -16,6 +16,7 @@ import {
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -2480,6 +2481,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -2494,6 +2496,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("uses populated memberships as the authoritative board access source", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -2516,6 +2519,7 @@ describe("canBoardManageRuntime", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -2530,6 +2534,7 @@ describe("canBoardManageRuntime", () => {
   it("denies viewers the runtime-manage-gated break-glass affordance", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -2550,6 +2555,7 @@ describe("canBoardManageRuntime", () => {
   it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
