@@ -1212,6 +1212,13 @@
       "when": 1784332800000,
       "tag": "0173_instance_settings_visibility",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1784332800000,
+      "tag": "0174_company_standing",
+      "breakpoints": true
     }
   ]
 }
