@@ -478,6 +478,10 @@ export {
   type PluginApiRouteCheckoutPolicy,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  COMPANY_SETTINGS_SURFACES,
+  INSTANCE_SETTINGS_SURFACES,
+  type CompanySettingsSurface,
+  type InstanceSettingsSurface,
 } from "./constants.js";
 
 export {
