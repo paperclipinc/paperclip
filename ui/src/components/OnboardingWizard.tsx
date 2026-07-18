@@ -373,6 +373,13 @@ export function OnboardingWizard() {
     adapterType === "pi_local" ||
     adapterType === "cursor";
   const credentialSetup = getUIAdapter(adapterType)?.credentialSetup;
+  // Gate activation on a connected credential: if the adapter advertises
+  // credential options, the user must bind at least one before we let them
+  // bring the agent to life (otherwise its heartbeat runs fail auth forever).
+  const requiresCredential = Boolean(credentialSetup && credentialSetup.options.length > 0);
+  const credentialConnected =
+    !requiresCredential ||
+    credentialSetup!.options.some((o) => Boolean(credentialBindings[o.envKey]));
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
@@ -933,7 +940,7 @@ export function OnboardingWizard() {
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim()) handleGiveHeartbeat();
+      else if (step === 4 && agentName.trim() && credentialConnected) handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -1908,7 +1915,12 @@ export function OnboardingWizard() {
                   {step === 4 && (
                     <Button
                       size="sm"
-                      disabled={!agentName.trim() || loading || adapterEnvLoading}
+                      disabled={
+                        !agentName.trim() ||
+                        loading ||
+                        adapterEnvLoading ||
+                        (requiresCredential && !credentialConnected)
+                      }
                       onClick={handleGiveHeartbeat}
                     >
                       {loading ? (

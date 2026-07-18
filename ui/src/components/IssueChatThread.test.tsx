@@ -2417,6 +2417,44 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("surfaces a custom pause reason instead of the generic manual copy", () => {
+    const root = createRoot(container);
+    const pauseReason: string =
+      "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.";
+    const pausedAgent = {
+      id: "agent-1",
+      companyId: "company-1",
+      name: "CodexCoder",
+      status: "paused",
+      pauseReason,
+    } as Agent;
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            agentMap={new Map([["agent-1", pausedAgent]])}
+            currentAssigneeValue="agent:agent-1"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("CodexCoder is paused");
+    expect(container.textContent).toContain(pauseReason);
+    expect(container.textContent).not.toContain("It was paused manually");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("supports the embedded read-only variant without the jump control", () => {
     const root = createRoot(container);
 
