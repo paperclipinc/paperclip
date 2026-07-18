@@ -1,8 +1,17 @@
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
-import { createDb, instanceUserRoles, authUsers } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  createDb,
+  instanceUserRoles,
+  authUsers,
+  companies,
+  companyMemberships,
+  companyStanding,
+  plugins,
+} from "@paperclipai/db";
 import { COMPANY_SETTINGS_SURFACES } from "@paperclipai/shared";
 import {
   closeDbClient,
@@ -10,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { companyStandingService } from "../services/company-standing.js";
 
 vi.hoisted(() => {
   process.env.PAPERCLIP_HOME = "/tmp/paperclip-test-home";
@@ -67,6 +77,45 @@ describeEmbeddedPostgres("GET /cli-auth/me capabilities", () => {
     companyIds: ["company-1"],
     memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
   };
+
+  async function insertCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Standing Co",
+      issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function insertPlugin(key: string) {
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: key,
+      packageName: `@paperclipai/${key}`,
+      version: "1.0.0",
+      manifestJson: {
+        id: key,
+        name: key,
+        version: "1.0.0",
+        capabilities: ["company.standing.write"],
+      } as never,
+      status: "ready",
+    });
+    return pluginId;
+  }
+
+  async function insertMembership(companyId: string, userId: string) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+  }
 
   it("returns all surfaces + derived features + empty standings under the default policy", async () => {
     // Migration 0105 seeds a "Local" default environment and points
@@ -151,5 +200,70 @@ describeEmbeddedPostgres("GET /cli-auth/me capabilities", () => {
     expect(res.status).toBe(200);
     expect(res.body.isInstanceAdmin).toBe(true);
     expect(res.body.capabilities.exposedSurfaces).toEqual([...COMPANY_SETTINGS_SURFACES]);
+    expect(res.body.capabilities.companyStandings).toEqual({});
+  });
+
+  it("fills capabilities.companyStandings with the effective standing per actor company", async () => {
+    const userId = "user-standing";
+    const companyNoRows = await insertCompany();
+    const companyBlocked = await insertCompany();
+    const companyGrace = await insertCompany();
+    await insertMembership(companyNoRows, userId);
+    await insertMembership(companyBlocked, userId);
+    await insertMembership(companyGrace, userId);
+
+    const pluginId = await insertPlugin("paperclip.billing");
+    const standings = companyStandingService(db);
+    await standings.setStanding(pluginId, companyBlocked, {
+      status: "blocked",
+      reason: "subscription_lapsed",
+      message: "Subscription lapsed.",
+      actionUrl: "/billing",
+    });
+    await standings.setStanding(pluginId, companyGrace, {
+      status: "grace",
+      reason: "payment_failed",
+      message: "Your last payment failed.",
+    });
+
+    try {
+      const app = await createApp(db, {
+        type: "board",
+        userId,
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      const res = await request(app).get("/api/cli-auth/me");
+
+      expect(res.status).toBe(200);
+      expect(res.body.companyIds).toEqual(
+        expect.arrayContaining([companyNoRows, companyBlocked, companyGrace]),
+      );
+      // getEffectiveStandings seeds every requested company: a company with
+      // no standing rows is present and reports `active`, it is never absent.
+      expect(res.body.capabilities.companyStandings).toEqual({
+        [companyNoRows]: { status: "active" },
+        [companyBlocked]: {
+          status: "blocked",
+          reason: "subscription_lapsed",
+          message: "Subscription lapsed.",
+          actionUrl: "/billing",
+        },
+        [companyGrace]: {
+          status: "grace",
+          reason: "payment_failed",
+          message: "Your last payment failed.",
+        },
+      });
+    } finally {
+      await db.delete(companyStanding).where(eq(companyStanding.pluginId, pluginId));
+      await db.delete(plugins).where(eq(plugins.id, pluginId));
+      await db
+        .delete(companyMemberships)
+        .where(eq(companyMemberships.principalId, userId));
+      await db
+        .delete(companies)
+        .where(inArray(companies.id, [companyNoRows, companyBlocked, companyGrace]));
+    }
   });
 });

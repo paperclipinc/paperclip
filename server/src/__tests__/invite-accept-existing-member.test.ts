@@ -31,6 +31,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: logActivityMock,
   notifyHireApproved: vi.fn(),
   instanceSettingsService: () => instanceSettingsServiceMock,
+  companyStandingService: () => ({ getEffectiveStandings: vi.fn() }),
 }));
 
 type QueryHooks = {

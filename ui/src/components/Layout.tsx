@@ -19,6 +19,7 @@ import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { CloudTrialBanner } from "./CloudTrialBanner";
+import { CompanyStandingBanner } from "./CompanyStandingBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
@@ -553,6 +554,7 @@ export function Layout() {
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <CloudTrialBanner />
+      <CompanyStandingBanner />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
