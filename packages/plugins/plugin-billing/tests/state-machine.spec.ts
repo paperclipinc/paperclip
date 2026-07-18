@@ -92,6 +92,7 @@ describe("transition — clock boundaries", () => {
     const r = transition(due, { type: "clock" }, CONFIG, NOW);
     expect(r.sub.status).toBe("canceled");
     expect(r.sub.cancelAtPeriodEnd).toBe(false);
+    expect(r.sub.providerSubscriptionId).toBeNull();
   });
 
   it("active without cancelAtPeriodEnd never clock-cancels, even long past periodEnd (dunning owns it)", () => {
@@ -168,8 +169,8 @@ describe("transition — payment.succeeded", () => {
     expect(r.changed).toBe(false);
   });
 
-  it("auto-unblocks grace and blocked, revives canceled, activates trialing/awaiting_payment", () => {
-    for (const status of ["grace", "blocked", "canceled", "trialing", "awaiting_payment"] as const) {
+  it("auto-unblocks grace and blocked, activates trialing/awaiting_payment", () => {
+    for (const status of ["grace", "blocked", "trialing", "awaiting_payment"] as const) {
       const r = transition(subInStatus(status), paid, CONFIG, NOW);
       expect(r.sub.status, status).toBe("active");
       expect(r.sub.graceSince).toBeNull();
@@ -178,6 +179,51 @@ describe("transition — payment.succeeded", () => {
 
   it("never touches complimentary", () => {
     expect(transition(subInStatus("complimentary"), paid, CONFIG, NOW).changed).toBe(false);
+  });
+
+  it("does not revive canceled — resurrection guard, belt-and-braces on top of routing", () => {
+    const r = transition(subInStatus("canceled"), paid, CONFIG, NOW);
+    expect(r.sub.status).toBe("canceled");
+    expect(r.changed).toBe(false);
+  });
+});
+
+describe("transition — resurrection hazard (canceled must stay canceled)", () => {
+  it("clock cancel-at-period-end nulls providerSubscriptionId, so a stale payment.succeeded for the old subRef leaves the sub canceled", () => {
+    const active = mkSub({
+      status: "active",
+      providerSubscriptionId: "psub-old",
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: "2026-07-18T12:00:00.000Z",
+    });
+    const afterClock = transition(active, { type: "clock" }, CONFIG, NOW);
+    expect(afterClock.sub.status).toBe("canceled");
+    expect(afterClock.sub.providerSubscriptionId).toBeNull();
+
+    const stalePayment: BillingEvent = { type: "payment.succeeded", subRef: "psub-old", periodEnd: "2026-09-18T12:00:00.000Z" };
+    const r = transition(afterClock.sub, stalePayment, CONFIG, NOW);
+    expect(r.sub.status).toBe("canceled");
+    expect(r.changed).toBe(false);
+  });
+
+  it("subscription.canceled event nulls providerSubscriptionId", () => {
+    const sub = subInStatus("active");
+    const r = transition(sub, { type: "subscription.canceled", subRef: "psub-1" }, CONFIG, NOW);
+    expect(r.sub.status).toBe("canceled");
+    expect(r.sub.providerSubscriptionId).toBeNull();
+  });
+
+  it("company.deleted nulls providerSubscriptionId", () => {
+    const sub = subInStatus("active");
+    const r = transition(sub, { type: "company.deleted" }, CONFIG, NOW);
+    expect(r.sub.status).toBe("canceled");
+    expect(r.sub.providerSubscriptionId).toBeNull();
+  });
+
+  it("payment.succeeded is a defensive no-op on canceled even if providerSubscriptionId were somehow still populated", () => {
+    const sub = { ...subInStatus("canceled"), providerSubscriptionId: "psub-1" };
+    const r = transition(sub, { type: "payment.succeeded", subRef: "psub-1", periodEnd: "2026-09-18T12:00:00.000Z" }, CONFIG, NOW);
+    expect(r.sub.status).toBe("canceled");
   });
 });
 
@@ -212,6 +258,7 @@ describe("transition — subscription.canceled", () => {
       const r = transition(subInStatus(status), canceled, CONFIG, NOW);
       expect(r.sub.status, status).toBe("canceled");
       expect(r.sub.cancelAtPeriodEnd).toBe(false);
+      expect(r.sub.providerSubscriptionId, status).toBeNull();
     }
   });
 
@@ -309,6 +356,7 @@ describe("transition — company.deleted", () => {
       const r = transition(sub, { type: "company.deleted" }, CONFIG, NOW);
       expect(r.sub.status).toBe("canceled");
       expect(r.effects).toEqual([{ kind: "provider.cancel_now", providerSubscriptionId: "psub-1" }]);
+      expect(r.sub.providerSubscriptionId, status).toBeNull();
     }
   });
 

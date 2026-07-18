@@ -72,6 +72,9 @@ export function transition(
         && Date.parse(next.currentPeriodEnd) <= now.getTime()) {
         next.status = "canceled";
         next.cancelAtPeriodEnd = false;
+        // Resurrection hazard: a stale payment.succeeded for the old subRef must not
+        // be able to match this row at the routing layer once it's canceled.
+        next.providerSubscriptionId = null;
       }
       break;
     }
@@ -93,6 +96,14 @@ export function transition(
 
     case "payment.succeeded": {
       if (next.status === "complimentary") break;
+      // Defensive guard, belt-and-braces: payment.succeeded must never transition
+      // status away from canceled. Routing (Task-8 exact-match on
+      // providerSubscriptionId, which every canceled path nulls out) is the primary
+      // defense, but this closes the hole even if that invariant were ever violated.
+      if (next.status === "canceled") break;
+      // trialing/awaiting_payment: unreachable via Task-8 exact-match routing
+      // (providerSubscriptionId is null in those states); kept for defensive
+      // completeness.
       next.status = "active";
       next.providerSubscriptionId = next.providerSubscriptionId ?? event.subRef;
       next.currentPeriodEnd = laterIso(next.currentPeriodEnd, event.periodEnd);
@@ -110,9 +121,15 @@ export function transition(
 
     case "subscription.canceled": {
       if (next.status === "complimentary" || next.status === "canceled") break;
+      // trialing/awaiting_payment: unreachable via Task-8 exact-match routing
+      // (providerSubscriptionId is null in those states); kept for defensive
+      // completeness.
       next.status = "canceled";
       next.cancelAtPeriodEnd = false;
       next.graceSince = null;
+      // Resurrection hazard: null the provider ref so a stale payment.succeeded for
+      // the old subRef can no longer match this row at the routing layer.
+      next.providerSubscriptionId = null;
       break;
     }
 
@@ -162,8 +179,13 @@ export function transition(
       if (next.providerSubscriptionId !== null) {
         effects.push({ kind: "provider.cancel_now", providerSubscriptionId: next.providerSubscriptionId });
       }
+      // Complimentary is normally "always active" (see expectedStanding), but the
+      // company is gone, so that no longer applies — it gets canceled here too.
       next.status = "canceled";
       next.cancelAtPeriodEnd = false;
+      // Resurrection hazard: null the provider ref so a stale payment.succeeded for
+      // the old subRef can no longer match this row at the routing layer.
+      next.providerSubscriptionId = null;
       break;
     }
   }
