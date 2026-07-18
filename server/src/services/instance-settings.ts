@@ -224,6 +224,9 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       cloudBilling:
         process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
         (parsed.data.cloudBilling ?? false),
+      cloudTrialBanner:
+        process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true" ||
+        (parsed.data.cloudTrialBanner ?? false),
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
@@ -256,6 +259,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
+    cloudTrialBanner: process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true",
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,

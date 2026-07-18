@@ -44,19 +44,19 @@ export function CloudTrialBanner() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const cloudBilling = experimentalSettings?.cloudBilling === true;
+  const cloudTrialBanner = experimentalSettings?.cloudTrialBanner === true;
 
   // One fetch per page load: the trial state does not change mid-session.
   const { data: summary } = useQuery({
     queryKey: queryKeys.cloudBilling.summary,
     queryFn: () => cloudBillingApi.summary(),
-    enabled: cloudBilling && !dismissed,
+    enabled: cloudTrialBanner && !dismissed,
     retry: false,
     staleTime: Infinity,
     gcTime: Infinity,
   });
 
-  if (!cloudBilling || dismissed || !summary) return null;
+  if (!cloudTrialBanner || dismissed || !summary) return null;
 
   const expired = summary.effectiveStatus === "trial_expired";
   const trialing = !expired && summary.status === "trialing";
