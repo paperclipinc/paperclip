@@ -3304,7 +3304,7 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update instance visibility settings",
   request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
