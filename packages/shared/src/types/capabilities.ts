@@ -30,8 +30,7 @@ export interface PublicFeatureFlags {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
-  cloudBilling: boolean;
-  cloudTrialBanner: boolean;
+  enableSummaries: boolean;
   // Derived from instance general settings / instance defaults. These ride
   // the capabilities payload because the /instance/settings reads that used
   // to serve them are instance-admin-only as of PR-1.
@@ -84,8 +83,7 @@ export function derivePublicFeatureFlags(input: {
     enableDecisions: experimental.enableDecisions === true,
     enableGoalsSidebarLink: experimental.enableGoalsSidebarLink === true,
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
-    cloudBilling: experimental.cloudBilling === true,
-    cloudTrialBanner: experimental.cloudTrialBanner === true,
+    enableSummaries: experimental.enableSummaries === true,
     keyboardShortcuts: general.keyboardShortcuts === true,
     censorUsernameInLogs: general.censorUsernameInLogs === true,
     feedbackDataSharingPreference: general.feedbackDataSharingPreference,
