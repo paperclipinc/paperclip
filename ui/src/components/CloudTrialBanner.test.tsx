@@ -4,17 +4,18 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { CloudTrialBanner, trialDaysLeft } from "./CloudTrialBanner";
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockCloudBillingApi = vi.hoisted(() => ({
   summary: vi.fn(),
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 vi.mock("@/api/cloudBilling", () => ({
   cloudBillingApi: mockCloudBillingApi,
@@ -36,7 +37,7 @@ let container: HTMLDivElement | null = null;
 let queryClient: QueryClient | null = null;
 
 function experimental(cloudTrialBanner: boolean) {
-  return { cloudTrialBanner };
+  return buildCurrentBoardAccess({ features: { cloudTrialBanner } });
 }
 
 function trialingSummary(trialEndsAt: string) {
@@ -75,7 +76,7 @@ async function render(client?: QueryClient) {
 
 beforeEach(() => {
   window.sessionStorage.clear();
-  mockInstanceSettingsApi.getExperimental.mockResolvedValue(experimental(true));
+  mockAccessApi.getCurrentBoardAccess.mockResolvedValue(experimental(true));
   mockCloudBillingApi.summary.mockResolvedValue(trialingSummary(inDays(5)));
 });
 
@@ -152,7 +153,7 @@ describe("CloudTrialBanner", () => {
   });
 
   it("renders nothing and never fetches billing off-cloud", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue(experimental(false));
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(experimental(false));
     const node = await render();
     expect(node.textContent).toBe("");
     expect(mockCloudBillingApi.summary).not.toHaveBeenCalled();

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -14,8 +15,8 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
@@ -24,8 +25,8 @@ vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -79,7 +80,7 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: false, enableIsolatedWorkspaces: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
     mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
@@ -230,7 +231,7 @@ describe("SidebarAccountMenu", () => {
   }
 
   it("links Plan & billing to /account on a cloud instance, above Sign out", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: true } }));
     const root = await renderOpenMenu();
 
     const billing = document.body.querySelector('a[href="/account"]');
@@ -252,7 +253,7 @@ describe("SidebarAccountMenu", () => {
   });
 
   it("points Feedback at the cloud support inbox on a cloud instance (never the upstream form)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ cloudBilling: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: true } }));
     const root = await renderOpenMenu();
 
     const feedback = document.body.querySelector('a[href^="mailto:support@paperclip.inc"]');
