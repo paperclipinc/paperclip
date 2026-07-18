@@ -13,11 +13,17 @@ export function signStubPayload(secret: string, rawBody: string): string {
 }
 
 export function verifyStubSignature(secret: string, rawBody: string, signature: string | undefined): boolean {
-  if (!signature || !/^[0-9a-f]+$/i.test(signature)) return false;
+  // Require exactly the canonical SHA-256 hex length (64 chars). This is deliberately
+  // stricter than "looks like hex": Buffer.from(str, "hex") silently drops a trailing
+  // unpaired nibble instead of throwing, so without this check a 65-char string made
+  // of a genuine signature plus one extra hex digit decodes to the same 32 bytes as
+  // the real signature and would incorrectly verify. Accept case-insensitively (headers
+  // may arrive uppercased) and normalize before decoding.
+  if (!signature || !/^[0-9a-f]{64}$/i.test(signature)) return false;
   const expected = Buffer.from(signStubPayload(secret, rawBody), "hex");
   let provided: Buffer;
   try {
-    provided = Buffer.from(signature, "hex");
+    provided = Buffer.from(signature.toLowerCase(), "hex");
   } catch {
     return false;
   }
@@ -46,5 +52,19 @@ export async function ensureStubWebhookSecret(state: PluginStateClient): Promise
   if (typeof existing === "string" && /^[0-9a-f]{64}$/.test(existing)) return existing;
   const secret = randomBytes(32).toString("hex");
   await state.set({ scopeKind: "instance", stateKey: SECRET_STATE_KEY }, secret);
+  // ctx.state.set() is a last-write-wins upsert; there is no compare-and-swap
+  // available plugin-side. Two concurrent first-boot callers can each read `null`,
+  // each mint their own secret, and each call set() — whichever write lands last
+  // wins in storage, but both callers would otherwise return their own (possibly
+  // losing) locally-minted secret, causing them to disagree about the "real"
+  // secret used to verify future webhooks. Re-read immediately after writing so
+  // every caller converges on whatever actually ended up persisted, rather than
+  // trusting its own local value.
+  //
+  // This narrows the race to the tiny window between this set() and the re-get()
+  // below, it does not eliminate it. A host-side setIfAbsent/CAS primitive would
+  // close that window entirely; tracked as a follow-up.
+  const stored = await state.get({ scopeKind: "instance", stateKey: SECRET_STATE_KEY });
+  if (typeof stored === "string" && /^[0-9a-f]{64}$/.test(stored)) return stored;
   return secret;
 }

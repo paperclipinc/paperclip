@@ -25,6 +25,28 @@ describe("stub HMAC", () => {
     expect(headerValue(headers, "x-billing-stub-signature")).toBe("abc");
     expect(headerValue(headers, "missing")).toBeUndefined();
   });
+
+  it("rejects a dangling hex nibble appended to a valid signature (odd-length truncation bug)", () => {
+    // Buffer.from(str, "hex") silently drops a trailing unpaired nibble instead of
+    // erroring, so a 65-char string ending in one extra hex digit used to decode to
+    // the same 32 bytes as the genuine 64-char signature and pass verification.
+    const body = JSON.stringify({ type: "payment.succeeded", subRef: "psub-1" });
+    const sig = signStubPayload("s3cret", body);
+    expect(verifyStubSignature("s3cret", body, sig + "f")).toBe(false);
+    expect(verifyStubSignature("s3cret", body, sig + "0")).toBe(false);
+  });
+
+  it("accepts an uppercase-hex signature (case-insensitive match, canonical length enforced)", () => {
+    const body = JSON.stringify({ type: "payment.succeeded", subRef: "psub-1" });
+    const sig = signStubPayload("s3cret", body);
+    expect(verifyStubSignature("s3cret", body, sig.toUpperCase())).toBe(true);
+  });
+
+  it("rejects a truncated 63-char signature", () => {
+    const body = JSON.stringify({ type: "payment.succeeded", subRef: "psub-1" });
+    const sig = signStubPayload("s3cret", body);
+    expect(verifyStubSignature("s3cret", body, sig.slice(0, 63))).toBe(false);
+  });
 });
 
 describe("ensureStubWebhookSecret", () => {
@@ -45,5 +67,24 @@ describe("ensureStubWebhookSecret", () => {
     const second = await ensureStubWebhookSecret(state);
     expect(first).toMatch(/^[0-9a-f]{64}$/);
     expect(second).toBe(first);
+  });
+
+  it("converges on the stored winner (not the locally minted secret) when a concurrent writer wins the set() race", async () => {
+    // ctx.state.set() is a last-write-wins upsert with no compare-and-swap available
+    // plugin-side. Simulate a lost race: our set() call is a no-op from storage's
+    // perspective because a concurrent writer's secret is what actually lands.
+    const values = new Map<string, unknown>();
+    const key = (input: { scopeKind: string; stateKey: string }) => `${input.scopeKind}:${input.stateKey}`;
+    const winner = "b".repeat(64);
+    const state = {
+      async get(input: { scopeKind: "instance"; stateKey: string }) { return values.get(key(input)) ?? null; },
+      async set(input: { scopeKind: "instance"; stateKey: string }, _value: unknown) {
+        values.set(key(input), winner);
+      },
+      async delete() {},
+    } as unknown as PluginStateClient;
+
+    const result = await ensureStubWebhookSecret(state);
+    expect(result).toBe(winner);
   });
 });
