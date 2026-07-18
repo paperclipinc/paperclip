@@ -16,6 +16,7 @@ import {
   instanceVisibilitySettingsSchema,
   type InstanceVisibilitySettings,
   type PatchInstanceVisibilitySettings,
+  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
@@ -280,7 +281,10 @@ export function normalizeVisibilitySettings(raw: unknown): InstanceVisibilitySet
   if (!parsed.success) {
     // Corrupt row: fall back to the spec default (everything exposed),
     // mirroring normalizeGeneralSettings/normalizeExperimentalSettings.
-    return { companySurfaces: [...COMPANY_SETTINGS_SURFACES] };
+    return {
+      ...DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
+      companySurfaces: [...DEFAULT_INSTANCE_VISIBILITY_SETTINGS.companySurfaces],
+    };
   }
   const stored = parsed.data.companySurfaces;
   // Canonical order + dedupe: intersect the constant list with the stored set.

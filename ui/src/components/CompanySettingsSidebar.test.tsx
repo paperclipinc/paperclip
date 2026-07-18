@@ -232,7 +232,7 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
+  it("shows cloud upstream nav item when cloud sync is enabled for an instance admin", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
     );
@@ -310,7 +310,7 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("shows cloud upstream only when cloud sync is enabled", async () => {
+  it("registers the cloud upstream nav item with the expected route and label when cloud sync is enabled", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
     );
