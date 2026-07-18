@@ -46,8 +46,10 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
+  COMPANY_SETTINGS_SURFACES,
+  derivePublicFeatureFlags,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
+import type { BoardCapabilities, DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -68,6 +70,7 @@ import {
   agentService,
   boardAuthService,
   deduplicateAgentName,
+  instanceSettingsService,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
@@ -2620,6 +2623,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const instanceSettings = instanceSettingsService(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -2854,16 +2858,38 @@ export function accessRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
-    const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
+    const [accessSnapshot, settings] = await Promise.all([
+      boardAuth.resolveBoardAccess(req.actor.userId),
+      instanceSettings.get(),
+    ]);
+    // The local_trusted implicit actor has no DB role row; honor the actor
+    // claim set by the auth middleware alongside the DB-resolved role.
+    const isInstanceAdmin =
+      req.actor.source === "local_implicit" ||
+      req.actor.isInstanceAdmin === true ||
+      accessSnapshot.isInstanceAdmin;
+    const capabilities: BoardCapabilities = {
+      exposedSurfaces: isInstanceAdmin
+        ? [...COMPANY_SETTINGS_SURFACES]
+        : settings.visibility.companySurfaces,
+      features: derivePublicFeatureFlags({
+        general: settings.general,
+        experimental: settings.experimental,
+        defaultEnvironmentId: settings.defaultEnvironmentId,
+      }),
+      // Populated by PR-3 (company-standing gate); typed and empty until then.
+      companyStandings: {},
+    };
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
+      isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
       memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
       cloudStack: req.actor.source === "cloud_tenant" ? req.actor.cloudStack ?? null : null,
+      capabilities,
     });
   });
 
