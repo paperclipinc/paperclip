@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BillingSummary } from "../src/service.js";
 
 type TestBridgeGlobal = typeof globalThis & {
@@ -130,6 +130,14 @@ describe("BillingPage states", () => {
     const { BillingPage } = await importUi();
     const html = renderToStaticMarkup(createElement(BillingPage, { context } as never));
     expect(html).toContain("Confirming payment");
+  });
+
+  it("awaiting_payment: renders with warning badge (not error)", async () => {
+    mockSummary = baseSummary({ status: "awaiting_payment", trialEndsAt: null });
+    const { BillingPage } = await importUi();
+    const html = renderToStaticMarkup(createElement(BillingPage, { context } as never));
+    expect(html).toContain('data-status="warning"');
+    expect(html).toContain("awaiting_payment");
   });
 
   it("renders the ledger history", async () => {

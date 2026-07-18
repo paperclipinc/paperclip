@@ -39,11 +39,18 @@ export function BillingPage({ context }: PluginCompanySettingsPageProps) {
     if (!confirming || !returnedSession) return;
     let cancelled = false;
     void resolveCheckout({ companyId, sessionRef: returnedSession }).catch(() => {});
-    const interval = setInterval(() => {
+    let interval = setInterval(() => {
       if (!cancelled) setTick((value) => value + 1);
     }, 2000);
     const slowTimer = setTimeout(() => {
-      if (!cancelled) setConfirmSlow(true);
+      if (!cancelled) {
+        setConfirmSlow(true);
+        // Back off from 2s to 15s polling after slow threshold
+        clearInterval(interval);
+        interval = setInterval(() => {
+          if (!cancelled) setTick((value) => value + 1);
+        }, 15000);
+      }
     }, 20000);
     return () => {
       cancelled = true;
@@ -123,7 +130,7 @@ export function BillingPage({ context }: PluginCompanySettingsPageProps) {
       {actionError && <p role="alert">{actionError}</p>}
 
       <section>
-        <StatusBadge label={summary.status} status={summary.status === "active" || summary.status === "complimentary" ? "ok" : summary.status === "grace" || summary.status === "trialing" ? "warning" : "error"} />
+        <StatusBadge label={summary.status} status={summary.status === "active" || summary.status === "complimentary" ? "ok" : summary.status === "grace" || summary.status === "trialing" || summary.status === "awaiting_payment" ? "warning" : "error"} />
         <dl>
           <dt>Price</dt>
           <dd>{summary.status === "complimentary" ? "Complimentary" : price}</dd>
