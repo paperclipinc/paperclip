@@ -173,6 +173,7 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.visibility_updated",
             entityType: "instance_settings",
             entityId: updated.id,

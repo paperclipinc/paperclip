@@ -668,6 +668,12 @@ describe("instance settings routes", () => {
       companySurfaces: ["company.general", "company.members"],
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    for (const call of mockLogActivity.mock.calls) {
+      expect(call[1]).toMatchObject({
+        action: "instance.settings.visibility_updated",
+        agentApiKeyId: null,
+      });
+    }
   });
 
   it("rejects non-admin board users from reading or updating the visibility policy", async () => {
