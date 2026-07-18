@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import { formatAmount } from "../format.js";
 import type { BillingSummary } from "../service.js";
+import { ActionRow, Button, Callout, Card, CardBody, CardHeader, LoadingBlock, Mono, PageHeading, PropRow, Stack } from "./kit.js";
 
 const day = (iso: string | null) => (iso ? iso.slice(0, 10) : "—");
 
@@ -65,12 +66,12 @@ export function BillingPage({ context }: PluginCompanySettingsPageProps) {
     }
   }, [confirming, summary]);
 
-  if (loading && !summary) return <Spinner />;
+  if (loading && !summary) return <LoadingBlock><Spinner /></LoadingBlock>;
   if (!summary) {
     return (
-      <p role="alert">
-        Billing information is unavailable{loadError ? `: ${loadError.message}` : "."}
-      </p>
+      <Callout tone="danger" role="alert">
+        <span>Billing information is unavailable{loadError ? `: ${loadError.message}` : "."}</span>
+      </Callout>
     );
   }
 
@@ -105,92 +106,139 @@ export function BillingPage({ context }: PluginCompanySettingsPageProps) {
   }
 
   const subscribeCta = summary.hasDefaultPaymentMethod ? (
-    <div>
-      <button onClick={() => void startOneClick()}>
+    <ActionRow>
+      <Button variant="primary" onClick={() => void startOneClick()}>
         Add subscription for {formatAmount(summary.priceCents, summary.currency)}/month — uses card on file
-      </button>
-      <button onClick={() => void startCheckout()}>Use a different payment method</button>
-    </div>
+      </Button>
+      <Button variant="ghost" onClick={() => void startCheckout()}>Use a different payment method</Button>
+    </ActionRow>
   ) : (
-    <button onClick={() => void startCheckout()}>Subscribe now — {price}</button>
+    <Button variant="primary" onClick={() => void startCheckout()}>Subscribe now — {price}</Button>
   );
 
   return (
-    <div>
-      <h2>Billing</h2>
+    <Stack style={{ maxWidth: 720 }}>
+      <PageHeading>Billing</PageHeading>
 
       {confirming && (
-        <div role="status">
+        <Callout tone="info" role="status">
           <Spinner />
-          <p>Confirming payment…</p>
-          {confirmSlow && <p>This is taking longer than expected — we&apos;ll update this page automatically.</p>}
-        </div>
+          <span>
+            <span>Confirming payment…</span>
+            {confirmSlow && (
+              <span style={{ display: "block", marginTop: 4 }}>
+                This is taking longer than expected — we&apos;ll update this page automatically.
+              </span>
+            )}
+          </span>
+        </Callout>
       )}
 
-      {actionError && <p role="alert">{actionError}</p>}
+      {actionError && <Callout tone="danger" role="alert"><span>{actionError}</span></Callout>}
 
-      <section>
-        <StatusBadge label={summary.status} status={summary.status === "active" || summary.status === "complimentary" ? "ok" : summary.status === "grace" || summary.status === "trialing" || summary.status === "awaiting_payment" ? "warning" : "error"} />
-        <dl>
-          <dt>Price</dt>
-          <dd>{summary.status === "complimentary" ? "Complimentary" : price}</dd>
+      <Card>
+        <CardHeader
+          title="Subscription"
+          right={
+            <StatusBadge
+              label={summary.status}
+              status={
+                summary.status === "active" || summary.status === "complimentary"
+                  ? "ok"
+                  : summary.status === "grace" || summary.status === "trialing" || summary.status === "awaiting_payment"
+                    ? "warning"
+                    : "error"
+              }
+            />
+          }
+        />
+        <CardBody>
+          <PropRow label="Price" value={summary.status === "complimentary" ? "Complimentary" : price} />
           {summary.status === "trialing" && (
-            <>
-              <dt>Free trial</dt>
-              <dd>Free trial — ends {day(summary.trialEndsAt)}</dd>
-            </>
+            <PropRow label="Free trial" value={`Free trial — ends ${day(summary.trialEndsAt)}`} />
           )}
           {summary.currentPeriodEnd && summary.status === "active" && (
-            <>
-              <dt>{summary.cancelAtPeriodEnd ? "Ends" : "Renews"}</dt>
-              <dd>{summary.cancelAtPeriodEnd ? `Ends on ${day(summary.currentPeriodEnd)}` : `Renews on ${day(summary.currentPeriodEnd)}`}</dd>
-            </>
+            <PropRow
+              label={summary.cancelAtPeriodEnd ? "Ends" : "Renews"}
+              value={summary.cancelAtPeriodEnd ? `Ends on ${day(summary.currentPeriodEnd)}` : `Renews on ${day(summary.currentPeriodEnd)}`}
+            />
           )}
           {summary.status === "grace" && (
-            <>
-              <dt>Grace period</dt>
-              <dd>Payment issue — resolve by {day(summary.graceDeadline)} to keep agents running.</dd>
-            </>
+            <PropRow label="Grace period" value={`Payment issue — resolve by ${day(summary.graceDeadline)} to keep agents running.`} />
           )}
-        </dl>
-      </section>
+        </CardBody>
+      </Card>
 
-      <section>
-        {summary.status === "trialing" && subscribeCta}
-        {summary.status === "awaiting_payment" && (
-          <div>
-            <p>This company needs a subscription before agents can run.</p>
-            {subscribeCta}
-          </div>
-        )}
-        {summary.status === "grace" && subscribeCta}
-        {summary.status === "blocked" && (
-          <div>
-            <p>Agent runs are paused until this company has an active subscription.</p>
-            {subscribeCta}
-          </div>
-        )}
-        {summary.status === "canceled" && (
-          <button onClick={() => void startCheckout()}>Resubscribe — {price}</button>
-        )}
-        {summary.status === "active" && !summary.cancelAtPeriodEnd && (
-          <button onClick={() => void run(() => cancel({ companyId }))}>Cancel at period end</button>
-        )}
-        {summary.status === "active" && summary.cancelAtPeriodEnd && (
-          <button onClick={() => void run(() => resume({ companyId }))}>Resume subscription</button>
-        )}
-      </section>
+      {(summary.status === "trialing" ||
+        summary.status === "awaiting_payment" ||
+        summary.status === "grace" ||
+        summary.status === "blocked" ||
+        summary.status === "canceled" ||
+        summary.status === "active") && (
+        <Card>
+          <CardBody>
+            <Stack gap={12}>
+              {summary.status === "awaiting_payment" && (
+                <Callout tone="warning">
+                  <span>This company needs a subscription before agents can run.</span>
+                </Callout>
+              )}
+              {summary.status === "blocked" && (
+                <Callout tone="danger">
+                  <span>Agent runs are paused until this company has an active subscription.</span>
+                </Callout>
+              )}
+              {summary.status === "trialing" && subscribeCta}
+              {summary.status === "awaiting_payment" && subscribeCta}
+              {summary.status === "grace" && subscribeCta}
+              {summary.status === "blocked" && subscribeCta}
+              {summary.status === "canceled" && (
+                <Button variant="primary" onClick={() => void startCheckout()}>Resubscribe — {price}</Button>
+              )}
+              {summary.status === "active" && !summary.cancelAtPeriodEnd && (
+                <Button variant="default" onClick={() => void run(() => cancel({ companyId }))}>Cancel at period end</Button>
+              )}
+              {summary.status === "active" && summary.cancelAtPeriodEnd && (
+                <Button variant="primary" onClick={() => void run(() => resume({ companyId }))}>Resume subscription</Button>
+              )}
+            </Stack>
+          </CardBody>
+        </Card>
+      )}
 
-      <section>
-        <h3>History</h3>
-        <ul>
-          {summary.events.map((event, index) => (
-            <li key={`${event.type}-${index}`}>
-              <code>{event.type}</code> — {event.createdAt.slice(0, 19).replace("T", " ")}
-            </li>
-          ))}
-        </ul>
-      </section>
-    </div>
+      <Card>
+        <CardHeader title="History" />
+        <CardBody padding={0}>
+          {summary.events.length === 0 ? (
+            <div style={{ padding: "16px" }}>
+              <span style={{ fontSize: 13 }}>No billing events yet.</span>
+            </div>
+          ) : (
+            <div>
+              {summary.events.map((event, index) => (
+                <div
+                  key={`${event.type}-${index}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    padding: "10px 16px",
+                    borderTop: index === 0 ? "none" : "1px solid var(--border, oklch(0.269 0 0))",
+                    fontSize: 13,
+                  }}
+                >
+                  <Mono>{event.type}</Mono>
+                  <span style={{ color: "var(--muted-foreground, oklch(0.708 0 0))", fontSize: 12 }}>
+                    {event.createdAt.slice(0, 19).replace("T", " ")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+    </Stack>
   );
 }
