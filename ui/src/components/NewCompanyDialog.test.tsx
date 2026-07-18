@@ -10,6 +10,16 @@ import { ApiError } from "@/api/client";
 const mockCloudCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
 vi.mock("@/api/cloudCompanies", () => ({ cloudCompaniesApi: mockCloudCompaniesApi }));
 
+const mockBillingDisclosure = vi.hoisted(() => ({ fetchCompanyCreationDisclosure: vi.fn() }));
+vi.mock("@/api/billingDisclosure", () => mockBillingDisclosure);
+
+// NewCompanyDialog reads the active company id (to scope the billing probe) via
+// useOptionalCompany, which returns null outside a CompanyProvider. Stub a
+// selected company so the disclosure query is enabled in these tests.
+vi.mock("@/context/CompanyContext", () => ({
+  useOptionalCompany: () => ({ selectedCompanyId: "company-1" }),
+}));
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,6 +45,7 @@ describe("NewCompanyDialog", () => {
   let originalLocation: Location;
 
   beforeEach(() => {
+    mockBillingDisclosure.fetchCompanyCreationDisclosure.mockResolvedValue(null);
     assignSpy = vi.fn();
     originalLocation = window.location;
     // jsdom's window.location (and its .assign) is non-configurable, so replace
@@ -240,6 +251,45 @@ describe("NewCompanyDialog", () => {
     await act(async () => {
       root.unmount();
     });
+    container.remove();
+  });
+
+  it("shows the billing price disclosure when the billing plugin responds", async () => {
+    mockBillingDisclosure.fetchCompanyCreationDisclosure.mockResolvedValue({
+      requiresSubscription: true,
+      trialAvailable: false,
+      trialDays: 0,
+      priceCents: 4900,
+      currency: "EUR",
+      message: "New companies require a €49.00/month subscription.",
+    });
+    const { container, root, queryClient, onOpenChange } = renderDialog();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewCompanyDialog open onOpenChange={onOpenChange} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(document.body.textContent).toContain("New companies require a €49.00/month subscription.");
+    root.unmount();
+    container.remove();
+  });
+
+  it("renders no disclosure line when the billing plugin is absent (null result)", async () => {
+    mockBillingDisclosure.fetchCompanyCreationDisclosure.mockResolvedValue(null);
+    const { container, root, queryClient, onOpenChange } = renderDialog();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewCompanyDialog open onOpenChange={onOpenChange} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    expect(document.body.textContent).not.toContain("subscription");
+    root.unmount();
     container.remove();
   });
 });

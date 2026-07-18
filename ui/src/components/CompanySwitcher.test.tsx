@@ -26,6 +26,9 @@ vi.mock("../context/CompanyContext", () => ({
     selectedCompany: { id: "company-1", name: "Acme", status: "active" },
     setSelectedCompanyId: setSelectedCompanyIdMock,
   }),
+  // NewCompanyDialog (rendered from this component) reads the active company
+  // via useOptionalCompany to scope the (mocked) billing disclosure probe.
+  useOptionalCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
 
 vi.mock("@/api/health", () => ({

@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/api/client";
 import { cloudCompaniesApi, type CloudCompanyCreateResult } from "@/api/cloudCompanies";
+import { fetchCompanyCreationDisclosure } from "@/api/billingDisclosure";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   Dialog,
@@ -27,6 +29,16 @@ interface NewCompanyDialogProps {
 export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+
+  const company = useOptionalCompany();
+  const activeCompanyId = company?.selectedCompanyId ?? null;
+  const disclosure = useQuery({
+    queryKey: ["billing-creation-disclosure", activeCompanyId],
+    queryFn: () => fetchCompanyCreationDisclosure(activeCompanyId as string),
+    enabled: open && activeCompanyId !== null,
+    staleTime: 60_000,
+    retry: false,
+  });
 
   const createCompany = useMutation<CloudCompanyCreateResult, unknown, { name: string }>({
     mutationFn: (data) => cloudCompaniesApi.create(data),
@@ -104,6 +116,12 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
             aria-label="Company name"
           />
         </div>
+
+        {disclosure.data && (
+          <p className="text-sm text-muted-foreground" data-testid="billing-disclosure">
+            {disclosure.data.message}
+          </p>
+        )}
 
         {isUpgradeRequired && (
           <div
