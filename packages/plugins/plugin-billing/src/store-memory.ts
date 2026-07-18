@@ -15,15 +15,17 @@ export class MemoryBillingStore implements BillingStore {
   }
 
   async getSubscriptionByProviderRef(subRef: string): Promise<SubscriptionRow | null> {
+    if (subRef == null) return null;
     for (const row of this.subscriptions.values()) {
-      if (row.providerSubscriptionId === subRef) return { ...row };
+      if (row.providerSubscriptionId !== null && row.providerSubscriptionId === subRef) return { ...row };
     }
     return null;
   }
 
   async getSubscriptionBySessionRef(sessionRef: string): Promise<SubscriptionRow | null> {
+    if (sessionRef == null) return null;
     for (const row of this.subscriptions.values()) {
-      if (row.openCheckoutSessionRef === sessionRef) return { ...row };
+      if (row.openCheckoutSessionRef !== null && row.openCheckoutSessionRef === sessionRef) return { ...row };
     }
     return null;
   }

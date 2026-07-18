@@ -91,4 +91,23 @@ describe("MemoryBillingStore", () => {
     expect(await store.ownerHadTrial("user-1")).toBe(true);
     expect(await store.ownerHadTrial("user-2")).toBe(false);
   });
+
+  it("getSubscriptionByProviderRef(null) returns null even when store contains null refs", async () => {
+    const store = new MemoryBillingStore();
+    await store.insertSubscription(mkSub({ status: "awaiting_payment", providerSubscriptionId: null }));
+    expect(await store.getSubscriptionByProviderRef(null as any)).toBeNull();
+  });
+
+  it("getSubscriptionBySessionRef(null) returns null even when store contains null refs", async () => {
+    const store = new MemoryBillingStore();
+    await store.insertSubscription(mkSub({ status: "awaiting_payment", openCheckoutSessionRef: null }));
+    expect(await store.getSubscriptionBySessionRef(null as any)).toBeNull();
+  });
+
+  it("null-ref guards do not prevent matching valid string refs", async () => {
+    const store = new MemoryBillingStore();
+    await store.insertSubscription(mkSub({ providerSubscriptionId: "valid-ref", openCheckoutSessionRef: "valid-sess" }));
+    expect(await store.getSubscriptionByProviderRef("valid-ref")).not.toBeNull();
+    expect(await store.getSubscriptionBySessionRef("valid-sess")).not.toBeNull();
+  });
 });

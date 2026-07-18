@@ -7,7 +7,9 @@ import type { CustomerRow, LedgerInsert, LedgerRow, SubscriptionRow } from "./do
  */
 export interface BillingStore {
   getSubscriptionByCompany(companyId: string): Promise<SubscriptionRow | null>;
+  /** Lookup by provider subscription ID. Never matches null refs — returns null if subRef is null/undefined, and skips rows with null providerSubscriptionId. */
   getSubscriptionByProviderRef(subRef: string): Promise<SubscriptionRow | null>;
+  /** Lookup by checkout session ID. Never matches null refs — returns null if sessionRef is null/undefined, and skips rows with null openCheckoutSessionRef. */
   getSubscriptionBySessionRef(sessionRef: string): Promise<SubscriptionRow | null>;
   listSubscriptions(): Promise<SubscriptionRow[]>;
   insertSubscription(sub: SubscriptionRow): Promise<void>;
