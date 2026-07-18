@@ -13,22 +13,10 @@ export interface StandingWriter {
   clear(companyId: string): Promise<void>;
 }
 
-/**
- * PR-3 host API surface on ctx.companies
- * (2026-07-18-settings-visibility-and-plugin-enablement-design.md §5.2).
- * The published SDK type does not include it until PR-3 lands, so this is the
- * single cast site in the plugin. Delete the cast when PR-3 merges.
- */
-interface CompaniesStandingClient {
-  setStanding(companyId: string, input: StandingSetInput): Promise<void>;
-  clearStanding(companyId: string): Promise<void>;
-}
-
 export function standingWriterFromContext(ctx: PluginContext): StandingWriter {
-  const client = ctx.companies as unknown as CompaniesStandingClient;
   return {
-    set: (companyId, input) => client.setStanding(companyId, input),
-    clear: (companyId) => client.clearStanding(companyId),
+    set: (companyId, input) => ctx.companies.setStanding(companyId, input),
+    clear: (companyId) => ctx.companies.clearStanding(companyId),
   };
 }
 
