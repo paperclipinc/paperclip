@@ -13,7 +13,7 @@ import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSi
 import { applyCloudCompanyBudget, budgetsApi } from "../api/budgets";
 import { cloudBillingApi } from "../api/cloudBilling";
 import { costsApi } from "../api/costs";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -210,10 +210,7 @@ export function Costs() {
     staleTime: 5_000,
   });
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   // Cloud-hosted billing: the company budget is a recurring monthly wallet funded
   // through the hosted checkout (Paddle) that carries over month to month, not a
   // direct limit write. Self-hosters leave this off and keep the existing direct

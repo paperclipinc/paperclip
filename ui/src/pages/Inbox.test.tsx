@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
@@ -28,7 +29,7 @@ const apiMocks = vi.hoisted(() => ({
   agentsList: vi.fn(),
   heartbeatRunsList: vi.fn(),
   liveRunsForCompany: vi.fn(),
-  experimentalSettings: vi.fn(),
+  currentBoardAccess: vi.fn(),
   projectsList: vi.fn(),
 }));
 
@@ -43,6 +44,7 @@ vi.mock("../api/access", async () => {
     accessApi: {
       listJoinRequests: apiMocks.joinRequestsList,
       listUserDirectory: apiMocks.userDirectoryList,
+      getCurrentBoardAccess: apiMocks.currentBoardAccess,
     },
   };
 });
@@ -81,10 +83,6 @@ vi.mock("../api/heartbeats", () => ({
     list: apiMocks.heartbeatRunsList,
     liveRunsForCompany: apiMocks.liveRunsForCompany,
   },
-}));
-
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: { getExperimental: apiMocks.experimentalSettings },
 }));
 
 vi.mock("../api/projects", () => ({
@@ -274,7 +272,9 @@ function resetInboxApiMocks() {
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
-  apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  apiMocks.currentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
+    );
   apiMocks.projectsList.mockResolvedValue([]);
 }
 
@@ -322,7 +322,9 @@ describe("Inbox toolbar", () => {
 
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    apiMocks.currentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
+    );
 
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },

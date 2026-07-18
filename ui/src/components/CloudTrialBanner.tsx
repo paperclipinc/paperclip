@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clock, X } from "lucide-react";
 import { cloudBillingApi } from "@/api/cloudBilling";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { queryKeys } from "../lib/queryKeys";
 
 const DISMISSED_SESSION_KEY = "paperclip-cloud-trial-banner-dismissed";
@@ -40,10 +40,7 @@ function writeSessionDismissed(): void {
 export function CloudTrialBanner() {
   const [dismissed, setDismissed] = useState(readSessionDismissed);
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   const cloudTrialBanner = experimentalSettings?.cloudTrialBanner === true;
 
   // One fetch per page load: the trial state does not change mid-session.

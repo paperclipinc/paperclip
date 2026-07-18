@@ -478,6 +478,10 @@ export {
   type PluginApiRouteCheckoutPolicy,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  COMPANY_SETTINGS_SURFACES,
+  INSTANCE_SETTINGS_SURFACES,
+  type CompanySettingsSurface,
+  type InstanceSettingsSurface,
 } from "./constants.js";
 
 export {
@@ -630,6 +634,7 @@ export type {
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
   InstanceSettings,
+  InstanceVisibilitySettings,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
@@ -1299,10 +1304,18 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./types/instance.js";
+
+export type {
+  PublicFeatureFlags,
+  EffectiveStanding,
+  BoardCapabilities,
+} from "./types/capabilities.js";
+export { derivePublicFeatureFlags } from "./types/capabilities.js";
 
 export type {
   SmokeLabServiceStatus,
@@ -1351,6 +1364,8 @@ export {
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceVisibilitySettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   createSmokeRunSchema,
@@ -1365,6 +1380,7 @@ export {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceVisibilitySettings,
   type PatchInstanceSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
   type CreateSmokeRun,

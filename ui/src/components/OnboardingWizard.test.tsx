@@ -31,8 +31,8 @@ const mockGoalsApi = vi.hoisted(() => ({
   create: vi.fn(),
   list: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -102,8 +102,8 @@ vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
 vi.mock("../api/cloudCompanies", () => ({ cloudCompaniesApi: mockCloudCompaniesApi }));
 vi.mock("../api/health", () => ({ healthApi: mockHealthApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../adapters", () => ({
@@ -226,7 +226,7 @@ describe("OnboardingWizard cloud first-run", () => {
     mockCompany.companies = [];
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
     // Default to the self-hosted (local_trusted) product so the OSS paths are
     // exercised unless a test opts into cloud.
     mockHealthApi.get.mockResolvedValue({ deploymentMode: "local_trusted" });
@@ -455,7 +455,7 @@ describe("OnboardingWizard cloud first-run", () => {
   });
 
   it("shows all five progress segments", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
     mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
     mockCompany.companies = [{ id: "c1", name: "Auto Co", issuePrefix: "PAP" }];
 

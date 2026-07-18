@@ -12,12 +12,18 @@ import {
   type InstanceSettings,
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
+  COMPANY_SETTINGS_SURFACES,
+  instanceVisibilitySettingsSchema,
+  type InstanceVisibilitySettings,
+  type PatchInstanceVisibilitySettings,
+  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
 const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
+const instanceVisibilitySettingsStorageSchema = instanceVisibilitySettingsSchema.strip();
 const TRUTHY_RUNTIME_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 interface InstanceSettingsServiceOptions {
@@ -270,12 +276,30 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   };
 }
 
+export function normalizeVisibilitySettings(raw: unknown): InstanceVisibilitySettings {
+  const parsed = instanceVisibilitySettingsStorageSchema.safeParse(raw ?? {});
+  if (!parsed.success) {
+    // Corrupt row: fall back to the spec default (everything exposed),
+    // mirroring normalizeGeneralSettings/normalizeExperimentalSettings.
+    return {
+      ...DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
+      companySurfaces: [...DEFAULT_INSTANCE_VISIBILITY_SETTINGS.companySurfaces],
+    };
+  }
+  const stored = parsed.data.companySurfaces;
+  // Canonical order + dedupe: intersect the constant list with the stored set.
+  return {
+    companySurfaces: COMPANY_SETTINGS_SURFACES.filter((surface) => stored.includes(surface)),
+  };
+}
+
 function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
   return {
     id: row.id,
     defaultEnvironmentId: row.defaultEnvironmentId ?? null,
     general: normalizeGeneralSettings(row.general),
     experimental: normalizeExperimentalSettings(row.experimental),
+    visibility: normalizeVisibilitySettings(row.visibility),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as InstanceSettings;
@@ -297,6 +321,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         singletonKey: DEFAULT_SINGLETON_KEY,
         general: {},
         experimental: {},
+        visibility: {},
         createdAt: now,
         updatedAt: now,
       })
@@ -349,6 +374,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return normalizeExperimentalSettings(row.experimental);
     },
 
+    getVisibility: async (): Promise<InstanceVisibilitySettings> => {
+      const row = await getOrCreateRow();
+      return normalizeVisibilitySettings(row.visibility);
+    },
+
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
       const nextGeneral = normalizeGeneralSettings({
@@ -375,6 +405,24 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         .update(instanceSettings)
         .set({
           experimental: { ...nextExperimental },
+          updatedAt: now,
+        })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
+
+    updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const nextVisibility = normalizeVisibilitySettings({
+        ...normalizeVisibilitySettings(current.visibility),
+        ...patch,
+      });
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({
+          visibility: { ...nextVisibility },
           updatedAt: now,
         })
         .where(eq(instanceSettings.id, current.id))

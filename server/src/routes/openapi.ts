@@ -138,6 +138,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateResourceMembershipSchema,
@@ -3042,6 +3043,23 @@ registry.registerPath({
   tags: ["instance"],
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Get instance visibility settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Update instance visibility settings",
+  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 

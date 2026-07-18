@@ -12,7 +12,7 @@ import {
 import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -145,10 +145,7 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const { data: experimentalSettings } = useFeatures();
   // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
   // instances have no /account page, so no entry.
   const cloudBilling = experimentalSettings?.cloudBilling === true;
