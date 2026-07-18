@@ -15,8 +15,13 @@ export const SWEEP_JOB_KEY = "billing-sweep";
 /** Header carrying the hex HMAC-SHA256 of the raw stub event body. */
 export const STUB_SIGNATURE_HEADER = "x-billing-stub-signature";
 
-/** Company-relative path of the plugin's Billing company-settings page. */
-export const BILLING_PAGE_PATH = "company/settings/billing";
+/**
+ * App-relative path of the plugin's Billing company-settings page.
+ * Must keep the leading slash: the PR-3 standing validator
+ * (server/src/services/company-standing.ts) rejects non-`/`-prefixed
+ * relative actionUrls.
+ */
+export const BILLING_PAGE_PATH = "/company/settings/billing";
 
 /** routePath of the stub checkout simulator `page` slot (mounted at /:companyPrefix/billing-checkout). */
 export const CHECKOUT_PAGE_ROUTE = "billing-checkout";

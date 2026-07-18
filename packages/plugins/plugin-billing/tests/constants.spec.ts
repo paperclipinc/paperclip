@@ -32,8 +32,14 @@ describe("constants", () => {
   it("misc keys are stable", () => {
     expect(SWEEP_JOB_KEY).toBe("billing-sweep");
     expect(STUB_SIGNATURE_HEADER).toBe("x-billing-stub-signature");
-    expect(BILLING_PAGE_PATH).toBe("company/settings/billing");
+    expect(BILLING_PAGE_PATH).toBe("/company/settings/billing");
     expect(CHECKOUT_PAGE_ROUTE).toBe("billing-checkout");
     expect(PROVIDER_STUB).toBe("stub");
+  });
+
+  it("BILLING_PAGE_PATH is app-relative (leading slash) — regression for the PR-3 standing " +
+    "validator (server/src/services/company-standing.ts), which throws badRequest on any " +
+    "non-`/`-prefixed, non-http(s) actionUrl", () => {
+    expect(BILLING_PAGE_PATH.startsWith("/")).toBe(true);
   });
 });

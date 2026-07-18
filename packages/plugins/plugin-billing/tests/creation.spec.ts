@@ -101,4 +101,18 @@ describe("ensureSubscriptionForCompany", () => {
     const second = await ensureSubscriptionForCompany(deps, "co-2");
     expect(second.status).toBe("awaiting_payment");
   });
+
+  it("concurrent calls for the same company converge on one subscription and exactly one trial.started row (race safety)", async () => {
+    const { deps, store } = makeDeps();
+    const [a, b] = await Promise.all([
+      ensureSubscriptionForCompany(deps, "co-1"),
+      ensureSubscriptionForCompany(deps, "co-1"),
+    ]);
+    expect(a.id).toBe(b.id);
+    expect((await store.listSubscriptions()).filter((row) => row.companyId === "co-1")).toHaveLength(1);
+    const events = await store.listLedgerEventsForCompany("co-1", 10);
+    expect(events.filter((event) => event.type === "trial.started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "subscription.created")).toHaveLength(1);
+    expect(events.every((event) => event.appliedAt !== null)).toBe(true);
+  });
 });

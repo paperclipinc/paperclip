@@ -50,6 +50,30 @@ export function initialSubscription(
   };
 }
 
+/**
+ * Detects the unique-violation raised by a concurrent insertSubscription for
+ * the same company, across both store adapters:
+ * - MemoryBillingStore throws a plain Error("duplicate subscription for company <id>"),
+ * - SqlBillingStore lets the Postgres unique-violation (company_id UNIQUE) surface
+ *   as-is, possibly wrapped in a driver error with a `.cause` chain — so walk it
+ *   looking for code "23505".
+ * Kept narrow: anything else is rethrown by the caller.
+ */
+function isDuplicateSubscriptionError(error: unknown, companyId: string): boolean {
+  if (error instanceof Error && error.message.includes(`duplicate subscription for company ${companyId}`)) {
+    return true;
+  }
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const maybe = current as { code?: string; cause?: unknown };
+    if (maybe.code === "23505") return true;
+    current = maybe.cause;
+  }
+  return false;
+}
+
 export interface OwnerResolver {
   resolveOwnerUserId(companyId: string): Promise<string>;
 }
@@ -93,10 +117,21 @@ export async function ensureSubscriptionForCompany(
   const ownerHadTrial = await deps.store.ownerHadTrial(ownerUserId);
   const sub = initialSubscription({ id: randomUUID(), companyId, ownerUserId, ownerHadTrial }, deps.config, now);
 
-  await deps.store.insertSubscription(sub);
+  try {
+    await deps.store.insertSubscription(sub);
+  } catch (error) {
+    // Check-then-act race: another caller (event handler vs. sweep, or two
+    // concurrent sweeps) won the insert between our lookup and now. Converge
+    // on the winner's row instead of throwing.
+    if (isDuplicateSubscriptionError(error, companyId)) {
+      const winner = await deps.store.getSubscriptionByCompany(companyId);
+      if (winner) return winner;
+    }
+    throw error;
+  }
 
   const createdLedgerId = randomUUID();
-  await deps.store.insertLedgerEvent({
+  const createdResult = await deps.store.insertLedgerEvent({
     id: createdLedgerId,
     idempotencyKey: `sub-created:${companyId}`,
     type: "subscription.created",
@@ -104,11 +139,13 @@ export async function ensureSubscriptionForCompany(
     companyId,
     rawPayload: { ownerUserId, status: sub.status },
   });
-  await deps.store.markLedgerApplied(createdLedgerId, now.toISOString());
+  if (createdResult === "inserted") {
+    await deps.store.markLedgerApplied(createdLedgerId, now.toISOString());
+  }
 
   if (sub.status === "trialing") {
     const trialLedgerId = randomUUID();
-    await deps.store.insertLedgerEvent({
+    const trialResult = await deps.store.insertLedgerEvent({
       id: trialLedgerId,
       idempotencyKey: `trial-started:${companyId}`,
       type: "trial.started",
@@ -116,7 +153,9 @@ export async function ensureSubscriptionForCompany(
       companyId,
       rawPayload: { ownerUserId, companyId, trialEndsAt: sub.trialEndsAt },
     });
-    await deps.store.markLedgerApplied(trialLedgerId, now.toISOString());
+    if (trialResult === "inserted") {
+      await deps.store.markLedgerApplied(trialLedgerId, now.toISOString());
+    }
   }
 
   try {

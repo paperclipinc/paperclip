@@ -456,4 +456,15 @@ describe("expectedStanding — full status mapping", () => {
       actionUrl: BILLING_PAGE_PATH,
     });
   });
+
+  it("every actionUrl across every status is app-relative (leading slash) — regression for the " +
+    "PR-3 standing validator (server/src/services/company-standing.ts), which throws badRequest " +
+    "on any non-`/`-prefixed, non-http(s) actionUrl", () => {
+    for (const status of SUBSCRIPTION_STATUSES) {
+      const command = expectedStanding(subInStatus(status), CONFIG);
+      if (command.kind === "set" && command.actionUrl !== undefined) {
+        expect(command.actionUrl.startsWith("/")).toBe(true);
+      }
+    }
+  });
 });
