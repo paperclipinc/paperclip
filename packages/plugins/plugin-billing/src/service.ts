@@ -238,14 +238,19 @@ export class BillingService {
     }
     const type = kind === "cancel" ? "owner.cancel_at_period_end" : "owner.resume";
     const ledgerId = randomUUID();
-    await this.deps.store.insertLedgerEvent({
-      id: ledgerId,
-      idempotencyKey: `${type}:${companyId}:${randomUUID()}`,
-      type,
-      subscriptionId: sub.id,
-      companyId,
-      rawPayload: {},
-    });
+    try {
+      await this.deps.store.insertLedgerEvent({
+        id: ledgerId,
+        idempotencyKey: `${type}:${companyId}:${randomUUID()}`,
+        type,
+        subscriptionId: sub.id,
+        companyId,
+        rawPayload: {},
+      });
+    } catch (err) {
+      console.log("billing owner-action ledger insert failed — provider action already applied; local mirror will converge at period end");
+      throw err;
+    }
     await applyBillingEvent(this.deps, sub, { type } as { type: "owner.cancel_at_period_end" | "owner.resume" }, ledgerId);
     return this.summary(companyId);
   }
@@ -331,7 +336,7 @@ export class BillingService {
     return this.summary(companyId);
   }
 
-  /** Re-derive standing, retry this company's unapplied ledger rows, expire stale checkout. */
+  /** Reconcile standing from local state and expire a stuck checkout. Does not replay unapplied ledger rows (sweep handles that) or query provider-side subscription state. */
   async adminForceResync(companyId: string): Promise<BillingSummary> {
     let sub = await this.ensure(companyId);
     if (sub.openCheckoutSessionRef && this.deps.provider.resolveCheckout) {
