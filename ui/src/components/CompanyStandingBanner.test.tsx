@@ -139,4 +139,58 @@ describe("CompanyStandingBanner", () => {
     await render();
     expect(container.textContent).toBe("");
   });
+
+  it("renders relative actionUrl without target or rel attributes", async () => {
+    getCurrentBoardAccessMock.mockResolvedValue(
+      boardAccess({
+        "company-1": {
+          status: "grace",
+          reason: "payment_failed",
+          message: "Payment issue.",
+          actionUrl: "/company/settings/billing",
+        },
+      }),
+    );
+    await render();
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/company/settings/billing");
+    expect(link?.getAttribute("target")).toBeNull();
+    expect(link?.getAttribute("rel")).toBeNull();
+  });
+
+  it("renders absolute https actionUrl with target=_blank and rel=noreferrer", async () => {
+    getCurrentBoardAccessMock.mockResolvedValue(
+      boardAccess({
+        "company-1": {
+          status: "blocked",
+          reason: "subscription_lapsed",
+          message: "Subscription lapsed.",
+          actionUrl: "https://example.com/billing",
+        },
+      }),
+    );
+    await render();
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://example.com/billing");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noreferrer");
+  });
+
+  it("renders absolute http actionUrl with target=_blank and rel=noreferrer", async () => {
+    getCurrentBoardAccessMock.mockResolvedValue(
+      boardAccess({
+        "company-1": {
+          status: "grace",
+          reason: "payment_failed",
+          message: "Payment issue.",
+          actionUrl: "http://example.com/resolve",
+        },
+      }),
+    );
+    await render();
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("http://example.com/resolve");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noreferrer");
+  });
 });
