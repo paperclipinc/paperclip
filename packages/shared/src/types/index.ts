@@ -838,3 +838,9 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  PublicFeatureFlags,
+  EffectiveStanding,
+  BoardCapabilities,
+} from "./capabilities.js";
+export { derivePublicFeatureFlags } from "./capabilities.js";

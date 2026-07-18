@@ -1311,6 +1311,13 @@ export {
 } from "./types/instance.js";
 
 export type {
+  PublicFeatureFlags,
+  EffectiveStanding,
+  BoardCapabilities,
+} from "./types/capabilities.js";
+export { derivePublicFeatureFlags } from "./types/capabilities.js";
+
+export type {
   SmokeLabServiceStatus,
   SmokeRun,
   SmokeRunStatus,
