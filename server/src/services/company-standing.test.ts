@@ -117,3 +117,51 @@ describe("companyStandingService.setStanding", () => {
     });
   });
 });
+
+describe("companyStandingService.getEffectiveStandings", () => {
+  it("resolves a severity tie between two blocked rows to the newer row's reason", async () => {
+    // The query orders rows newest-first (see .orderBy(desc(updatedAt), asc(pluginId))
+    // in company-standing.ts); the merge loop keeps the first row it sees at a
+    // given severity, so simulate that ordering here: newer row first.
+    const newerRow = {
+      companyId: "company-1",
+      pluginId: "plugin-newer",
+      status: "blocked",
+      reason: "newer_reason",
+      message: "Newer blocked message",
+      actionUrl: null,
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+    };
+    const olderRow = {
+      companyId: "company-1",
+      pluginId: "plugin-older",
+      status: "blocked",
+      reason: "older_reason",
+      message: "Older blocked message",
+      actionUrl: null,
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    };
+    const orderBy = vi.fn().mockResolvedValue([newerRow, olderRow]);
+    const mockDbWithRows = {
+      insert: vi.fn().mockReturnThis(),
+      delete: vi.fn().mockReturnThis(),
+      select: vi.fn().mockReturnThis(),
+      values: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      orderBy,
+      onConflictDoUpdate: vi.fn().mockReturnThis(),
+      set: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    const serviceWithRows = companyStandingService(mockDbWithRows);
+
+    const result = await serviceWithRows.getEffectiveStandings(["company-1"]);
+
+    expect(orderBy).toHaveBeenCalledTimes(1);
+    expect(result["company-1"]).toMatchObject({
+      status: "blocked",
+      reason: "newer_reason",
+      message: "Newer blocked message",
+    });
+  });
+});

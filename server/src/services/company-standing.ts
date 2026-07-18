@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companyStanding } from "@paperclipai/db";
 import {
@@ -51,22 +51,20 @@ export function companyStandingService(db: Db) {
         const trimmed = input.actionUrl.trim();
         // Allow app-relative paths starting with "/" or absolute http/https URLs
         if (!trimmed.startsWith("/")) {
+          let url: URL;
           try {
-            const url = new URL(trimmed);
-            if (!["http:", "https:"].includes(url.protocol)) {
-              throw badRequest(
-                `Invalid actionUrl scheme. Only app-relative paths (starting with "/") or http/https URLs are allowed`,
-              );
-            }
-            actionUrl = trimmed;
-          } catch (err) {
-            if (err instanceof Error && err.message.includes("Invalid standing")) {
-              throw err;
-            }
+            url = new URL(trimmed);
+          } catch {
             throw badRequest(
               `Invalid actionUrl scheme. Only app-relative paths (starting with "/") or http/https URLs are allowed`,
             );
           }
+          if (!["http:", "https:"].includes(url.protocol)) {
+            throw badRequest(
+              `Invalid actionUrl scheme. Only app-relative paths (starting with "/") or http/https URLs are allowed`,
+            );
+          }
+          actionUrl = trimmed;
         } else {
           actionUrl = trimmed;
         }
@@ -124,10 +122,14 @@ export function companyStandingService(db: Db) {
       }
       if (companyIds.length === 0) return result;
 
+      // Ordered newest-first (tiebroken by pluginId) so that when two rows
+      // tie on severity, the first one seen below — and thus the one that
+      // wins the merge — is deterministically the most recently updated row.
       const rows = await db
         .select()
         .from(companyStanding)
-        .where(inArray(companyStanding.companyId, companyIds));
+        .where(inArray(companyStanding.companyId, companyIds))
+        .orderBy(desc(companyStanding.updatedAt), asc(companyStanding.pluginId));
 
       for (const row of rows) {
         const status = row.status as CompanyStandingStatus;
