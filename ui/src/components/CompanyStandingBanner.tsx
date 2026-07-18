@@ -24,6 +24,9 @@ export function CompanyStandingBanner() {
     ? "This company is blocked from starting new agent runs."
     : "This company needs attention.";
 
+  // Determine if actionUrl is absolute (http/https) or relative (starts with /)
+  const isAbsoluteUrl = standing.actionUrl && /^https?:\/\//.test(standing.actionUrl);
+
   return (
     <div
       data-testid="company-standing-banner"
@@ -44,6 +47,7 @@ export function CompanyStandingBanner() {
               {" "}
               <a
                 href={standing.actionUrl}
+                {...(isAbsoluteUrl ? { target: "_blank", rel: "noreferrer" } : {})}
                 className="font-semibold underline underline-offset-2 hover:opacity-80"
               >
                 Resolve now
