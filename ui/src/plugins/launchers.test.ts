@@ -2,20 +2,14 @@
 
 import { createElement } from "react";
 import { flushSync } from "react-dom";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  PluginSlotMount,
-  _collectRegisterableExportNamesForTests,
-  _resetPluginModuleLoader,
-  registerPluginWebComponent,
-  usePluginSlots,
-  type ResolvedPluginSlot,
-} from "./slots";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { usePluginLaunchers } from "./launchers";
 
 const mockPluginsApi = vi.hoisted(() => ({
   listUiContributions: vi.fn(),
+  bridgePerformAction: vi.fn(),
 }));
 
 vi.mock("../api/plugins", () => ({ pluginsApi: mockPluginsApi }));
@@ -38,86 +32,12 @@ async function flushReact() {
   });
 }
 
-let roots: Root[] = [];
-
-afterEach(() => {
-  for (const root of roots) {
-    flushSync(() => {
-      root.unmount();
-    });
-  }
-  roots = [];
-  _resetPluginModuleLoader();
-});
-
-describe("plugin slot export registration", () => {
-  it("keeps declared missing exports visible for diagnostics", () => {
-    const exports = _collectRegisterableExportNamesForTests(
-      { Page: () => null },
-      new Set(["Page", "MissingRouteSidebar"]),
-    );
-
-    expect([...exports]).toEqual(["Page", "MissingRouteSidebar"]);
-  });
-
-  it("registers component-like module exports even when the current contribution did not declare them", () => {
-    const exports = _collectRegisterableExportNamesForTests(
-      {
-        Page: () => null,
-        RouteSidebar: () => null,
-        webComponentTag: "paperclip-widget",
-        metadata: { ignored: true },
-        count: 1,
-        default: () => null,
-      },
-      new Set(["Page"]),
-    );
-
-    expect(exports).toEqual(new Set(["Page", "RouteSidebar", "webComponentTag"]));
-  });
-
-  it("updates an already-mounted placeholder when the slot export registers later", async () => {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    roots.push(root);
-    const slot: ResolvedPluginSlot = {
-      type: "routeSidebar",
-      id: "content-machine-sidebar",
-      displayName: "Content",
-      exportName: "ContentMachineRouteSidebar",
-      routePath: "content-machine",
-      pluginId: "content-machine-plugin",
-      pluginKey: "content-machine",
-      pluginDisplayName: "Content Machine",
-      pluginVersion: "1.0.0",
-    };
-
-    flushSync(() => {
-      root.render(createElement(PluginSlotMount, {
-        slot,
-        context: { companyId: "company-1", companyPrefix: "PAP" },
-        missingBehavior: "placeholder",
-      }));
-    });
-
-    expect(container.textContent).toContain("Content Machine: Content");
-
-    flushSync(() => {
-      registerPluginWebComponent("content-machine", "ContentMachineRouteSidebar", "paperclip-test-sidebar");
-    });
-
-    expect(container.textContent).not.toContain("Content Machine: Content");
-    expect(container.querySelector("paperclip-test-sidebar")).not.toBeNull();
-  });
-});
-
-describe("usePluginSlots company filtering", () => {
+describe("usePluginLaunchers company filtering", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let captured: any = null;
 
   function Harness({ companyId }: { companyId?: string | null }) {
-    captured = usePluginSlots({ slotTypes: ["toolbarButton"], companyId });
+    captured = usePluginLaunchers({ placementZones: ["toolbarButton"], companyId });
     return null;
   }
 
@@ -194,5 +114,16 @@ describe("usePluginSlots company filtering", () => {
 
     root.unmount();
     container.remove();
+  });
+
+  it("excludes launchers from a plugin's contribution when it is filtered out for the company (disabled plugin never reaches the client)", async () => {
+    // Simulates the server-side per-company enablement filter: a disabled
+    // plugin's contribution (and thus its launchers) never appears in the
+    // /api/plugins/ui-contributions response for that company.
+    mockPluginsApi.listUiContributions.mockResolvedValue([]);
+    const cleanup = await renderHook("company-1");
+
+    expect(captured.launchers).toEqual([]);
+    cleanup();
   });
 });
