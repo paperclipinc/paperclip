@@ -81,6 +81,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     cloudBilling: false,
+    cloudTrialBanner: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,

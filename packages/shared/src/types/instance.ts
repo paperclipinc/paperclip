@@ -65,6 +65,7 @@ export interface InstanceExperimentalSettings {
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   cloudBilling: boolean;
+  cloudTrialBanner: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**

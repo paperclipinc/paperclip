@@ -35,8 +35,8 @@ let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
 let queryClient: QueryClient | null = null;
 
-function experimental(cloudBilling: boolean) {
-  return { cloudBilling };
+function experimental(cloudTrialBanner: boolean) {
+  return { cloudTrialBanner };
 }
 
 function trialingSummary(trialEndsAt: string) {
