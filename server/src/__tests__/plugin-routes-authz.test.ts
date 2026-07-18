@@ -617,6 +617,81 @@ describe.sequential("plugin local folder routes", () => {
     expect(res.body.error).toContain("Local folder key is not declared");
     expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
   });
+
+  function defaultOffLocalFolderPlugin() {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["local.folders"],
+        companyEnablement: { default: "off" },
+        localFolders: [
+          {
+            folderKey: "content-root",
+            displayName: "Content root",
+            access: "readWrite",
+            requiredDirectories: ["docs"],
+            requiredFiles: ["README.md"],
+          },
+        ],
+      },
+    });
+  }
+
+  it("rejects PUT local-folders for a member when the plugin is not enabled for the company (403, no upsert)", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects GET local-folders (list) for a member when the plugin is not enabled for the company", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/companies/${companyA}/local-folders`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+  });
+
+  it("rejects GET local-folders/:folderKey/status for a member when the plugin is not enabled for the company", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue(null);
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root/status`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+  });
+
+  it("allows PUT local-folders once the plugin is enabled for the company (settings row present)", async () => {
+    defaultOffLocalFolderPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValue({ enabled: true, settingsJson: null, lastError: null });
+    mockRegistry.upsertCompanySettings.mockResolvedValue({ enabled: true });
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/content-root`)
+      .send({ path: "/tmp" });
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.upsertCompanySettings).toHaveBeenCalled();
+  });
 });
 
 describe.sequential("plugin tool and bridge authz", () => {
