@@ -2917,6 +2917,7 @@ export function pluginRoutes(
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    await enablement.ensurePluginEnabledForCompany(plugin.id, companyId);
 
     const settings = await registry.getCompanySettings(plugin.id, companyId);
     const storedFolders = getStoredLocalFolders(settings?.settingsJson);
@@ -2948,6 +2949,7 @@ export function pluginRoutes(
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    await enablement.ensurePluginEnabledForCompany(plugin.id, companyId);
 
     const settings = await registry.getCompanySettings(plugin.id, companyId);
     const storedFolders = getStoredLocalFolders(settings?.settingsJson);
@@ -3004,6 +3006,7 @@ export function pluginRoutes(
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+    await enablement.ensurePluginEnabledForCompany(plugin.id, companyId);
 
     const body = req.body as {
       path?: unknown;
