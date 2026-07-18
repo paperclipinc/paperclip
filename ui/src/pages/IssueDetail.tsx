@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEve
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -318,12 +317,19 @@ export function shouldScrollIssueDetailToTopOnNavigation(input: {
   return input.previousIssueId !== input.nextIssueId;
 }
 
-function resolveRunningIssueRun(
+function resolveInterruptibleIssueRun(
   activeRun: ActiveRunForIssue | null | undefined,
   liveRuns: readonly LiveRunForIssue[] | undefined,
 ) {
-  const runningLiveRun = (liveRuns ?? []).find((run) => run.status === "running") ?? null;
-  return runningLiveRun ?? (activeRun?.status === "running" ? activeRun : null);
+  const issueLiveRun =
+    (liveRuns ?? []).find((run) => run.status === "running") ??
+    (liveRuns ?? []).find((run) => run.status === "queued") ??
+    null;
+  return issueLiveRun ?? (
+    activeRun?.status === "running" || activeRun?.status === "queued"
+      ? activeRun
+      : null
+  );
 }
 
 function dedupeLiveRunsById(liveRuns: readonly LiveRunForIssue[]) {
@@ -356,7 +362,7 @@ function readIssueRunStateFromCache(
   return {
     liveRuns,
     activeRun: resolvedActiveRun,
-    runningIssueRun: resolveRunningIssueRun(resolvedActiveRun, liveRuns),
+    interruptibleIssueRun: resolveInterruptibleIssueRun(resolvedActiveRun, liveRuns),
   };
 }
 
@@ -1039,8 +1045,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const resolvedActivity = activity ?? [];
   const resolvedLinkedRuns = linkedRuns ?? [];
 
-  const runningIssueRun = useMemo(
-    () => resolveRunningIssueRun(resolvedActiveRun, resolvedLiveRuns),
+  const interruptibleIssueRun = useMemo(
+    () => resolveInterruptibleIssueRun(resolvedActiveRun, resolvedLiveRuns),
     [resolvedActiveRun, resolvedLiveRuns],
   );
   const liveRunIds = useMemo(() => {
@@ -1060,7 +1066,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     }));
   }, [liveRunIds, resolvedLinkedRuns]);
   const commentsWithRunMeta = useMemo<IssueDetailComment[]>(() => {
-    const activeRunStartedAt = runningIssueRun?.startedAt ?? runningIssueRun?.createdAt ?? null;
+    const activeRunStartedAt = interruptibleIssueRun?.startedAt ?? interruptibleIssueRun?.createdAt ?? null;
     const runMetaByCommentId = new Map<string, { runId: string; runAgentId: string | null; interruptedRunId: string | null }>();
     const followUpCommentIds = new Set<string>();
     const agentIdByRunId = new Map<string, string>();
@@ -1101,7 +1107,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(nextComment, {
         queuedTargetRunId,
         targetRunIsLive: queuedTargetRunId ? liveRunIds.has(queuedTargetRunId) : false,
-        runningRunId: runningIssueRun?.id ?? null,
+        runningRunId: interruptibleIssueRun?.id ?? null,
       });
       if (locallyQueuedComment !== nextComment) {
         return locallyQueuedComment;
@@ -1110,9 +1116,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         isQueuedIssueComment({
           comment: nextComment,
           activeRunStartedAt,
-          activeRunAgentId: runningIssueRun?.agentId ?? null,
-          activeRunCommentId: runningIssueRun?.contextCommentId ?? null,
-          activeRunWakeCommentId: runningIssueRun?.contextWakeCommentId ?? null,
+          activeRunAgentId: interruptibleIssueRun?.agentId ?? null,
+          activeRunCommentId: interruptibleIssueRun?.contextCommentId ?? null,
+          activeRunWakeCommentId: interruptibleIssueRun?.contextWakeCommentId ?? null,
           runId: meta?.runId ?? nextComment.runId ?? null,
           interruptedRunId: meta?.interruptedRunId ?? nextComment.interruptedRunId ?? null,
         })
@@ -1120,7 +1126,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: runningIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId: interruptibleIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
           queueReason: queuedCommentReason,
         };
       }
@@ -1133,7 +1139,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queuedCommentReason,
     resolvedActivity,
     resolvedLinkedRuns,
-    runningIssueRun,
+    interruptibleIssueRun,
   ]);
   const timelineEvents = useMemo(
     () => extractIssueTimelineEvents(resolvedActivity),
@@ -1222,9 +1228,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
         issueWorkMode={issueWorkMode}
         onWorkModeChange={onWorkModeChange}
-        onCancelRun={runningIssueRun && onPauseWorkRun
+        onCancelRun={interruptibleIssueRun && onPauseWorkRun
           ? async () => {
-              await onPauseWorkRun(runningIssueRun.id);
+              await onPauseWorkRun(interruptibleIssueRun.id);
             }
           : undefined}
         onImageClick={onImageClick}
@@ -1685,14 +1691,14 @@ export function IssueDetail() {
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
   });
-  const companyLiveRunsRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5000 });
   const companyLiveRunsQueryKey = resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"] as const;
   const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
     companyId: resolvedCompanyId,
     resourceKey: "live-runs",
     queryKey: companyLiveRunsQueryKey,
     enabled: !!resolvedCompanyId,
-    refetchInterval: companyLiveRunsRefetchInterval,
+    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: companyLiveRuns, dataUpdatedAt: companyLiveRunsUpdatedAt } = useQuery({
@@ -2407,7 +2413,9 @@ export function IssueDetail() {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!, issue).runningIssueRun : null;
+      const queuedComment = !interrupt
+        ? readIssueRunStateFromCache(queryClient, issueId!, issue).interruptibleIssueRun
+        : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,
@@ -2665,7 +2673,9 @@ export function IssueDetail() {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
 
       const previousIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId!));
-      const queuedComment = !interrupt ? readIssueRunStateFromCache(queryClient, issueId!, issue).runningIssueRun : null;
+      const queuedComment = !interrupt
+        ? readIssueRunStateFromCache(queryClient, issueId!, issue).interruptibleIssueRun
+        : null;
       const optimisticComment = issue
         ? createOptimisticIssueComment({
             companyId: issue.companyId,
@@ -2785,11 +2795,11 @@ export function IssueDetail() {
         previousRunState.find((state) => state.activeRun)?.activeRun ??
         null;
       const liveRunList = dedupeLiveRunsById(previousRunState.flatMap((state) => state.liveRuns ?? []));
-      const runningIssueRun = resolveRunningIssueRun(cachedActiveRun, liveRunList);
+      const interruptibleIssueRun = resolveInterruptibleIssueRun(cachedActiveRun, liveRunList);
       const targetRun =
         cachedActiveRun?.id === runId
           ? cachedActiveRun
-          : liveRunList?.find((run) => run.id === runId) ?? runningIssueRun ?? null;
+          : liveRunList?.find((run) => run.id === runId) ?? interruptibleIssueRun ?? null;
 
       if (targetRun) {
         const interruptedAt = new Date().toISOString();

@@ -30,6 +30,7 @@ export interface PublicFeatureFlags {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  enableSummaries: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   // Derived from instance general settings / instance defaults. These ride
@@ -84,6 +85,7 @@ export function derivePublicFeatureFlags(input: {
     enableDecisions: experimental.enableDecisions === true,
     enableGoalsSidebarLink: experimental.enableGoalsSidebarLink === true,
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
+    enableSummaries: experimental.enableSummaries === true,
     cloudBilling: experimental.cloudBilling === true,
     cloudTrialBanner: experimental.cloudTrialBanner === true,
     keyboardShortcuts: general.keyboardShortcuts === true,

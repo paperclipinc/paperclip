@@ -111,24 +111,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterEach(async () => {
     await heartbeat?.drain();
-    await db.execute(sql.raw(`
-      TRUNCATE TABLE
-        "activity_log",
-        "heartbeat_run_events",
-        "environment_leases",
-        "issue_relations",
-        "issues",
-        "execution_workspaces",
-        "projects",
-        "heartbeat_runs",
-        "agent_wakeup_requests",
-        "agent_runtime_state",
-        "budget_policies",
-        "agents",
-        "company_skills",
-        "companies"
-      CASCADE
-    `));
+    await cleanupRetryFixture();
   });
 
   afterAll(async () => {
@@ -137,6 +120,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     unregisterServerAdapter(AUTH_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
+
+  async function cleanupRetryFixture() {
+    await db.delete(activityLog);
+    await db.delete(environmentLeases);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
+    await db.delete(budgetPolicies);
+    await db.delete(agents);
+    await db.delete(companySkills);
+    await db.delete(companies);
+  }
 
   async function seedRetryFixture(input: {
     runId: string;
@@ -1533,15 +1533,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueId: budgetBlocked.issueId,
     });
 
-    await db.delete(budgetPolicies);
-    await db.delete(issueRelations);
-    await db.delete(issues);
-    await db.execute(sql.raw(`TRUNCATE TABLE "heartbeat_run_events", "heartbeat_runs" CASCADE`));
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await cleanupRetryFixture();
 
     const dependencyBlocked = await seedMaxTurnFixture({ now: new Date("2026-04-20T17:00:00.000Z") });
     const blockerId = randomUUID();
@@ -2256,11 +2248,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         .then((rows) => rows[0] ?? null);
       expect((wakeupRequest?.payload as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(expectedMode);
 
-      await db.execute(sql.raw(`TRUNCATE TABLE "heartbeat_run_events", "heartbeat_runs" CASCADE`));
-      await db.delete(agentWakeupRequests);
-      await db.delete(agents);
-      await db.delete(companySkills);
-      await db.delete(companies);
+      await cleanupRetryFixture();
     }
   });
 

@@ -19,6 +19,7 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableDecisions: false,
   enableGoalsSidebarLink: false,
   enableServerInfoDebugView: false,
+  enableSummaries: false,
   cloudBilling: false,
   cloudTrialBanner: false,
   keyboardShortcuts: false,
