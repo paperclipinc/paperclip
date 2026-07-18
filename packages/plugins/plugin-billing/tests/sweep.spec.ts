@@ -11,7 +11,8 @@ const SECRET = "d".repeat(64);
 const NOW = new Date("2026-07-18T12:00:00.000Z");
 const DAY = 86_400_000;
 
-function harness(companies: Array<{ id: string; status: string }>) {
+function harness(companies: Array<{ id: string; status: string }>, options: { complete?: boolean } = {}) {
+  const complete = options.complete ?? true;
   const store = new MemoryBillingStore(() => NOW);
   const standingCalls: Array<Record<string, unknown>> = [];
   let now = NOW;
@@ -37,7 +38,7 @@ function harness(companies: Array<{ id: string; status: string }>) {
     logger: { warn: vi.fn() },
     now: () => now,
     owners: { resolveOwnerUserId: async (companyId) => `owner-of-${companyId}` },
-    companies: { list: async () => companies },
+    companies: { list: async () => ({ companies, complete }) },
     stub: provider,
   };
   return { deps, store, standingCalls, provider, setNow: (d: Date) => { now = d; } };
@@ -111,6 +112,26 @@ describe("runBillingSweep", () => {
     expect((await store.getSubscriptionByCompany("co-gone"))!.status).toBe("canceled");
     expect(cancelNow).toHaveBeenCalledExactlyOnceWith("psub-gone");
     expect((await store.getSubscriptionByCompany("co-live"))!.status).toBe("active");
+  });
+
+  it("skips deletion detection (and logs a warning) when the company list is not provably complete", async () => {
+    // Regression for the phase-4 wrong-cancellation bug: an incomplete list
+    // (e.g. a truncated page from the host) must never be treated as the
+    // full set of live companies, or every company missing from that page
+    // looks "deleted" and gets force-canceled.
+    const { deps, store } = harness([{ id: "co-live", status: "active" }], { complete: false });
+    const cancelNow = vi.spyOn(deps.provider, "cancelNow").mockResolvedValue();
+    await store.insertSubscription(mkSub({ companyId: "co-live", status: "active", providerSubscriptionId: "psub-live" }));
+    await store.insertSubscription(mkSub({ companyId: "co-not-on-this-page", status: "active", providerSubscriptionId: "psub-elsewhere" }));
+    const report = await runBillingSweep(deps);
+    expect(report.deletedCompanyCancels).toBe(0);
+    expect(cancelNow).not.toHaveBeenCalled();
+    expect((await store.getSubscriptionByCompany("co-not-on-this-page"))!.status).toBe("active");
+    expect((await store.getSubscriptionByCompany("co-live"))!.status).toBe("active");
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      "billing sweep: deletion detection skipped (company list incomplete)",
+      expect.objectContaining({ companiesSeen: 1 }),
+    );
   });
 
   it("replays unapplied ledger events once they become resolvable (out-of-order recovery)", async () => {

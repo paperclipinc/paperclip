@@ -32,6 +32,12 @@ built, it MUST follow these guardrails, recorded verbatim from the design spec
   (`secrets.read-ref` capability is already declared in the manifest set —
   add the secret-ref fields to `instanceConfigSchema` with
   `"format": "secret-ref"` when the adapter lands).
+- Concurrent `createCheckout` double-calls (double-click, retried request)
+  can mint two provider checkout sessions for the same company; the stub
+  self-heals because the last one to resolve just wins, but the Stripe
+  adapter must actively guard against it — e.g. an idempotency key on
+  `checkout.sessions.create` derived from the subscription, or a short-lived
+  local lock around session creation.
 
 ## Host-API gaps to close before the adapter
 

@@ -86,6 +86,44 @@ describe("worker wiring", () => {
     expect(await store.getSubscriptionByCompany("co-2")).not.toBeNull();
   });
 
+  it("paginates past the host's per-call company limit instead of wrongly canceling companies beyond it", async () => {
+    // Regression for the phase-4 wrong-cancellation bug: ctx.companies.list
+    // only returns 500 rows per call, so the sweep's own companies.list
+    // adapter (worker.ts) must page to completion. Seed 501 companies —
+    // one past a single 500-row page — with an existing, active
+    // subscription on the 501st. If the adapter stopped at page 1, that
+    // company would look "deleted" and get force-canceled.
+    const store = new MemoryBillingStore(() => NOW);
+    const stubStateStore = new MemoryStubStateStore();
+    const plugin = createWorker({ store, stubStateStore, now: () => NOW });
+    const harness = createTestHarness({ manifest });
+    Object.assign(harness.ctx.companies, {
+      setStanding: async () => {},
+      clearStanding: async () => {},
+    });
+    const companies = Array.from({ length: 501 }, (_, i) => mkCompany(`co-page-${i + 1}`));
+    harness.seed({ companies });
+    await plugin.definition.setup(harness.ctx);
+
+    const lastCompanyId = companies[companies.length - 1]!.id;
+    await store.insertSubscription({
+      id: "sub-last", companyId: lastCompanyId, ownerUserId: "user-1", customerId: "cust-1",
+      status: "active", trialEndsAt: null, graceSince: null,
+      currentPeriodEnd: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
+      cancelAtPeriodEnd: false, priceCentsOverride: null, providerSubscriptionId: "psub-last",
+      openCheckoutSessionRef: null, openCheckoutUrl: null,
+      createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z",
+    });
+
+    await harness.runJob("billing-sweep");
+
+    // rowless pickup ran for every company, not just the first page
+    expect(await store.getSubscriptionByCompany("co-page-1")).not.toBeNull();
+    expect(await store.getSubscriptionByCompany(companies[499]!.id)).not.toBeNull();
+    // the 501st company's pre-existing subscription was NOT force-canceled
+    expect((await store.getSubscriptionByCompany(lastCompanyId))!.status).toBe("active");
+  });
+
   it("billing-summary data requires the host-authorized companyId", async () => {
     const { harness } = await makeWorker();
     const summary = await harness.getData<{ status: string }>("billing-summary", { companyId: "co-1" });

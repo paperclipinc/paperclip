@@ -9,7 +9,14 @@ import type { BillingStore } from "./store.js";
 
 export interface SweepDeps extends ApplyDeps {
   owners: OwnerResolver;
-  companies: { list(): Promise<Array<{ id: string; status: string }>> };
+  /**
+   * `complete: false` means the adapter could not prove it enumerated every
+   * company (e.g. it hit a pagination safety cap). Phase 4 (deletion
+   * detection) MUST be skipped in that case — treating "not in this partial
+   * list" as "deleted" would force-cancel live customers who simply landed
+   * past the page the adapter managed to read.
+   */
+  companies: { list(): Promise<{ companies: Array<{ id: string; status: string }>; complete: boolean }> };
   stub?: { deliverDue(now: Date): Promise<number> };
 }
 
@@ -98,7 +105,8 @@ export async function runBillingSweep(deps: SweepDeps): Promise<SweepReport> {
     }
   }
 
-  const companies = await deps.companies.list();
+  const companyList = await deps.companies.list();
+  const companies = companyList.companies;
   const liveCompanyIds = new Set(companies.map((company) => company.id));
 
   // 3. rowless pickup (event-loss safety + first-install backfill)
@@ -114,24 +122,33 @@ export async function runBillingSweep(deps: SweepDeps): Promise<SweepReport> {
     }
   }
 
-  // 4. deleted companies — never bill a ghost
-  for (const sub of await deps.store.listSubscriptions()) {
-    if (liveCompanyIds.has(sub.companyId) || sub.status === "canceled") continue;
-    try {
-      const ledgerId = randomUUID();
-      const inserted = await deps.store.insertLedgerEvent({
-        id: ledgerId,
-        idempotencyKey: `company-deleted:${sub.companyId}`,
-        type: "company.deleted",
-        subscriptionId: sub.id,
-        companyId: sub.companyId,
-        rawPayload: {},
-      });
-      if (inserted === "duplicate") continue;
-      await applyBillingEvent(deps, sub, { type: "company.deleted" }, ledgerId);
-      report.deletedCompanyCancels += 1;
-    } catch (error) {
-      warn("deleted-company cancel", error, { companyId: sub.companyId });
+  // 4. deleted companies — never bill a ghost.
+  // Only trustworthy when the company list is PROVABLY complete: a truncated
+  // list makes every company past the cutoff look "deleted", which would
+  // force-cancel live customers. Skip the whole phase rather than risk that.
+  if (!companyList.complete) {
+    deps.logger.warn("billing sweep: deletion detection skipped (company list incomplete)", {
+      companiesSeen: companies.length,
+    });
+  } else {
+    for (const sub of await deps.store.listSubscriptions()) {
+      if (liveCompanyIds.has(sub.companyId) || sub.status === "canceled") continue;
+      try {
+        const ledgerId = randomUUID();
+        const inserted = await deps.store.insertLedgerEvent({
+          id: ledgerId,
+          idempotencyKey: `company-deleted:${sub.companyId}`,
+          type: "company.deleted",
+          subscriptionId: sub.id,
+          companyId: sub.companyId,
+          rawPayload: {},
+        });
+        if (inserted === "duplicate") continue;
+        await applyBillingEvent(deps, sub, { type: "company.deleted" }, ledgerId);
+        report.deletedCompanyCancels += 1;
+      } catch (error) {
+        warn("deleted-company cancel", error, { companyId: sub.companyId });
+      }
     }
   }
 

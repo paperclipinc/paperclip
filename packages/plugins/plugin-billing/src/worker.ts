@@ -126,10 +126,36 @@ export function createWorker(overrides: WorkerOverrides = {}): PaperclipPlugin {
         return {
           ...deps,
           companies: {
-            list: async () => (await ctx.companies.list({ limit: 500 })).map((company) => ({
-              id: company.id,
-              status: String(company.status),
-            })),
+            list: async () => {
+              // ctx.companies.list only supports offset/limit windowing (no
+              // cursor, no total count) — page to completion instead of
+              // taking the first page. A truncated list here is what used to
+              // make sweep phase 4 force-cancel every company past company
+              // #500 (they looked "deleted"); complete:false tells sweep.ts
+              // to skip that phase entirely instead of trusting a partial view.
+              const pageSize = 500;
+              // Safety ceiling (500k companies) against a host bug that never
+              // shrinks the page below pageSize — bail out rather than loop
+              // forever, and report the list as incomplete.
+              const maxPages = 1000;
+              const companies: Array<{ id: string; status: string }> = [];
+              let offset = 0;
+              for (let page = 0; page < maxPages; page += 1) {
+                const batch = await ctx.companies.list({ limit: pageSize, offset });
+                for (const company of batch) {
+                  companies.push({ id: company.id, status: String(company.status) });
+                }
+                if (batch.length < pageSize) {
+                  return { companies, complete: true };
+                }
+                offset += pageSize;
+              }
+              ctx.logger.warn("billing sweep: company list pagination hit its safety cap; treating as incomplete", {
+                pagesRead: maxPages,
+                companiesRead: companies.length,
+              });
+              return { companies, complete: false };
+            },
           },
           stub: deps.config.provider === PROVIDER_STUB ? base!.stub : undefined,
         };
