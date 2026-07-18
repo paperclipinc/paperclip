@@ -11,6 +11,7 @@ import { CompanySwitcher } from "./CompanySwitcher";
 const navigateMock = vi.hoisted(() => vi.fn());
 const createCloudCompanyMock = vi.hoisted(() => vi.fn());
 const healthGetMock = vi.hoisted(() => vi.fn());
+const getCurrentBoardAccessMock = vi.hoisted(() => vi.fn());
 const setSelectedCompanyIdMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
@@ -29,6 +30,10 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("@/api/health", () => ({
   healthApi: { get: () => healthGetMock() },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: () => getCurrentBoardAccessMock() },
 }));
 
 vi.mock("@/api/cloudCompanies", () => ({
@@ -106,6 +111,7 @@ describe("CompanySwitcher — cloud create company", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     healthGetMock.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    getCurrentBoardAccessMock.mockResolvedValue({ capabilities: { companyStandings: {} } });
     locationAssignMock = vi.fn();
     originalLocation = window.location;
     Object.defineProperty(window, "location", {
@@ -255,6 +261,62 @@ describe("CompanySwitcher — cloud create company", () => {
     // The native "Manage Companies" affordance is still there.
     expect(container.textContent).toContain("Manage Companies");
 
+    await act(async () => root.unmount());
+  });
+});
+
+describe("CompanySwitcher — standing badges", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    healthGetMock.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function renderWithStandings(companyStandings: Record<string, unknown>) {
+    getCurrentBoardAccessMock.mockResolvedValue({ capabilities: { companyStandings } });
+    const { root, queryClient } = renderSwitcher(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanySwitcher />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact(); // resolve health + board-access queries
+    return root;
+  }
+
+  it("shows a Blocked badge on companies with blocked standing", async () => {
+    const root = await renderWithStandings({
+      "company-1": { status: "blocked", reason: "subscription_lapsed", message: "Lapsed." },
+    });
+    const badge = container.querySelector('[data-testid="company-standing-badge-company-1"]');
+    expect(badge?.textContent).toBe("Blocked");
+    expect(badge?.getAttribute("data-standing")).toBe("blocked");
+    await act(async () => root.unmount());
+  });
+
+  it("shows an Attention badge on companies with grace standing", async () => {
+    const root = await renderWithStandings({
+      "company-1": { status: "grace", reason: "payment_failed", message: "Failed." },
+    });
+    const badge = container.querySelector('[data-testid="company-standing-badge-company-1"]');
+    expect(badge?.textContent).toBe("Attention");
+    expect(badge?.getAttribute("data-standing")).toBe("grace");
+    await act(async () => root.unmount());
+  });
+
+  it("shows no badge for active or unknown standing", async () => {
+    const root = await renderWithStandings({ "company-1": { status: "active" } });
+    expect(container.querySelector('[data-testid="company-standing-badge-company-1"]')).toBeNull();
     await act(async () => root.unmount());
   });
 });

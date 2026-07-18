@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { healthApi } from "@/api/health";
+import { accessApi } from "@/api/access";
+import { type EffectiveStanding } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   DropdownMenu,
@@ -29,6 +31,24 @@ function statusDotColor(status?: string): string {
   }
 }
 
+function StandingBadge({ companyId, standing }: { companyId: string; standing?: EffectiveStanding }) {
+  if (!standing || (standing.status !== "grace" && standing.status !== "blocked")) return null;
+  const blocked = standing.status === "blocked";
+  return (
+    <span
+      data-testid={`company-standing-badge-${companyId}`}
+      data-standing={standing.status}
+      className={
+        blocked
+          ? "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-200"
+          : "ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200"
+      }
+    >
+      {blocked ? "Blocked" : "Attention"}
+    </span>
+  );
+}
+
 interface CompanySwitcherProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -52,6 +72,17 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
     staleTime: 5 * 60 * 1000,
   });
   const isCloud = healthQuery.data?.deploymentMode === "authenticated";
+
+  // Standing badges (spec §5.4): an owner with many companies must not miss a
+  // lapsed one. Fail-safe — unknown standings render no badge.
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const companyStandings: Record<string, EffectiveStanding> =
+    boardAccessQuery.data?.capabilities?.companyStandings ?? {};
 
   return (
     <>
@@ -83,6 +114,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           >
             <span className={`h-2 w-2 rounded-full shrink-0 mr-2 ${statusDotColor(company.status)}`} />
             <span className="truncate">{company.name}</span>
+            <StandingBadge companyId={company.id} standing={companyStandings[company.id]} />
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
