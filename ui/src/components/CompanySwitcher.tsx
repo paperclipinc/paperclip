@@ -3,9 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { healthApi } from "@/api/health";
-import { accessApi } from "@/api/access";
 import { type EffectiveStanding } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -75,14 +75,9 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
 
   // Standing badges (spec §5.4): an owner with many companies must not miss a
   // lapsed one. Fail-safe — unknown standings render no badge.
-  const boardAccessQuery = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
-    staleTime: 60_000,
-  });
+  const { data: boardAccess } = useBoardCapabilities();
   const companyStandings: Record<string, EffectiveStanding> =
-    boardAccessQuery.data?.capabilities?.companyStandings ?? {};
+    boardAccess?.capabilities?.companyStandings ?? {};
 
   return (
     <>
