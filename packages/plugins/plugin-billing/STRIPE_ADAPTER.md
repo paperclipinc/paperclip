@@ -24,8 +24,10 @@ built, it MUST follow these guardrails, recorded verbatim from the design spec
   see `src/webhook.ts`) keeps working for Stripe events.
 - `resolveCheckout` = `checkout.sessions.retrieve(sessionRef).status` mapping
   (`complete` | `open` | `expired`).
-- `createPortal` = Billing Portal session; v1's stub returns no portal, the UI
-  already hides the button when `portal()` yields `{ url: null }`.
+- `createPortal` = Billing Portal session; the stub has no createPortal,
+  BillingService.portal() returns { url: null }, and the v1 UI exposes no
+  portal entry point — the Stripe adapter must ADD the "Manage in portal" CTA
+  (button + summary field) alongside implementing createPortal.
 - The webhook signing secret and the `rk_` key resolve through `ctx.secrets`
   (`secrets.read-ref` capability is already declared in the manifest set —
   add the secret-ref fields to `instanceConfigSchema` with
@@ -40,3 +42,9 @@ built, it MUST follow these guardrails, recorded verbatim from the design spec
    plugin-readable user contact info first.
 2. **Dunning windows**: `graceDays` must be aligned with the Stripe dunning
    retry schedule configured in the dashboard (spec §3 note).
+3. **Atomic state mutations**: `ctx.state` offers no `setIfAbsent`/compare-and-swap,
+   so the per-install webhook-secret get-or-create races on first boot; the plugin
+   converges by re-reading the stored winner after set (see src/hmac.ts
+   ensureStubWebhookSecret), but a host-side atomic setIfAbsent would eliminate
+   the window — the Stripe adapter's webhook-secret handling inherits the same
+   pattern.
