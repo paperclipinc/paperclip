@@ -589,10 +589,19 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("omits the env key from the hire payload when there are no bindings", async () => {
+  it("omits the env key from the hire payload when the adapter needs no credential and nothing is bound", async () => {
+    // An adapter with no credentialSetup requires no credential, so the
+    // activation gate is satisfied and a keyless hire is legitimate. This keeps
+    // the "no bindings -> no env key" merge behavior exercised now that the
+    // credential-requiring default adapter blocks keyless activation.
+    mockAdapterRegistry.byType.claude_local = {
+      buildAdapterConfig: () => ({}),
+    };
+
     const { root } = await mount();
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
     await act(async () => {
       heartbeatButton.click();
     });
@@ -603,6 +612,28 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       adapterConfig: Record<string, unknown>;
     };
     expect(hirePayload.adapterConfig).not.toHaveProperty("env");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the heartbeat CTA disabled until a required credential is bound", async () => {
+    // Default adapter (claude_local) advertises an ANTHROPIC_API_KEY option, so
+    // activation must stay gated until the user connects a credential.
+    const { root } = await mount();
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(true);
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    const enabledButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(enabledButton.disabled).toBe(false);
 
     await act(async () => {
       root.unmount();
@@ -728,9 +759,11 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
         step: 4,
         agentName: "Chief of staff",
         adapterType: "gemini_local",
-        // Stale binding left over from when claude_local was selected.
         credentialBindings: {
+          // Stale binding left over from when claude_local was selected.
           ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-stale" },
+          // The current adapter's own credential, which satisfies the gate.
+          GEMINI_API_KEY: { type: "secret_ref", secretId: "sec-gemini" },
         },
       }),
     );
@@ -738,6 +771,8 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     const { root } = await mount();
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    // The gate is satisfied by the current adapter's own binding.
+    expect(heartbeatButton.disabled).toBe(false);
     await act(async () => {
       heartbeatButton.click();
     });
@@ -745,12 +780,15 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
 
     expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
     const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
-      adapterConfig: Record<string, unknown>;
+      adapterConfig: { env?: Record<string, unknown> };
     };
-    // Filtered out entirely, and the base config has no env of its own, so
-    // the regression-guarded "no env key when nothing is bound" behavior
-    // holds even though credentialBindings isn't empty.
-    expect(hirePayload.adapterConfig).not.toHaveProperty("env");
+    // Only the current adapter's credential option is sent; the stale binding
+    // collected under the previously-selected adapter is filtered out.
+    expect(hirePayload.adapterConfig.env?.GEMINI_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "sec-gemini",
+    });
+    expect(hirePayload.adapterConfig.env).not.toHaveProperty("ANTHROPIC_API_KEY");
 
     await act(async () => {
       root.unmount();

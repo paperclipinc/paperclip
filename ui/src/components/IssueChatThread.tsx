@@ -595,7 +595,14 @@ function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
       ? "It was paused by a budget hard stop."
       : agent.pauseReason === "system"
         ? "It was paused by the system."
-        : "It was paused manually.";
+        : // A custom pause reason (e.g. an auth-failure pause) is a human-readable
+          // sentence, not one of the canned "manual"/"budget"/"system" tokens, so
+          // surface it directly instead of the generic "paused manually" copy.
+          typeof agent.pauseReason === "string" &&
+            agent.pauseReason.trim().length > 0 &&
+            agent.pauseReason !== "manual"
+          ? agent.pauseReason
+          : "It was paused manually.";
 
   return (
     <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
