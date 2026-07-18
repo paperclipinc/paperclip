@@ -33,6 +33,7 @@ describe("derivePublicFeatureFlags", () => {
       enableDecisions: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
+      enableSummaries: false,
       cloudBilling: defaultExperimental.cloudBilling,
       cloudTrialBanner: defaultExperimental.cloudTrialBanner,
       keyboardShortcuts: false,
