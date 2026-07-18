@@ -1272,6 +1272,7 @@ export const PLUGIN_CAPABILITIES = [
   "external.objects.read",
   "external.objects.write",
   "external.objects.refresh",
+  "company.standing.write",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",
@@ -1297,6 +1298,17 @@ export const PLUGIN_CAPABILITIES = [
   "ui.action.register",
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
+
+/**
+ * Company standing — a per-company, per-plugin governance record written by
+ * plugins holding `company.standing.write` (e.g. billing, compliance, quota).
+ *
+ * Effective standing per company is the most severe row across all plugins
+ * (`blocked` > `grace` > `active`); no rows ⇒ `active`. Only an explicit,
+ * persisted `blocked` row stops new work (fail-safe: unknown = active).
+ */
+export const COMPANY_STANDING_STATUSES = ["active", "grace", "blocked"] as const;
+export type CompanyStandingStatus = (typeof COMPANY_STANDING_STATUSES)[number];
 
 export const PLUGIN_DATABASE_NAMESPACE_MODES = ["schema"] as const;
 export type PluginDatabaseNamespaceMode = (typeof PLUGIN_DATABASE_NAMESPACE_MODES)[number];
