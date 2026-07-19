@@ -187,7 +187,7 @@ export function SidebarAccountMenu({
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
     onError: () => {
-      // Even if the sign-out call failed, leave the SPA: the gate will bounce a
+      // cloud: even if the sign-out call failed, leave the SPA: the gate will bounce a
       // still-valid session straight back in, and a half-dead session must not
       // strand the user on a broken app shell.
       if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
