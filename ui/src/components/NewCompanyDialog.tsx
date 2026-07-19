@@ -110,11 +110,12 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
             role="alert"
             className="rounded-md border border-border bg-muted/40 p-3 text-sm"
           >
-            <p className="font-medium">Creating more companies is a Pro feature</p>
+            <p className="font-medium">Add another company</p>
             <p className="mt-1 text-muted-foreground">
-              Your plan includes one company. Upgrade to Pro to run more.{" "}
-              <a href="/pricing" className="font-medium underline">
-                See plans
+              Your trial includes one company. Subscribe to add more; each company is 10 euro per
+              month.{" "}
+              <a href="/account" className="font-medium underline">
+                Subscribe
               </a>
             </p>
           </div>
@@ -135,7 +136,7 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
             role="alert"
             className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground"
           >
-            You've reached your plan's company limit.
+            You have reached the fair use company limit. Contact us to raise it.
           </div>
         )}
 

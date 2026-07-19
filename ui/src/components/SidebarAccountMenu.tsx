@@ -281,7 +281,7 @@ export function SidebarAccountMenu({
               {cloudBilling ? (
                 <MenuAction
                   label="Plan & billing"
-                  description="Manage your plan and seats."
+                  description="Manage your plan and billing."
                   icon={CreditCard}
                   href={CLOUD_ACCOUNT_PATH}
                   nativeAnchor

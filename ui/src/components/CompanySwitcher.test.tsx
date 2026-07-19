@@ -228,11 +228,11 @@ describe("CompanySwitcher — cloud create company", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Creating more companies is a Pro feature");
-    const pricingLink = Array.from(container.querySelectorAll("a")).find(
-      (a) => a.getAttribute("href") === "/pricing",
+    expect(container.textContent).toContain("Add another company");
+    const accountLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === "/account",
     );
-    expect(pricingLink).toBeTruthy();
+    expect(accountLink).toBeTruthy();
     expect(locationAssignMock).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
