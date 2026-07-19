@@ -11,8 +11,14 @@ on:
       - "staging"
     tags:
       - "v*"
-  # Manual fallback: occasionally a push event fails to trigger this workflow,
-  # leaving main unbuilt. workflow_dispatch lets an operator force a build.
+  # Fallback: pushes made with the default GITHUB_TOKEN (e.g. a bot's
+  # `gh pr merge --auto`) never fire `on: push` workflow runs -- GitHub
+  # suppresses it to prevent recursive workflow chains. workflow_dispatch is
+  # explicitly exempt from that restriction. Confirmed root cause 2026-07-18:
+  # PR #263's lockfile-refresh auto-merge (github-actions[bot], GITHUB_TOKEN)
+  # landed on main with no docker build. refresh-lockfile.yml now force-triggers
+  # this dispatch right after its own auto-merges land; this stays as the
+  # general operator escape hatch for any other case (or manual force-build).
   workflow_dispatch:
 
 permissions:
