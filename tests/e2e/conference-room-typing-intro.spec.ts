@@ -80,6 +80,15 @@ test.describe("Dashboard launch after onboarding wizard", () => {
     await page.getByRole("button", { name: /^Next/ }).click();
 
     // Step 4: adapter (claude_local default); heartbeat is intercepted.
+    // #261 gates "Give it a heartbeat" on a connected credential for the
+    // chosen adapter, so bind a throwaway Anthropic API key before clicking.
+    await page
+      .getByLabel("Anthropic API key value")
+      .fill("sk-ant-api03-e2efakecredential1234567890");
+    await page.getByRole("button", { name: "Connect" }).click();
+    await expect(
+      page.getByRole("button", { name: /Give it a heartbeat/ }),
+    ).toBeEnabled({ timeout: 15_000 });
     await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
 
     // Step 5: review → Get started creates the first task and opens dashboard.

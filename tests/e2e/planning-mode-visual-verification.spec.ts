@@ -62,6 +62,16 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
+
+  // #261 gates "Give it a heartbeat" on a connected credential for the
+  // chosen adapter, so bind a throwaway Anthropic API key before clicking.
+  await page
+    .getByLabel("Anthropic API key value")
+    .fill("sk-ant-api03-e2efakecredential1234567890");
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(
+    page.getByRole("button", { name: /Give it a heartbeat/ }),
+  ).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
 
   await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
