@@ -28,7 +28,7 @@ const FEEDBACK_URL = "https://paperclip.ing/feedback";
 // Cloud-only: feedback from managed tenants goes to the hosting company's
 // support inbox, not the upstream project's feedback form.
 const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
-// Cloud-only: the hosting layer's account page (plan, billing, usage budget).
+// Cloud-only: the hosting layer's account page (plan and billing).
 // Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
 const CLOUD_ACCOUNT_PATH = "/account";
 const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
@@ -281,7 +281,7 @@ export function SidebarAccountMenu({
               {cloudBilling ? (
                 <MenuAction
                   label="Plan & billing"
-                  description="Manage your plan, seats, and usage budget."
+                  description="Manage your plan and seats."
                   icon={CreditCard}
                   href={CLOUD_ACCOUNT_PATH}
                   nativeAnchor

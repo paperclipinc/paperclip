@@ -323,24 +323,6 @@ describe("budgetService", () => {
       }),
     );
   });
-
-  it("getIncidentScopeType returns the stored incident scope", async () => {
-    const dbStub = createDbStub([
-      [{ scopeType: "agent" }],
-    ]);
-
-    const service = budgetService(dbStub.db as any);
-    await expect(service.getIncidentScopeType("company-1", "incident-1")).resolves.toBe("agent");
-  });
-
-  it("getIncidentScopeType returns null for an unknown incident (callers fail closed)", async () => {
-    const dbStub = createDbStub([
-      [],
-    ]);
-
-    const service = budgetService(dbStub.db as any);
-    await expect(service.getIncidentScopeType("company-1", "missing")).resolves.toBeNull();
-  });
 });
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

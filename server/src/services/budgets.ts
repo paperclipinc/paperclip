@@ -960,22 +960,6 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .where(and(eq(companies.status, "paused"), eq(companies.pauseReason, "budget")));
     },
 
-    // Scope lookup for the cloud-billing gate on the incident resolve route:
-    // company-scope raises are wallet self-grants, agent/project-scope raises
-    // only adjust a sub-cap inside the wallet. Returns null when the incident
-    // does not exist for the company (callers fail closed).
-    getIncidentScopeType: async (
-      companyId: string,
-      incidentId: string,
-    ): Promise<BudgetScopeType | null> => {
-      const row = await db
-        .select({ scopeType: budgetIncidents.scopeType })
-        .from(budgetIncidents)
-        .where(and(eq(budgetIncidents.id, incidentId), eq(budgetIncidents.companyId, companyId)))
-        .then((rows) => rows[0] ?? null);
-      return (row?.scopeType as BudgetScopeType | undefined) ?? null;
-    },
-
     resolveIncident: async (
       companyId: string,
       incidentId: string,
