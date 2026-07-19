@@ -18,6 +18,9 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
+const mockCloudBillingApi = vi.hoisted(() => ({
+  summary: vi.fn(),
+}));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
@@ -27,6 +30,10 @@ vi.mock("@/api/auth", () => ({
 
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("@/api/cloudBilling", () => ({
+  cloudBillingApi: mockCloudBillingApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -81,6 +88,9 @@ describe("SidebarAccountMenu", () => {
       },
     });
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
+    // Self-hosted default: the cloud-billing summary endpoint doesn't exist
+    // off-cloud, so the gateway detection probe fails like a real 404 would.
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
     mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
@@ -272,6 +282,62 @@ describe("SidebarAccountMenu", () => {
 
     expect(document.body.textContent).not.toContain("Plan & billing");
     expect(document.body.textContent).toContain("Sign out");
+    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the billing entry when the cloud-billing summary succeeds, even with the cloudBilling flag off", async () => {
+    // The `cloudBilling` instance flag stays off on the hosted cloud (it also
+    // gates a server-side 403), so detection must not depend on it: a
+    // successful summary response is proof enough that the gateway is there.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false } }));
+    mockCloudBillingApi.summary.mockResolvedValue({ plan: "pro", status: "active", entitlements: {} });
+    const root = await renderOpenMenu();
+
+    const billing = document.body.querySelector('a[href="/account"]');
+    expect(billing).not.toBeNull();
+    expect(billing?.textContent).toContain("Plan & billing");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the billing entry when both the flag and the summary probe are negative", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false } }));
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
+    const root = await renderOpenMenu();
+
+    expect(document.body.textContent).not.toContain("Plan & billing");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("never re-fetches the cloud-billing probe on window focus after it has errored (self-hosted)", async () => {
+    // Regression: an errored query has `data === undefined` forever, so
+    // staleTime/gcTime: Infinity alone don't stop a refetch - the app's
+    // global default is refetchOnWindowFocus: true (main.tsx). Off-cloud the
+    // probe 404s every time, so without an explicit override each window
+    // focus (e.g. alt-tabbing back to the app) re-hits it.
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
+    const root = await renderOpenMenu();
+
+    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      // react-query's default FocusManager listens for "visibilitychange" on
+      // `window` (not "focus"), and only a listener attached directly to the
+      // dispatch target fires regardless of the event's `bubbles` flag.
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flushReact();
+
+    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
 
     await act(async () => {
       root.unmount();
