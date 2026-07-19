@@ -67,7 +67,7 @@ export function CloudTrialBanner() {
     message =
       days <= 0
         ? "Your free trial ends today."
-        : `Your free trial ends in ${days} day${days === 1 ? "" : "s"}.`;
+        : `Free trial: ${days} day${days === 1 ? "" : "s"} left.`;
   }
 
   return (

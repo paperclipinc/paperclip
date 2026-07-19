@@ -106,7 +106,7 @@ describe("trialDaysLeft", () => {
 describe("CloudTrialBanner", () => {
   it("shows the trial banner with days left and a subscribe-now link", async () => {
     const node = await render();
-    expect(node.textContent).toContain("Your free trial ends in 5 days.");
+    expect(node.textContent).toContain("Free trial: 5 days left.");
     // Flat-plan cleanup: the stale usage-budget language must be gone.
     expect(node.textContent).not.toContain("usage budget");
     const link = [...node.querySelectorAll("a")].find((a) => a.textContent?.includes("Subscribe now"));
@@ -116,7 +116,7 @@ describe("CloudTrialBanner", () => {
   it("uses the singular form for the last day", async () => {
     mockCloudBillingApi.summary.mockResolvedValue(trialingSummary(inDays(1)));
     const node = await render();
-    expect(node.textContent).toContain("Your free trial ends in 1 day.");
+    expect(node.textContent).toContain("Free trial: 1 day left.");
   });
 
   it("says 'ends today' on the final day rather than 'in 0 days'", async () => {

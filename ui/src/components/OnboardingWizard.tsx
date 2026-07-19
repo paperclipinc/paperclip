@@ -720,10 +720,10 @@ export function OnboardingWizard() {
           setError(
             code === "billing_update_failed"
               ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
-              : "Creating more companies is a Pro feature. Upgrade your plan to run more companies.",
+              : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
           );
         } else if (err instanceof ApiError && err.status === 409) {
-          setError("You've reached your plan's company limit.");
+          setError("You have reached the fair use company limit. Contact us to raise it.");
         } else {
           setError(
             err instanceof Error ? err.message : "Failed to create company",

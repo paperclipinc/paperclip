@@ -142,7 +142,14 @@ describe("NewCompanyDialog", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Creating more companies is a Pro feature");
+    expect(document.body.textContent).toContain("Add another company");
+    expect(document.body.textContent).toContain(
+      "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
+    );
+    const subscribeLink = [...document.body.querySelectorAll("a")].find(
+      (a) => a.textContent?.includes("Subscribe"),
+    );
+    expect(subscribeLink?.getAttribute("href")).toBe("/account");
     expect(assignSpy).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -191,7 +198,7 @@ describe("NewCompanyDialog", () => {
       "We could not update your billing for the new company.",
     );
     expect(document.body.textContent).toContain("you have not been charged");
-    expect(document.body.textContent).not.toContain("Creating more companies is a Pro feature");
+    expect(document.body.textContent).not.toContain("Add another company");
     expect(assignSpy).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -234,7 +241,9 @@ describe("NewCompanyDialog", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("reached your plan's company limit");
+    expect(document.body.textContent).toContain(
+      "You have reached the fair use company limit. Contact us to raise it.",
+    );
     expect(assignSpy).not.toHaveBeenCalled();
 
     await act(async () => {
