@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
-import { detectCredentialOptionIndex } from "./AdapterCredentialConnect";
+import { detectCredentialOptionIndex, normalizeCredentialValue } from "./AdapterCredentialConnect";
 
 // Mirrors the claude-local credential setup: an API key vs a subscription token,
 // disambiguated by the sk-ant-api… / sk-ant-oat… prefix.
@@ -26,6 +26,20 @@ describe("detectCredentialOptionIndex", () => {
 
   it("trims surrounding whitespace before matching (pasted values)", () => {
     expect(detectCredentialOptionIndex(options, "  sk-ant-oat01-token\n")).toBe(1);
+  });
+
+  it("detects a token corrupted by inner spaces (terminal line-wrap paste)", () => {
+    expect(detectCredentialOptionIndex(options, "sk-ant-oat01-AbCdEf  GhIjKl")).toBe(1);
+  });
+
+  it("detects a token corrupted by an inner newline", () => {
+    expect(detectCredentialOptionIndex(options, "sk-ant-api03-AbCdEf\nGhIjKl")).toBe(0);
+  });
+
+  it("normalizes a corrupted paste to the clean token (all whitespace removed)", () => {
+    expect(normalizeCredentialValue("sk-ant-oat01-AbCdEf  GhIjKl")).toBe("sk-ant-oat01-AbCdEfGhIjKl");
+    expect(normalizeCredentialValue("sk-ant-oat01-AbCdEf\nGhIjKl")).toBe("sk-ant-oat01-AbCdEfGhIjKl");
+    expect(normalizeCredentialValue("  sk-ant-oat01-AbCdEfGhIjKl\n")).toBe("sk-ant-oat01-AbCdEfGhIjKl");
   });
 
   it("ignores options without a valuePattern and never throws on a bad pattern", () => {

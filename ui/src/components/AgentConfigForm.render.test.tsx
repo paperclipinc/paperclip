@@ -751,7 +751,7 @@ describe("AgentConfigForm guided credential connect", () => {
     expect(valueInput).toBeTruthy();
 
     await act(async () => {
-      setInputValue(valueInput!, "sk-ant-test");
+      setInputValue(valueInput!, "sk-ant-test-0123456789");
     });
     await flushReact();
 
@@ -817,7 +817,7 @@ describe("AgentConfigForm guided credential connect", () => {
     expect(valueInput).toBeTruthy();
 
     await act(async () => {
-      setInputValue(valueInput!, "sk-ant-test");
+      setInputValue(valueInput!, "sk-ant-test-0123456789");
     });
     await flushReact();
 

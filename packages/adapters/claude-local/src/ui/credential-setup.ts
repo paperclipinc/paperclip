@@ -9,7 +9,7 @@ export const claudeLocalCredentialSetup: AdapterCredentialSetup = {
       hint: "Create a key in the Anthropic Console. Usage bills to your Anthropic API account.",
       setupUrl: "https://console.anthropic.com/settings/keys",
       placeholder: "sk-ant-api…",
-      valuePattern: "^sk-ant-api",
+      valuePattern: "^sk-ant-api[a-z0-9]*-[A-Za-z0-9_-]+$",
     },
     {
       envKey: "CLAUDE_CODE_OAUTH_TOKEN",
@@ -18,7 +18,7 @@ export const claudeLocalCredentialSetup: AdapterCredentialSetup = {
       hint: "Mint a long-lived token with `claude setup-token` on a machine where Claude Code is logged in. Token-only auth has no usage/quota reporting, and subscription usage in third-party contexts may draw from your Anthropic \"extra usage\" credits.",
       setupCommand: "claude setup-token",
       placeholder: "sk-ant-oat01-…",
-      valuePattern: "^sk-ant-oat",
+      valuePattern: "^sk-ant-oat[a-z0-9]*-[A-Za-z0-9_-]+$",
     },
   ],
 };
