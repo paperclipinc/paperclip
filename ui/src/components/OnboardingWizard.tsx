@@ -207,6 +207,13 @@ export function OnboardingWizard() {
   const [growAutomate, setGrowAutomate] = useState((saved?.growAutomate as string) ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True only while `error` holds the additional-company plan-gate message
+  // (the 402 upgrade_required case). Lets the error banner offer an
+  // actionable "Subscribe" link (to /account) instead of a dead end (mirrors
+  // NewCompanyDialog's inline upgrade prompt). Always reset at the top of
+  // handleConfirmMission, the only place that sets it true, so it can never
+  // linger onto an unrelated later error.
+  const [companyUpgradeRequired, setCompanyUpgradeRequired] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -500,6 +507,7 @@ export function OnboardingWizard() {
     setGrowAutomate("");
     setLoading(false);
     setError(null);
+    setCompanyUpgradeRequired(false);
     setCompanyName("");
     setCompanyGoal("");
     setMissionPath(null);
@@ -707,6 +715,7 @@ export function OnboardingWizard() {
       // the stack company for the cloud tenant).
       setLoading(true);
       setError(null);
+      setCompanyUpgradeRequired(false);
       try {
         const created = await cloudCompaniesApi.create({ name: companyName.trim() });
         await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -717,6 +726,8 @@ export function OnboardingWizard() {
           // per-company billing update for an already-paying user
           // (billing_update_failed). Only the former is an upsell.
           const code = (err.body as { error?: string } | null)?.error;
+          const upgradeRequired = code !== "billing_update_failed";
+          setCompanyUpgradeRequired(upgradeRequired);
           setError(
             code === "billing_update_failed"
               ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
@@ -1855,7 +1866,21 @@ export function OnboardingWizard() {
               {/* Error */}
               {visibleError && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">{visibleError}</p>
+                  <p className="text-xs text-destructive">
+                    {visibleError}
+                    {companyUpgradeRequired && (
+                      <>
+                        {" "}
+                        {/* Explicit non-destructive color: the surrounding error
+                            paragraph is text-destructive, but this is a normal
+                            navigation link, not a danger action (mirrors
+                            NewCompanyDialog's muted-not-red Subscribe link). */}
+                        <a href="/account" className="font-medium text-foreground underline">
+                          Subscribe
+                        </a>
+                      </>
+                    )}
+                  </p>
                 </div>
               )}
 

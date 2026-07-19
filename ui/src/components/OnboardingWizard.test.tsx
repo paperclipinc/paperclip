@@ -167,6 +167,7 @@ vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
+import { ApiError } from "@/api/client";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -448,6 +449,87 @@ describe("OnboardingWizard cloud first-run", () => {
     expect(mockCloudCompaniesApi.create).toHaveBeenCalledWith({ name: "Fresh Co" });
     expect(mockCompaniesApi.create).not.toHaveBeenCalled();
     expect(assign).toHaveBeenCalledWith("/PCnew/dashboard");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers a Subscribe link on the additional-company plan gate instead of a dead end", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    mockCloudCompaniesApi.create.mockRejectedValueOnce(
+      new ApiError("upgrade_required", 402, { error: "upgrade_required" }),
+    );
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "Fresh Co",
+        companyGoal: "Ship it",
+        missionPath: "direct",
+      }),
+    );
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [{ id: "existing", name: "First Co", issuePrefix: "FST" }];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Your trial includes one company");
+    const link = Array.from(document.body.querySelectorAll("a")).find(
+      (a) => a.textContent?.includes("Subscribe"),
+    );
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/account");
+    // The link sits inside a text-destructive error paragraph but is a normal
+    // navigation action, not a danger action - it needs an explicit
+    // non-destructive color so it doesn't inherit the error paragraph's red.
+    expect(link?.className).not.toContain("text-destructive");
+    expect(link?.className).toContain("text-foreground");
+    // Back stays available too - the wizard must never trap the user here.
+    expect(findButton("Back")).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not show the Subscribe link for a billing_update_failed 402 (not the upsell case)", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    mockCloudCompaniesApi.create.mockRejectedValueOnce(
+      new ApiError("billing_update_failed", 402, { error: "billing_update_failed" }),
+    );
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "Fresh Co",
+        companyGoal: "Ship it",
+        missionPath: "direct",
+      }),
+    );
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [{ id: "existing", name: "First Co", issuePrefix: "FST" }];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("We could not update your billing");
+    const link = Array.from(document.body.querySelectorAll("a")).find(
+      (a) => a.textContent?.includes("Subscribe"),
+    );
+    expect(link).toBeFalsy();
 
     await act(async () => {
       root.unmount();
