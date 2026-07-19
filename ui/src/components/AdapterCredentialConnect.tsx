@@ -22,6 +22,31 @@ function toKebab(value: string): string {
 }
 
 /**
+ * Every adapter credential option is a single-line token, so remove ALL
+ * whitespace from a pasted value, not just the ends. Terminal line-wrap can
+ * inject spaces or newlines mid-token when copying (e.g. the output of
+ * `claude setup-token`), which produces a secret that looks bound but fails
+ * every run with a 401. Not for the generic secrets editor, where multi-line
+ * values are legitimate.
+ */
+export function normalizeCredentialValue(value: string): string {
+  return value.replace(/\s+/g, "");
+}
+
+const MIN_CREDENTIAL_VALUE_LENGTH = 20;
+const INCOMPLETE_TOKEN_ERROR =
+  "This does not look like a complete token. Paste the whole value with no line breaks.";
+
+// An invalid valuePattern must never lock the user out of submitting.
+function patternAllows(pattern: string, value: string): boolean {
+  try {
+    return new RegExp(pattern).test(value);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Auto-detect which credential option a pasted value belongs to, using each
  * option's `valuePattern`. Returns the index of the first matching option, or
  * -1 if none match (or the value is empty). Lets the connect card pick the
@@ -33,12 +58,12 @@ export function detectCredentialOptionIndex(
   options: AdapterCredentialSetup["options"],
   value: string,
 ): number {
-  const trimmed = value.trim();
-  if (!trimmed) return -1;
+  const normalized = normalizeCredentialValue(value);
+  if (!normalized) return -1;
   return options.findIndex((option) => {
     if (!option.valuePattern) return false;
     try {
-      return new RegExp(option.valuePattern).test(trimmed);
+      return new RegExp(option.valuePattern).test(normalized);
     } catch {
       return false;
     }
@@ -106,8 +131,19 @@ export function AdapterCredentialConnect({
   }
 
   async function handleConnect() {
-    const trimmed = value.trim();
-    if (!trimmed || submitting) return;
+    const normalized = normalizeCredentialValue(value);
+    if (!normalized || submitting) return;
+
+    // Strict completeness check: an anchored valuePattern mismatch or a
+    // suspiciously short value means a truncated/mangled paste; storing it
+    // would only surface later as auth failures on every run.
+    if (
+      normalized.length < MIN_CREDENTIAL_VALUE_LENGTH ||
+      (active.valuePattern && !patternAllows(active.valuePattern, normalized))
+    ) {
+      setError(INCOMPLETE_TOKEN_ERROR);
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -115,7 +151,7 @@ export function AdapterCredentialConnect({
     const baseName = `${toKebab(adapterType)}-${toKebab(envKey)}`;
 
     try {
-      const created = await secretsApi.create(companyId, { name: baseName, value: trimmed });
+      const created = await secretsApi.create(companyId, { name: baseName, value: normalized });
       onBind(envKey, created.id);
       setValue("");
       setDetectedIndex(-1);
@@ -125,7 +161,7 @@ export function AdapterCredentialConnect({
       // name would silently create a second secret for an unrelated error.
       if (err instanceof ApiError && err.status === 409) {
         try {
-          const created = await secretsApi.create(companyId, { name: `${baseName}-2`, value: trimmed });
+          const created = await secretsApi.create(companyId, { name: `${baseName}-2`, value: normalized });
           onBind(envKey, created.id);
           setValue("");
         } catch (retryError) {

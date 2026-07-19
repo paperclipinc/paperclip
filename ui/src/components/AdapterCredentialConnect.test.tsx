@@ -178,7 +178,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
@@ -193,7 +193,7 @@ describe("AdapterCredentialConnect", () => {
     expect(mockSecretsApi.create).toHaveBeenCalledTimes(1);
     expect(mockSecretsApi.create).toHaveBeenCalledWith("company-1", {
       name: "claude-local-anthropic-api-key",
-      value: "sk-ant-test",
+      value: "sk-ant-test-0123456789",
     });
     expect(onBind).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "secret-42");
 
@@ -214,7 +214,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
@@ -227,11 +227,11 @@ describe("AdapterCredentialConnect", () => {
     expect(mockSecretsApi.create).toHaveBeenCalledTimes(2);
     expect(mockSecretsApi.create).toHaveBeenNthCalledWith(1, "company-1", {
       name: "claude-local-anthropic-api-key",
-      value: "sk-ant-test",
+      value: "sk-ant-test-0123456789",
     });
     expect(mockSecretsApi.create).toHaveBeenNthCalledWith(2, "company-1", {
       name: "claude-local-anthropic-api-key-2",
-      value: "sk-ant-test",
+      value: "sk-ant-test-0123456789",
     });
     expect(onBind).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "secret-retry");
   });
@@ -245,7 +245,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
@@ -259,7 +259,7 @@ describe("AdapterCredentialConnect", () => {
     expect(onBind).not.toHaveBeenCalled();
     expect(container.textContent).toContain("still conflicted");
     const keptInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    expect(keptInput?.value).toBe("sk-ant-test");
+    expect(keptInput?.value).toBe("sk-ant-test-0123456789");
   });
 
   it("does not retry on a non-409 rejection and surfaces the error immediately", async () => {
@@ -269,7 +269,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
@@ -283,7 +283,7 @@ describe("AdapterCredentialConnect", () => {
     expect(onBind).not.toHaveBeenCalled();
     expect(container.textContent).toContain("network error");
     const keptInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    expect(keptInput?.value).toBe("sk-ant-test");
+    expect(keptInput?.value).toBe("sk-ant-test-0123456789");
   });
 
   it("sends the trimmed value to secretsApi.create", async () => {
@@ -293,7 +293,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "  sk-ant-test  "));
+    await act(() => setInputValue(input, "  sk-ant-test-0123456789  "));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
@@ -305,8 +305,89 @@ describe("AdapterCredentialConnect", () => {
 
     expect(mockSecretsApi.create).toHaveBeenCalledWith("company-1", {
       name: "claude-local-anthropic-api-key",
-      value: "sk-ant-test",
+      value: "sk-ant-test-0123456789",
     });
+  });
+
+  it("strips all inner whitespace from a corrupted paste and submits the normalized token", async () => {
+    const onBind = vi.fn();
+    mockSecretsApi.create.mockResolvedValueOnce(makeSecret({ id: "secret-normalized" }));
+
+    await render({ onBind });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    // Terminal line-wrap paste artifact: two spaces mid-token plus a trailing newline.
+    await act(() => setInputValue(input, "sk-ant-oat01-AbCdEfGh  IjKlMnOpQrStUvWx\n"));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledWith("company-1", {
+      name: "claude-local-anthropic-api-key",
+      value: "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWx",
+    });
+    expect(onBind).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "secret-normalized");
+  });
+
+  it("blocks submit with an inline error when the normalized value is suspiciously short", async () => {
+    const onBind = vi.fn();
+
+    await render({ onBind });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-short"));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).not.toHaveBeenCalled();
+    expect(onBind).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      "This does not look like a complete token. Paste the whole value with no line breaks.",
+    );
+  });
+
+  it("blocks submit with an inline error when the normalized value fails the option valuePattern", async () => {
+    const onBind = vi.fn();
+    const patternedSetup: AdapterCredentialSetup = {
+      options: [
+        {
+          envKey: "ANTHROPIC_API_KEY",
+          kind: "api_key",
+          label: "Anthropic API key",
+          valuePattern: "^sk-ant-api[a-z0-9]*-[A-Za-z0-9_-]+$",
+        },
+      ],
+    };
+
+    await render({ onBind, setup: patternedSetup });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-api03-AbCd!!corrupted??EfGh"));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).not.toHaveBeenCalled();
+    expect(onBind).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      "This does not look like a complete token. Paste the whole value with no line breaks.",
+    );
   });
 
   it("submits on Enter in the password input", async () => {
@@ -316,7 +397,7 @@ describe("AdapterCredentialConnect", () => {
     await render({ onBind });
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     await act(() => {
       input.dispatchEvent(
@@ -349,7 +430,7 @@ describe("AdapterCredentialConnect", () => {
     await render({});
 
     const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
-    await act(() => setInputValue(input, "sk-ant-test"));
+    await act(() => setInputValue(input, "sk-ant-test-0123456789"));
 
     const connectButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Connect"),
