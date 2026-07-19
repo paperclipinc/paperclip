@@ -32,6 +32,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { healthApi } from "@/api/health";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
@@ -163,13 +164,29 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     userId: currentUserId,
   });
 
+  // cloud: same cached health query CloudAccessGate populates, read here so
+  // sign-out can tell whether to leave the SPA for the gateway sign-in page.
+  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get(), staleTime: 60_000 });
+
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
+      // cloud: leave the SPA entirely (see SidebarAccountMenu).
+      if (healthQuery.data?.deploymentMode === "authenticated") {
+        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+        window.location.assign(`/auth/sign-in?signedout=1&next=${next}`);
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    },
+    onError: () => {
+      // Even if the sign-out call failed, leave the SPA: the gate will bounce a
+      // still-valid session straight back in, and a half-dead session must not
+      // strand the user on a broken app shell.
+      if (healthQuery.data?.deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
     },
   });
 

@@ -176,8 +176,21 @@ export function SidebarAccountMenu({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
       setOpen(false);
+      // cloud: leave the SPA entirely; the gateway serves the marketing
+      // sign-in page. signedout=1 drives its "You've been signed out" note.
+      if (deploymentMode === "authenticated") {
+        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+        window.location.assign(`/auth/sign-in?signedout=1&next=${next}`);
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    },
+    onError: () => {
+      // Even if the sign-out call failed, leave the SPA: the gate will bounce a
+      // still-valid session straight back in, and a half-dead session must not
+      // strand the user on a broken app shell.
+      if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
     },
   });
 
