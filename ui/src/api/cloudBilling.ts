@@ -12,10 +12,7 @@ export interface CloudBillingSummary {
   trialEndsAt?: string | null;
   currentPeriodEnd?: string | null;
   entitlements?: unknown;
-  // Per-company billing state. `hasBudgetSubscription` is the authoritative signal
-  // for first-time-set vs change of the recurring budget wallet: a trial with
-  // INCLUDED budget reads false (no subscription yet) so the first raise checks out.
-  companies?: Array<{ companyId: string; slug?: string; hasBudgetSubscription: boolean }>;
+  companies?: Array<{ companyId: string; slug?: string }>;
 }
 
 export const cloudBillingApi = {

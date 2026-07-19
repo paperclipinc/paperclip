@@ -37,19 +37,17 @@ async function renderCard(props: Partial<Parameters<typeof BudgetIncidentCard>[0
   const root = createRoot(container);
   const onRaiseAndResume = vi.fn();
   const onKeepPaused = vi.fn();
-  const onRaiseViaBilling = vi.fn();
   await act(async () => {
     root.render(
       <BudgetIncidentCard
         incident={incident}
         onRaiseAndResume={onRaiseAndResume}
         onKeepPaused={onKeepPaused}
-        onRaiseViaBilling={onRaiseViaBilling}
         {...props}
       />,
     );
   });
-  return { container, root, onRaiseAndResume, onKeepPaused, onRaiseViaBilling };
+  return { container, root, onRaiseAndResume, onKeepPaused };
 }
 
 function findButton(text: string) {
@@ -64,8 +62,8 @@ afterEach(() => {
 });
 
 describe("BudgetIncidentCard", () => {
-  it("keeps the direct raise flow byte-identical for self-hosters", async () => {
-    const { root, container, onRaiseAndResume, onRaiseViaBilling } = await renderCard();
+  it("raises the budget and resumes directly", async () => {
+    const { root, container, onRaiseAndResume } = await renderCard();
 
     expect(document.body.textContent).toContain("New budget (USD)");
     const raiseButton = findButton("Raise budget & resume");
@@ -75,32 +73,6 @@ describe("BudgetIncidentCard", () => {
     });
     // Default draft is max(observed + $10, limit) = 3100 cents.
     expect(onRaiseAndResume).toHaveBeenCalledWith(3100);
-    expect(onRaiseViaBilling).not.toHaveBeenCalled();
-
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-  });
-
-  it("routes the raise through billing (EUR) when the budget is billing-managed", async () => {
-    const { root, container, onRaiseAndResume, onRaiseViaBilling } = await renderCard({
-      billingManaged: true,
-    });
-
-    expect(document.body.textContent).toContain("New budget (EUR)");
-    expect(document.body.textContent).not.toContain("New budget (USD)");
-    expect(document.body.textContent).toContain(
-      "Raise your budget through billing. Work resumes once the budget is updated.",
-    );
-
-    const billingButton = findButton("Raise budget through billing");
-    expect(billingButton).toBeTruthy();
-    await act(async () => {
-      billingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(onRaiseViaBilling).toHaveBeenCalledWith(3100);
-    expect(onRaiseAndResume).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
