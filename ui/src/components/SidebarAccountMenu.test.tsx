@@ -74,8 +74,22 @@ async function flushReact() {
 
 describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
+  // cloud: sign-out on a cloud instance does a full-page navigation via
+  // window.location.assign, not a client-side transition. jsdom's
+  // window.location (and its .assign) is non-configurable, so replace the
+  // whole object with a stub to assert it, following the pattern in
+  // NewCompanyDialog.test.tsx.
+  let assignSpy: ReturnType<typeof vi.fn>;
+  let originalLocation: Location;
 
   beforeEach(() => {
+    assignSpy = vi.fn();
+    originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, assign: assignSpy } as unknown as Location,
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({
@@ -95,6 +109,11 @@ describe("SidebarAccountMenu", () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -167,7 +186,11 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
+    // gateway's marketing sign-in page rather than invalidating in-app
+    // queries (there's no app left to refetch into).
+    expect(assignSpy).toHaveBeenCalledOnce();
+    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
 
     await act(async () => {
       root.unmount();
