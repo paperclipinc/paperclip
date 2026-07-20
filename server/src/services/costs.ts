@@ -1,14 +1,26 @@
 import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, companySecrets, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { BUILT_IN_AGENT_METADATA_KEY } from "./built-in-agent-metadata.js";
 
 export interface CostDateRange {
   from?: Date;
   to?: Date;
+}
+
+export interface ActivationSignalsRow {
+  companyId: string;
+  hasAgent: boolean;
+  hasCompletedRun: boolean;
+  hasCredential: boolean;
+  agentCount: number;
+  lastActivityAt: Date | null;
+  monthRunCount: number;
+  monthCostCents: number;
 }
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -506,6 +518,149 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
         .orderBy(desc(costCentsExpr));
+    },
+
+    /**
+     * Cloud-internal, all-companies read backing GET /api/cloud/activation-signals
+     * (the control-plane's lifecycle-email sweep). Field-definition judgment
+     * calls, since none of these are single dedicated columns in the schema:
+     *
+     * - hasAgent: any live (non-terminated) agent row WITHOUT the built-in
+     *   marker set by services/built-in-agent-metadata.ts. Every company gets
+     *   a platform-seeded built-in agent, so counting that would make every
+     *   company look "activated" on day one; hasAgent specifically means "the
+     *   company hired someone".
+     * - agentCount: a plain headcount of live (non-terminated) agents,
+     *   INCLUDING built-ins - this is a raw metric, not a gating boolean, so
+     *   it intentionally does not share hasAgent's exclusion.
+     * - hasCompletedRun / monthRunCount: heartbeat_runs.status = 'succeeded'
+     *   (the literal terminal-success value; see HEARTBEAT_RUN_STATUSES in
+     *   @paperclipai/shared and setRunStatus() in services/heartbeat.ts).
+     *   There is a purpose-built activation_events table
+     *   (services/activation.ts) that records "first successful run", but
+     *   it's only populated when PAPERCLIP_ACTIVATION_SINK=db is set in the
+     *   deployment env; querying heartbeat_runs directly avoids silently
+     *   under-reporting in any environment that hasn't set that flag.
+     * - lastActivityAt: max(heartbeat_runs.updated_at) across ALL runs
+     *   (not just succeeded ones) - setRunStatus() touches updated_at on
+     *   every status transition, so it's a reliable "last agent activity"
+     *   timestamp regardless of outcome.
+     * - hasCredential: any company_secrets row (the general connected
+     *   secret/API-key store) with status = 'active' and deleted_at IS NULL,
+     *   scoped by companyId. company_secrets is scoped to the company (agent-
+     *   level secrets are expressed via company_secret_bindings, not a
+     *   separate agentId column), which matches the brief's "scoped to the
+     *   company or its agents" - every agent-scoped secret is still a
+     *   company_secrets row with this company's companyId.
+     * - monthRunCount / monthCostCents: current UTC calendar month, matching
+     *   currentUtcMonthWindow()/getMonthlySpendTotal() above. monthRunCount
+     *   counts succeeded runs whose updated_at falls in the window (same
+     *   basis as lastActivityAt); monthCostCents sums cost_events.cost_cents
+     *   whose occurred_at falls in the window (the same column
+     *   getMonthlySpendTotal uses for a single company).
+     *
+     * Companies whose signals are entirely false/zero are omitted - the
+     * control-plane treats absence as all-false/zero (see the route comment).
+     */
+    listActivationSignals: async (): Promise<ActivationSignalsRow[]> => {
+      const { start, end } = currentUtcMonthWindow();
+      // Embedding a raw JS Date inside a `sql` template (as opposed to going
+      // through drizzle's gte()/lt() column-aware helpers) skips the driver's
+      // timestamptz encoding and postgres-js's binary Bind step rejects the
+      // Date instance outright; pass ISO strings instead, which postgres
+      // parses fine for timestamptz comparisons.
+      const startIso = start.toISOString();
+      const endIso = end.toISOString();
+
+      const [agentRows, runRows, credentialRows, costRows] = await Promise.all([
+        db
+          .select({
+            companyId: agents.companyId,
+            agentCount: sql<number>`count(*) filter (where ${agents.status} != 'terminated')::int`,
+            hasAgent: sql<boolean>`bool_or(
+              ${agents.status} != 'terminated'
+              and (${agents.metadata} -> ${BUILT_IN_AGENT_METADATA_KEY}) is null
+            )`,
+          })
+          .from(agents)
+          .groupBy(agents.companyId),
+        db
+          .select({
+            companyId: heartbeatRuns.companyId,
+            hasCompletedRun: sql<boolean>`bool_or(${heartbeatRuns.status} = 'succeeded')`,
+            lastActivityAt: sql<Date | null>`max(${heartbeatRuns.updatedAt})`,
+            monthRunCount: sql<number>`count(*) filter (
+              where ${heartbeatRuns.status} = 'succeeded'
+              and ${heartbeatRuns.updatedAt} >= ${startIso}
+              and ${heartbeatRuns.updatedAt} < ${endIso}
+            )::int`,
+          })
+          .from(heartbeatRuns)
+          .groupBy(heartbeatRuns.companyId),
+        db
+          .select({
+            companyId: companySecrets.companyId,
+            hasCredential: sql<boolean>`bool_or(${companySecrets.status} = 'active' and ${companySecrets.deletedAt} is null)`,
+          })
+          .from(companySecrets)
+          .groupBy(companySecrets.companyId),
+        db
+          .select({
+            companyId: costEvents.companyId,
+            monthCostCents: sql<number>`coalesce(sum(${costEvents.costCents}) filter (
+              where ${costEvents.occurredAt} >= ${startIso} and ${costEvents.occurredAt} < ${endIso}
+            ), 0)::int`,
+          })
+          .from(costEvents)
+          .groupBy(costEvents.companyId),
+      ]);
+
+      const byCompany = new Map<string, ActivationSignalsRow>();
+      const rowFor = (companyId: string) => {
+        let row = byCompany.get(companyId);
+        if (!row) {
+          row = {
+            companyId,
+            hasAgent: false,
+            hasCompletedRun: false,
+            hasCredential: false,
+            agentCount: 0,
+            lastActivityAt: null,
+            monthRunCount: 0,
+            monthCostCents: 0,
+          };
+          byCompany.set(companyId, row);
+        }
+        return row;
+      };
+
+      for (const r of agentRows) {
+        const row = rowFor(r.companyId);
+        row.agentCount = Number(r.agentCount ?? 0);
+        row.hasAgent = Boolean(r.hasAgent);
+      }
+      for (const r of runRows) {
+        const row = rowFor(r.companyId);
+        row.hasCompletedRun = Boolean(r.hasCompletedRun);
+        row.lastActivityAt = r.lastActivityAt ? new Date(r.lastActivityAt) : null;
+        row.monthRunCount = Number(r.monthRunCount ?? 0);
+      }
+      for (const r of credentialRows) {
+        rowFor(r.companyId).hasCredential = Boolean(r.hasCredential);
+      }
+      for (const r of costRows) {
+        rowFor(r.companyId).monthCostCents = Number(r.monthCostCents ?? 0);
+      }
+
+      return Array.from(byCompany.values()).filter(
+        (row) =>
+          row.hasAgent ||
+          row.hasCompletedRun ||
+          row.hasCredential ||
+          row.agentCount > 0 ||
+          row.monthRunCount > 0 ||
+          row.monthCostCents > 0,
+      );
     },
   };
 }

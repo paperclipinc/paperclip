@@ -359,6 +359,25 @@ export function costRoutes(
     res.json(rows);
   });
 
+  // Cloud-internal: the control-plane's lifecycle-email sweep polls this once
+  // per cycle to score every company's activation progress (agent hired,
+  // first successful run, credential connected, recent usage) so it can gate
+  // nurture/upsell emails without re-deriving these facts itself. Read-only
+  // and gated on the same trusted `x-paperclip-cloud-credit` header as the
+  // other /cloud/* routes above (no user actor is present, so we deliberately
+  // skip assertBoard/assertCompanyAccess). Self-hosters never set the header,
+  // so this path is inert for OSS. Companies whose signals are entirely
+  // false/zero are omitted by costService.listActivationSignals (the
+  // control-plane treats absence as all-false/zero).
+  router.get("/cloud/activation-signals", async (req, res) => {
+    if (req.header("x-paperclip-cloud-credit") !== "1") {
+      res.status(403).json({ error: "Activation-signals listing is a cloud-internal operation" });
+      return;
+    }
+    const companiesRows = await costs.listActivationSignals();
+    res.json({ companies: companiesRows });
+  });
+
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

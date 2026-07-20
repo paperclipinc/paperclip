@@ -5310,6 +5310,14 @@ registry.registerPath({
   responses: { 200: r.ok(), 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/activation-signals",
+  tags: ["costs"],
+  summary: "List per-company activation signals for lifecycle-email gating (cloud-internal)",
+  responses: { 200: r.ok(), 403: r.forbidden },
+});
+
 // ─── Current route coverage ─────────────────────────────────────────────────
 
 registerCurrentRoute({
