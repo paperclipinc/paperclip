@@ -4,6 +4,7 @@ import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/exe
 import { asString, parseJson } from "@paperclipai/adapter-utils/server-utils";
 import {
   describeClaudeFailure,
+  detectClaudeAuthRetryStorm,
   detectClaudeLoginRequired,
   isClaudeInvalidCredentialError,
   isClaudeTransientUpstreamError,
@@ -166,6 +167,24 @@ export async function runClaudeCredentialHelloProbe(
   const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
 
   if (probe.timedOut) {
+    // The CLI retries a 401 with long exponential backoff instead of failing
+    // fast, so an invalid credential reliably presents as a TIMEOUT here, not
+    // as the "Invalid API key" text detectClaudeLoginRequired matches. The
+    // api_retry authentication_failed events it streamed before the deadline
+    // are the provider's rejection — classify them as one, or every bad key
+    // rides the permissive timeout branch to "Connected".
+    if (detectClaudeAuthRetryStorm(probe.stdout)) {
+      checks.push({
+        code: "claude_hello_probe_credential_rejected",
+        level: "error",
+        message: "Claude rejected the provided credential.",
+        detail:
+          "The Claude CLI spent the whole probe window retrying an authentication_failed (HTTP 401) response from the provider.",
+        authFailure: true,
+        hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
+      });
+      return checks;
+    }
     checks.push({
       code: "claude_hello_probe_timed_out",
       level: "warn",

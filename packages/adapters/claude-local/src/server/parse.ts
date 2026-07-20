@@ -262,6 +262,34 @@ export function isClaudeInvalidCredentialError(input: {
   return messages.some((message) => CLAUDE_INVALID_CREDENTIAL_RE.test(message));
 }
 
+// The Claude CLI does NOT fail fast on an invalid credential: a 401 from the
+// provider is retried up to 10 times with exponential backoff (observed live,
+// CLI 2.1.215: `{"type":"system","subtype":"api_retry",...,"error_status":401,
+// "error":"authentication_failed"}` roughly every backoff step, ~100s+ total),
+// so a hello probe against a bad key exhausts any sane timeout before the CLI
+// ever prints its "Invalid API key" result. The retry events themselves are the
+// provider saying the credential is rejected, and they appear on stdout within
+// the first second, so a timed-out probe whose stream carries them is a
+// credential rejection, not an infra timeout.
+export function detectClaudeAuthRetryStorm(stdout: string | null | undefined): boolean {
+  if (!stdout) return false;
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object") continue;
+    const record = event as Record<string, unknown>;
+    if (record.type !== "system" || record.subtype !== "api_retry") continue;
+    if (record.error_status === 401 || record.error === "authentication_failed") return true;
+  }
+  return false;
+}
+
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
 
