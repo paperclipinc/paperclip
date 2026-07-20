@@ -9,7 +9,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 // other execution-target helper keeps its real implementation.
 const { ensureAdapterExecutionTargetCommandResolvable, runAdapterExecutionTargetProcess, probeResult, commandResolvable } =
   vi.hoisted(() => {
-    const probeResult: { value: { exitCode: number; stdout: string; stderr: string } } = {
+    const probeResult: { value: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean } } = {
       value: { exitCode: 0, stdout: "", stderr: "" },
     };
     const commandResolvable: { value: boolean } = { value: true };
@@ -29,7 +29,7 @@ const { ensureAdapterExecutionTargetCommandResolvable, runAdapterExecutionTarget
       runAdapterExecutionTargetProcess: vi.fn(async () => ({
         exitCode: probeResult.value.exitCode,
         signal: null,
-        timedOut: false,
+        timedOut: probeResult.value.timedOut ?? false,
         stdout: probeResult.value.stdout,
         stderr: probeResult.value.stderr,
         pid: 123,
@@ -128,6 +128,72 @@ describe("Claude ACP lane live credential probe", () => {
     expect(rejected).toBeTruthy();
     expect(rejected?.level).toBe("error");
     expect(rejected?.authFailure).toBe(true);
+  });
+
+  it("classifies an auth-retry storm that rides out the probe timeout as a credential rejection", async () => {
+    // CLI 2.1.215 retries a 401 up to 10 times with exponential backoff, so a
+    // bad key surfaces as a TIMEOUT whose stream carries api_retry events —
+    // that must read as the provider rejecting the credential, not as the
+    // permissive infra-timeout warn (or bad keys show "Connected").
+    probeResult.value = {
+      exitCode: 0,
+      timedOut: true,
+      stdout: [
+        initLine,
+        '{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":535,"error_status":401,"error":"authentication_failed","session_id":"abc"}',
+        '{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1078,"error_status":401,"error":"authentication_failed","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "acp",
+        agentCommand: "/opt/claude-agent-acp",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "sk-ant-api03-invalid" },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find(
+      (check) => check.code === "claude_hello_probe_credential_rejected",
+    );
+    expect(rejected).toBeTruthy();
+    expect(rejected?.level).toBe("error");
+    expect(rejected?.authFailure).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_timed_out")).toBe(false);
+  });
+
+  it("keeps a quiet probe timeout permissive (warn, no authFailure)", async () => {
+    probeResult.value = {
+      exitCode: 0,
+      timedOut: true,
+      stdout: initLine,
+      stderr: "",
+    };
+
+    const result = await testClaudeAcpEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "acp",
+        agentCommand: "/opt/claude-agent-acp",
+        command: "claude",
+        env: { ANTHROPIC_API_KEY: "sk-ant-api03-plausible-but-slow" },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const timedOut = result.checks.find((check) => check.code === "claude_hello_probe_timed_out");
+    expect(timedOut).toBeTruthy();
+    expect(timedOut?.level).toBe("warn");
+    expect(result.checks.some((check) => check.authFailure)).toBe(false);
   });
 
   it("passes a valid credential through the same live probe", async () => {
