@@ -262,6 +262,7 @@ describe("OnboardingWizard cloud first-run", () => {
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
+    mockCompany.loading = false;
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
@@ -612,6 +613,69 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
+  it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
+    // Regression for the initializer-only restore bug: the inner wizard's
+    // ~20 useState(saved?.x ?? default) initializers only read `saved` on
+    // their very first render. useCompany() starts with companies=[] and
+    // loading=true and resolves later; if the inner component mounted before
+    // that resolution, restoreOnboardingState would see an empty companies
+    // list and the whole draft would lock to defaults forever, even after
+    // companies arrive. The fix defers mounting the inner wizard until
+    // companies settle.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [];
+    mockCompany.loading = true;
+
+    const { container, root, queryClient } = render();
+    const renderTree = () =>
+      act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+
+    await renderTree();
+    await flushReact();
+
+    // Nothing mounts yet — no premature guess, and the draft is not touched.
+    expect(container.textContent).toBe("");
+    expect(document.body.textContent).toBe("");
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
+
+    // Companies resolve asynchronously, owning the saved company.
+    mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
+    mockCompany.loading = false;
+
+    await renderTree();
+    await flushReact();
+
+    // The draft is restored once companies settle: step 3 (Create your team
+    // lead) with the saved agent name in the input, not the defaults
+    // (step 0, "Chief of staff").
+    expect(document.body.textContent).toContain("Create your team lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value).toBe("Ops Lead");
+    const currentStep = document.body.querySelector('[aria-current="step"]');
+    expect(currentStep?.getAttribute("aria-label")).toBe("Step 3");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps an enabled saved adapterType untouched", async () => {
     mockAdapterRegistry.list = [
       { type: "claude_local" },
@@ -846,6 +910,63 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // With nothing bound and no matching company secret, the gate stays
     // closed and hiring is blocked rather than silently sending the stale
     // secret id.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("resets in-session credential bindings when createdCompanyId changes mid-session (company switch, no reload)", async () => {
+    // credentialBindings is company-scoped even though it is never persisted
+    // (see the [createdCompanyId] effect in OnboardingWizardInner). Exercise
+    // the mid-session path: the dialog reopens with a DIFFERENT companyId
+    // while the wizard stays mounted, no page reload, so a binding collected
+    // under the previous company must not silently read as "connected" for
+    // the new one.
+    const { root, queryClient } = render();
+    const renderTree = () =>
+      act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+
+    await renderTree();
+    await flushReact();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+
+    // Switch companies mid-session: same adapterType (claude_local), so the
+    // AdapterCredentialConnect instance (keyed on adapterType) is NOT
+    // remounted — only the [createdCompanyId] effect can be responsible for
+    // clearing the binding.
+    mockDialog.onboardingOptions = { initialStep: 4, companyId: "c2" };
+    mockCompany.companies = [
+      { id: "c1", name: "Test Co", issuePrefix: "TC" },
+      { id: "c2", name: "Second Co", issuePrefix: "SC" },
+    ];
+    mockSecretsApi.list.mockResolvedValue([]);
+
+    await renderTree();
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:");
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     expect(heartbeatButton.disabled).toBe(true);
 

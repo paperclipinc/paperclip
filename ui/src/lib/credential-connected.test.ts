@@ -26,6 +26,14 @@ describe("deriveCredentialConnected", () => {
     expect(deriveCredentialConnected(setup, secrets, {}, "claude_local")).toBe(true);
   });
 
+  it("does not match a free-text secret name that merely starts with the base", () => {
+    // Secret keys are user-controlled free text. A secret named
+    // "claude-local-anthropic-api-key-backup-notes" must not falsely count as
+    // connected just because it starts with the canonical base name.
+    const secrets = [secret("claude-local-anthropic-api-key-backup-notes")];
+    expect(deriveCredentialConnected(setup, secrets, {}, "claude_local")).toBe(false);
+  });
+
   it("ignores secrets belonging to a different adapter", () => {
     const secrets = [secret("codex-local-openai-api-key")];
     expect(deriveCredentialConnected(setup, secrets, {}, "claude_local")).toBe(false);

@@ -7,6 +7,14 @@
  *
  * So restoring is an authorization decision, not a convenience. If the saved
  * company is not one the signed-in user owns, the whole blob is discarded.
+ *
+ * CONTRACT: `companies` must be the caller's SETTLED companies list (its
+ * loading query/context has finished, e.g. `companiesLoading === false`).
+ * This function has no way to tell an empty-because-still-loading list apart
+ * from an empty-because-the-account-owns-nothing list, so it always treats
+ * an empty `companies` as "owns nothing" and discards a saved company id.
+ * Callers must not invoke this while companies are still loading — wait for
+ * the settled list first, or a legitimate draft gets discarded by mistake.
  */
 export function restoreOnboardingState(
   raw: unknown,
@@ -22,10 +30,6 @@ export function restoreOnboardingState(
 
   const companyId = saved.createdCompanyId;
   if (typeof companyId !== "string" || companyId === "") return saved;
-
-  // Companies not loaded yet: refuse rather than guess. The caller retries once
-  // the list arrives, so this costs a render, not correctness.
-  if (companies.length === 0) return null;
 
   return companies.some((c) => c.id === companyId) ? saved : null;
 }
