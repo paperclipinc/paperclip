@@ -141,15 +141,39 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 }
 
 export const authApi = {
+  // Distinguishes a DEFINITIVE "not authenticated" signal (401, or a 200
+  // whose body doesn't parse into a session) from every other failure
+  // (429/5xx/network). Only the former resolves to `null` — the latter
+  // throws an AuthApiError carrying the real status, specifically so
+  // CloudAccessGate can tell "genuinely logged out" apart from "the
+  // session-check request itself was rejected/unreachable for an unrelated
+  // reason" and retry instead of bouncing a still-valid session to sign-in
+  // (see PAP bounce-and-probe-investigation.md: a rate-limited 429 on this
+  // exact endpoint, with the session cookie untouched, previously triggered
+  // a hard redirect).
   getSession: async (): Promise<AuthSession | null> => {
-    const res = await fetch("/api/auth/get-session", {
-      credentials: "include",
-      headers: { Accept: "application/json" },
-    });
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/get-session", {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+    } catch (networkError) {
+      logAuthNetworkFailure("GET", "/get-session", networkError);
+      // No HTTP response at all — status 0 signals "not a definitive
+      // unauthenticated answer" to callers, same as any other non-2xx,
+      // non-401 status below.
+      throw new AuthApiError(
+        networkError instanceof Error ? networkError.message : "Network error",
+        0,
+        null,
+      );
+    }
     if (res.status === 401) return null;
     const payload = await res.json().catch(() => null);
     if (!res.ok) {
-      throw new Error(`Failed to load session (${res.status})`);
+      logAuthHttpError("GET", "/get-session", res.status, res.statusText, payload);
+      throw new AuthApiError(`Failed to load session (${res.status})`, res.status, payload);
     }
     const direct = toSession(payload);
     if (direct) return direct;
