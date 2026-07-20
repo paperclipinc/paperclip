@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CompanySecret } from "@paperclipai/shared";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -39,6 +40,12 @@ const mockHealthApi = vi.hoisted(() => ({
 }));
 const mockCloudCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
+}));
+// Server-side truth for "is a credential connected" (deriveCredentialConnected
+// reads this via the wizard's company-secrets query). Defaults to no secrets;
+// individual tests override with mockResolvedValueOnce / mockResolvedValue.
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(async (): Promise<CompanySecret[]> => []),
 }));
 
 // The real adapter registry eagerly imports every adapter package. The
@@ -106,6 +113,7 @@ vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
 }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: (type: string) =>
@@ -169,6 +177,35 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "@/api/client";
 import { OnboardingWizard } from "./OnboardingWizard";
+
+function makeCompanySecret(overrides: Partial<CompanySecret> = {}): CompanySecret {
+  return {
+    id: "secret-1",
+    companyId: "c1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "claude-local-anthropic-api-key",
+    name: "ANTHROPIC_API_KEY",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 1,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: "user-1",
+    referenceCount: 1,
+    createdAt: new Date("2026-05-06T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -248,6 +285,7 @@ describe("OnboardingWizard cloud first-run", () => {
     });
     mockGoalsApi.create.mockResolvedValue({ id: "goal-1" });
     mockGoalsApi.list.mockResolvedValue([]);
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -611,6 +649,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -635,7 +674,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("persists a binding to the draft and merges it into the hire payload", async () => {
+  it("merges an in-session binding into the hire payload without ever writing it to the persisted draft", async () => {
     const { root } = await mount();
 
     const bindButton = findButtonByText(document.body, "bound:");
@@ -644,12 +683,14 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
+    // Bindings are session-only: localStorage is per-origin, not per-account,
+    // so a restored binding could name a secret belonging to another
+    // company, which the server rejects with "Secret must belong to same
+    // company". The persisted draft must never carry the key at all.
     const saved = JSON.parse(
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
-    expect(saved.credentialBindings).toEqual({
-      ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-1" },
-    });
+    expect(saved).not.toHaveProperty("credentialBindings");
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     await act(async () => {
@@ -771,7 +812,14 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("restores credentialBindings from a saved draft and merges them into the hire payload", async () => {
+  it("never restores credentialBindings from a saved draft, even for the owned, currently-selected company", async () => {
+    // A binding named in a saved draft names a secret id. Restoring it would
+    // let a browser carrying a stale draft (e.g. after switching accounts,
+    // still on the same company) hand a secret id to the server that may no
+    // longer resolve, or may belong to a different company entirely — the
+    // "Secret must belong to same company" failure this fix exists for.
+    // Bindings are session-only now, so the saved value below must be
+    // ignored no matter what.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -783,36 +831,30 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
         },
       }),
     );
+    // No matching secret on the company either, so the gate has no other way
+    // to read as satisfied.
+    mockSecretsApi.list.mockResolvedValue([]);
 
     const { root } = await mount();
 
-    // The restored binding surfaces as a bound env key on the connect card.
+    // The connect card starts unbound: the draft's binding was discarded.
     expect(
       document.body.querySelector('[data-testid="mock-credential-bind"]')
         ?.textContent,
-    ).toBe("bound:ANTHROPIC_API_KEY");
+    ).toBe("bound:");
 
+    // With nothing bound and no matching company secret, the gate stays
+    // closed and hiring is blocked rather than silently sending the stale
+    // secret id.
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
-    await act(async () => {
-      heartbeatButton.click();
-    });
-    await flushReact();
-
-    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
-    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
-      adapterConfig: { env?: Record<string, unknown> };
-    };
-    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
-      type: "secret_ref",
-      secretId: "sec-draft",
-    });
+    expect(heartbeatButton.disabled).toBe(true);
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("does not send a binding collected under a previously-selected adapter when hiring with a different adapter selected", async () => {
+  it("filters a stale in-session binding from a previously-selected adapter out of the hire payload; the gate is satisfied by a real company secret instead", async () => {
     // gemini_local has its own credential option (GEMINI_API_KEY), disjoint
     // from claude_local's ANTHROPIC_API_KEY.
     mockAdapterRegistry.byType.gemini_local = {
@@ -835,25 +877,41 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       { type: "claude_local" },
       { type: "gemini_local" },
     ];
+    // adapterType itself still restores fine (only credentialBindings is
+    // stripped by restoreOnboardingState).
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
         step: 4,
         agentName: "Chief of staff",
         adapterType: "gemini_local",
-        credentialBindings: {
-          // Stale binding left over from when claude_local was selected.
-          ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-stale" },
-          // The current adapter's own credential, which satisfies the gate.
-          GEMINI_API_KEY: { type: "secret_ref", secretId: "sec-gemini" },
-        },
       }),
     );
+    // The company already has an active secret matching gemini_local's own
+    // naming convention (see credentialSecretName), so the server-side truth
+    // satisfies the gate without any session binding.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({
+        id: "sec-gemini",
+        key: "gemini-local-gemini-api-key",
+        name: "GEMINI_API_KEY",
+      }),
+    ]);
 
     const { root } = await mount();
 
+    // Simulate a stale in-session binding left over from a moment when
+    // claude_local was selected (the mocked connect card always binds
+    // ANTHROPIC_API_KEY regardless of the adapter currently on screen).
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
-    // The gate is satisfied by the current adapter's own binding.
+    // The gate is satisfied by the real company secret for GEMINI_API_KEY,
+    // not by the stale ANTHROPIC_API_KEY session binding.
     expect(heartbeatButton.disabled).toBe(false);
     await act(async () => {
       heartbeatButton.click();
@@ -864,13 +922,11 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
       adapterConfig: { env?: Record<string, unknown> };
     };
-    // Only the current adapter's credential option is sent; the stale binding
-    // collected under the previously-selected adapter is filtered out.
-    expect(hirePayload.adapterConfig.env?.GEMINI_API_KEY).toEqual({
-      type: "secret_ref",
-      secretId: "sec-gemini",
-    });
-    expect(hirePayload.adapterConfig.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    // The stale binding collected under the previously-selected adapter is
+    // filtered out by mergeCredentialBindings (it only keeps envKeys the
+    // current adapter's credentialSetup advertises); the current adapter's
+    // credential was never session-bound, so no env override is sent at all.
+    expect(hirePayload.adapterConfig).not.toHaveProperty("env");
 
     await act(async () => {
       root.unmount();
@@ -882,9 +938,8 @@ describe("mergeCredentialBindings", () => {
   // Exercised indirectly above through the wizard's call sites; this
   // isolates the merge/filter semantics themselves since the helper isn't
   // exported (it's an internal implementation detail of the wizard), driven
-  // through the same "restore saved draft" + hire path used elsewhere in
-  // this file so the base-env-survives case doesn't need a real
-  // buildAdapterConfig() with forceUnset wiring.
+  // through an in-session bind + hire, so the base-env-survives case doesn't
+  // need a real buildAdapterConfig() with forceUnset wiring.
   beforeEach(() => {
     window.localStorage.clear();
     mockDialog.onboardingOpen = true;
@@ -898,6 +953,7 @@ describe("mergeCredentialBindings", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -905,37 +961,36 @@ describe("mergeCredentialBindings", () => {
     vi.clearAllMocks();
   });
 
-  it("merges a matching binding on top of the base config's own env instead of replacing it", async () => {
+  it("merges an in-session binding on top of the base config's own env instead of replacing it", async () => {
     // Simulate buildAdapterConfig() already producing a base env entry (e.g.
     // the forceUnsetAnthropicApiKey plain-value marker) by having the
-    // claude_local adapter's buildAdapterConfig stub return one.
+    // claude_local adapter's buildAdapterConfig stub return one for a key
+    // other than the credential option under test, so the merge's
+    // "survives alongside" behavior is unambiguous.
     mockAdapterRegistry.byType.claude_local = {
       buildAdapterConfig: () => ({
-        env: { ANTHROPIC_API_KEY: { type: "plain", value: "" } },
+        env: { SOME_OTHER_VAR: { type: "plain", value: "kept" } },
       }),
       credentialSetup: {
         options: [
           {
-            envKey: "CLAUDE_CODE_OAUTH_TOKEN",
-            label: "Claude Pro/Max subscription token",
-            placeholder: "sk-ant-oat01-...",
+            envKey: "ANTHROPIC_API_KEY",
+            label: "Anthropic API key",
+            placeholder: "sk-ant-...",
           },
         ],
       },
     };
-    window.localStorage.setItem(
-      ONBOARDING_STORAGE_KEY,
-      JSON.stringify({
-        step: 4,
-        agentName: "Chief of staff",
-        adapterType: "claude_local",
-        credentialBindings: {
-          CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId: "sec-token" },
-        },
-      }),
-    );
 
     const { root } = await mount();
+
+    // The mocked connect card always binds ANTHROPIC_API_KEY, which matches
+    // this adapter's own credential option.
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     await act(async () => {
@@ -948,14 +1003,15 @@ describe("mergeCredentialBindings", () => {
       adapterConfig: { env?: Record<string, unknown> };
     };
     // The base config's own env entry survives the merge...
-    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+    expect(hirePayload.adapterConfig.env?.SOME_OTHER_VAR).toEqual({
       type: "plain",
-      value: "",
+      value: "kept",
     });
-    // ...alongside the binding for the current adapter's credential option.
-    expect(hirePayload.adapterConfig.env?.CLAUDE_CODE_OAUTH_TOKEN).toEqual({
+    // ...alongside the in-session binding for the current adapter's
+    // credential option.
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
       type: "secret_ref",
-      secretId: "sec-token",
+      secretId: "sec-1",
     });
 
     await act(async () => {

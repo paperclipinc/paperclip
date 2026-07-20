@@ -7,6 +7,8 @@ import type {
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
+import { restoreOnboardingState } from "@/lib/onboarding-state";
+import { deriveCredentialConnected } from "@/lib/credential-connected";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -17,6 +19,7 @@ import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -148,15 +151,6 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
-function loadSavedState(): Record<string, unknown> | null {
-  try {
-    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
 export function OnboardingWizard() {
   const {
     onboardingOpen,
@@ -195,8 +189,31 @@ export function OnboardingWizard() {
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
 
-  // Restore saved state from localStorage (read once on mount)
-  const saved = useMemo(loadSavedState, []);
+  // Restore saved state from localStorage, routed through restoreOnboardingState
+  // so a company the signed-in user does not own can never seed the wizard.
+  // Parsed once here (not re-parsed by the cleanup effect below) so the restored
+  // value and the "should we wipe the blob" decision always agree.
+  const { saved, staleStateDetected } = useMemo(() => {
+    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    if (!raw) return { saved: null, staleStateDetected: false };
+    try {
+      const restored = restoreOnboardingState(JSON.parse(raw), companies);
+      // Companies not loaded yet: restoreOnboardingState refuses to guess and
+      // returns null, but that's not stale state, it's a retry-next-render
+      // signal, so don't wipe storage over it.
+      return { saved: restored, staleStateDetected: restored === null && companies.length > 0 };
+    } catch {
+      return { saved: null, staleStateDetected: true };
+    }
+  }, [companies]);
+
+  // A discarded/malformed state should not sit in storage waiting to confuse
+  // the next onboarding attempt (e.g. a different signed-in user).
+  useEffect(() => {
+    if (staleStateDetected) {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    }
+  }, [staleStateDetected]);
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
@@ -244,14 +261,11 @@ export function OnboardingWizard() {
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  // Session-only: never restored from localStorage. A restored binding names a
+  // secret id that can belong to another company, which the server rejects.
   const [credentialBindings, setCredentialBindings] = useState<
     Record<string, { type: "secret_ref"; secretId: string }>
-  >(
-    (saved?.credentialBindings as Record<
-      string,
-      { type: "secret_ref"; secretId: string }
-    >) ?? {}
-  );
+  >({});
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -315,6 +329,14 @@ export function OnboardingWizard() {
     if (company?.name) setCompanyName(company.name);
   }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
 
+  // credentialBindings is company-scoped even though it isn't persisted: if
+  // createdCompanyId changes while the wizard stays mounted (an in-SPA company
+  // switch, no page reload), a binding collected under the previous company
+  // must not read as "connected" for the new one.
+  useEffect(() => {
+    setCredentialBindings({});
+  }, [createdCompanyId]);
+
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -324,7 +346,6 @@ export function OnboardingWizard() {
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
-      credentialBindings,
     };
     localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
   }, [
@@ -333,7 +354,6 @@ export function OnboardingWizard() {
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
-    credentialBindings,
   ]);
 
   const {
@@ -350,6 +370,14 @@ export function OnboardingWizard() {
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
+  });
+  // Server-side truth for "is a credential connected". Company scoped, so a
+  // secret from another company cannot appear here.
+  const { data: companySecrets } = useQuery({
+    queryKey: ["company-secrets", createdCompanyId],
+    queryFn: () => secretsApi.list(createdCompanyId as string),
+    enabled: Boolean(createdCompanyId),
+    staleTime: 0,
   });
   // Cloud (authenticated) mode: the native POST /api/companies collection-create
   // is blocked by the hosting gateway (409 use_cloud_company_create). Creating an
@@ -386,7 +414,7 @@ export function OnboardingWizard() {
   const requiresCredential = Boolean(credentialSetup && credentialSetup.options.length > 0);
   const credentialConnected =
     !requiresCredential ||
-    credentialSetup!.options.some((o) => Boolean(credentialBindings[o.envKey]));
+    deriveCredentialConnected(credentialSetup, companySecrets, credentialBindings, adapterType);
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
@@ -688,6 +716,7 @@ export function OnboardingWizard() {
     };
     setCredentialBindings(nextBindings);
     setAdapterEnvResult(null);
+    void queryClient.invalidateQueries({ queryKey: ["company-secrets", createdCompanyId] });
     void runAdapterEnvironmentTest(
       mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
     );
