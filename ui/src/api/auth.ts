@@ -141,16 +141,30 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 }
 
 export const authApi = {
-  // Distinguishes a DEFINITIVE "not authenticated" signal (401, or a 200
-  // whose body doesn't parse into a session) from every other failure
-  // (429/5xx/network). Only the former resolves to `null` — the latter
-  // throws an AuthApiError carrying the real status, specifically so
-  // CloudAccessGate can tell "genuinely logged out" apart from "the
-  // session-check request itself was rejected/unreachable for an unrelated
-  // reason" and retry instead of bouncing a still-valid session to sign-in
-  // (see PAP bounce-and-probe-investigation.md: a rate-limited 429 on this
-  // exact endpoint, with the session cookie untouched, previously triggered
-  // a hard redirect).
+  // Distinguishes a DEFINITIVE "not authenticated" signal from every other
+  // failure (429/5xx/network/malformed 200). Only the former resolves to
+  // `null` — everything else throws an AuthApiError carrying the real
+  // status, specifically so CloudAccessGate can tell "genuinely logged out"
+  // apart from "the session-check request itself failed, or answered with
+  // something we don't recognize" and retry instead of bouncing a still-
+  // valid session to sign-in (see PAP bounce-and-probe-investigation.md: a
+  // rate-limited 429 on this exact endpoint, with the session cookie
+  // untouched, previously triggered a hard redirect).
+  //
+  // There are exactly two definitive-unauthenticated signals:
+  //   1. An explicit 401.
+  //   2. better-auth's own documented "no session" 200 response, which is a
+  //      bare JSON `null` body (see the vendored get-session handler in
+  //      services/paperclip-id/node_modules/better-auth/dist/api/routes/
+  //      session.mjs: no session cookie, or an expired/deleted session, both
+  //      `return ctx.json(null)` / bare `return null`) — never `{session:
+  //      null}` or any other shape.
+  // A 200 whose body is neither of those — including one that merely fails
+  // authSessionSchema — is a CONTRACT MISMATCH (a server-side response-shape
+  // drift, e.g. #189's empty-name bug), not a logout signal, and must not be
+  // silently treated as one: a deploy that drifts this shape would otherwise
+  // log out every signed-in user on their next reload. Throw instead, and
+  // log the parse failure for diagnostics.
   getSession: async (): Promise<AuthSession | null> => {
     let res: Response;
     try {
@@ -170,15 +184,34 @@ export const authApi = {
       );
     }
     if (res.status === 401) return null;
-    const payload = await res.json().catch(() => null);
+    // `undefined` (JSON parse failed — e.g. an empty body) is deliberately
+    // distinct from a successfully-parsed literal `null`: only the latter is
+    // better-auth's documented "no session" shape.
+    const payload = await res.json().catch(() => undefined);
     if (!res.ok) {
       logAuthHttpError("GET", "/get-session", res.status, res.statusText, payload);
-      throw new AuthApiError(`Failed to load session (${res.status})`, res.status, payload);
+      throw new AuthApiError(`Failed to load session (${res.status})`, res.status, payload ?? null);
     }
+    if (payload === null) return null;
     const direct = toSession(payload);
     if (direct) return direct;
     const nested = payload && typeof payload === "object" ? toSession((payload as Record<string, unknown>).data) : null;
-    return nested;
+    if (nested) return nested;
+    const parsed = authSessionSchema.safeParse(payload);
+    // eslint-disable-next-line no-console
+    console.error(
+      "[auth] /get-session returned a 200 whose body does not match the expected session shape (or the documented null-session shape) — treating as transient, not a logout",
+      {
+        payload,
+        issues: parsed.success ? null : parsed.error.issues,
+      },
+    );
+    throw new AuthApiError(
+      "Session response did not match the expected shape",
+      res.status,
+      payload,
+      "session_shape_mismatch",
+    );
   },
 
   signInEmail: async (input: { email: string; password: string }) => {

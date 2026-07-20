@@ -38,14 +38,50 @@ describe("authApi.getSession status classification", () => {
     await expect(authApi.getSession()).resolves.toBeNull();
   });
 
-  it("resolves to null on a 200 whose body doesn't parse into a session (definitive: not authenticated)", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(200, { unrelated: "shape" }));
+  // better-auth's OWN documented "no session" 200 response is a bare JSON
+  // `null` body (see services/paperclip-id's vendored get-session handler:
+  // no session cookie, or an expired/deleted session, both `return
+  // ctx.json(null)` / bare `return null` — never `{session: null}` or any
+  // other shape). This is the ONLY 200 body that means "not authenticated".
+  it("resolves to null on better-auth's genuine unauthenticated 200 body (a bare JSON null)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, null));
     await expect(authApi.getSession()).resolves.toBeNull();
   });
 
   it("resolves the session on a valid 200", async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, validSessionBody));
     await expect(authApi.getSession()).resolves.toEqual(validSessionBody);
+  });
+
+  // A 200 that is neither the documented null-session body NOR a valid
+  // session is a CONTRACT MISMATCH — a server-side response-shape drift
+  // (this bit us before as #189's empty-name authSessionSchema issue), not
+  // a logout. Must throw (so the gate retries/backs off), never resolve to
+  // null: silently treating this as "logged out" would log out every
+  // signed-in user the moment a deploy drifts this shape.
+  it("throws (does not resolve to null) on a 200 whose body matches neither the null-session shape nor a valid session", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { unrelated: "shape" }));
+    let caught: unknown = null;
+    try {
+      await authApi.getSession();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AuthApiError);
+    expect((caught as AuthApiError).status).toBe(200);
+    expect((caught as AuthApiError).code).toBe("session_shape_mismatch");
+  });
+
+  it("throws on a 200 whose body is a session-shaped object missing a required field (e.g. a drifted user schema)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        session: { id: "sess-1", userId: "user-1" },
+        // Missing `image`, which currentUserProfileSchema requires
+        // (nullable but not optional) — exactly the #189 shape-drift class.
+        user: { id: "user-1", email: "user@example.com", name: "User One" },
+      }),
+    );
+    await expect(authApi.getSession()).rejects.toBeInstanceOf(AuthApiError);
   });
 
   // Everything below is NOT a definitive "not authenticated" answer — it
