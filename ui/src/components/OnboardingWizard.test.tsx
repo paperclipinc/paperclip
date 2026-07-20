@@ -76,7 +76,11 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
   testEnvironment: vi.fn(
-    async (): Promise<AdapterEnvironmentTestResult> => ({
+    async (
+      _companyId: string,
+      _adapterType: string,
+      _data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
+    ): Promise<AdapterEnvironmentTestResult> => ({
       adapterType: "claude_local",
       status: "pass",
       checks: [],
@@ -1018,8 +1022,26 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
+    // The probe was NOT run against an empty/credential-less config: it
+    // actually submitted the orphaned secret's own secret_ref, materialized
+    // from deriveCredentialConnected's own name-matching logic
+    // (findMatchingCompanySecret) rather than the gate being trusted blind.
+    // Without this, the probe could only ever see the soft "please log in"
+    // case (no credential present to reject) and this whole test would be
+    // asserting against a scenario that can't occur in the real app.
+    const probeCall = mockAgentsApi.testEnvironment.mock.calls[0] as
+      | [string, string, { adapterConfig: { env?: Record<string, unknown> } }]
+      | undefined;
+    expect(probeCall?.[2]?.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-1",
+    });
+
     // No agent was created against the known-bad credential.
     expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+    // The rejected, materialized secret is disabled server-side too.
+    expect(mockSecretsApi.disable).toHaveBeenCalledWith("secret-1");
 
     // The rejection error is visible and the user is kept on the step —
     // not a dead end. Back must still be reachable and enabled.
@@ -1033,6 +1055,65 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     expect(
       findButtonByText(document.body, "Give it a heartbeat").disabled,
     ).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("materializes a VALID post-reload company secret into both the probe and the hire payload", async () => {
+    // The counterpart to the orphaned-secret regression above: a user who
+    // successfully bound a valid key, then reloaded BEFORE clicking "Give
+    // it a heartbeat" (or simply opened onboarding fresh with a company
+    // that already has a valid secret from a prior session). No session
+    // binding exists, so without materializing the match,
+    // mergeCredentialBindings would ship neither the probe nor the hire any
+    // credential at all — a credential-less agent that fails its first run
+    // even though the key itself was always fine.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ id: "secret-valid", status: "active" }),
+    ]);
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+    await flushReact();
+
+    // The gate reads as open purely from the company secret.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    // The live probe actually tested the matched secret, not an empty config.
+    const probeCall = mockAgentsApi.testEnvironment.mock.calls[0] as
+      | [string, string, { adapterConfig: { env?: Record<string, unknown> } }]
+      | undefined;
+    expect(probeCall?.[2]?.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-valid",
+    });
+
+    // The hire succeeded, and its payload carries the same binding — the
+    // created agent is not credential-less.
+    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
+      adapterConfig: { env?: Record<string, unknown> };
+    };
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-valid",
+    });
+
+    // A valid credential never gets disabled.
+    expect(mockSecretsApi.disable).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
@@ -1259,7 +1340,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("filters a stale in-session binding from a previously-selected adapter out of the hire payload; the gate is satisfied by a real company secret instead", async () => {
+  it("filters a stale in-session binding from a previously-selected adapter out of the hire payload, and materializes the current adapter's OWN matching company secret into it instead", async () => {
     // gemini_local has its own credential option (GEMINI_API_KEY), disjoint
     // from claude_local's ANTHROPIC_API_KEY.
     mockAdapterRegistry.byType.gemini_local = {
@@ -1327,11 +1408,20 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
       adapterConfig: { env?: Record<string, unknown> };
     };
-    // The stale binding collected under the previously-selected adapter is
-    // filtered out by mergeCredentialBindings (it only keeps envKeys the
-    // current adapter's credentialSetup advertises); the current adapter's
-    // credential was never session-bound, so no env override is sent at all.
-    expect(hirePayload.adapterConfig).not.toHaveProperty("env");
+    // The stale ANTHROPIC_API_KEY binding collected under the
+    // previously-selected adapter is filtered out by mergeCredentialBindings
+    // (it only keeps envKeys the current adapter's credentialSetup
+    // advertises). gemini_local's own credential was never session-bound
+    // this session, but handleGiveHeartbeat materializes the matching
+    // company secret the gate itself was satisfied by, so the hire payload
+    // still carries a real credential rather than shipping a credential-less
+    // agent (the reload gap this covers: without materializing, this agent
+    // would be hired with no env override at all and fail its first run).
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(hirePayload.adapterConfig.env?.GEMINI_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "sec-gemini",
+    });
 
     await act(async () => {
       root.unmount();

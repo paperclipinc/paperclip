@@ -13,6 +13,7 @@ import {
   credentialRejectionMessage,
   deriveCredentialConnected,
   findCredentialAuthFailureCheck,
+  findMatchingCompanySecret,
 } from "@/lib/credential-connected";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -980,6 +981,43 @@ function OnboardingWizardInner({
     setLoading(true);
     setError(null);
     try {
+      // The heartbeat gate (credentialConnected) can read "connected"
+      // purely off deriveCredentialConnected's company-secrets fallback —
+      // e.g. right after a page reload, before the user has bound anything
+      // THIS session. That fallback proves an active secret exists, but it
+      // never puts anything into credentialBindings. Left alone, the probe
+      // below and the hire payload would both run through
+      // mergeCredentialBindings with an EMPTY bindings map: the probe would
+      // only ever see the soft "please log in" case (no authFailure, since
+      // no credential is present to reject) and the hire would create an
+      // agent with no credential binding at all — exactly the "first run
+      // fails after onboarding" bug this whole fix exists for, just via a
+      // different path (a valid key on a fresh reload gets the same
+      // treatment as a rejected one). Materialize the match into an actual
+      // binding — reusing the exact name-matching logic
+      // deriveCredentialConnected uses, via findMatchingCompanySecret — so
+      // the probe actually tests it and the hire payload actually carries
+      // it. Also persist it to credentialBindings state so later renders
+      // (and the rejection-handling branch below) see it too.
+      let materializedBindings = credentialBindings;
+      let justMaterializedBinding = false;
+      if (requiresCredential && credentialSetup) {
+        const alreadyBoundThisSession = credentialSetup.options.some((option) =>
+          Boolean(credentialBindings[option.envKey]),
+        );
+        if (!alreadyBoundThisSession) {
+          const match = findMatchingCompanySecret(credentialSetup, companySecrets, adapterType);
+          if (match) {
+            materializedBindings = {
+              ...credentialBindings,
+              [match.envKey]: { type: "secret_ref" as const, secretId: match.secretId },
+            };
+            justMaterializedBinding = true;
+            setCredentialBindings(materializedBindings);
+          }
+        }
+      }
+
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!isValidOpenCodeModelId(selectedModelId)) {
@@ -1014,15 +1052,29 @@ function OnboardingWizardInner({
       }
 
       if (isLocalAdapter) {
-        const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
+        // If we just materialized a binding above, the cached adapterEnvResult
+        // (if any) was necessarily produced before that binding existed — it
+        // could only have seen the soft "please log in" case, never a real
+        // pass/fail for this credential. Force a fresh probe against
+        // materializedBindings rather than trusting the stale cache.
+        const envConfigForProbe = mergeCredentialBindings(
+          buildAdapterConfig(),
+          materializedBindings,
+          credentialSetup
+        );
+        const result = justMaterializedBinding
+          ? await runAdapterEnvironmentTest(envConfigForProbe)
+          : adapterEnvResult ?? (await runAdapterEnvironmentTest(envConfigForProbe));
         if (!result) return;
         // Defense in depth: normally a rejected credential never gets this
         // far because handleCredentialBind already undid the binding and
         // disabled the secret. This still catches drift — e.g. the disable
         // call above failed and the gate re-opened off a stale active
-        // secret after a reload, or the key was rotated bad after a
-        // successful bind. Never hire against a credential the fresh probe
-        // just told us the provider rejected.
+        // secret after a reload, the key was rotated bad after a successful
+        // bind, or (the case this fresh-probe-forcing fix above closes) the
+        // gate opened purely from an orphaned active company secret this
+        // session never bound. Never hire against a credential the fresh
+        // probe just told us the provider rejected.
         const rejection = findCredentialAuthFailureCheck(result);
         if (rejection) {
           // eslint-disable-next-line no-console
@@ -1032,17 +1084,18 @@ function OnboardingWizardInner({
           );
           const adapterEnvKeys = (credentialSetup?.options ?? []).map((option) => option.envKey);
           const boundEnvKeysForAdapter = adapterEnvKeys.filter((envKey) =>
-            Boolean(credentialBindings[envKey]),
+            Boolean(materializedBindings[envKey]),
           );
-          // Disable only the ones we have a secretId for (a live session
-          // binding). The gate can also read "connected" purely via an
-          // orphaned active company secret with no session binding at all
-          // (e.g. a rejected attempt from an earlier session whose disable
-          // call itself failed) — there is no secretId for that one to
-          // disable from here.
+          // Disable only the ones we have a secretId for (a live or
+          // just-materialized session binding, including the one we may
+          // have just materialized above). A gate that's STILL open purely
+          // via an orphaned active secret with no matching binding at all
+          // would mean findMatchingCompanySecret found nothing to
+          // materialize in the first place, so there is nothing left
+          // un-disabled here.
           await Promise.all(
             boundEnvKeysForAdapter.map((envKey) => {
-              const binding = credentialBindings[envKey];
+              const binding = materializedBindings[envKey];
               return binding
                 ? disableRejectedCredentialSecret(binding.secretId, envKey)
                 : Promise.resolve();
@@ -1077,7 +1130,7 @@ function OnboardingWizardInner({
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup),
+        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), materializedBindings, credentialSetup),
         runtimeConfig: buildNewAgentRuntimeConfig(),
         // The onboarding CEO's seed task is to hire the first engineer. Attach the
         // create-agent skill so its run session exposes the governance-aware hiring

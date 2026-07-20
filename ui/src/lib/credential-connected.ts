@@ -30,18 +30,47 @@ export function credentialFailureKey(adapterType: string, envKey: string): strin
   return `${adapterType}:${envKey}`;
 }
 
+export interface MatchingCompanySecret {
+  envKey: string;
+  secretId: string;
+}
+
+/**
+ * Find the first active company secret whose name matches this adapter's
+ * canonical naming convention (see `credentialSecretName`) for one of its
+ * credential envKeys: an exact match, or the client's own numeric
+ * collision-suffix scheme (`-2`, `-3`, ...) — never a loose prefix, or an
+ * unrelated active secret like `claude-local-anthropic-api-key-backup-notes`
+ * would falsely count.
+ *
+ * Shared by `deriveCredentialConnected` (the read-only "is this connected"
+ * check) and callers that need to MATERIALIZE a discovered secret into an
+ * actual session binding — e.g. `handleGiveHeartbeat`, when the gate reads
+ * connected purely from this fallback (no session binding exists to submit
+ * to the live probe or the hire payload, which otherwise silently ship
+ * without any credential at all).
+ */
+export function findMatchingCompanySecret(
+  setup: AdapterCredentialSetup | undefined,
+  secrets: CompanySecret[] | undefined,
+  adapterType: string,
+): MatchingCompanySecret | null {
+  const usable = (secrets ?? []).filter((s) => s.status === "active" && !s.deletedAt);
+  for (const option of setup?.options ?? []) {
+    const base = credentialSecretName(adapterType, option.envKey);
+    const pattern = new RegExp(`^${escapeRegExp(base)}(-\\d+)?$`);
+    const match = usable.find((s) => pattern.test(s.key));
+    if (match) return { envKey: option.envKey, secretId: match.id };
+  }
+  return null;
+}
+
 /**
  * A credential counts as connected only when the CURRENT company actually has a
  * usable secret for one of this adapter's env keys, or the user just bound one
  * in this session. Session bindings are deliberately NOT persisted: localStorage
  * is per origin, so a restored binding can name another company's secret, which
  * the server rejects with "Secret must belong to same company".
- *
- * Secret keys are free text a user can name anything, so the match against the
- * canonical `credentialSecretName` base must be exact or the client's own
- * collision-suffix scheme (`-2`, `-3`, ...), never a loose prefix. A prefix
- * match would let an unrelated active secret like
- * `claude-local-anthropic-api-key-backup-notes` falsely count as connected.
  *
  * @param failedEnvKeys keys built with `credentialFailureKey(adapterType,
  * envKey)` for every (adapter, envKey) pair whose most recent live-probe
@@ -55,6 +84,13 @@ export function credentialFailureKey(adapterType: string, envKey: string): strin
  * rejection, so a stale/failed page reload doesn't fall through to this
  * fallback and re-open the gate on an orphaned active secret. Cleared the
  * moment a fresh bind attempt starts for that (adapter, envKey) pair.
+ *
+ * IMPORTANT: this being true from the company-secrets fallback alone means
+ * there is NO session binding for that envKey. A caller that goes on to run
+ * the live probe or the hire off `credentialBindings` as-is would silently
+ * submit no credential at all (see `findMatchingCompanySecret`) — callers
+ * on that path (`handleGiveHeartbeat`) must materialize the match into a
+ * real session binding first.
  */
 export function deriveCredentialConnected(
   setup: AdapterCredentialSetup | undefined,
@@ -70,13 +106,8 @@ export function deriveCredentialConnected(
 
   if (envKeys.some((k) => Boolean(sessionBindings[k]))) return true;
 
-  const usable = (secrets ?? []).filter((s) => s.status === "active" && !s.deletedAt);
-  return envKeys.some((envKey) => {
-    const base = credentialSecretName(adapterType, envKey);
-    // Exact match, or the client's numeric collision-suffix scheme (-2, -3, ...).
-    const pattern = new RegExp(`^${escapeRegExp(base)}(-\\d+)?$`);
-    return usable.some((s) => pattern.test(s.key));
-  });
+  const match = findMatchingCompanySecret(setup, secrets, adapterType);
+  return match !== null && envKeys.includes(match.envKey);
 }
 
 /**

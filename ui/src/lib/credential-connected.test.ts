@@ -6,11 +6,16 @@ import {
   credentialSecretName,
   deriveCredentialConnected,
   findCredentialAuthFailureCheck,
+  findMatchingCompanySecret,
 } from "./credential-connected";
 
 const setup = { options: [{ envKey: "ANTHROPIC_API_KEY" }, { envKey: "CLAUDE_CODE_OAUTH_TOKEN" }] } as never;
-const secret = (key: string, status = "active", deletedAt: Date | null = null) =>
-  ({ key, status, deletedAt }) as never;
+const secret = (
+  key: string,
+  status = "active",
+  deletedAt: Date | null = null,
+  id = "secret-id",
+) => ({ id, key, status, deletedAt }) as never;
 
 describe("credentialSecretName", () => {
   it("kebabs adapter type and env key", () => {
@@ -96,6 +101,51 @@ describe("deriveCredentialConnected", () => {
     // Sanity check the other direction: the failure record DOES block the
     // adapter it was actually recorded against.
     expect(deriveCredentialConnected(setup, [], bindings, "claude_local", failed)).toBe(false);
+  });
+});
+
+describe("findMatchingCompanySecret", () => {
+  it("returns null with no secrets", () => {
+    expect(findMatchingCompanySecret(setup, [], "claude_local")).toBeNull();
+  });
+
+  it("returns the envKey and secretId of the matching active secret", () => {
+    const secrets = [secret("claude-local-anthropic-api-key", "active", null, "sec-42")];
+    expect(findMatchingCompanySecret(setup, secrets, "claude_local")).toEqual({
+      envKey: "ANTHROPIC_API_KEY",
+      secretId: "sec-42",
+    });
+  });
+
+  it("matches the -2 collision suffix", () => {
+    const secrets = [secret("claude-local-anthropic-api-key-2", "active", null, "sec-suffix")];
+    expect(findMatchingCompanySecret(setup, secrets, "claude_local")).toEqual({
+      envKey: "ANTHROPIC_API_KEY",
+      secretId: "sec-suffix",
+    });
+  });
+
+  it("does not match a free-text secret name that merely starts with the base", () => {
+    const secrets = [secret("claude-local-anthropic-api-key-backup-notes")];
+    expect(findMatchingCompanySecret(setup, secrets, "claude_local")).toBeNull();
+  });
+
+  it("ignores disabled and deleted secrets", () => {
+    expect(
+      findMatchingCompanySecret(setup, [secret("claude-local-anthropic-api-key", "disabled")], "claude_local"),
+    ).toBeNull();
+    expect(
+      findMatchingCompanySecret(
+        setup,
+        [secret("claude-local-anthropic-api-key", "active", new Date())],
+        "claude_local",
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores secrets belonging to a different adapter", () => {
+    const secrets = [secret("codex-local-openai-api-key")];
+    expect(findMatchingCompanySecret(setup, secrets, "claude_local")).toBeNull();
   });
 });
 
