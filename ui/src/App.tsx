@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -79,7 +80,6 @@ import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
-import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -519,11 +519,23 @@ function NoCompaniesStartPage() {
   );
 }
 
+// cloud: the auth pages are served by the gateway (marketing /auth/*), never by
+// the SPA. Any client-side navigation to /auth becomes a full page load so the
+// gateway can route it. Keeps stray <Link to="/auth"> from rendering AuthPage.
+function CloudAuthRedirect() {
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const next = params.get("next");
+    window.location.replace(`/auth/sign-in${next ? `?next=${encodeURIComponent(next)}` : ""}`);
+  }, []);
+  return null;
+}
+
 export function App() {
   return (
     <>
       <Routes>
-        <Route path="auth" element={<AuthPage />} />
+        <Route path="auth" element={<CloudAuthRedirect />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />

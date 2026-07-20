@@ -1,4 +1,4 @@
-import { Navigate, Outlet, useLocation } from "@/lib/router";
+import { Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
@@ -120,8 +120,12 @@ export function CloudAccessGate() {
   }
 
   if (isAuthenticatedMode && !sessionQuery.data) {
+    // cloud: the auth pages live OUTSIDE the SPA (the gateway serves the
+    // marketing /auth/* pages). A client-side <Navigate to="/auth"> would render
+    // the SPA's own AuthPage instead, so this must be a full page load.
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
-    return <Navigate to={`/auth?next=${next}`} replace />;
+    window.location.replace(`/auth/sign-in?next=${next}`);
+    return null;
   }
 
   if (isAuthenticatedMode && sessionQuery.data && boardAccessQuery.data) {
