@@ -19,6 +19,18 @@ export function credentialSecretName(adapterType: string, envKey: string): strin
 }
 
 /**
+ * ANTHROPIC_API_KEY (and other envKey names) are not globally unique to one
+ * adapter — claude_local, opencode_local, and pi_local each advertise it
+ * (see packages/adapters/*\/src/ui/credential-setup.ts). A rejection
+ * recorded while onboarding claude_local must not read as a failure for
+ * opencode_local's own, independently-bound ANTHROPIC_API_KEY, so failure
+ * records are keyed by (adapterType, envKey), not envKey alone.
+ */
+export function credentialFailureKey(adapterType: string, envKey: string): string {
+  return `${adapterType}:${envKey}`;
+}
+
+/**
  * A credential counts as connected only when the CURRENT company actually has a
  * usable secret for one of this adapter's env keys, or the user just bound one
  * in this session. Session bindings are deliberately NOT persisted: localStorage
@@ -30,16 +42,19 @@ export function credentialSecretName(adapterType: string, envKey: string): strin
  * collision-suffix scheme (`-2`, `-3`, ...), never a loose prefix. A prefix
  * match would let an unrelated active secret like
  * `claude-local-anthropic-api-key-backup-notes` falsely count as connected.
- */
-/**
- * @param failedEnvKeys env keys whose most recent live-probe result came back
- * with the provider explicitly rejecting the credential (see
- * `findCredentialAuthFailureCheck`). Excluded from BOTH the session-binding
- * and the company-secrets checks below: the secret can legitimately still
- * exist server-side (re-pasting the corrected key reuses/suffixes the same
- * name), so its mere presence must not count as "connected" once we know
- * the value it holds was rejected. Cleared the moment a fresh bind attempt
- * starts for that envKey.
+ *
+ * @param failedEnvKeys keys built with `credentialFailureKey(adapterType,
+ * envKey)` for every (adapter, envKey) pair whose most recent live-probe
+ * result came back with the provider explicitly rejecting the credential
+ * (see `findCredentialAuthFailureCheck`). Excluded from BOTH the
+ * session-binding and the company-secrets checks below: the secret can
+ * legitimately still exist server-side in principle (re-pasting the
+ * corrected key reuses/suffixes the same name), so its mere presence must
+ * not count as "connected" once we know the value it holds was rejected —
+ * this is also why the caller disables the secret server-side on
+ * rejection, so a stale/failed page reload doesn't fall through to this
+ * fallback and re-open the gate on an orphaned active secret. Cleared the
+ * moment a fresh bind attempt starts for that (adapter, envKey) pair.
  */
 export function deriveCredentialConnected(
   setup: AdapterCredentialSetup | undefined,
@@ -50,7 +65,7 @@ export function deriveCredentialConnected(
 ): boolean {
   const envKeys = (setup?.options ?? [])
     .map((o) => o.envKey)
-    .filter((envKey) => !failedEnvKeys.has(envKey));
+    .filter((envKey) => !failedEnvKeys.has(credentialFailureKey(adapterType, envKey)));
   if (envKeys.length === 0) return false;
 
   if (envKeys.some((k) => Boolean(sessionBindings[k]))) return true;

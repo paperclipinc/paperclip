@@ -14,7 +14,15 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 // `/login` regardless of root cause), so this narrower pattern exists to
 // let a caller upgrade that soft "please log in" bucket into a hard
 // rejection when the message specifically says the key/token is invalid.
-const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|unauthorized|authentication\s+required)/i;
+// `\b...\b` around the single-word alternative: detectClaudeLoginRequired
+// joins raw stdout/stderr wholesale into the searched text (see the
+// `messages` array below), so an unanchored bare "unauthorized" would also
+// match as a substring of unrelated incidental noise (e.g. a log line
+// mentioning "...?status=unauthorized_pending"). The multi-word phrases
+// don't need the same guard: an unrelated string coincidentally containing
+// "invalid api key" or "authentication required" verbatim is not a
+// realistic false-positive surface the way a single common word is.
+const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|\bunauthorized\b|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =

@@ -55,6 +55,55 @@ describe("detectClaudeLoginRequired", () => {
     expect(result.requiresLogin).toBe(false);
     expect(result.credentialRejected).toBe(true);
   });
+
+  // Known false-negative surface: our patterns are a curated list of
+  // wordings we've actually seen, not a generic "sounds auth-related"
+  // classifier. A rejection phrased outside that list falls through to the
+  // permissive (non-authFailure) path rather than crashing — this pins
+  // that as intentional, documented behavior, not silently-broken behavior.
+  // (The overall probe still hard-fails via the generic error bucket in
+  // test.ts; see test.probe.test.ts for the full-pipeline pin.)
+  it("documents a false negative: an unrecognized rejection wording ('token revoked') is not classified as auth-related at all", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Your token has been revoked.",
+    });
+    expect(result.requiresLogin).toBe(false);
+    expect(result.credentialRejected).toBe(false);
+    expect(
+      isClaudeInvalidCredentialError({
+        parsed: null,
+        stdout: "",
+        stderr: "Your token has been revoked.",
+      }),
+    ).toBe(false);
+  });
+
+  // Known false-positive guard: detectClaudeLoginRequired joins the FULL
+  // raw stdout/stderr text into the searched blob (see the `messages` array
+  // in the implementation), not just structured CLI result fields. Without
+  // a word-boundary on the single bare-word alternative, an unrelated log
+  // line that merely CONTAINS "unauthorized" as a substring (e.g. a URL
+  // query param) would wrongly read as the provider rejecting the
+  // credential.
+  it("does not flag credentialRejected from an incidental 'unauthorized' substring inside unrelated noise", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Fetching https://api.example.com/orders?status=unauthorized_pending",
+    });
+    expect(result.credentialRejected).toBe(false);
+  });
+
+  it("still flags credentialRejected for the standalone word 'unauthorized' in a real auth context", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "401 Unauthorized: request rejected",
+    });
+    expect(result.credentialRejected).toBe(true);
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AdapterEnvironmentCheck, AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import {
+  credentialFailureKey,
   credentialRejectionMessage,
   credentialSecretName,
   deriveCredentialConnected,
@@ -62,26 +63,39 @@ describe("deriveCredentialConnected", () => {
 
   it("reads a failed envKey as not connected, even with a live session binding for it", () => {
     const bindings = { ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "abc" } };
-    expect(
-      deriveCredentialConnected(setup, [], bindings, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
-    ).toBe(false);
+    const failed = new Set([credentialFailureKey("claude_local", "ANTHROPIC_API_KEY")]);
+    expect(deriveCredentialConnected(setup, [], bindings, "claude_local", failed)).toBe(false);
   });
 
   it("reads a failed envKey as not connected even when the server-side secret still exists", () => {
     // The secret can legitimately remain after a rejection (re-pasting the
     // corrected key reuses/suffixes the same name) — its mere presence must
     // not count as connected once the probe told us the value was rejected.
+    // (In practice the caller also disables the secret server-side on
+    // rejection specifically so this fallback can never see it as active
+    // again after a reload — this test pins the client-side belt as well.)
     const secrets = [secret("claude-local-anthropic-api-key")];
-    expect(
-      deriveCredentialConnected(setup, secrets, {}, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
-    ).toBe(false);
+    const failed = new Set([credentialFailureKey("claude_local", "ANTHROPIC_API_KEY")]);
+    expect(deriveCredentialConnected(setup, secrets, {}, "claude_local", failed)).toBe(false);
   });
 
   it("still counts a different, unfailed envKey as connected", () => {
     const bindings = { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref" as const, secretId: "abc" } };
-    expect(
-      deriveCredentialConnected(setup, [], bindings, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
-    ).toBe(true);
+    const failed = new Set([credentialFailureKey("claude_local", "ANTHROPIC_API_KEY")]);
+    expect(deriveCredentialConnected(setup, [], bindings, "claude_local", failed)).toBe(true);
+  });
+
+  it("does not let a rejection recorded under one adapter mark another adapter's independent binding of the same envKey as failed", () => {
+    // ANTHROPIC_API_KEY is advertised by claude_local, opencode_local, and
+    // pi_local independently (each has its own credential-setup.ts). A
+    // rejection while onboarding claude_local must not disconnect
+    // opencode_local's own, separately-bound ANTHROPIC_API_KEY.
+    const bindings = { ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "opencode-secret" } };
+    const failed = new Set([credentialFailureKey("claude_local", "ANTHROPIC_API_KEY")]);
+    expect(deriveCredentialConnected(setup, [], bindings, "opencode_local", failed)).toBe(true);
+    // Sanity check the other direction: the failure record DOES block the
+    // adapter it was actually recorded against.
+    expect(deriveCredentialConnected(setup, [], bindings, "claude_local", failed)).toBe(false);
   });
 });
 

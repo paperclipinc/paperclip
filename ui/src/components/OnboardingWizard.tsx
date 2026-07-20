@@ -9,6 +9,7 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
 import { restoreOnboardingState } from "@/lib/onboarding-state";
 import {
+  credentialFailureKey,
   credentialRejectionMessage,
   deriveCredentialConnected,
   findCredentialAuthFailureCheck,
@@ -481,7 +482,9 @@ function OnboardingWizardInner({
   // over a stale message.
   const credentialCardError =
     credentialProbeError &&
-    (credentialSetup?.options ?? []).some((option) => failedCredentialEnvKeys.has(option.envKey))
+    (credentialSetup?.options ?? []).some((option) =>
+      failedCredentialEnvKeys.has(credentialFailureKey(adapterType, option.envKey)),
+    )
       ? credentialProbeError
       : null;
   // Build adapter grids dynamically from the UI registry + display metadata.
@@ -785,6 +788,35 @@ function OnboardingWizardInner({
     }
   }
 
+  // Best-effort: disable a secret whose bound value was just rejected by the
+  // provider. Without this, the secret stays "active" server-side and, on a
+  // fresh mount (page reload), deriveCredentialConnected's company-secrets
+  // fallback would match it by name and silently re-open the heartbeat gate
+  // — the in-session failedCredentialEnvKeys marker that blocks it here
+  // does not survive a reload. A failure to disable is logged, not thrown:
+  // the in-session gate still holds for the current session either way, and
+  // AdapterCredentialConnect's existing 409-name-collision retry (the "-2"
+  // suffix) already tolerates the name staying taken by an old secret
+  // regardless of its status.
+  async function disableRejectedCredentialSecret(secretId: string, envKey: string) {
+    try {
+      await secretsApi.disable(secretId);
+      if (createdCompanyId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.secrets.list(createdCompanyId),
+        });
+      }
+    } catch (disableErr) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[onboarding] failed to disable a rejected credential secret; it may remain active server-side until disabled manually",
+        envKey,
+        secretId,
+        disableErr,
+      );
+    }
+  }
+
   // Guided BYOK credential connect (step 4): bind an env key to a freshly
   // created company secret, then re-run the environment check with the
   // fresh binding included (passed explicitly rather than relying on
@@ -792,15 +824,18 @@ function OnboardingWizardInner({
   //
   // If the live probe comes back with the provider explicitly rejecting the
   // credential (checks[].authFailure, classified server-side where the
-  // actual provider response is visible), undo the binding so
-  // deriveCredentialConnected reads it as NOT connected and the heartbeat
-  // gate cannot open on its strength, and show a plain-language error on
-  // the card. The server-side secret is left alone: AdapterCredentialConnect's
-  // existing 409-name-collision retry (the "-2" suffix) absorbs a re-paste.
-  // Any other outcome (pass, or a non-auth warn/fail) keeps the existing
-  // permissive behavior — this is what onboarding did before this fix and
-  // must keep working for transient/infra probe failures.
+  // actual provider response is visible): undo the binding and disable the
+  // just-created secret so deriveCredentialConnected reads it as NOT
+  // connected — both in this session AND after a reload — and the
+  // heartbeat gate cannot open on its strength; show a plain-language error
+  // on the card. AdapterCredentialConnect's existing 409-name-collision
+  // retry (the "-2" suffix) absorbs a re-paste regardless of the disabled
+  // secret's continued (inactive) existence. Any other outcome (pass, or a
+  // non-auth warn/fail) keeps the existing permissive behavior — this is
+  // what onboarding did before this fix and must keep working for
+  // transient/infra probe failures.
   async function handleCredentialBind(envKey: string, secretId: string) {
+    const failureKey = credentialFailureKey(adapterType, envKey);
     const nextBindings = {
       ...credentialBindings,
       [envKey]: { type: "secret_ref" as const, secretId }
@@ -809,9 +844,9 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     setCredentialProbeError(null);
     setFailedCredentialEnvKeys((prev) => {
-      if (!prev.has(envKey)) return prev;
+      if (!prev.has(failureKey)) return prev;
       const next = new Set(prev);
-      next.delete(envKey);
+      next.delete(failureKey);
       return next;
     });
     if (createdCompanyId) {
@@ -836,10 +871,11 @@ function OnboardingWizardInner({
     });
     setFailedCredentialEnvKeys((prev) => {
       const next = new Set(prev);
-      next.add(envKey);
+      next.add(failureKey);
       return next;
     });
     setCredentialProbeError(credentialRejectionMessage(rejection));
+    await disableRejectedCredentialSecret(secretId, envKey);
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
@@ -980,6 +1016,61 @@ function OnboardingWizardInner({
       if (isLocalAdapter) {
         const result = adapterEnvResult ?? (await runAdapterEnvironmentTest());
         if (!result) return;
+        // Defense in depth: normally a rejected credential never gets this
+        // far because handleCredentialBind already undid the binding and
+        // disabled the secret. This still catches drift — e.g. the disable
+        // call above failed and the gate re-opened off a stale active
+        // secret after a reload, or the key was rotated bad after a
+        // successful bind. Never hire against a credential the fresh probe
+        // just told us the provider rejected.
+        const rejection = findCredentialAuthFailureCheck(result);
+        if (rejection) {
+          // eslint-disable-next-line no-console
+          console.log(
+            "[onboarding] refusing to hire: the fresh environment probe reports the bound credential was rejected",
+            rejection,
+          );
+          const adapterEnvKeys = (credentialSetup?.options ?? []).map((option) => option.envKey);
+          const boundEnvKeysForAdapter = adapterEnvKeys.filter((envKey) =>
+            Boolean(credentialBindings[envKey]),
+          );
+          // Disable only the ones we have a secretId for (a live session
+          // binding). The gate can also read "connected" purely via an
+          // orphaned active company secret with no session binding at all
+          // (e.g. a rejected attempt from an earlier session whose disable
+          // call itself failed) — there is no secretId for that one to
+          // disable from here.
+          await Promise.all(
+            boundEnvKeysForAdapter.map((envKey) => {
+              const binding = credentialBindings[envKey];
+              return binding
+                ? disableRejectedCredentialSecret(binding.secretId, envKey)
+                : Promise.resolve();
+            }),
+          );
+          if (boundEnvKeysForAdapter.length > 0) {
+            setCredentialBindings((prev) => {
+              const next = { ...prev };
+              for (const envKey of boundEnvKeysForAdapter) delete next[envKey];
+              return next;
+            });
+          }
+          // Mark EVERY envKey this adapter advertises as failed, not just
+          // the ones with a live session binding, so the gate closes for
+          // the rest of this session even in the orphaned-secret case above
+          // (a later reload could still re-open it until that secret is
+          // disabled some other way — see the report's concerns section).
+          setFailedCredentialEnvKeys((prev) => {
+            const next = new Set(prev);
+            for (const envKey of adapterEnvKeys) {
+              next.add(credentialFailureKey(adapterType, envKey));
+            }
+            return next;
+          });
+          setCredentialProbeError(credentialRejectionMessage(rejection));
+          setError(credentialRejectionMessage(rejection));
+          return;
+        }
       }
 
       const hire = await agentsApi.hire(createdCompanyId, {

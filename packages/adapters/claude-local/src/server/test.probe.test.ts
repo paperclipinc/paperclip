@@ -229,4 +229,59 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.authFailure).toBe(true);
   });
+
+  it("does not hard-fail on incidental 'unauthorized' substring noise unrelated to the login prompt", async () => {
+    // Pins the tightened CLAUDE_CREDENTIAL_REJECTED_RE at the full pipeline
+    // level: requiresLogin still fires (CLAUDE_AUTH_REQUIRED_RE's bare
+    // "unauthorized" alternative is unchanged, pre-existing behavior), but
+    // credentialRejected must not, so this stays the existing soft "please
+    // log in" warning rather than a hard authFailure.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "Fetching https://api.example.com/orders?status=unauthorized_pending",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const authRequired = result.checks.find((check) => check.code === "claude_hello_probe_auth_required");
+    expect(authRequired).toBeTruthy();
+    expect(authRequired?.authFailure).toBeUndefined();
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_credential_rejected")).toBe(
+      false,
+    );
+  });
+
+  it("documents a false negative: an unrecognized rejection wording ('token revoked') still fails overall but without the authFailure flag", async () => {
+    // The probe still hard-fails (a real error card shows up in the
+    // "Adapter environment check" panel), but because the wording matches
+    // none of our credential-rejection patterns, the authFailure-driven
+    // gate-closing behavior in OnboardingWizard does not kick in for this
+    // specific wording. A known, documented false-negative surface — not a
+    // crash, and not silently reported as passing.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "Your token has been revoked.",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+    expect(failed).toBeTruthy();
+    expect(failed?.authFailure).toBeUndefined();
+  });
 });

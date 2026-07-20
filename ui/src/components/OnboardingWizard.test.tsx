@@ -46,6 +46,7 @@ const mockCloudCompaniesApi = vi.hoisted(() => ({
 // individual tests override with mockResolvedValueOnce / mockResolvedValue.
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(async (): Promise<CompanySecret[]> => []),
+  disable: vi.fn(async (id: string): Promise<CompanySecret> => ({ id }) as CompanySecret),
 }));
 
 // The real adapter registry eagerly imports every adapter package. The
@@ -716,6 +717,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
     mockSecretsApi.list.mockReset().mockResolvedValue([]);
+    mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
 
   afterEach(() => {
@@ -879,6 +881,158 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // The heartbeat gate must not open on the strength of the rejected binding.
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     expect(heartbeatButton.disabled).toBe(true);
+
+    // The rejected secret is disabled server-side too, so a page reload
+    // can't fall through deriveCredentialConnected's company-secrets
+    // fallback and silently re-open the gate on the orphaned active secret.
+    expect(mockSecretsApi.disable).toHaveBeenCalledWith("sec-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not re-open the gate on a fresh mount for a DIFFERENT adapter that happens to share the envKey name", async () => {
+    // ANTHROPIC_API_KEY is advertised by claude_local, opencode_local, and
+    // pi_local independently. A rejection recorded for claude_local must not
+    // leak into another adapter's own credential state.
+    mockAdapterRegistry.byType.opencode_local = {
+      buildAdapterConfig: () => ({}),
+      credentialSetup: {
+        options: [
+          {
+            envKey: "ANTHROPIC_API_KEY",
+            label: "Anthropic API key",
+            placeholder: "sk-ant-...",
+          },
+        ],
+      },
+    };
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "opencode_local" },
+    ];
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // claude_local's own gate is closed by the rejection.
+    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+      true,
+    );
+
+    // Switching to opencode_local (same ANTHROPIC_API_KEY envKey, but a
+    // DIFFERENT adapter and thus a different failure record) and binding it
+    // fresh must not read as pre-failed.
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "opencode_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    });
+    // The test-mocked getAdapterDisplay marks nothing as "recommended", so
+    // every adapter (including opencode_local) lands in the collapsed
+    // "More Agent Adapter Types" section.
+    const moreToggle = findButtonByText(document.body, "More Agent Adapter Types");
+    await act(async () => {
+      moreToggle.click();
+    });
+    await flushReact();
+
+    const adapterButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent === "opencode_local",
+    );
+    expect(adapterButton).not.toBeUndefined();
+    await act(async () => {
+      adapterButton?.click();
+    });
+    await flushReact();
+
+    const bindButtonAgain = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButtonAgain.click();
+    });
+    await flushReact();
+
+    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+      false,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("refuses to hire when a fresh mount's orphaned active company secret still fails the live probe (no dead-end: error shown, gate closes, Back still works)", async () => {
+    // Simulates the reload gap this fix closes: an active company secret
+    // survives from an earlier attempt (e.g. its disable call itself
+    // failed), so on a fresh mount there is no in-session failure record
+    // and the gate reads as open purely via deriveCredentialConnected's
+    // company-secrets fallback. handleGiveHeartbeat's own fresh-probe check
+    // must still refuse to hire rather than trusting that "open" gate.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ status: "active" }),
+    ]);
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+    await flushReact();
+
+    // The gate reads as open on mount purely from the orphaned secret —
+    // nothing was bound this session.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    // No agent was created against the known-bad credential.
+    expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+    // The rejection error is visible and the user is kept on the step —
+    // not a dead end. Back must still be reachable and enabled.
+    expect(document.body.textContent).toContain(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+    expect(findButtonByText(document.body, "Back").disabled).toBe(false);
+
+    // The gate closes for the rest of this session so retrying without a
+    // fresh bind can't loop the same way.
+    expect(
+      findButtonByText(document.body, "Give it a heartbeat").disabled,
+    ).toBe(true);
 
     await act(async () => {
       root.unmount();
@@ -1205,6 +1359,7 @@ describe("mergeCredentialBindings", () => {
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
     mockSecretsApi.list.mockReset().mockResolvedValue([]);
+    mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
 
   afterEach(() => {
