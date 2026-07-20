@@ -82,7 +82,9 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+// Exported so tests write/read the exact key the component uses, instead of
+// duplicating the literal and silently drifting from it if it's ever renamed.
+export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
 const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
 const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
