@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
 import {
   agentService,
   agentInstructionsService,
@@ -104,6 +105,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { claudeHostLoginUnavailableReason } from "../services/execution-allowlist.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
   agentInstructionsChangeTargetKey,
@@ -134,37 +136,6 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   const paperclipIssue = readObject(context?.paperclipIssue);
   const nestedIssueId = paperclipIssue?.id;
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
-}
-
-/**
- * Merge a donor agent's credential env bindings into a new agent's requested env,
- * so hired/created agents inherit the company's BYOK credential. Only `secret_ref`
- * bindings are inherited (the shape the credential-connect flow produces), any env
- * key the request already set is left untouched, and the donor binding's
- * projection semantics are preserved verbatim. Pure/testable.
- */
-export function mergeInheritedCredentialEnv(
-  donorEnv: Record<string, unknown>,
-  requestedEnv: Record<string, unknown>,
-): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...requestedEnv };
-  for (const [envKey, binding] of Object.entries(donorEnv)) {
-    const parsed =
-      typeof binding === "object" && binding !== null && !Array.isArray(binding)
-        ? (binding as Record<string, unknown>)
-        : null;
-    if (!parsed || parsed.type !== "secret_ref" || typeof parsed.secretId !== "string") continue;
-    if (Object.prototype.hasOwnProperty.call(requestedEnv, envKey)) continue;
-    const inherited: Record<string, unknown> = {
-      type: "secret_ref",
-      secretId: parsed.secretId,
-      version: parsed.version ?? "latest",
-    };
-    if (typeof parsed.projectionClass === "string") inherited.projectionClass = parsed.projectionClass;
-    if (parsed.projectionAllowlistKey !== undefined) inherited.projectionAllowlistKey = parsed.projectionAllowlistKey;
-    merged[envKey] = inherited;
-  }
-  return merged;
 }
 
 export function agentRoutes(
@@ -1071,34 +1042,6 @@ export function agentRoutes(
   function asRecord(value: unknown): Record<string, unknown> | null {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
     return value as Record<string, unknown>;
-  }
-
-  // Inherit the company's BYOK credential env bindings onto a newly hired/created
-  // agent so it can authenticate without the user re-connecting a key for every
-  // agent. Copies each `secret_ref` env binding from an existing same-adapter
-  // company agent (preferring the CEO) into the new agent's `adapterConfig.env`,
-  // never overriding an env the request set explicitly. No-op when no donor agent
-  // of the same adapterType has a credential (no behavior change / no regression).
-  async function inheritCompanyCredentialEnv(
-    companyId: string,
-    adapterType: string,
-    requestedAdapterConfig: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const requestedEnv = asRecord(requestedAdapterConfig.env) ?? {};
-    let donorRows: Array<{ role: string | null; adapterConfig: unknown }>;
-    try {
-      donorRows = await db
-        .select({ role: agentsTable.role, adapterConfig: agentsTable.adapterConfig })
-        .from(agentsTable)
-        .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.adapterType, adapterType)));
-    } catch {
-      return requestedAdapterConfig;
-    }
-    const donors = donorRows.filter((row) => asRecord(asRecord(row.adapterConfig)?.env));
-    const donor = donors.find((row) => row.role === "ceo") ?? donors[0];
-    if (!donor) return requestedAdapterConfig;
-    const donorEnv = asRecord(asRecord(donor.adapterConfig)?.env) ?? {};
-    return { ...requestedAdapterConfig, env: mergeInheritedCredentialEnv(donorEnv, requestedEnv) };
   }
 
   function asNonEmptyString(value: unknown): string | null {
@@ -2428,6 +2371,7 @@ export function agentRoutes(
       ),
     );
     requestedAdapterConfig = await inheritCompanyCredentialEnv(
+      db,
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
@@ -2628,6 +2572,7 @@ export function agentRoutes(
       ),
     );
     requestedAdapterConfig = await inheritCompanyCredentialEnv(
+      db,
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
@@ -3632,6 +3577,16 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
+      return;
+    }
+
+    // `claude login` runs on the server host; when the instance forces all
+    // execution onto the Kubernetes sandbox, sandboxed runs can never see that
+    // host-local login state, so refuse before spawning anything.
+    const { executionMode } = await instanceSettings.getGeneral();
+    const hostLoginUnavailableReason = claudeHostLoginUnavailableReason(executionMode);
+    if (hostLoginUnavailableReason) {
+      res.status(409).json({ error: hostLoginUnavailableReason });
       return;
     }
 

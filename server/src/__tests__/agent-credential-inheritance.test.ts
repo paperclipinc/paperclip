@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { mergeInheritedCredentialEnv } from "../routes/agents.js";
+import { mergeInheritedCredentialEnv } from "../services/agent-credential-inheritance.js";
 
-describe("mergeInheritedCredentialEnv (hired agents inherit the company BYOK credential)", () => {
+describe("mergeInheritedCredentialEnv (new agents inherit the company credential)", () => {
   const donorCred = { type: "secret_ref", secretId: "sec-1", version: "latest" };
 
   it("inherits a donor secret_ref the new agent does not have", () => {
