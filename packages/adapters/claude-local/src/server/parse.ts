@@ -7,6 +7,14 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+// A credential was actually PRESENTED and the provider said it is invalid,
+// as opposed to a plain "you haven't signed in yet" prompt with no
+// credential in play. CLAUDE_AUTH_REQUIRED_RE intentionally also matches
+// this (the CLI's generic invalid-key message tells the user to run
+// `/login` regardless of root cause), so this narrower pattern exists to
+// let a caller upgrade that soft "please log in" bucket into a hard
+// rejection when the message specifically says the key/token is invalid.
+const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -173,7 +181,7 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
-}): { requiresLogin: boolean; loginUrl: string | null } {
+}): { requiresLogin: boolean; loginUrl: string | null; credentialRejected: boolean } {
   const resultText = asString(input.parsed?.result, "").trim();
   const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
     .join("\n")
@@ -182,9 +190,17 @@ export function detectClaudeLoginRequired(input: {
     .filter(Boolean);
 
   const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  // Independent of requiresLogin: a message can say the credential is
+  // invalid without also matching the login-prompt wording (e.g. a raw
+  // 401/authentication_error payload), and detectClaudeLoginRequired is the
+  // one place that already has the full message text assembled.
+  const credentialRejected =
+    messages.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
+    isClaudeInvalidCredentialError({ parsed: input.parsed, stdout: input.stdout, stderr: input.stderr });
   return {
     requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    credentialRejected,
   };
 }
 

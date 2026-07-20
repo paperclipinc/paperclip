@@ -15,24 +15,45 @@ import {
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
-  it("classifies Claude's invalid API key login prompt as auth required", () => {
+  it("classifies Claude's invalid API key login prompt as auth required and as a credential rejection", () => {
     expect(
       detectClaudeLoginRequired({
         parsed: null,
         stdout: "",
         stderr: "Invalid API key · Please run /login",
       }),
-    ).toEqual({ requiresLogin: true, loginUrl: null });
+    ).toEqual({ requiresLogin: true, loginUrl: null, credentialRejected: true });
   });
 
-  it("does not classify a bare invalid API key as the Claude login flow", () => {
-    expect(
-      detectClaudeLoginRequired({
-        parsed: null,
-        stdout: "",
-        stderr: "Invalid API key",
-      }).requiresLogin,
-    ).toBe(false);
+  it("does not classify a bare invalid API key as the Claude login flow, but still flags it as a credential rejection", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Invalid API key",
+    });
+    expect(result.requiresLogin).toBe(false);
+    expect(result.credentialRejected).toBe(true);
+  });
+
+  it("does not flag a plain 'please log in' prompt (no credential attempted) as a rejection", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Please log in. Run `claude login` first.",
+    });
+    expect(result.requiresLogin).toBe(true);
+    expect(result.credentialRejected).toBe(false);
+  });
+
+  it("flags credentialRejected via the 401/authentication_error signal even without login-prompt wording", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr:
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+    });
+    expect(result.requiresLogin).toBe(false);
+    expect(result.credentialRejected).toBe(true);
   });
 });
 

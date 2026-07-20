@@ -160,4 +160,73 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
   });
+
+  it("hard-fails an invalid just-pasted API key instead of the soft 'please log in' nudge", async () => {
+    // This is the exact CLI message a just-bound, syntactically-plausible
+    // but wrong Anthropic key produces: it happens to mention /login even
+    // though the real problem is the key itself, not a missing session.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "Invalid API key · Please run /login",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find((check) => check.code === "claude_hello_probe_credential_rejected");
+    expect(rejected).toBeTruthy();
+    expect(rejected?.level).toBe("error");
+    expect(rejected?.authFailure).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+  });
+
+  it("keeps the soft 'login required' warning for a genuine not-signed-in-yet prompt", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "Please log in. Run `claude login` first.",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("warn");
+    const authRequired = result.checks.find((check) => check.code === "claude_hello_probe_auth_required");
+    expect(authRequired).toBeTruthy();
+    expect(authRequired?.authFailure).toBeUndefined();
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_credential_rejected")).toBe(false);
+  });
+
+  it("flags authFailure on a raw 401/invalid x-api-key failure that never matches the login-prompt wording", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr:
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+    expect(failed?.authFailure).toBe(true);
+  });
 });

@@ -1,5 +1,5 @@
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestResult, CompanySecret } from "@paperclipai/shared";
 
 export type SessionBinding = { type: "secret_ref"; secretId: string };
 
@@ -31,13 +31,26 @@ export function credentialSecretName(adapterType: string, envKey: string): strin
  * match would let an unrelated active secret like
  * `claude-local-anthropic-api-key-backup-notes` falsely count as connected.
  */
+/**
+ * @param failedEnvKeys env keys whose most recent live-probe result came back
+ * with the provider explicitly rejecting the credential (see
+ * `findCredentialAuthFailureCheck`). Excluded from BOTH the session-binding
+ * and the company-secrets checks below: the secret can legitimately still
+ * exist server-side (re-pasting the corrected key reuses/suffixes the same
+ * name), so its mere presence must not count as "connected" once we know
+ * the value it holds was rejected. Cleared the moment a fresh bind attempt
+ * starts for that envKey.
+ */
 export function deriveCredentialConnected(
   setup: AdapterCredentialSetup | undefined,
   secrets: CompanySecret[] | undefined,
   sessionBindings: Record<string, SessionBinding>,
   adapterType: string,
+  failedEnvKeys: ReadonlySet<string> = new Set(),
 ): boolean {
-  const envKeys = (setup?.options ?? []).map((o) => o.envKey);
+  const envKeys = (setup?.options ?? [])
+    .map((o) => o.envKey)
+    .filter((envKey) => !failedEnvKeys.has(envKey));
   if (envKeys.length === 0) return false;
 
   if (envKeys.some((k) => Boolean(sessionBindings[k]))) return true;
@@ -49,4 +62,30 @@ export function deriveCredentialConnected(
     const pattern = new RegExp(`^${escapeRegExp(base)}(-\\d+)?$`);
     return usable.some((s) => pattern.test(s.key));
   });
+}
+
+/**
+ * Find the check (if any) in a just-run adapter environment test result that
+ * represents the PROVIDER explicitly rejecting the credential just bound.
+ * The classification itself is server-side (e.g. claude-local's test.ts,
+ * which has the actual provider response text); this only reads the typed
+ * `authFailure` flag it sets on a hard-fail check, never re-derives
+ * pass/fail from raw message text client-side.
+ */
+export function findCredentialAuthFailureCheck(
+  result: AdapterEnvironmentTestResult | null | undefined,
+): AdapterEnvironmentCheck | null {
+  if (!result) return null;
+  return result.checks.find((check) => check.level === "error" && check.authFailure === true) ?? null;
+}
+
+/**
+ * Plain-language copy for a rejected credential, no em/en dashes. Never
+ * surfaces the raw provider/CLI message verbatim (see `check.detail`) —
+ * callers that want the original text for support debugging should
+ * console.log the check directly rather than render it.
+ */
+export function credentialRejectionMessage(check: AdapterEnvironmentCheck | null): string | null {
+  if (!check) return null;
+  return "That key was rejected by the provider. Check it and paste it again.";
 }

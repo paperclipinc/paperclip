@@ -8,7 +8,11 @@ import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
 import { restoreOnboardingState } from "@/lib/onboarding-state";
-import { deriveCredentialConnected } from "@/lib/credential-connected";
+import {
+  credentialRejectionMessage,
+  deriveCredentialConnected,
+  findCredentialAuthFailureCheck,
+} from "@/lib/credential-connected";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -295,6 +299,21 @@ function OnboardingWizardInner({
   const [credentialBindings, setCredentialBindings] = useState<
     Record<string, { type: "secret_ref"; secretId: string }>
   >({});
+  // envKeys whose most recent post-bind live probe came back with the
+  // provider explicitly rejecting the credential (see
+  // findCredentialAuthFailureCheck). Cleared for an envKey the moment a
+  // fresh bind attempt starts for it; excludes that envKey from
+  // deriveCredentialConnected regardless of session bindings or the
+  // (possibly still-present) server-side secret.
+  const [failedCredentialEnvKeys, setFailedCredentialEnvKeys] = useState<
+    Set<string>
+  >(new Set());
+  // Plain-language copy for the most recent rejection, shown on the
+  // credential-connect card. Never the raw provider/CLI message — see
+  // credentialRejectionMessage.
+  const [credentialProbeError, setCredentialProbeError] = useState<
+    string | null
+  >(null);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -364,6 +383,8 @@ function OnboardingWizardInner({
   // must not read as "connected" for the new one.
   useEffect(() => {
     setCredentialBindings({});
+    setFailedCredentialEnvKeys(new Set());
+    setCredentialProbeError(null);
   }, [createdCompanyId]);
 
   // Persist wizard state to localStorage on every change
@@ -447,7 +468,22 @@ function OnboardingWizardInner({
   const requiresCredential = Boolean(credentialSetup && credentialSetup.options.length > 0);
   const credentialConnected =
     !requiresCredential ||
-    deriveCredentialConnected(credentialSetup, companySecrets, credentialBindings, adapterType);
+    deriveCredentialConnected(
+      credentialSetup,
+      companySecrets,
+      credentialBindings,
+      adapterType,
+      failedCredentialEnvKeys,
+    );
+  // Scope the credential card's error banner to the CURRENT adapter: only
+  // show it when one of this adapter's own credential options is the one
+  // that was rejected, so switching to an unrelated adapter never carries
+  // over a stale message.
+  const credentialCardError =
+    credentialProbeError &&
+    (credentialSetup?.options ?? []).some((option) => failedCredentialEnvKeys.has(option.envKey))
+      ? credentialProbeError
+      : null;
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
@@ -729,8 +765,19 @@ function OnboardingWizardInner({
       setAdapterEnvResult(result);
       return result;
     } catch (err) {
+      // The server's raw message can be an internal implementation detail
+      // (e.g. "Secret must belong to same company") that must never render
+      // verbatim — log it for support, show the operator a plain sentence.
+      // This check "cannot run" case stays permissive by design: it does
+      // not touch credentialBindings, so a prior successful bind still
+      // reads as connected.
+      // eslint-disable-next-line no-console
+      console.log(
+        "[onboarding] adapter environment test request failed:",
+        err instanceof Error ? err.message : err,
+      );
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        "We could not run the adapter check right now. You can continue and retry the test later."
       );
       return null;
     } finally {
@@ -742,21 +789,57 @@ function OnboardingWizardInner({
   // created company secret, then re-run the environment check with the
   // fresh binding included (passed explicitly rather than relying on
   // credentialBindings state, which wouldn't have re-rendered yet).
-  function handleCredentialBind(envKey: string, secretId: string) {
+  //
+  // If the live probe comes back with the provider explicitly rejecting the
+  // credential (checks[].authFailure, classified server-side where the
+  // actual provider response is visible), undo the binding so
+  // deriveCredentialConnected reads it as NOT connected and the heartbeat
+  // gate cannot open on its strength, and show a plain-language error on
+  // the card. The server-side secret is left alone: AdapterCredentialConnect's
+  // existing 409-name-collision retry (the "-2" suffix) absorbs a re-paste.
+  // Any other outcome (pass, or a non-auth warn/fail) keeps the existing
+  // permissive behavior — this is what onboarding did before this fix and
+  // must keep working for transient/infra probe failures.
+  async function handleCredentialBind(envKey: string, secretId: string) {
     const nextBindings = {
       ...credentialBindings,
       [envKey]: { type: "secret_ref" as const, secretId }
     };
     setCredentialBindings(nextBindings);
     setAdapterEnvResult(null);
+    setCredentialProbeError(null);
+    setFailedCredentialEnvKeys((prev) => {
+      if (!prev.has(envKey)) return prev;
+      const next = new Set(prev);
+      next.delete(envKey);
+      return next;
+    });
     if (createdCompanyId) {
       void queryClient.invalidateQueries({
         queryKey: queryKeys.secrets.list(createdCompanyId),
       });
     }
-    void runAdapterEnvironmentTest(
+    const result = await runAdapterEnvironmentTest(
       mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
     );
+    const rejection = findCredentialAuthFailureCheck(result);
+    if (!rejection) return;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[onboarding] credential probe rejected the just-bound value for",
+      envKey,
+      rejection,
+    );
+    setCredentialBindings((prev) => {
+      const { [envKey]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setFailedCredentialEnvKeys((prev) => {
+      const next = new Set(prev);
+      next.add(envKey);
+      return next;
+    });
+    setCredentialProbeError(credentialRejectionMessage(rejection));
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
@@ -1730,6 +1813,7 @@ function OnboardingWizardInner({
                       setup={credentialSetup}
                       boundEnvKeys={Object.keys(credentialBindings)}
                       onBind={handleCredentialBind}
+                      externalError={credentialCardError}
                     />
                   )}
 

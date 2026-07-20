@@ -15,6 +15,15 @@ export interface AdapterCredentialConnectProps {
   setup: AdapterCredentialSetup;
   boundEnvKeys: string[];
   onBind: (envKey: string, secretId: string) => void;
+  /**
+   * A plain-language error from a caller-driven check that ran AFTER a
+   * successful bind (e.g. the onboarding wizard's post-bind live probe
+   * finding the provider rejected the credential). Seeds the same inline
+   * error slot as a failed Connect submit; the user typing a new value
+   * clears it via the existing onChange handler below, same as any other
+   * inline error.
+   */
+  externalError?: string | null;
 }
 
 function toKebab(value: string): string {
@@ -84,6 +93,7 @@ export function AdapterCredentialConnect({
   setup,
   boundEnvKeys,
   onBind,
+  externalError,
 }: AdapterCredentialConnectProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [value, setValue] = useState("");
@@ -101,6 +111,16 @@ export function AdapterCredentialConnect({
   useEffect(() => {
     setForceShowForm(false);
   }, [boundOption?.envKey]);
+
+  // Seed the same inline error slot from an external (post-bind) rejection.
+  // The caller clears externalError to null before starting a new bind
+  // attempt, so a repeated rejection is a genuine null -> message
+  // transition here even when the message text is identical to last time.
+  // Typing a new value clears it via the existing onChange handler below,
+  // same as any other inline error.
+  useEffect(() => {
+    if (externalError) setError(externalError);
+  }, [externalError]);
 
   if (boundOption && !forceShowForm) {
     return (

@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, CompanySecret } from "@paperclipai/shared";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -74,18 +74,14 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
-  testEnvironment: vi.fn(async () => ({
-    adapterType: "claude_local",
-    status: "pass" as const,
-    checks: [] as Array<{
-      code: string;
-      level: "info" | "warn" | "error";
-      message: string;
-      detail?: string | null;
-      hint?: string | null;
-    }>,
-    testedAt: new Date().toISOString(),
-  })),
+  testEnvironment: vi.fn(
+    async (): Promise<AdapterEnvironmentTestResult> => ({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    }),
+  ),
   hire: vi.fn(async (_companyId: string, _data: Record<string, unknown>) => ({
     agent: { id: "agent-1" },
     approval: null,
@@ -160,14 +156,20 @@ vi.mock("./AdapterCredentialConnect", () => ({
   AdapterCredentialConnect: (props: {
     boundEnvKeys: string[];
     onBind: (envKey: string, secretId: string) => void;
+    externalError?: string | null;
   }) => (
-    <button
-      type="button"
-      data-testid="mock-credential-bind"
-      onClick={() => props.onBind("ANTHROPIC_API_KEY", "sec-1")}
-    >
-      bound:{props.boundEnvKeys.join(",")}
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="mock-credential-bind"
+        onClick={() => props.onBind("ANTHROPIC_API_KEY", "sec-1")}
+      >
+        bound:{props.boundEnvKeys.join(",")}
+      </button>
+      {props.externalError && (
+        <p data-testid="mock-credential-error">{props.externalError}</p>
+      )}
+    </>
   ),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
@@ -821,6 +823,134 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
 
     const enabledButton = findButtonByText(document.body, "Give it a heartbeat");
     expect(enabledButton.disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("clears the binding, keeps the heartbeat CTA disabled, and shows a plain-language error when the post-bind probe rejects the credential", async () => {
+    // This is the bug this branch exists to fix: pasting an invalid key
+    // must not sail through as "Connected" with the gate open.
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          detail: 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // The in-session binding was undone: the mocked card's boundEnvKeys is
+    // empty again, and deriveCredentialConnected reads it as not connected.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:");
+
+    // A plain-language error is surfaced on the card — never the raw
+    // provider/CLI detail text.
+    const errorEl = document.body.querySelector(
+      '[data-testid="mock-credential-error"]',
+    );
+    expect(errorEl?.textContent).toBe(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+    // The credential card's own error must never repeat the raw provider
+    // detail (the separate, pre-existing "Adapter environment check" /
+    // Manual debug panel below intentionally does show that raw text for
+    // debugging — that panel is out of scope for this fix).
+    expect(errorEl?.textContent).not.toContain("authentication_error");
+
+    // The heartbeat gate must not open on the strength of the rejected binding.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the existing permissive behavior (Connected stands, gate opens) when the probe fails for a non-auth reason", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_command_unresolvable",
+          level: "error",
+          message: "Command is not executable: claude",
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-error"]'),
+    ).toBeNull();
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("maps a thrown adapter-environment-test error to plain language and stays permissive", async () => {
+    mockAgentsApi.testEnvironment.mockRejectedValueOnce(
+      new Error("Secret must belong to same company"),
+    );
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // Permissive: the check "cannot run", so the binding stands.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    // The raw internal server message never renders; a plain sentence does.
+    expect(document.body.textContent).not.toContain(
+      "Secret must belong to same company",
+    );
+    expect(document.body.textContent).toContain(
+      "We could not run the adapter check right now. You can continue and retry the test later.",
+    );
 
     await act(async () => {
       root.unmount();

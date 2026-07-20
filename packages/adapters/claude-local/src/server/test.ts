@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeInvalidCredentialError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -411,15 +412,33 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
         });
       } else if (loginMeta.requiresLogin) {
-        checks.push({
-          code: "claude_hello_probe_auth_required",
-          level: "warn",
-          message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
-        });
+        // The CLI's generic "please log in" prompt also fires for a
+        // just-pasted invalid API key (its message literally says "Invalid
+        // API key ... run /login" regardless of root cause). When the
+        // message specifically told us the credential is invalid, treat it
+        // as a hard failure rather than the soft "you haven't signed in
+        // yet" nudge below, or a mangled/expired BYOK key sails through
+        // onboarding as "Connected" and only fails on the agent's first run.
+        checks.push(
+          loginMeta.credentialRejected
+            ? {
+                code: "claude_hello_probe_credential_rejected",
+                level: "error",
+                message: "Claude rejected the provided credential.",
+                ...(detail ? { detail } : {}),
+                authFailure: true,
+                hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
+              }
+            : {
+                code: "claude_hello_probe_auth_required",
+                level: "warn",
+                message: "Claude CLI is installed, but login is required.",
+                ...(detail ? { detail } : {}),
+                hint: loginMeta.loginUrl
+                  ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
+                  : "Run `claude login` in this environment, then retry the probe.",
+              },
+        );
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
@@ -456,6 +475,20 @@ export async function testEnvironment(
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
+        // Some invalid-credential payloads (raw 401 / "invalid x-api-key" /
+        // authentication_error) never match the login-prompt wording above,
+        // so loginMeta.requiresLogin is false and execution falls straight
+        // here. Still flag authFailure so the client can distinguish a
+        // rejected credential from any other hard failure (bad command,
+        // crashed CLI, etc.).
+        const invalidCredential =
+          !transient &&
+          isClaudeInvalidCredentialError({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+            errorMessage: failureDetail || null,
+          });
         checks.push(
           transient
             ? {
@@ -470,7 +503,10 @@ export async function testEnvironment(
                 level: "error",
                 message: "Claude hello probe failed.",
                 ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+                ...(invalidCredential ? { authFailure: true } : {}),
+                hint: invalidCredential
+                  ? "Paste a fresh, valid Claude API key or subscription token, then retry."
+                  : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
               },
         );
       }

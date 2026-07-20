@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { credentialSecretName, deriveCredentialConnected } from "./credential-connected";
+import type { AdapterEnvironmentCheck, AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import {
+  credentialRejectionMessage,
+  credentialSecretName,
+  deriveCredentialConnected,
+  findCredentialAuthFailureCheck,
+} from "./credential-connected";
 
 const setup = { options: [{ envKey: "ANTHROPIC_API_KEY" }, { envKey: "CLAUDE_CODE_OAUTH_TOKEN" }] } as never;
 const secret = (key: string, status = "active", deletedAt: Date | null = null) =>
@@ -52,5 +58,106 @@ describe("deriveCredentialConnected", () => {
   it("ignores a session binding for an env key this adapter does not use", () => {
     const bindings = { OPENAI_API_KEY: { type: "secret_ref" as const, secretId: "abc" } };
     expect(deriveCredentialConnected(setup, [], bindings, "claude_local")).toBe(false);
+  });
+
+  it("reads a failed envKey as not connected, even with a live session binding for it", () => {
+    const bindings = { ANTHROPIC_API_KEY: { type: "secret_ref" as const, secretId: "abc" } };
+    expect(
+      deriveCredentialConnected(setup, [], bindings, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
+    ).toBe(false);
+  });
+
+  it("reads a failed envKey as not connected even when the server-side secret still exists", () => {
+    // The secret can legitimately remain after a rejection (re-pasting the
+    // corrected key reuses/suffixes the same name) — its mere presence must
+    // not count as connected once the probe told us the value was rejected.
+    const secrets = [secret("claude-local-anthropic-api-key")];
+    expect(
+      deriveCredentialConnected(setup, secrets, {}, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
+    ).toBe(false);
+  });
+
+  it("still counts a different, unfailed envKey as connected", () => {
+    const bindings = { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref" as const, secretId: "abc" } };
+    expect(
+      deriveCredentialConnected(setup, [], bindings, "claude_local", new Set(["ANTHROPIC_API_KEY"])),
+    ).toBe(true);
+  });
+});
+
+function makeCheck(overrides: Partial<AdapterEnvironmentCheck> = {}): AdapterEnvironmentCheck {
+  return {
+    code: "some_check",
+    level: "info",
+    message: "message",
+    ...overrides,
+  };
+}
+
+function makeResult(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult {
+  return {
+    adapterType: "claude_local",
+    status: "fail",
+    checks,
+    testedAt: new Date(0).toISOString(),
+  };
+}
+
+describe("findCredentialAuthFailureCheck", () => {
+  it("returns null for a null/undefined result", () => {
+    expect(findCredentialAuthFailureCheck(null)).toBeNull();
+    expect(findCredentialAuthFailureCheck(undefined)).toBeNull();
+  });
+
+  it("returns null when no check is flagged authFailure", () => {
+    const result = makeResult([
+      makeCheck({ code: "claude_cwd_valid", level: "info" }),
+      makeCheck({ code: "claude_hello_probe_timed_out", level: "warn" }),
+    ]);
+    expect(findCredentialAuthFailureCheck(result)).toBeNull();
+  });
+
+  it("ignores a warn-level check even if it were somehow marked authFailure", () => {
+    const result = makeResult([
+      makeCheck({ code: "claude_hello_probe_auth_required", level: "warn", authFailure: true }),
+    ]);
+    expect(findCredentialAuthFailureCheck(result)).toBeNull();
+  });
+
+  it("finds the error-level check flagged authFailure", () => {
+    const rejected = makeCheck({
+      code: "claude_hello_probe_credential_rejected",
+      level: "error",
+      message: "Claude rejected the provided credential.",
+      authFailure: true,
+    });
+    const result = makeResult([makeCheck({ code: "claude_cwd_valid" }), rejected]);
+    expect(findCredentialAuthFailureCheck(result)).toBe(rejected);
+  });
+
+  it("does not match a generic error-level check without the authFailure flag", () => {
+    const result = makeResult([
+      makeCheck({ code: "claude_command_unresolvable", level: "error" }),
+    ]);
+    expect(findCredentialAuthFailureCheck(result)).toBeNull();
+  });
+});
+
+describe("credentialRejectionMessage", () => {
+  it("returns null for no check", () => {
+    expect(credentialRejectionMessage(null)).toBeNull();
+  });
+
+  it("returns fixed plain-language copy, never the raw check detail", () => {
+    const check = makeCheck({
+      level: "error",
+      message: "Claude rejected the provided credential.",
+      detail: "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}",
+      authFailure: true,
+    });
+    const message = credentialRejectionMessage(check);
+    expect(message).toBe("That key was rejected by the provider. Check it and paste it again.");
+    expect(message).not.toContain("401");
+    expect(message).not.toContain("authentication_error");
   });
 });

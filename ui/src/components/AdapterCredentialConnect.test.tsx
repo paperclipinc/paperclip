@@ -95,19 +95,42 @@ const claudeLocalSetup: AdapterCredentialSetup = {
 let container: HTMLDivElement;
 let root: Root | null = null;
 
+function renderProps(props: Partial<React.ComponentProps<typeof AdapterCredentialConnect>> = {}) {
+  return (
+    <AdapterCredentialConnect
+      companyId={props.companyId ?? "company-1"}
+      adapterType={props.adapterType ?? "claude_local"}
+      setup={props.setup ?? claudeLocalSetup}
+      boundEnvKeys={props.boundEnvKeys ?? []}
+      onBind={props.onBind ?? vi.fn()}
+      externalError={props.externalError ?? null}
+    />
+  );
+}
+
 function render(props: Partial<React.ComponentProps<typeof AdapterCredentialConnect>> = {}) {
   root = createRoot(container);
   return act(() => {
-    root!.render(
-      <AdapterCredentialConnect
-        companyId={props.companyId ?? "company-1"}
-        adapterType={props.adapterType ?? "claude_local"}
-        setup={props.setup ?? claudeLocalSetup}
-        boundEnvKeys={props.boundEnvKeys ?? []}
-        onBind={props.onBind ?? vi.fn()}
-      />,
-    );
+    root!.render(renderProps(props));
   });
+}
+
+// For the externalError transition tests: re-renders the SAME root (unlike
+// `render`, which mounts a fresh one) so the component's own effect/state
+// persists across prop changes, the way it would in the real wizard.
+async function renderWithRerender(
+  props: Partial<React.ComponentProps<typeof AdapterCredentialConnect>> = {},
+) {
+  root = createRoot(container);
+  await act(() => {
+    root!.render(renderProps(props));
+  });
+  return {
+    rerender: (nextProps: Partial<React.ComponentProps<typeof AdapterCredentialConnect>>) =>
+      act(() => {
+        root!.render(renderProps(nextProps));
+      }),
+  };
 }
 
 beforeEach(() => {
@@ -422,6 +445,71 @@ describe("AdapterCredentialConnect", () => {
     await flushReact();
 
     expect(mockSecretsApi.create).not.toHaveBeenCalled();
+  });
+
+  it("shows an externalError as the inline alert once nothing is bound", async () => {
+    // Mirrors the onboarding wizard's post-bind rejection flow: it clears
+    // boundEnvKeys for the rejected option (so the card falls back to the
+    // full form) and passes a plain-language externalError alongside.
+    await render({
+      boundEnvKeys: [],
+      externalError: "That key was rejected by the provider. Check it and paste it again.",
+    });
+    await flushReact();
+
+    const errorEl = container.querySelector('[role="alert"]');
+    expect(errorEl?.textContent).toBe(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+    expect(container.querySelector('input[type="password"]')).not.toBeNull();
+  });
+
+  it("clears the externalError banner once the user starts typing a new value", async () => {
+    await render({
+      boundEnvKeys: [],
+      externalError: "That key was rejected by the provider. Check it and paste it again.",
+    });
+    await flushReact();
+
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-corrected-0123456789"));
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("re-shows the same externalError text on a second consecutive rejection", async () => {
+    // Regression guard: a naive effect keyed only on the externalError value
+    // would not re-fire when the parent sets the identical string twice in a
+    // row. The parent always clears to null before a new attempt, so this
+    // simulates that null -> message -> null -> message sequence.
+    const { rerender } = await renderWithRerender({ boundEnvKeys: [], externalError: null });
+    await flushReact();
+
+    await rerender({
+      boundEnvKeys: [],
+      externalError: "That key was rejected by the provider. Check it and paste it again.",
+    });
+    await flushReact();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-retry-0123456789"));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    await rerender({ boundEnvKeys: [], externalError: null });
+    await flushReact();
+    await rerender({
+      boundEnvKeys: [],
+      externalError: "That key was rejected by the provider. Check it and paste it again.",
+    });
+    await flushReact();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
   });
 
   it("associates the inline error with the input via aria-describedby and role=alert", async () => {
