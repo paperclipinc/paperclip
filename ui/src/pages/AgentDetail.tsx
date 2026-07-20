@@ -25,7 +25,6 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AdapterCredentialConnect } from "../components/AdapterCredentialConnect";
@@ -2978,12 +2977,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" a host-local `claude login` cannot authenticate sandboxed
   // runs, so the login button is replaced with an inline credential connect.
-  // Reuses the same general-settings query the rest of the UI uses.
-  const { data: generalSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-    retry: false,
-  });
+  const { data: generalSettings } = useFeatures();
   const offerClaudeHostLogin = shouldOfferClaudeHostLogin(generalSettings?.executionMode);
   const credentialSetup = useMemo(() => getUIAdapter(adapterType).credentialSetup, [adapterType]);
   const [sessionOpen, setSessionOpen] = useState(false);
