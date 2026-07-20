@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AdapterEnvironmentTestResult, CompanySecret } from "@paperclipai/shared";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -40,6 +41,13 @@ const mockHealthApi = vi.hoisted(() => ({
 const mockCloudCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
+// Server-side truth for "is a credential connected" (deriveCredentialConnected
+// reads this via the wizard's company-secrets query). Defaults to no secrets;
+// individual tests override with mockResolvedValueOnce / mockResolvedValue.
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(async (): Promise<CompanySecret[]> => []),
+  disable: vi.fn(async (id: string): Promise<CompanySecret> => ({ id }) as CompanySecret),
+}));
 
 // The real adapter registry eagerly imports every adapter package. The
 // model/harness picker internals are out of scope here, so stub the adapter
@@ -67,18 +75,18 @@ const mockAdapterRegistry = vi.hoisted(() => ({
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
-  testEnvironment: vi.fn(async () => ({
-    adapterType: "claude_local",
-    status: "pass" as const,
-    checks: [] as Array<{
-      code: string;
-      level: "info" | "warn" | "error";
-      message: string;
-      detail?: string | null;
-      hint?: string | null;
-    }>,
-    testedAt: new Date().toISOString(),
-  })),
+  testEnvironment: vi.fn(
+    async (
+      _companyId: string,
+      _adapterType: string,
+      _data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
+    ): Promise<AdapterEnvironmentTestResult> => ({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    }),
+  ),
   hire: vi.fn(async (_companyId: string, _data: Record<string, unknown>) => ({
     agent: { id: "agent-1" },
     approval: null,
@@ -106,6 +114,7 @@ vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
 }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: (type: string) =>
@@ -152,14 +161,20 @@ vi.mock("./AdapterCredentialConnect", () => ({
   AdapterCredentialConnect: (props: {
     boundEnvKeys: string[];
     onBind: (envKey: string, secretId: string) => void;
+    externalError?: string | null;
   }) => (
-    <button
-      type="button"
-      data-testid="mock-credential-bind"
-      onClick={() => props.onBind("ANTHROPIC_API_KEY", "sec-1")}
-    >
-      bound:{props.boundEnvKeys.join(",")}
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid="mock-credential-bind"
+        onClick={() => props.onBind("ANTHROPIC_API_KEY", "sec-1")}
+      >
+        bound:{props.boundEnvKeys.join(",")}
+      </button>
+      {props.externalError && (
+        <p data-testid="mock-credential-error">{props.externalError}</p>
+      )}
+    </>
   ),
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
@@ -169,6 +184,35 @@ vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "@/api/client";
 import { OnboardingWizard } from "./OnboardingWizard";
+
+function makeCompanySecret(overrides: Partial<CompanySecret> = {}): CompanySecret {
+  return {
+    id: "secret-1",
+    companyId: "c1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "claude-local-anthropic-api-key",
+    name: "ANTHROPIC_API_KEY",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 1,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: "user-1",
+    referenceCount: 1,
+    createdAt: new Date("2026-05-06T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -225,6 +269,7 @@ describe("OnboardingWizard cloud first-run", () => {
     mockDialog.onboardingOptions = {};
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
+    mockCompany.loading = false;
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
@@ -248,6 +293,7 @@ describe("OnboardingWizard cloud first-run", () => {
     });
     mockGoalsApi.create.mockResolvedValue({ id: "goal-1" });
     mockGoalsApi.list.mockResolvedValue([]);
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -574,6 +620,69 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
+  it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
+    // Regression for the initializer-only restore bug: the inner wizard's
+    // ~20 useState(saved?.x ?? default) initializers only read `saved` on
+    // their very first render. useCompany() starts with companies=[] and
+    // loading=true and resolves later; if the inner component mounted before
+    // that resolution, restoreOnboardingState would see an empty companies
+    // list and the whole draft would lock to defaults forever, even after
+    // companies arrive. The fix defers mounting the inner wizard until
+    // companies settle.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [];
+    mockCompany.loading = true;
+
+    const { container, root, queryClient } = render();
+    const renderTree = () =>
+      act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+
+    await renderTree();
+    await flushReact();
+
+    // Nothing mounts yet — no premature guess, and the draft is not touched.
+    expect(container.textContent).toBe("");
+    expect(document.body.textContent).toBe("");
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
+
+    // Companies resolve asynchronously, owning the saved company.
+    mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
+    mockCompany.loading = false;
+
+    await renderTree();
+    await flushReact();
+
+    // The draft is restored once companies settle: step 3 (Create your team
+    // lead) with the saved agent name in the input, not the defaults
+    // (step 0, "Chief of staff").
+    expect(document.body.textContent).toContain("Create your team lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value).toBe("Ops Lead");
+    const currentStep = document.body.querySelector('[aria-current="step"]');
+    expect(currentStep?.getAttribute("aria-label")).toBe("Step 3");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps an enabled saved adapterType untouched", async () => {
     mockAdapterRegistry.list = [
       { type: "claude_local" },
@@ -611,6 +720,8 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
+    mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
 
   afterEach(() => {
@@ -635,7 +746,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("persists a binding to the draft and merges it into the hire payload", async () => {
+  it("merges an in-session binding into the hire payload without ever writing it to the persisted draft", async () => {
     const { root } = await mount();
 
     const bindButton = findButtonByText(document.body, "bound:");
@@ -644,12 +755,14 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
+    // Bindings are session-only: localStorage is per-origin, not per-account,
+    // so a restored binding could name a secret belonging to another
+    // company, which the server rejects with "Secret must belong to same
+    // company". The persisted draft must never carry the key at all.
     const saved = JSON.parse(
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
-    expect(saved.credentialBindings).toEqual({
-      ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-1" },
-    });
+    expect(saved).not.toHaveProperty("credentialBindings");
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     await act(async () => {
@@ -722,6 +835,363 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
+  it("clears the binding, keeps the heartbeat CTA disabled, and shows a plain-language error when the post-bind probe rejects the credential", async () => {
+    // This is the bug this branch exists to fix: pasting an invalid key
+    // must not sail through as "Connected" with the gate open.
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          detail: 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // The in-session binding was undone: the mocked card's boundEnvKeys is
+    // empty again, and deriveCredentialConnected reads it as not connected.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:");
+
+    // A plain-language error is surfaced on the card — never the raw
+    // provider/CLI detail text.
+    const errorEl = document.body.querySelector(
+      '[data-testid="mock-credential-error"]',
+    );
+    expect(errorEl?.textContent).toBe(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+    // The credential card's own error must never repeat the raw provider
+    // detail (the separate, pre-existing "Adapter environment check" /
+    // Manual debug panel below intentionally does show that raw text for
+    // debugging — that panel is out of scope for this fix).
+    expect(errorEl?.textContent).not.toContain("authentication_error");
+
+    // The heartbeat gate must not open on the strength of the rejected binding.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(true);
+
+    // The rejected secret is disabled server-side too, so a page reload
+    // can't fall through deriveCredentialConnected's company-secrets
+    // fallback and silently re-open the gate on the orphaned active secret.
+    expect(mockSecretsApi.disable).toHaveBeenCalledWith("sec-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not re-open the gate on a fresh mount for a DIFFERENT adapter that happens to share the envKey name", async () => {
+    // ANTHROPIC_API_KEY is advertised by claude_local, opencode_local, and
+    // pi_local independently. A rejection recorded for claude_local must not
+    // leak into another adapter's own credential state.
+    mockAdapterRegistry.byType.opencode_local = {
+      buildAdapterConfig: () => ({}),
+      credentialSetup: {
+        options: [
+          {
+            envKey: "ANTHROPIC_API_KEY",
+            label: "Anthropic API key",
+            placeholder: "sk-ant-...",
+          },
+        ],
+      },
+    };
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "opencode_local" },
+    ];
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // claude_local's own gate is closed by the rejection.
+    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+      true,
+    );
+
+    // Switching to opencode_local (same ANTHROPIC_API_KEY envKey, but a
+    // DIFFERENT adapter and thus a different failure record) and binding it
+    // fresh must not read as pre-failed.
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "opencode_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    });
+    // The test-mocked getAdapterDisplay marks nothing as "recommended", so
+    // every adapter (including opencode_local) lands in the collapsed
+    // "More Agent Adapter Types" section.
+    const moreToggle = findButtonByText(document.body, "More Agent Adapter Types");
+    await act(async () => {
+      moreToggle.click();
+    });
+    await flushReact();
+
+    const adapterButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent === "opencode_local",
+    );
+    expect(adapterButton).not.toBeUndefined();
+    await act(async () => {
+      adapterButton?.click();
+    });
+    await flushReact();
+
+    const bindButtonAgain = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButtonAgain.click();
+    });
+    await flushReact();
+
+    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+      false,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("refuses to hire when a fresh mount's orphaned active company secret still fails the live probe (no dead-end: error shown, gate closes, Back still works)", async () => {
+    // Simulates the reload gap this fix closes: an active company secret
+    // survives from an earlier attempt (e.g. its disable call itself
+    // failed), so on a fresh mount there is no in-session failure record
+    // and the gate reads as open purely via deriveCredentialConnected's
+    // company-secrets fallback. handleGiveHeartbeat's own fresh-probe check
+    // must still refuse to hire rather than trusting that "open" gate.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ status: "active" }),
+    ]);
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+    await flushReact();
+
+    // The gate reads as open on mount purely from the orphaned secret —
+    // nothing was bound this session.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    // The probe was NOT run against an empty/credential-less config: it
+    // actually submitted the orphaned secret's own secret_ref, materialized
+    // from deriveCredentialConnected's own name-matching logic
+    // (findMatchingCompanySecret) rather than the gate being trusted blind.
+    // Without this, the probe could only ever see the soft "please log in"
+    // case (no credential present to reject) and this whole test would be
+    // asserting against a scenario that can't occur in the real app.
+    const probeCall = mockAgentsApi.testEnvironment.mock.calls[0] as
+      | [string, string, { adapterConfig: { env?: Record<string, unknown> } }]
+      | undefined;
+    expect(probeCall?.[2]?.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-1",
+    });
+
+    // No agent was created against the known-bad credential.
+    expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+
+    // The rejected, materialized secret is disabled server-side too.
+    expect(mockSecretsApi.disable).toHaveBeenCalledWith("secret-1");
+
+    // The rejection error is visible and the user is kept on the step —
+    // not a dead end. Back must still be reachable and enabled.
+    expect(document.body.textContent).toContain(
+      "That key was rejected by the provider. Check it and paste it again.",
+    );
+    expect(findButtonByText(document.body, "Back").disabled).toBe(false);
+
+    // The gate closes for the rest of this session so retrying without a
+    // fresh bind can't loop the same way.
+    expect(
+      findButtonByText(document.body, "Give it a heartbeat").disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("materializes a VALID post-reload company secret into both the probe and the hire payload", async () => {
+    // The counterpart to the orphaned-secret regression above: a user who
+    // successfully bound a valid key, then reloaded BEFORE clicking "Give
+    // it a heartbeat" (or simply opened onboarding fresh with a company
+    // that already has a valid secret from a prior session). No session
+    // binding exists, so without materializing the match,
+    // mergeCredentialBindings would ship neither the probe nor the hire any
+    // credential at all — a credential-less agent that fails its first run
+    // even though the key itself was always fine.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ id: "secret-valid", status: "active" }),
+    ]);
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+    await flushReact();
+
+    // The gate reads as open purely from the company secret.
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      heartbeatButton.click();
+    });
+    await flushReact();
+
+    // The live probe actually tested the matched secret, not an empty config.
+    const probeCall = mockAgentsApi.testEnvironment.mock.calls[0] as
+      | [string, string, { adapterConfig: { env?: Record<string, unknown> } }]
+      | undefined;
+    expect(probeCall?.[2]?.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-valid",
+    });
+
+    // The hire succeeded, and its payload carries the same binding — the
+    // created agent is not credential-less.
+    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
+    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
+      adapterConfig: { env?: Record<string, unknown> };
+    };
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+      type: "secret_ref",
+      secretId: "secret-valid",
+    });
+
+    // A valid credential never gets disabled.
+    expect(mockSecretsApi.disable).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the existing permissive behavior (Connected stands, gate opens) when the probe fails for a non-auth reason", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+      adapterType: "claude_local",
+      status: "fail",
+      checks: [
+        {
+          code: "claude_command_unresolvable",
+          level: "error",
+          message: "Command is not executable: claude",
+        },
+      ],
+      testedAt: new Date().toISOString(),
+    });
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-error"]'),
+    ).toBeNull();
+
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("maps a thrown adapter-environment-test error to plain language and stays permissive", async () => {
+    mockAgentsApi.testEnvironment.mockRejectedValueOnce(
+      new Error("Secret must belong to same company"),
+    );
+
+    const { root } = await mount();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    // Permissive: the check "cannot run", so the binding stands.
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(false);
+
+    // The raw internal server message never renders; a plain sentence does.
+    expect(document.body.textContent).not.toContain(
+      "Secret must belong to same company",
+    );
+    expect(document.body.textContent).toContain(
+      "We could not run the adapter check right now. You can continue and retry the test later.",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("lists warn-level checks even when the overall status is pass", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValueOnce({
       adapterType: "claude_local",
@@ -771,7 +1241,14 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
   });
 
-  it("restores credentialBindings from a saved draft and merges them into the hire payload", async () => {
+  it("never restores credentialBindings from a saved draft, even for the owned, currently-selected company", async () => {
+    // A binding named in a saved draft names a secret id. Restoring it would
+    // let a browser carrying a stale draft (e.g. after switching accounts,
+    // still on the same company) hand a secret id to the server that may no
+    // longer resolve, or may belong to a different company entirely — the
+    // "Secret must belong to same company" failure this fix exists for.
+    // Bindings are session-only now, so the saved value below must be
+    // ignored no matter what.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -783,36 +1260,87 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
         },
       }),
     );
+    // No matching secret on the company either, so the gate has no other way
+    // to read as satisfied.
+    mockSecretsApi.list.mockResolvedValue([]);
 
     const { root } = await mount();
 
-    // The restored binding surfaces as a bound env key on the connect card.
+    // The connect card starts unbound: the draft's binding was discarded.
     expect(
       document.body.querySelector('[data-testid="mock-credential-bind"]')
         ?.textContent,
-    ).toBe("bound:ANTHROPIC_API_KEY");
+    ).toBe("bound:");
 
+    // With nothing bound and no matching company secret, the gate stays
+    // closed and hiring is blocked rather than silently sending the stale
+    // secret id.
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
-    await act(async () => {
-      heartbeatButton.click();
-    });
-    await flushReact();
-
-    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
-    const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
-      adapterConfig: { env?: Record<string, unknown> };
-    };
-    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
-      type: "secret_ref",
-      secretId: "sec-draft",
-    });
+    expect(heartbeatButton.disabled).toBe(true);
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("does not send a binding collected under a previously-selected adapter when hiring with a different adapter selected", async () => {
+  it("resets in-session credential bindings when createdCompanyId changes mid-session (company switch, no reload)", async () => {
+    // credentialBindings is company-scoped even though it is never persisted
+    // (see the [createdCompanyId] effect in OnboardingWizardInner). Exercise
+    // the mid-session path: the dialog reopens with a DIFFERENT companyId
+    // while the wizard stays mounted, no page reload, so a binding collected
+    // under the previous company must not silently read as "connected" for
+    // the new one.
+    const { root, queryClient } = render();
+    const renderTree = () =>
+      act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+
+    await renderTree();
+    await flushReact();
+
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:ANTHROPIC_API_KEY");
+
+    // Switch companies mid-session: same adapterType (claude_local), so the
+    // AdapterCredentialConnect instance (keyed on adapterType) is NOT
+    // remounted — only the [createdCompanyId] effect can be responsible for
+    // clearing the binding.
+    mockDialog.onboardingOptions = { initialStep: 4, companyId: "c2" };
+    mockCompany.companies = [
+      { id: "c1", name: "Test Co", issuePrefix: "TC" },
+      { id: "c2", name: "Second Co", issuePrefix: "SC" },
+    ];
+    mockSecretsApi.list.mockResolvedValue([]);
+
+    await renderTree();
+    await flushReact();
+
+    expect(
+      document.body.querySelector('[data-testid="mock-credential-bind"]')
+        ?.textContent,
+    ).toBe("bound:");
+    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    expect(heartbeatButton.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("filters a stale in-session binding from a previously-selected adapter out of the hire payload, and materializes the current adapter's OWN matching company secret into it instead", async () => {
     // gemini_local has its own credential option (GEMINI_API_KEY), disjoint
     // from claude_local's ANTHROPIC_API_KEY.
     mockAdapterRegistry.byType.gemini_local = {
@@ -835,25 +1363,41 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       { type: "claude_local" },
       { type: "gemini_local" },
     ];
+    // adapterType itself still restores fine (only credentialBindings is
+    // stripped by restoreOnboardingState).
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
         step: 4,
         agentName: "Chief of staff",
         adapterType: "gemini_local",
-        credentialBindings: {
-          // Stale binding left over from when claude_local was selected.
-          ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "sec-stale" },
-          // The current adapter's own credential, which satisfies the gate.
-          GEMINI_API_KEY: { type: "secret_ref", secretId: "sec-gemini" },
-        },
       }),
     );
+    // The company already has an active secret matching gemini_local's own
+    // naming convention (see credentialSecretName), so the server-side truth
+    // satisfies the gate without any session binding.
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({
+        id: "sec-gemini",
+        key: "gemini-local-gemini-api-key",
+        name: "GEMINI_API_KEY",
+      }),
+    ]);
 
     const { root } = await mount();
 
+    // Simulate a stale in-session binding left over from a moment when
+    // claude_local was selected (the mocked connect card always binds
+    // ANTHROPIC_API_KEY regardless of the adapter currently on screen).
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
+
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
-    // The gate is satisfied by the current adapter's own binding.
+    // The gate is satisfied by the real company secret for GEMINI_API_KEY,
+    // not by the stale ANTHROPIC_API_KEY session binding.
     expect(heartbeatButton.disabled).toBe(false);
     await act(async () => {
       heartbeatButton.click();
@@ -864,13 +1408,20 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     const hirePayload = mockAgentsApi.hire.mock.calls[0]?.[1] as {
       adapterConfig: { env?: Record<string, unknown> };
     };
-    // Only the current adapter's credential option is sent; the stale binding
-    // collected under the previously-selected adapter is filtered out.
+    // The stale ANTHROPIC_API_KEY binding collected under the
+    // previously-selected adapter is filtered out by mergeCredentialBindings
+    // (it only keeps envKeys the current adapter's credentialSetup
+    // advertises). gemini_local's own credential was never session-bound
+    // this session, but handleGiveHeartbeat materializes the matching
+    // company secret the gate itself was satisfied by, so the hire payload
+    // still carries a real credential rather than shipping a credential-less
+    // agent (the reload gap this covers: without materializing, this agent
+    // would be hired with no env override at all and fail its first run).
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(hirePayload.adapterConfig.env?.GEMINI_API_KEY).toEqual({
       type: "secret_ref",
       secretId: "sec-gemini",
     });
-    expect(hirePayload.adapterConfig.env).not.toHaveProperty("ANTHROPIC_API_KEY");
 
     await act(async () => {
       root.unmount();
@@ -882,9 +1433,8 @@ describe("mergeCredentialBindings", () => {
   // Exercised indirectly above through the wizard's call sites; this
   // isolates the merge/filter semantics themselves since the helper isn't
   // exported (it's an internal implementation detail of the wizard), driven
-  // through the same "restore saved draft" + hire path used elsewhere in
-  // this file so the base-env-survives case doesn't need a real
-  // buildAdapterConfig() with forceUnset wiring.
+  // through an in-session bind + hire, so the base-env-survives case doesn't
+  // need a real buildAdapterConfig() with forceUnset wiring.
   beforeEach(() => {
     window.localStorage.clear();
     mockDialog.onboardingOpen = true;
@@ -898,6 +1448,8 @@ describe("mergeCredentialBindings", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockSecretsApi.list.mockReset().mockResolvedValue([]);
+    mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
 
   afterEach(() => {
@@ -905,37 +1457,36 @@ describe("mergeCredentialBindings", () => {
     vi.clearAllMocks();
   });
 
-  it("merges a matching binding on top of the base config's own env instead of replacing it", async () => {
+  it("merges an in-session binding on top of the base config's own env instead of replacing it", async () => {
     // Simulate buildAdapterConfig() already producing a base env entry (e.g.
     // the forceUnsetAnthropicApiKey plain-value marker) by having the
-    // claude_local adapter's buildAdapterConfig stub return one.
+    // claude_local adapter's buildAdapterConfig stub return one for a key
+    // other than the credential option under test, so the merge's
+    // "survives alongside" behavior is unambiguous.
     mockAdapterRegistry.byType.claude_local = {
       buildAdapterConfig: () => ({
-        env: { ANTHROPIC_API_KEY: { type: "plain", value: "" } },
+        env: { SOME_OTHER_VAR: { type: "plain", value: "kept" } },
       }),
       credentialSetup: {
         options: [
           {
-            envKey: "CLAUDE_CODE_OAUTH_TOKEN",
-            label: "Claude Pro/Max subscription token",
-            placeholder: "sk-ant-oat01-...",
+            envKey: "ANTHROPIC_API_KEY",
+            label: "Anthropic API key",
+            placeholder: "sk-ant-...",
           },
         ],
       },
     };
-    window.localStorage.setItem(
-      ONBOARDING_STORAGE_KEY,
-      JSON.stringify({
-        step: 4,
-        agentName: "Chief of staff",
-        adapterType: "claude_local",
-        credentialBindings: {
-          CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId: "sec-token" },
-        },
-      }),
-    );
 
     const { root } = await mount();
+
+    // The mocked connect card always binds ANTHROPIC_API_KEY, which matches
+    // this adapter's own credential option.
+    const bindButton = findButtonByText(document.body, "bound:");
+    await act(async () => {
+      bindButton.click();
+    });
+    await flushReact();
 
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     await act(async () => {
@@ -948,14 +1499,15 @@ describe("mergeCredentialBindings", () => {
       adapterConfig: { env?: Record<string, unknown> };
     };
     // The base config's own env entry survives the merge...
-    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+    expect(hirePayload.adapterConfig.env?.SOME_OTHER_VAR).toEqual({
       type: "plain",
-      value: "",
+      value: "kept",
     });
-    // ...alongside the binding for the current adapter's credential option.
-    expect(hirePayload.adapterConfig.env?.CLAUDE_CODE_OAUTH_TOKEN).toEqual({
+    // ...alongside the in-session binding for the current adapter's
+    // credential option.
+    expect(hirePayload.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
       type: "secret_ref",
-      secretId: "sec-token",
+      secretId: "sec-1",
     });
 
     await act(async () => {
