@@ -9,6 +9,7 @@ import {
   companies,
   agents,
   activityLog,
+  companySecrets,
   costEvents,
   financeEvents,
   heartbeatRuns,
@@ -427,6 +428,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(companySecrets);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
@@ -938,5 +940,218 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+
+  describe("listActivationSignals", () => {
+    function currentUtcMonthTimestamps() {
+      const now = new Date();
+      const inMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 3, 12, 0, 0));
+      // Guaranteed to fall in the PREVIOUS calendar month regardless of when
+      // the test runs (day 1 minus a day always lands in the prior month).
+      const beforeMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0));
+      const outOfMonth = new Date(beforeMonthStart.getTime() - 24 * 60 * 60 * 1000);
+      return { inMonth, outOfMonth };
+    }
+
+    it("reports hasAgent/agentCount/hasCompletedRun/hasCredential/lastActivityAt per company, excluding the built-in agent from hasAgent and terminated agents from agentCount", async () => {
+      const companyId = randomUUID();
+      const hiredAgentId = randomUUID();
+      const builtInAgentId = randomUUID();
+      const terminatedAgentId = randomUUID();
+      const { inMonth } = currentUtcMonthTimestamps();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Activated Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values([
+        {
+          id: hiredAgentId,
+          companyId,
+          name: "Hired Agent",
+          role: "engineer",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: builtInAgentId,
+          companyId,
+          name: "Board CEO",
+          role: "board",
+          status: "active",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+          metadata: { paperclipBuiltInAgent: { key: "ceo", featureKeys: ["board_chat"] } },
+        },
+        {
+          id: terminatedAgentId,
+          companyId,
+          name: "Former Agent",
+          role: "engineer",
+          status: "terminated",
+          adapterType: "codex_local",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+      await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId: hiredAgentId,
+        invocationSource: "on_demand",
+        status: "succeeded",
+        startedAt: inMonth,
+        finishedAt: inMonth,
+        updatedAt: inMonth,
+      });
+      await db.insert(companySecrets).values({
+        companyId,
+        key: "OPENAI_API_KEY",
+        name: "OpenAI key",
+        status: "active",
+      });
+
+      const companyOnlyBuiltIn = randomUUID();
+      await db.insert(companies).values({
+        id: companyOnlyBuiltIn,
+        name: "Built-in Only Co",
+        issuePrefix: `T${companyOnlyBuiltIn.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: randomUUID(),
+        companyId: companyOnlyBuiltIn,
+        name: "Board CEO",
+        role: "board",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: { paperclipBuiltInAgent: { key: "ceo", featureKeys: ["board_chat"] } },
+      });
+
+      const signals = await costs.listActivationSignals();
+      const activated = signals.find((row) => row.companyId === companyId);
+      const builtInOnly = signals.find((row) => row.companyId === companyOnlyBuiltIn);
+
+      expect(activated).toBeDefined();
+      expect(activated).toMatchObject({
+        hasAgent: true,
+        hasCompletedRun: true,
+        hasCredential: true,
+        agentCount: 2, // hired + built-in, terminated agent excluded
+        monthRunCount: 1,
+      });
+      expect(activated?.lastActivityAt?.toISOString()).toBe(inMonth.toISOString());
+
+      // A company with only the platform-seeded built-in agent never "hired"
+      // anyone, so hasAgent is false, but agentCount still reflects the one
+      // live agent row.
+      expect(builtInOnly).toBeDefined();
+      expect(builtInOnly).toMatchObject({
+        hasAgent: false,
+        hasCompletedRun: false,
+        hasCredential: false,
+        agentCount: 1,
+        monthRunCount: 0,
+        monthCostCents: 0,
+      });
+      expect(builtInOnly?.lastActivityAt).toBeNull();
+    });
+
+    it("scopes monthRunCount and monthCostCents to the current UTC calendar month without affecting hasCompletedRun/lastActivityAt", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const { inMonth, outOfMonth } = currentUtcMonthTimestamps();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Month Scoping Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      // A run that succeeded LAST month: counts toward hasCompletedRun and
+      // lastActivityAt (unscoped), but NOT toward this month's monthRunCount.
+      await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "succeeded",
+        startedAt: outOfMonth,
+        finishedAt: outOfMonth,
+        updatedAt: outOfMonth,
+      });
+      // A cost event from last month: does not count toward this month's
+      // monthCostCents.
+      await db.insert(costEvents).values({
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        costCents: 999,
+        occurredAt: outOfMonth,
+      });
+      // A cost event from THIS month: counts toward monthCostCents.
+      await db.insert(costEvents).values({
+        companyId,
+        agentId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 10,
+        cachedInputTokens: 0,
+        outputTokens: 5,
+        costCents: 250,
+        occurredAt: inMonth,
+      });
+
+      const signals = await costs.listActivationSignals();
+      const row = signals.find((r) => r.companyId === companyId);
+
+      expect(row).toBeDefined();
+      expect(row?.hasCompletedRun).toBe(true);
+      expect(row?.lastActivityAt?.toISOString()).toBe(outOfMonth.toISOString());
+      expect(row?.monthRunCount).toBe(0);
+      expect(row?.monthCostCents).toBe(250);
+    });
+
+    it("omits companies with no agent, run, credential, or cost-event rows at all", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Untouched Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      const signals = await costs.listActivationSignals();
+
+      expect(signals.find((row) => row.companyId === companyId)).toBeUndefined();
+    });
   });
 });
