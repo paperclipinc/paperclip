@@ -63,6 +63,13 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
+    // Plugin-backed sandbox providers own their runtime images (built per
+    // adapter, contractually complete) and run behind a locked egress, so the
+    // in-sandbox network-install shim must never fire for them. Built-in
+    // sandbox providers (e.g. e2b) keep the install path. The lease metadata's
+    // `sandboxProviderPlugin` flag is the existing discriminator.
+    const prebakedRuntime = input.leaseMetadata?.sandboxProviderPlugin === true;
+
     return {
       kind: "remote",
       transport: "sandbox",
@@ -72,6 +79,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
+      prebakedRuntime,
       // Run-log streaming defaults ON for sandbox environments so agent CLI
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
