@@ -78,10 +78,11 @@ const OVERRIDES_ENV_VAR = "PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES";
 export interface InstanceSettingsOverrides {
   general: Record<string, unknown>;
   experimental: Record<string, unknown>;
+  visibility: Record<string, unknown>;
 }
 
 function emptyOverrides(): InstanceSettingsOverrides {
-  return { general: {}, experimental: {} };
+  return { general: {}, experimental: {}, visibility: {} };
 }
 
 const warnedOverrideInputs = new Set<string>();
@@ -94,10 +95,12 @@ function warnOverridesOnce(cacheKey: string, message: string) {
 
 /**
  * Parses PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES (a JSON object with optional
- * "general" / "experimental" sections). Overridden keys win over the stored
- * instance settings at read time, letting operators pin settings declaratively
- * from deployment config. Invalid JSON or an invalid section is warned about
- * once and ignored (the stored settings apply).
+ * "general" / "experimental" / "visibility" sections). Overridden keys win over
+ * the stored instance settings at read time, letting operators pin settings
+ * declaratively from deployment config. Invalid JSON or an invalid section is
+ * warned about once and ignored (the stored settings apply). The "visibility"
+ * section is fork-only (upstream has no visibility concept), included so
+ * overrides are internally consistent across all instance settings sections.
  */
 export function parseInstanceSettingsOverrides(
   env: Record<string, string | undefined> = process.env,
@@ -121,10 +124,11 @@ export function parseInstanceSettingsOverrides(
   const sectionSchemas = {
     general: instanceGeneralSettingsSchema.partial().strip(),
     experimental: instanceExperimentalSettingsSchema.partial().strip(),
+    visibility: instanceVisibilitySettingsSchema.partial().strip(),
   } as const;
 
   const result = emptyOverrides();
-  for (const key of ["general", "experimental"] as const) {
+  for (const key of ["general", "experimental", "visibility"] as const) {
     if (sections[key] === undefined) continue;
     const sectionParsed = sectionSchemas[key].safeParse(sections[key]);
     if (!sectionParsed.success) {
@@ -394,19 +398,37 @@ export function normalizeVisibilitySettings(raw: unknown): InstanceVisibilitySet
   };
 }
 
-function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
+/**
+ * Override-aware resolution for visibility settings, symmetric with
+ * resolveGeneralSettings/resolveExperimentalSettings above. Upstream has no
+ * visibility concept (it's fork-only), so this keeps env overrides
+ * internally consistent across all three settings sections.
+ */
+export function resolveVisibilitySettings(
+  raw: unknown,
+  overrides: Record<string, unknown> = {},
+): InstanceVisibilitySettings {
+  return normalizeVisibilitySettings({ ...normalizeVisibilitySettings(raw), ...overrides });
+}
+
+function toInstanceSettings(
+  row: typeof instanceSettings.$inferSelect,
+  overrides: InstanceSettingsOverrides = emptyOverrides(),
+): InstanceSettings {
   return {
     id: row.id,
     defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-    general: normalizeGeneralSettings(row.general),
-    experimental: normalizeExperimentalSettings(row.experimental),
-    visibility: normalizeVisibilitySettings(row.visibility),
+    general: resolveGeneralSettings(row.general, overrides.general),
+    experimental: resolveExperimentalSettings(row.experimental, overrides.experimental),
+    visibility: resolveVisibilitySettings(row.visibility, overrides.visibility),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
+  const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -447,7 +469,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -462,29 +484,33 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+      return resolveGeneralSettings(row.general, overrides.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettings> => {
       const row = await getOrCreateRow();
-      return normalizeExperimentalSettings(row.experimental);
+      return resolveExperimentalSettings(row.experimental, overrides.experimental);
     },
 
     getVisibility: async (): Promise<InstanceVisibilitySettings> => {
       const row = await getOrCreateRow();
-      return normalizeVisibilitySettings(row.visibility);
+      return resolveVisibilitySettings(row.visibility, overrides.visibility);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.general),
+      );
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
-        ...patch,
+        ...effectivePatch,
       });
       const now = new Date();
       const [updated] = await db
@@ -495,12 +521,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.experimental),
+      ) as PatchInstanceExperimentalSettings;
+      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, effectivePatch, options);
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -510,14 +540,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.visibility),
+      ) as PatchInstanceVisibilitySettings;
       const nextVisibility = normalizeVisibilitySettings({
         ...normalizeVisibilitySettings(current.visibility),
-        ...patch,
+        ...effectivePatch,
       });
       const now = new Date();
       const [updated] = await db
@@ -528,7 +562,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     listCompanyIds: async (): Promise<string[]> =>
