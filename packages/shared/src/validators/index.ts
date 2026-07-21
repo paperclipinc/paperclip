@@ -796,6 +796,8 @@ export {
   connectionTokenIssuancePathSchema,
   connectionTokenRequestSchema,
   connectionTokenScopeSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,
