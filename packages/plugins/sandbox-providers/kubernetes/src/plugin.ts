@@ -212,7 +212,9 @@ const plugin = definePlugin({
     // to the environment's configured default adapter. getAdapterDefaults validates
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
-    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
+    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType, {
+      requireRunAdapter: config.requireRunAdapterType,
+    });
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see

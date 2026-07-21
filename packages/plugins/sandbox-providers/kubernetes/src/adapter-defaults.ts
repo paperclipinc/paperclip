@@ -92,17 +92,61 @@ export function getAdapterDefaults(
   return defaults;
 }
 
+/** Stable error code for a rejected lease that lacked a required per-run adapter. */
+export const RUN_ADAPTER_REQUIRED_CODE = "run_adapter_required" as const;
+
+/**
+ * Thrown when strict per-run adapter resolution is enabled but the lease did not
+ * carry a per-run adapter type. Falling back to the environment's configured
+ * default adapter would be unsafe: the default is a global env value that may be
+ * a DIFFERENT harness than the agent will run, so the sandbox image would not
+ * match the CLI the server exec's (a gemini agent landing on the opencode image).
+ */
+export class RunAdapterRequiredError extends Error {
+  readonly code = RUN_ADAPTER_REQUIRED_CODE;
+  constructor(configAdapterType: string) {
+    super(
+      `per-run adapter type is required for per-run sandbox execution but was not supplied; refusing to fall back to the environment default adapter "${configAdapterType}", which may be a different harness than the agent will run (the sandbox runtime image would not match the executed CLI)`,
+    );
+    this.name = "RunAdapterRequiredError";
+  }
+}
+
+export interface ResolveRunAdapterTypeOptions {
+  /**
+   * Require an explicit per-run adapter. When true and the run does not supply
+   * one, throw {@link RunAdapterRequiredError} instead of silently falling back
+   * to the environment default — the correct posture for a mixed-harness
+   * managed pool where the default is unlikely to match the agent's harness.
+   * Defaults to false to preserve single-adapter environments and connectivity
+   * probes that legitimately carry no per-run adapter.
+   */
+  requireRunAdapter?: boolean;
+}
+
 /**
  * Resolve the adapter type for a single run: prefer the run's adapter (the agent's,
  * from the lease params) so one environment can serve mixed harnesses; fall back to
  * the environment's configured default adapter when the run does not specify one.
+ *
+ * The image the plugin picks MUST match the harness the server exec's. Never
+ * substitute a different harness: when `options.requireRunAdapter` is set, a run
+ * without a per-run adapter is rejected rather than silently mapped to the
+ * environment default (which may be a different harness's runtime image).
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
   configAdapterType: string,
+  options: ResolveRunAdapterTypeOptions = {},
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
-  return trimmed.length > 0 ? trimmed : configAdapterType;
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+  if (options.requireRunAdapter) {
+    throw new RunAdapterRequiredError(configAdapterType);
+  }
+  return configAdapterType;
 }
 
 /**

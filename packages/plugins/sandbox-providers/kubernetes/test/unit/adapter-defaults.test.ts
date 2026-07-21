@@ -3,6 +3,8 @@ import {
   getAdapterDefaults,
   buildAdapterEnv,
   resolveRunAdapterType,
+  RunAdapterRequiredError,
+  RUN_ADAPTER_REQUIRED_CODE,
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
@@ -144,5 +146,44 @@ describe("resolveRunAdapterType", () => {
   });
   it("trims the run adapter", () => {
     expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
+  });
+
+  describe("strict mode (requireRunAdapter)", () => {
+    it("returns the run's own harness, never a different one, when the run adapter is present", () => {
+      // The config default is a DIFFERENT harness; strict mode must still honor
+      // the run's adapter and never substitute the env default image.
+      expect(
+        resolveRunAdapterType("gemini_local", "opencode_local", { requireRunAdapter: true }),
+      ).toBe("gemini_local");
+    });
+
+    it("rejects the run instead of falling back to a different harness image when absent", () => {
+      // The bug: a null per-run adapter silently mapped to the env default
+      // (opencode_local) so a gemini agent ran in the opencode image. Strict
+      // mode rejects rather than picking a mismatched image.
+      for (const absent of [undefined, null, "   "]) {
+        expect(() =>
+          resolveRunAdapterType(absent, "opencode_local", { requireRunAdapter: true }),
+        ).toThrow(RunAdapterRequiredError);
+      }
+    });
+
+    it("names the environment default in the rejection and carries a stable code", () => {
+      try {
+        resolveRunAdapterType(null, "opencode_local", { requireRunAdapter: true });
+        throw new Error("expected resolveRunAdapterType to throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(RunAdapterRequiredError);
+        expect((err as RunAdapterRequiredError).code).toBe(RUN_ADAPTER_REQUIRED_CODE);
+        expect((err as Error).message).toContain("opencode_local");
+      }
+    });
+
+    it("still falls back by default (probe/single-adapter compatibility) when not strict", () => {
+      expect(resolveRunAdapterType(undefined, "opencode_local")).toBe("opencode_local");
+      expect(resolveRunAdapterType(undefined, "opencode_local", { requireRunAdapter: false })).toBe(
+        "opencode_local",
+      );
+    });
   });
 });

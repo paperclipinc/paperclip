@@ -47,6 +47,17 @@ export const kubernetesProviderConfigSchema = z
       }),
 
     /**
+     * Require an explicit per-run adapter type on every lease. When true, a run
+     * that does not carry its harness is rejected instead of falling back to
+     * `adapterType` above. Set this for a mixed-harness managed pool where the
+     * environment default is unlikely to match the agent's harness, so a run can
+     * never land on a different harness's runtime image. Defaults to false to
+     * preserve single-adapter environments and connectivity probes (which
+     * legitimately acquire a lease with no per-run adapter).
+     */
+    requireRunAdapterType: z.boolean().default(false),
+
+    /**
      * Optional declarative adapter registry. When present it is authoritative
      * for runtime image / envKeys / allowFqdns / probe / defaultEnv resolution
      * (replace semantics). Absent = built-in defaults.
