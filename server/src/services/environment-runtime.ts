@@ -354,6 +354,9 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
       version: resolvedVersion,
       provider: secret.provider,
       providerVersionRef: versionRow?.providerVersionRef ?? null,
+      valueFingerprint: versionRow
+        ? versionRow.fingerprintSha256 ?? versionRow.valueSha256
+        : null,
       outcome: versionRow ? "success" : "failure",
     });
   }
