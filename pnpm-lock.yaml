@@ -282,8 +282,8 @@ importers:
         specifier: ^1.1.1
         version: 1.1.1
       ws:
-        specifier: ^8.19.0
-        version: 8.19.0
+        specifier: ^8.21.1
+        version: 8.21.1
     devDependencies:
       '@types/node':
         specifier: ^22.19.21
@@ -822,8 +822,8 @@ importers:
         specifier: ^1.17.0
         version: 1.17.0
       ws:
-        specifier: ^8.19.0
-        version: 8.19.0
+        specifier: ^8.21.1
+        version: 8.21.1
       zod:
         specifier: ^3.24.2
         version: 3.25.76
@@ -8353,20 +8353,8 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
-  ws@8.19.0:
-    resolution: {integrity: sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
-  ws@8.21.0:
-    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
+  ws@8.21.1:
+    resolution: {integrity: sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -15994,7 +15982,7 @@ snapshots:
       recast: 0.23.12
       semver: 7.8.5
       use-sync-external-store: 1.6.0(react@19.2.7)
-      ws: 8.21.0
+      ws: 8.21.1
     optionalDependencies:
       '@types/react': 19.2.17
     transitivePeerDependencies:
@@ -16623,9 +16611,7 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.19.0: {}
-
-  ws@8.21.0: {}
+  ws@8.21.1: {}
 
   wsl-utils@0.1.0:
     dependencies:
