@@ -139,10 +139,13 @@ describe("resolveRunAdapterType", () => {
   it("prefers the run/agent adapter when provided (mixed-harness env)", () => {
     expect(resolveRunAdapterType("pi_local", "opencode_local")).toBe("pi_local");
   });
-  it("falls back to the environment default when the run adapter is missing/blank", () => {
-    expect(resolveRunAdapterType(undefined, "opencode_local")).toBe("opencode_local");
-    expect(resolveRunAdapterType(null, "opencode_local")).toBe("opencode_local");
-    expect(resolveRunAdapterType("   ", "opencode_local")).toBe("opencode_local");
+  it("rejects an adapter-less lease when no registry positively proves a single-adapter env", () => {
+    // Without an authoritative adapter set the env-default fallback is unsafe:
+    // the built-in registry still exposes every harness, so an adapter-less run
+    // could land on a different harness's image. Require the per-run adapter.
+    for (const absent of [undefined, null, "   "]) {
+      expect(() => resolveRunAdapterType(absent, "opencode_local")).toThrow(RunAdapterRequiredError);
+    }
   });
   it("trims the run adapter", () => {
     expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
@@ -179,11 +182,16 @@ describe("resolveRunAdapterType", () => {
       }
     });
 
-    it("still falls back by default (probe/single-adapter compatibility) when not strict", () => {
-      expect(resolveRunAdapterType(undefined, "opencode_local")).toBe("opencode_local");
-      expect(resolveRunAdapterType(undefined, "opencode_local", { requireRunAdapter: false })).toBe(
-        "opencode_local",
+    it("does not fall back for an adapter-less lease without an authoritative single-adapter registry", () => {
+      // requireRunAdapter defaults to false, but a false flag does NOT opt into
+      // permissiveness: absent a registry that proves a single-adapter env, the
+      // adapter-less lease is still rejected (the env default can't be trusted).
+      expect(() => resolveRunAdapterType(undefined, "opencode_local")).toThrow(
+        RunAdapterRequiredError,
       );
+      expect(() =>
+        resolveRunAdapterType(undefined, "opencode_local", { requireRunAdapter: false }),
+      ).toThrow(RunAdapterRequiredError);
     });
   });
 
@@ -209,7 +217,9 @@ describe("resolveRunAdapterType", () => {
       ).toBe("gemini_local");
     });
 
-    it("still falls back for a single-adapter config with an absent per-run adapter", () => {
+    it("falls back for a single-adapter config with an absent per-run adapter", () => {
+      // A registry with exactly one distinct enabled adapter positively proves a
+      // single-adapter environment, so the env-default fallback is safe.
       expect(
         resolveRunAdapterType(undefined, "opencode_local", {
           configuredAdapterTypes: ["opencode_local"],
@@ -225,11 +235,21 @@ describe("resolveRunAdapterType", () => {
       ).toBe("opencode_local");
     });
 
-    it("falls back when no configured adapter set is supplied (probe/single-adapter compatibility)", () => {
-      expect(
+    it("rejects an adapter-less lease when the configured adapter set is empty or absent", () => {
+      // An empty or absent authoritative registry cannot prove a single-adapter
+      // env, so it is treated as UNSAFE: the per-run adapter is required rather
+      // than trusting the env default (adapter-less probes are pinned upstream).
+      expect(() =>
         resolveRunAdapterType(undefined, "opencode_local", { configuredAdapterTypes: [] }),
-      ).toBe("opencode_local");
-      expect(resolveRunAdapterType(undefined, "opencode_local", {})).toBe("opencode_local");
+      ).toThrow(RunAdapterRequiredError);
+      expect(() =>
+        resolveRunAdapterType(undefined, "opencode_local", {
+          configuredAdapterTypes: ["", "   "],
+        }),
+      ).toThrow(RunAdapterRequiredError);
+      expect(() => resolveRunAdapterType(undefined, "opencode_local", {})).toThrow(
+        RunAdapterRequiredError,
+      );
     });
 
     it("names the environment default and carries the stable code when a mixed pool rejects", () => {
