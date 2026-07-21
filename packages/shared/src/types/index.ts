@@ -882,3 +882,4 @@ export type {
   BoardCapabilities,
 } from "./capabilities.js";
 export { derivePublicFeatureFlags } from "./capabilities.js";
+export * from "./app-definition.js";
