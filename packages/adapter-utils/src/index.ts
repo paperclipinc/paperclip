@@ -31,6 +31,7 @@ export type {
   ConfigFieldSchema,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
+  AdapterRuntimeCommandSpecOptions,
   AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,
@@ -65,6 +66,7 @@ export {
 export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
+  redactSensitiveText,
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
