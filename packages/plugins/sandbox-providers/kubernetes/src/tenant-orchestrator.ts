@@ -8,6 +8,7 @@ export interface EnsureTenantInput {
   paperclipServerNamespace: string;
   serviceAccountAnnotations: Record<string, string>;
   egressMode: "standard" | "cilium";
+  egressPolicy?: "allowlist" | "open-internet";
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
   resourceQuota: {
@@ -220,6 +221,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
     paperclipServerNamespace: input.paperclipServerNamespace,
     egressAllowCidrs: input.egressAllowCidrs,
     egressAllowFqdns: input.egressAllowFqdns,
+    egressPolicy: input.egressPolicy,
   });
 
   await ensureNetworkPolicy(clients, input.namespace, denyAll);
@@ -230,6 +232,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
       paperclipServerNamespace: input.paperclipServerNamespace,
       egressAllowFqdns: input.egressAllowFqdns,
       egressAllowCidrs: input.egressAllowCidrs,
+      egressPolicy: input.egressPolicy,
     });
     await ensureCiliumNetworkPolicy(clients, input.namespace, cnp);
   } else {
