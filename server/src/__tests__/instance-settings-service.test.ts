@@ -9,6 +9,7 @@ import {
   parseInstanceSettingsOverrides,
   resolveExperimentalSettings,
   resolveGeneralSettings,
+  resolveVisibilitySettings,
   stripOverriddenPatchKeys,
 } from "../services/instance-settings.js";
 
@@ -395,9 +396,9 @@ describe("instance settings service", () => {
 
 describe("parseInstanceSettingsOverrides", () => {
   it("returns empty overrides when the env var is unset or blank", () => {
-    expect(parseInstanceSettingsOverrides({})).toEqual({ general: {}, experimental: {} });
+    expect(parseInstanceSettingsOverrides({})).toEqual({ general: {}, experimental: {}, visibility: {} });
     expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "  " })).toEqual({
-      general: {}, experimental: {},
+      general: {}, experimental: {}, visibility: {},
     });
   });
 
@@ -407,11 +408,21 @@ describe("parseInstanceSettingsOverrides", () => {
     });
     expect(overrides.experimental).toEqual({ enableApps: true, enablePipelines: true });
     expect(overrides.general).toEqual({});
+    expect(overrides.visibility).toEqual({});
+  });
+
+  it("parses visibility company-surfaces overrides", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"visibility":{"companySurfaces":["company.general"]}}',
+    });
+    expect(overrides.visibility).toEqual({ companySurfaces: ["company.general"] });
+    expect(overrides.general).toEqual({});
+    expect(overrides.experimental).toEqual({});
   });
 
   it("ignores invalid JSON entirely", () => {
     expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "{nope" })).toEqual({
-      general: {}, experimental: {},
+      general: {}, experimental: {}, visibility: {},
     });
   });
 
@@ -455,6 +466,19 @@ describe("override resolution", () => {
     const resolved = resolveGeneralSettings({ keyboardShortcuts: true }, { censorUsernameInLogs: true });
     expect(resolved.keyboardShortcuts).toBe(true);
     expect(resolved.censorUsernameInLogs).toBe(true);
+  });
+
+  it("visibility overrides replace stored company surfaces (fork-only, symmetric with general/experimental)", () => {
+    const resolved = resolveVisibilitySettings(
+      { companySurfaces: [...COMPANY_SETTINGS_SURFACES] },
+      { companySurfaces: ["company.general"] },
+    );
+    expect(resolved.companySurfaces).toEqual(["company.general"]);
+  });
+
+  it("stored visibility survives when not overridden", () => {
+    const resolved = resolveVisibilitySettings({ companySurfaces: ["company.secrets"] });
+    expect(resolved.companySurfaces).toEqual(["company.secrets"]);
   });
 });
 
@@ -514,5 +538,24 @@ describe("instanceSettingsService with env overrides", () => {
     const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), { runtimeEnv: {} });
     const experimental = await svc.getExperimental();
     expect(experimental.enableApps).toBe(false);
+  });
+
+  it("getVisibility() applies overrides over stored company surfaces (fork-only)", async () => {
+    const svc = instanceSettingsService(
+      makeReadOnlyDb(makeSettingsRow({ visibility: { companySurfaces: [...COMPANY_SETTINGS_SURFACES] } })),
+      {
+        runtimeEnv: {
+          PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"visibility":{"companySurfaces":["company.general"]}}',
+        },
+      },
+    );
+    const visibility = await svc.getVisibility();
+    expect(visibility.companySurfaces).toEqual(["company.general"]);
+  });
+
+  it("getVisibility() without the env var behaves exactly as before", async () => {
+    const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), { runtimeEnv: {} });
+    const visibility = await svc.getVisibility();
+    expect(visibility.companySurfaces).toEqual([...COMPANY_SETTINGS_SURFACES]);
   });
 });
