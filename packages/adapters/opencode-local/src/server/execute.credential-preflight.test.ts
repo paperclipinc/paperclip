@@ -105,14 +105,78 @@ describe("opencode credential preflight in execute", () => {
     return env;
   }
 
-  it("fails fast with inference_auth_invalid when the run has no provider credential", async () => {
+  it("fails fast with inference_auth_invalid for a LOCAL run with no provider credential", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-nocred-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
 
     const result = await execute({
-      runId: "run-nocred-1",
+      runId: "run-nocred-local-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "anthropic/claude-sonnet-4-5",
+        env: await buildCredentiallessConfigEnv(),
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      // No executionTransport => LOCAL execution: the host filesystem IS the
+      // credential store, so an empty one legitimately blocks.
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("inference_auth_invalid");
+    expect(result.errorMessage).toBe(
+      "No model provider credential is connected for this agent. Connect a provider key, then resume.",
+    );
+    expect(result.exitCode).not.toBe(0);
+    expect(result.timedOut).toBe(false);
+
+    // Fail FAST: no OpenCode process launch happened.
+    expect(runChildProcess).not.toHaveBeenCalled();
+  });
+
+  it("does NOT block a REMOTE run with no host-local credential (remote holds its own auth)", async () => {
+    // Regression (PR #9854 review): the preflight's host `auth.json` /
+    // `opencode.json` checks describe only a LOCAL OpenCode process. For a
+    // remote (SSH) target authenticated via `opencode auth login` on the
+    // server with no env keys, the preflight must fail OPEN and let execution
+    // proceed, not pause the agent with inference_auth_invalid.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-nocred-remote-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    // With the preflight open, execution reaches the remote model probe; make
+    // it succeed so the run is not blocked for an unrelated reason.
+    runChildProcess.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "anthropic/claude-sonnet-4-5\n",
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-nocred-remote-1",
       agent: {
         id: "agent-1",
         companyId: "company-1",
@@ -152,16 +216,9 @@ describe("opencode credential preflight in execute", () => {
       onLog: async () => {},
     });
 
-    expect(result.errorCode).toBe("inference_auth_invalid");
-    expect(result.errorMessage).toBe(
-      "No model provider credential is connected for this agent. Connect a provider key, then resume.",
-    );
-    expect(result.exitCode).not.toBe(0);
-    expect(result.timedOut).toBe(false);
-
-    // Fail FAST: no workspace sync and no OpenCode process launch happened.
-    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
-    expect(runChildProcess).not.toHaveBeenCalled();
+    // Not blocked by the credential preflight: execution proceeded.
+    expect(result.errorCode ?? null).not.toBe("inference_auth_invalid");
+    expect(runChildProcess).toHaveBeenCalled();
   });
 
   it("does not fail fast when a provider credential is present in the run env", async () => {

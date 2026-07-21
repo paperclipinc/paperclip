@@ -330,8 +330,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // transient "Unexpected server error" and feeds an endless retry storm.
     // Host-level auth (`opencode auth login`), host config providers, injected
     // gateway providers, and env keys all pass, so self-hosted setups that
-    // authenticate on the host are unaffected.
-    const credentialPreflight = await evaluateOpenCodeCredentialPreflight({ env: runtimeEnv });
+    // authenticate on the host are unaffected. For a REMOTE execution target
+    // the host filesystem holds no relevant auth (the remote authenticates
+    // itself), so the preflight fails open there and only blocks local runs.
+    const credentialPreflight = await evaluateOpenCodeCredentialPreflight({
+      env: runtimeEnv,
+      executionIsRemote: executionTargetIsRemote,
+    });
     if (!credentialPreflight.ready) {
       await onLog("stderr", `[paperclip] ${OPENCODE_MISSING_CREDENTIAL_MESSAGE}\n`);
       return {

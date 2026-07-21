@@ -17,6 +17,17 @@ import path from "node:path";
 // blocks all count as credentials. When in doubt it reports ready and lets
 // OpenCode itself decide (the status quo), mirroring how codex-local's
 // credential readiness check treats external overrides as self-managed.
+//
+// Local vs remote: the host `auth.json` / `opencode.json` filesystem checks
+// only prove anything for a LOCAL OpenCode process. When execution targets a
+// REMOTE machine (SSH / sandbox), OpenCode authenticates against the remote's
+// own `opencode auth login` state, which this host cannot see. Probing the
+// host filesystem there would false-negative a remote agent that is perfectly
+// authenticated on the server. So for remote execution we only trust signals
+// that travel to the remote (env keys, injected gateway providers) and
+// otherwise fail OPEN (cannot verify locally -> do not block), preserving the
+// pre-preflight behaviour. Only a LOCAL run with no detectable credential is
+// blocked.
 // ---------------------------------------------------------------------------
 
 /**
@@ -60,7 +71,7 @@ export const OPENCODE_MISSING_CREDENTIAL_MESSAGE =
 
 export interface OpenCodeCredentialPreflight {
   ready: boolean;
-  source: "env" | "custom_providers" | "host_config" | "host_auth" | null;
+  source: "env" | "custom_providers" | "host_config" | "host_auth" | "remote_unverified" | null;
   /** The env key or file path that satisfied the preflight, for run-log diagnostics. */
   detail: string | null;
 }
@@ -113,12 +124,24 @@ function customProvidersConfigured(env: Record<string, string>): boolean {
  * authenticate against a model provider. Pure over `env` (callers pass the
  * fully-merged run env, process env included) apart from the host filesystem
  * lookups for `opencode auth login` state and the host config.
+ *
+ * `executionIsRemote` gates the host filesystem probes: they only describe a
+ * LOCAL OpenCode process, so on a remote (SSH / sandbox) execution target they
+ * are skipped and the preflight fails OPEN when no env-forwardable credential
+ * is found (the remote holds its own auth). Only a local run with no
+ * detectable credential is blocked. Defaults to local for backward
+ * compatibility.
  */
 export async function evaluateOpenCodeCredentialPreflight(input: {
   env: Record<string, string>;
+  executionIsRemote?: boolean;
 }): Promise<OpenCodeCredentialPreflight> {
   const { env } = input;
+  const executionIsRemote = input.executionIsRemote ?? false;
 
+  // Env keys and injected gateway providers travel to the remote (they are
+  // forwarded in the run env), so they are trustworthy signals in BOTH local
+  // and remote execution.
   for (const key of OPENCODE_PROVIDER_CREDENTIAL_ENV_KEYS) {
     if (nonEmpty(env[key])) {
       return { ready: true, source: "env", detail: key };
@@ -129,16 +152,29 @@ export async function evaluateOpenCodeCredentialPreflight(input: {
     return { ready: true, source: "custom_providers", detail: "PAPERCLIP_OPENCODE_PROVIDERS" };
   }
 
-  const hostConfigPath = resolveOpenCodeHostConfigPath(env);
-  const hostConfig = await readJsonObject(hostConfigPath);
-  if (hostConfig && isPlainObject(hostConfig.provider) && Object.keys(hostConfig.provider).length > 0) {
-    return { ready: true, source: "host_config", detail: hostConfigPath };
+  // Host filesystem auth/config only authenticates a LOCAL OpenCode process.
+  // For a remote target the remote host holds its own `opencode auth login`
+  // state, invisible from here, so these probes are meaningless there.
+  if (!executionIsRemote) {
+    const hostConfigPath = resolveOpenCodeHostConfigPath(env);
+    const hostConfig = await readJsonObject(hostConfigPath);
+    if (hostConfig && isPlainObject(hostConfig.provider) && Object.keys(hostConfig.provider).length > 0) {
+      return { ready: true, source: "host_config", detail: hostConfigPath };
+    }
+
+    const hostAuthPath = resolveOpenCodeHostAuthPath(env);
+    const hostAuth = await readJsonObject(hostAuthPath);
+    if (hostAuth && Object.keys(hostAuth).length > 0) {
+      return { ready: true, source: "host_auth", detail: hostAuthPath };
+    }
   }
 
-  const hostAuthPath = resolveOpenCodeHostAuthPath(env);
-  const hostAuth = await readJsonObject(hostAuthPath);
-  if (hostAuth && Object.keys(hostAuth).length > 0) {
-    return { ready: true, source: "host_auth", detail: hostAuthPath };
+  // Remote target with no env-forwardable credential: the remote may still be
+  // authenticated via `opencode auth login` with no env keys. We cannot verify
+  // that from here, so fail OPEN (do not block) to preserve pre-preflight
+  // behaviour for remote-execution setups. Blocking is reserved for local runs.
+  if (executionIsRemote) {
+    return { ready: true, source: "remote_unverified", detail: null };
   }
 
   return { ready: false, source: null, detail: null };

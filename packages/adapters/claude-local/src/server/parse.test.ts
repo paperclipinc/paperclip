@@ -102,6 +102,34 @@ describe("isClaudeInvalidCredentialError", () => {
       errorMessage: "You've hit your session limit - resets at 4pm",
     })).toBe(false);
   });
+
+  it("does not classify a generic non-credential 'authentication error' phrase", () => {
+    // Regression (PR #9854 review): the whitespace prose form "authentication
+    // error" must not classify a downstream service's unrelated failure as an
+    // invalid provider credential. Only the snake_case API error TYPE token, or
+    // the phrase alongside a 401 / auth-domain keyword, is a real signal.
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "authentication error while contacting billing service",
+    })).toBe(false);
+    expect(isClaudeInvalidCredentialError({
+      stderr: "An authentication error occurred in the webhook dispatcher",
+    })).toBe(false);
+  });
+
+  it("still classifies the API error-type token and 401-anchored authentication errors", () => {
+    // The snake_case type token is a genuine signal on its own.
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "Claude exited with code 1: authentication_error",
+    })).toBe(true);
+    // The whitespace phrase counts when a 401 co-occurs.
+    expect(isClaudeInvalidCredentialError({
+      stderr: "API Error: 401 authentication error: check your key",
+    })).toBe(true);
+    // ...or when an auth-domain keyword co-occurs.
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "authentication error: api key is invalid",
+    })).toBe(true);
+  });
 });
 
 describe("isClaudeTransientUpstreamError", () => {

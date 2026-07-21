@@ -19,8 +19,16 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
 // Distinct from CLAUDE_AUTH_REQUIRED_RE, which detects the CLI's interactive
 // "run /login" prompt; both resolve to errorCode "claude_auth_required" so the
 // heartbeat's permanent-auth pause covers them.
+// The trailing `authentication_error` token is Anthropic's snake_case API error
+// TYPE (as in `{"type":"authentication_error"}`) and is a genuine credential
+// signal on its own. The whitespace prose form "authentication error", by
+// contrast, appears in unrelated downstream failures (e.g. a billing service's
+// "authentication error while contacting ..."), so it only counts when it
+// co-occurs with a 401 status or an auth-domain keyword. Without that anchor it
+// used to false-positive any error string containing the words "authentication
+// error".
 const CLAUDE_INVALID_CREDENTIAL_RE =
-  /(?:failed\s+to\s+authenticate[\s\S]{0,200}?\b401\b|\b401\b[\s\S]{0,200}?failed\s+to\s+authenticate|invalid\s+bearer\s+token|oauth\s+(?:access\s+)?token\s+is\s+(?:invalid|expired|revoked)|invalid\s+x-api-key|authentication[\s_]error)/i;
+  /(?:failed\s+to\s+authenticate[\s\S]{0,200}?\b401\b|\b401\b[\s\S]{0,200}?failed\s+to\s+authenticate|invalid\s+bearer\s+token|oauth\s+(?:access\s+)?token\s+is\s+(?:invalid|expired|revoked)|invalid\s+x-api-key|authentication_error|authentication\s+error[\s\S]{0,160}?(?:\b401\b|invalid|expired|revoked|credential|token|bearer|api[\s_-]?key)|(?:\b401\b|invalid|expired|revoked|credential|bearer|api[\s_-]?key)[\s\S]{0,160}?authentication\s+error)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 

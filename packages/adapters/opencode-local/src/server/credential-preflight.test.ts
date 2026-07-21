@@ -32,11 +32,50 @@ describe("evaluateOpenCodeCredentialPreflight", () => {
     };
   }
 
-  it("is not ready when no provider credential exists anywhere", async () => {
+  it("is not ready when no provider credential exists anywhere (local execution blocks)", async () => {
     const env = await emptyIsolatedEnv();
     const result = await evaluateOpenCodeCredentialPreflight({ env });
     expect(result.ready).toBe(false);
     expect(result.source).toBeNull();
+  });
+
+  it("still blocks a local execution target with no detectable credential", async () => {
+    const env = await emptyIsolatedEnv();
+    const result = await evaluateOpenCodeCredentialPreflight({ env, executionIsRemote: false });
+    expect(result.ready).toBe(false);
+    expect(result.source).toBeNull();
+  });
+
+  it("fails OPEN for a remote execution target with no host-local credential", async () => {
+    // Regression (PR #9854 review): the host `auth.json` / `opencode.json`
+    // checks only describe a LOCAL OpenCode process. A remote (SSH) target may
+    // authenticate via `opencode auth login` on the server with no env keys, so
+    // the preflight must NOT block it merely because the host filesystem is
+    // empty. It fails open, preserving pre-preflight behaviour.
+    const env = await emptyIsolatedEnv();
+    const result = await evaluateOpenCodeCredentialPreflight({ env, executionIsRemote: true });
+    expect(result.ready).toBe(true);
+    expect(result.source).toBe("remote_unverified");
+  });
+
+  it("still recognises an env key on a remote target (env is forwarded to the remote)", async () => {
+    const env = await emptyIsolatedEnv();
+    env.ANTHROPIC_API_KEY = "test-key";
+    const result = await evaluateOpenCodeCredentialPreflight({ env, executionIsRemote: true });
+    expect(result.ready).toBe(true);
+    expect(result.source).toBe("env");
+  });
+
+  it("does not consult host auth files for a remote target even when present", async () => {
+    // A stale host auth.json on the orchestrator must not be mistaken for the
+    // remote's credential state: remote resolution is via env/gateway or fail-open.
+    const env = await emptyIsolatedEnv();
+    const authPath = resolveOpenCodeHostAuthPath(env);
+    await mkdir(path.dirname(authPath), { recursive: true });
+    await writeFile(authPath, JSON.stringify({ anthropic: { type: "oauth", access: "a" } }), "utf8");
+    const result = await evaluateOpenCodeCredentialPreflight({ env, executionIsRemote: true });
+    expect(result.ready).toBe(true);
+    expect(result.source).toBe("remote_unverified");
   });
 
   it("is ready for each documented provider env key", async () => {
