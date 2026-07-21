@@ -141,13 +141,15 @@ export interface ResolveRunAdapterTypeOptions {
   requireRunAdapter?: boolean;
   /**
    * The set of adapter types the environment is configured to serve (the
-   * enabled entries of the plugin's `adapters` registry). When this declares
-   * MORE THAN ONE distinct adapter the environment is a mixed-harness pool, and
-   * a lease with no per-run adapter is rejected automatically — falling back to
-   * the single env-default image would route e.g. a gemini run onto the
-   * opencode image. Absent, empty, or a single distinct entry means an
-   * effectively single-adapter environment, where the env-default fallback is
-   * safe (and connectivity probes that carry no per-run adapter keep working).
+   * enabled entries of the plugin's `adapters` registry). It is the ONLY
+   * positive proof of a single-adapter environment: the env-default fallback for
+   * an adapter-less lease is permitted ONLY when this declares EXACTLY ONE
+   * distinct enabled adapter. Absent or empty proves nothing (the built-in
+   * registry still exposes every harness, so an adapter-less run could land on a
+   * different harness's image) and more than one entry is an outright
+   * mixed-harness pool — both reject the adapter-less lease automatically.
+   * Adapter-less callers that must keep working (e.g. connectivity probes) pass
+   * an explicit adapter instead of relying on the fallback.
    */
   configuredAdapterTypes?: readonly string[];
 }
@@ -158,14 +160,16 @@ export interface ResolveRunAdapterTypeOptions {
  * the environment's configured default adapter when the run does not specify one.
  *
  * The image the plugin picks MUST match the harness the server exec's. Never
- * substitute a different harness for an absent per-run adapter:
- *   - A MIXED-harness pool (`configuredAdapterTypes` declares more than one
- *     distinct adapter) rejects the lease automatically — no operator flag
- *     needed — because the single env-default image could belong to a different
- *     harness than the agent will run.
+ * substitute a different harness for an absent per-run adapter. The env-default
+ * fallback for an adapter-less lease is permitted ONLY when the config positively
+ * proves a single-adapter environment (`configuredAdapterTypes` declares exactly
+ * one distinct enabled adapter). Otherwise the lease is rejected:
+ *   - An ABSENT or EMPTY `configuredAdapterTypes` proves nothing (the built-in
+ *     registry still exposes every harness), so it is treated as UNSAFE.
+ *   - A MIXED-harness pool (more than one distinct adapter) is unsafe outright.
  *   - `options.requireRunAdapter` forces the same rejection for any pool.
- * A single-adapter environment (or one with no declared registry) still falls
- * back to the env default, preserving single-adapter setups and probes.
+ * Adapter-less callers that must keep working (connectivity probes) pass an
+ * explicit adapter instead of relying on the fallback.
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
@@ -176,16 +180,19 @@ export function resolveRunAdapterType(
   if (trimmed.length > 0) {
     return normalizeAdapterType(trimmed);
   }
-  // Per-run adapter absent. Determine whether the environment is a mixed-harness
-  // pool from its configured adapter set: more than one distinct enabled adapter
-  // means the single env-default fallback could pick a DIFFERENT harness's image.
+  // Per-run adapter absent. Falling back to the env default is safe ONLY when the
+  // config can POSITIVELY prove a single-adapter environment. Prove it from the
+  // authoritative adapter set: exactly one distinct enabled adapter. An absent or
+  // empty set proves nothing (the built-in registry still exposes every harness,
+  // so an adapter-less run could land on a different harness's image), and more
+  // than one entry is an outright mixed-harness pool — both are unsafe.
   const distinctConfiguredAdapters = new Set(
     (options.configuredAdapterTypes ?? [])
       .map((type) => (typeof type === "string" ? type.trim() : ""))
       .filter((type) => type.length > 0),
   );
-  const isMixedHarnessPool = distinctConfiguredAdapters.size > 1;
-  if (options.requireRunAdapter || isMixedHarnessPool) {
+  const provesSingleAdapterEnv = distinctConfiguredAdapters.size === 1;
+  if (options.requireRunAdapter || !provesSingleAdapterEnv) {
     throw new RunAdapterRequiredError(configAdapterType);
   }
   return configAdapterType;

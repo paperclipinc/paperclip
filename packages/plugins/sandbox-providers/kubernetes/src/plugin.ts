@@ -246,12 +246,15 @@ const plugin = definePlugin({
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
     //
-    // Drive the mixed-pool safety off the configured adapter set: when the
-    // declarative `adapters` registry enables more than one adapter this is a
-    // mixed-harness pool, so an absent per-run adapter is rejected automatically
-    // (a gemini run must never fall back to the opencode image) — no operator
-    // flag required. `requireRunAdapterType` remains an explicit override that
-    // also requires the per-run adapter in a single-adapter environment.
+    // Drive the fallback safety off the configured adapter set: the env-default
+    // fallback for an absent per-run adapter is permitted ONLY when the `adapters`
+    // registry positively proves a single-adapter environment (exactly one enabled
+    // adapter). An absent/empty registry proves nothing (the built-in registry
+    // still exposes every harness) and a registry with more than one enabled
+    // adapter is a mixed-harness pool — both reject an adapter-less lease
+    // automatically (a gemini run must never fall back to the opencode image), no
+    // operator flag required. `requireRunAdapterType` remains an explicit override
+    // that also requires the per-run adapter in a single-adapter environment.
     const configuredAdapterTypes = config.adapters
       ?.filter((entry) => entry.enabled !== false)
       .map((entry) => entry.adapterType);
