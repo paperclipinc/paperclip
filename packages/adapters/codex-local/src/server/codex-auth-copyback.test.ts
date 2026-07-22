@@ -253,6 +253,42 @@ describe("copyBackCodexAuth", () => {
     expect(result.logs.join("\n")).toContain("no sandbox credential to copy back");
   });
 
+  it("treats a missing host credential directory (ENOENT on staging) as a keep-host no-op and never creates it", async () => {
+    // The prod shape: on a multi-tenant cloud server the shared host codex home
+    // (`~/.codex`) never existed, so staging the copy-back temp file fails with
+    // ENOENT on the missing parent directory. That must be a benign "nothing to
+    // merge into" outcome, not a teardown failure that marks a completed run
+    // failed. Crucially the directory must NOT be created either: on a
+    // multi-tenant server that would leak this run's credential into the store
+    // every other tenant's managed home is seeded from.
+    const parentDir = await makeHostDir();
+    const hostDir = path.join(parentDir, "missing-codex-home");
+    const hostAuthPath = path.join(hostDir, "auth.json");
+    const sandboxAuth = subscriptionAuth({
+      accountId: "acct-same",
+      lastRefresh: NEWER,
+      marker: "sandbox-SENTINEL",
+    });
+
+    const logs: string[] = [];
+    const outcome = await copyBackCodexAuth({
+      readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
+      hostAuthPath,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    expect(outcome).toBe("kept-host");
+    // The shared host directory must stay absent.
+    await expect(stat(hostDir)).rejects.toMatchObject({ code: "ENOENT" });
+    // No leftover artifacts (the merge-lock sibling dir must be cleaned up too).
+    expect(await readdir(parentDir)).toEqual([]);
+    const combined = logs.join("\n");
+    expect(combined).toContain("no shared host credential store");
+    expect(combined).not.toContain("SENTINEL");
+  });
+
   it("fails loud when the sandbox read errors and leaves the host untouched", async () => {
     const hostDir = await makeHostDir();
     const hostAuth = subscriptionAuth({ accountId: "acct-same", lastRefresh: OLDER, marker: "host-intact" });
