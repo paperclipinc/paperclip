@@ -1235,7 +1235,7 @@
       "breakpoints": true
     },
     {
-      "idx": 177,
+      "idx": 178,
       "version": "7",
       "when": 1784211956161,
       "tag": "0177_issue_create_idempotency_key_expiry",
@@ -1288,6 +1288,20 @@
       "version": "7",
       "when": 1784419200000,
       "tag": "0184_heartbeat_run_events_run_cascade",
+      "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1784592000000,
+      "tag": "0185_connections_v3_schema_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1784653200000,
+      "tag": "0186_connection_user_authorization_state",
       "breakpoints": true
     }
   ]

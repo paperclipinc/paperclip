@@ -143,15 +143,16 @@ export {
   type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
-  TOOL_APP_GALLERY,
-  getToolAppGalleryEntry,
-  getToolAppGalleryEntryForUrl,
-  type AppGalleryAuthKind,
-  type AppGalleryCredentialField,
-  type AppGalleryEntry,
-  type AppGalleryKey,
-  type AppGalleryTransportTemplate,
-} from "./tool-app-gallery.js";
+  CONNECTABLE_APP_DEFINITIONS,
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  credentialConfigPath,
+  getAppDefinitionForUrl,
+  getAvailableConnectionMethod,
+  getConnectableAppDefinition,
+  recommendedDefaultsForApp,
+} from "./app-definitions.js";
+export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,
@@ -1113,6 +1114,8 @@ export type {
   ToolCallEvent,
   ToolCatalogEntryKind,
   ToolConnectionHealthStatus,
+  ToolConnectionAuthKind,
+  ToolConnectionOwnership,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -1136,6 +1139,9 @@ export type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
+  ConnectionGrant,
+  ConnectionGrantKind,
+  ConnectionGrantStatus,
   ConnectionTokenScope,
   ConnectionTokenRequest,
   ConnectionTokenAttribution,
@@ -1257,6 +1263,9 @@ export type {
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
+  AppDefinition,
+  ConnectionMethodDef,
+  FieldDef,
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
@@ -1784,6 +1793,8 @@ export {
   toolTrustRuleBatchApprovalSchema,
   toolTrustRuleScopeSchema,
   connectionTokenRequestSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   toolConnectionTestCallSchema,
   toolPolicyTestRequestSchema,
   importMcpJsonSchema,

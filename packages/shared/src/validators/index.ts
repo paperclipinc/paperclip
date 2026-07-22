@@ -796,6 +796,8 @@ export {
   connectionTokenIssuancePathSchema,
   connectionTokenRequestSchema,
   connectionTokenScopeSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,
@@ -873,3 +875,4 @@ export {
   type RevokeToolTrustRule,
 } from "./tool-access.js";
 export * from "./skill-policy.js";
+export * from "./app-definition.js";
