@@ -1764,7 +1764,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
 
   await onLog(
     "stdout",
-    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir}.\n`,
+    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir} (forward target: ${hostApiUrl}).\n`,
   );
 
   const bridgeAsset = await createSandboxCallbackBridgeAsset();
@@ -1840,7 +1840,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
-            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""} (url=${response.url || "-"} ct=${response.headers.get("content-type") ?? "-"} server=${response.headers.get("server") ?? "-"} xpb=${response.headers.get("x-powered-by") ?? "-"} redirected=${response.redirected})\n`,
           );
         }
         let body: string;
