@@ -1673,18 +1673,40 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
+        if (options?.actorUserId) {
+          requireCapability(manifest, capabilitySet, "issue.comments.create_human_attributed");
+        }
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
+        }
+        if (options?.actorUserId) {
+          // Mirror the host's `requireActiveHumanMember` check so the harness
+          // rejects the same forged attributions production does: the actor
+          // must be an active `user` member of the issue's company. Seed
+          // members via `createTestPluginHost({ accessMembers: [...] })`.
+          const actorUserId = options.actorUserId;
+          const isActiveHumanMember = [...accessMembers.values()].some(
+            (member) =>
+              member.companyId === companyId
+              && member.principalType === "user"
+              && member.principalId === actorUserId
+              && member.status === "active",
+          );
+          if (!isActiveHumanMember) {
+            throw new Error(
+              `actorUserId "${actorUserId}" is not an active human member of this company`,
+            );
+          }
         }
         const now = new Date();
         const comment: IssueComment = {
           id: randomUUID(),
           companyId: parentIssue.companyId,
           issueId,
-          authorType: options?.authorAgentId ? "agent" : "system",
-          authorAgentId: options?.authorAgentId ?? null,
-          authorUserId: null,
+          authorType: options?.actorUserId ? "user" : options?.authorAgentId ? "agent" : "system",
+          authorAgentId: options?.actorUserId ? null : options?.authorAgentId ?? null,
+          authorUserId: options?.actorUserId ?? null,
           body,
           presentation: null,
           metadata: null,
