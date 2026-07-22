@@ -289,6 +289,42 @@ describe("copyBackCodexAuth", () => {
     expect(combined).not.toContain("SENTINEL");
   });
 
+  it("treats a missing ANCESTOR of the host directory (ENOENT on lock acquisition) as a keep-host no-op and never creates it", async () => {
+    // Variant of the missing-host-dir case: the merge lock lives in a SIBLING
+    // of the host directory (`${hostDir}.paperclip-restore.lock`), so when the
+    // host dir itself is the missing leaf the lock still acquires and the
+    // staging `open` is the first ENOENT. But when an ANCESTOR of the host dir
+    // is missing too, the lock `mkdir` itself throws ENOENT before staging ever
+    // runs. Both shapes mean the same thing (no shared store to merge into) and
+    // must resolve to the same benign kept-host outcome without creating any
+    // part of the missing tree.
+    const parentDir = await makeHostDir();
+    const hostDir = path.join(parentDir, "missing-ancestor", "missing-codex-home");
+    const hostAuthPath = path.join(hostDir, "auth.json");
+    const sandboxAuth = subscriptionAuth({
+      accountId: "acct-same",
+      lastRefresh: NEWER,
+      marker: "sandbox-SENTINEL",
+    });
+
+    const logs: string[] = [];
+    const outcome = await copyBackCodexAuth({
+      readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
+      hostAuthPath,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    expect(outcome).toBe("kept-host");
+    // Neither the missing ancestor nor anything below it may be created.
+    await expect(stat(path.join(parentDir, "missing-ancestor"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(parentDir)).toEqual([]);
+    const combined = logs.join("\n");
+    expect(combined).toContain("no shared host credential store");
+    expect(combined).not.toContain("SENTINEL");
+  });
+
   it("fails loud when the sandbox read errors and leaves the host untouched", async () => {
     const hostDir = await makeHostDir();
     const hostAuth = subscriptionAuth({ accountId: "acct-same", lastRefresh: OLDER, marker: "host-intact" });
