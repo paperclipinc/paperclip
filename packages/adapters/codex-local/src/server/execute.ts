@@ -732,8 +732,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
       onEvent,
     });
-    const hasExplicitApiKey =
-      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...paperclipBaseEnv };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
@@ -811,7 +809,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (!hasExplicitApiKey && authToken) {
+    if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
