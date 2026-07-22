@@ -83,7 +83,11 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
  *      resolves to `kept-host` (benign no-op, host untouched); every other read
  *      error stays fail-loud.
  *   2. Stage them to a `0600` temp file on the **same filesystem** as the host
- *      target (its directory), which doubles as the predicate `source`.
+ *      target (its directory), which doubles as the predicate `source`. A host
+ *      directory that is missing outright (ENOENT) resolves to `kept-host`:
+ *      there is no shared store to merge into, and the directory is never
+ *      created here (on a multi-tenant server that would leak one tenant's
+ *      credential into the store every other managed home is seeded from).
  *   3. Run the Phase-3 decision predicate (`source` = sandbox temp, `destination`
  *      = host). Exit 10 → adopt the sandbox copy; exit 20 → keep the host copy.
  *   4. On exit 10, `rename` the staged temp over the host target — an atomic
@@ -121,8 +125,27 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
     // atomic and would fail with EXDEV).
     const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
     // `wx` + explicit mode create the temp private (0600) and fail if it somehow
-    // already exists, so we never write through a pre-existing symlink.
-    const handle = await open(stagedTempPath, "wx", 0o600);
+    // already exists, so we never write through a pre-existing symlink. ENOENT
+    // here means the host directory itself is missing (a shared codex home that
+    // never existed, e.g. a multi-tenant cloud server whose credentials live
+    // only in managed per-company homes, or one deleted between the caller's
+    // launch-time check and teardown): there is nothing to merge into, so treat
+    // it exactly like the absent-sandbox-auth branch above and keep the host.
+    // Deliberately NOT `mkdir`: creating the shared directory here would leak
+    // this run's credential into the store every other tenant's managed home is
+    // seeded from. Every other staging error stays fail-loud.
+    let handle;
+    try {
+      handle = await open(stagedTempPath, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+        await log(
+          "[paperclip] Codex auth copy-back: no shared host credential store (host codex home directory is absent); nothing to merge into, host left untouched.",
+        );
+        return "kept-host";
+      }
+      throw error;
+    }
     try {
       await handle.writeFile(sandboxAuthBytes);
       await handle.close();
