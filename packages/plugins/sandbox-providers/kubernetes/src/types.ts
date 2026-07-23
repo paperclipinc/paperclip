@@ -149,21 +149,15 @@ export interface KubernetesLeaseMetadata {
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
   /**
-   * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
-   * acquisition. Lets the execution target resolve the correct cwd from the
-   * lease itself, matching the SSH/Daytona providers. Optional for backward
-   * compatibility with leases acquired before this field existed.
+   * Realized workspace cwd for this lease.
    */
   remoteCwd?: string;
   /**
-   * Capability signal surfaced to the server: this plugin's runtime images are
-   * pre-baked / contractually complete — the adapter CLI is already on PATH in
-   * the image, which runs behind a locked (sovereign) egress. The server reads
-   * this specific flag (NOT the generic "plugin-backed" marker) to disable the
-   * in-sandbox network-install shim and instead fail fast with a typed
-   * `adapter_runtime_image_mismatch` when the CLI is missing (the run landed on
-   * the wrong image). A provider plugin that ships a GENERIC sandbox and relies
-   * on runtime installation must NOT set this, so its install path is preserved.
+   * Capability signal: runtime images are pre-baked.
    */
   runtimeImagePrebaked: true;
+  /**
+   * True when this lease's backend has no data channel for native file-sync.
+   */
+  nativeFileSyncUnsupported?: boolean;
 }
