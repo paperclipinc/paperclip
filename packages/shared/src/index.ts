@@ -673,9 +673,12 @@ export type {
   AgentSkillSyncRequest,
   InstanceExecutionMode,
   InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
   InstanceVisibilitySettings,
+  ManagedExperimentalFeatureKey,
+  ManagedSettingMetadata,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
@@ -1367,6 +1370,7 @@ export {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
 export type {
@@ -1422,6 +1426,8 @@ export {
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  instanceExperimentalSettingsWithManagedSchema,
+  managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   instanceVisibilitySettingsSchema,
   patchInstanceVisibilitySettingsSchema,
