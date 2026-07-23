@@ -14,10 +14,21 @@ import { api } from "./client";
 // subscribes.
 //   200 -> { productSlug, url, name }      (subscribed, or first company on trial)
 //   402 -> { error:"upgrade_required", capability:"create_company" }   (2nd+ company during trial)
+//   402 -> { error:"slot_required", limit }    (active subscriber past their paid company slots; confirm-first billing, so they must buy another slot before the company is created — nothing created or charged yet)
 //   402 -> { error:"billing_update_failed" }  (paying user; the per-company billing bump failed, nothing created or charged)
 //   409 -> { error:"company_limit_reached", limit }                    (fair-use cap)
 // Callers read those via the thrown ApiError (status + body) from ./client;
-// branch on body.error, not just the status (both 402s share it).
+// branch on body.error, not just the status (all three 402s share it).
+
+/**
+ * Shape of the 402 body when an active subscriber must buy another company
+ * slot before this company can be created (confirm-first billing). `limit` is
+ * how many companies the current subscription already covers.
+ */
+export type CloudCompanySlotRequired = {
+  error: "slot_required";
+  limit?: number;
+};
 
 export type CloudCompanyCreateResult = {
   /** The product slug of the newly provisioned company. */
