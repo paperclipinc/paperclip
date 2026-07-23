@@ -13,6 +13,9 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -39,7 +42,8 @@ import {
   SandboxCrTimeoutError,
   SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
-import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
+import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
+import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
@@ -140,6 +144,75 @@ const REALIZED_WORKSPACE_CWD = "/workspace";
 // the host over the plugin worker RPC boundary. One worker process runs a
 // single plugin instance, so a module-level singleton is correct here.
 let pluginContext: PluginContext | null = null;
+
+// The workspace remote dir is the confinement root for native file sync. It is
+// recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
+// it so a sync can never run without a concrete root to confine every sandbox
+// path against.
+function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
+  const remoteCwd = lease.metadata?.remoteCwd;
+  if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
+    return remoteCwd.trim();
+  }
+  throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
+}
+
+async function resolveSyncPodExec(
+  params:
+    | PluginEnvironmentSyncInParams
+    | PluginEnvironmentSyncOutParams,
+): Promise<{ exec: PodStreamExec; timeoutMs: number }> {
+  const { lease } = params;
+  if (!lease.providerLeaseId) {
+    throw new Error("Kubernetes file sync requires a provider lease ID.");
+  }
+
+  const config = kubernetesProviderConfigSchema.parse(params.config);
+  const namespace =
+    typeof lease.metadata?.namespace === "string"
+      ? lease.metadata.namespace
+      : deriveTenantNamespace(config, params.companyId);
+
+  const leaseBackend =
+    typeof lease.metadata?.backend === "string"
+      ? (lease.metadata.backend as "sandbox-cr" | "job")
+      : config.backend;
+  if (leaseBackend !== "sandbox-cr") {
+    throw new Error(
+      `Kubernetes file sync is only supported on the sandbox-cr backend (lease backend: ${leaseBackend}).`,
+    );
+  }
+
+  const kc = createKubeConfig({
+    inCluster: config.inCluster,
+    kubeconfig: config.kubeconfig,
+  });
+  const clients = makeKubeClients(kc);
+  const timeoutMs = config.podActivityDeadlineSec * 1000;
+
+  if (!readySandboxesByLease.has(lease.providerLeaseId)) {
+    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
+      timeoutMs,
+      pollMs: 2000,
+    });
+    readySandboxesByLease.add(lease.providerLeaseId);
+  }
+
+  const podName =
+    typeof lease.metadata?.podName === "string" && lease.metadata.podName
+      ? lease.metadata.podName
+      : await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+  if (!podName) {
+    throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
+  }
+
+  const exec: PodStreamExec = (command, io) =>
+    execInPodStreaming(kc, namespace, podName, "agent", command, {
+      ...io,
+      timeoutMs: io.timeoutMs ?? timeoutMs,
+    });
+  return { exec, timeoutMs };
+}
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -404,16 +477,9 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
-      // Carry the realized workspace cwd on the lease from acquisition, matching
-      // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
-      // Daytona providers do the same: a lease that knows its own cwd makes the
-      // execution target correct even if the orchestrator's separate cwd
-      // threading regresses. Defense-in-depth for the C1 remoteCwd fix.
       remoteCwd: REALIZED_WORKSPACE_CWD,
-      // This plugin's per-adapter runtime images ship the adapter CLI and run
-      // behind a locked egress: declare them pre-baked so the server disables
-      // the network-install shim and fails fast on a wrong-image mismatch.
       runtimeImagePrebaked: true,
+      nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
     };
 
     return {
@@ -483,9 +549,8 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
-      // Pre-baked runtime images (see acquire path); the resumed lease carries
-      // the same capability so the server keeps the network-install shim off.
       runtimeImagePrebaked: true,
+      nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
     };
 
     return {
@@ -1110,6 +1175,40 @@ const plugin = definePlugin({
         closeOutputChannel();
       }
     }
+  },
+
+  // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
+  // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
+  // host runner routes workspace/asset transfers through a single pod exec per
+  // operation (host tar streamed over the exec stdin → in-pod `head -c <N> | tar
+  // -x` → stage-then-atomic-`mv -f`) instead of the base64-over-exec chunk loop.
+  // Only the sandbox-cr backend is supported; the job backend carries no file
+  // path. Providers that do not define these keep the byte-identical fallback.
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncIn({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
+  },
+
+  // Opt-in native outbound transfer. See onEnvironmentSyncIn.
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncOut({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
   },
 });
 

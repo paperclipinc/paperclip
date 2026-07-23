@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -13,15 +14,19 @@ import type {
 } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
+  describeAdapterExecutionTarget,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterExecutionTarget,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
+  type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -33,6 +38,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
@@ -77,14 +83,47 @@ import {
 } from "./constants.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
-const WRAPPER_CLEANUP_RETENTION_MS = 15 * 60 * 1000;
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
+
+interface ChildStderrState {
+  logPath: string | null;
+  pendingLiveLine: string;
+}
+
+function routeChildStderr(state: ChildStderrState, chunk: string) {
+  if (state.logPath) {
+    fsSync.mkdirSync(path.dirname(state.logPath), { recursive: true });
+    fsSync.appendFileSync(state.logPath, chunk);
+  }
+  const combined = state.pendingLiveLine + chunk;
+  const lastNewline = combined.lastIndexOf("\n");
+  if (lastNewline < 0) {
+    state.pendingLiveLine = combined;
+    return;
+  }
+  const complete = combined.slice(0, lastNewline + 1);
+  state.pendingLiveLine = combined.slice(lastNewline + 1);
+  const filtered = complete
+    .split(/(?<=\n)/)
+    .filter((line) => !BENIGN_NES_CLOSE_STDERR.test(line))
+    .join("");
+  if (filtered) process.stderr.write(filtered);
+}
+
+function flushChildStderr(state: ChildStderrState) {
+  if (state.pendingLiveLine && !BENIGN_NES_CLOSE_STDERR.test(state.pendingLiveLine)) {
+    process.stderr.write(state.pendingLiveLine);
+  }
+  state.pendingLiveLine = "";
+}
 
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
 
 export interface RuntimeCacheEntry {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
+  childStderrState: ChildStderrState;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
@@ -151,6 +190,12 @@ interface AcpxPreparedRuntime {
   agentRegistry: AcpAgentRegistry;
   processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
   paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
+  // The workspace/runtime staged into a runner-backed remote sandbox (null for
+  // local runs and the runner-less ACP→CLI fallback). PR 1 stages the workspace
+  // + cwd only; the `assetDirs`/`runtimeRootDir`/`restoreWorkspace` it carries
+  // are what PR 2 (managed-home seeding + codex copy-back) and PR 3 (session
+  // lifecycle re-staging) build on.
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
@@ -208,8 +253,13 @@ function resolveManagedCodexHomeDir(companyId: string): string {
 export async function findAncestorBin(startDir: string, binName: string): Promise<string | null> {
   let current = path.resolve(startDir);
   while (true) {
-    const candidate = path.join(current, "node_modules", ".bin", binName);
-    if (await pathExists(candidate)) return candidate;
+    const binDir = path.join(current, "node_modules", ".bin");
+    const candidates = process.platform === "win32"
+      ? [path.join(binDir, `${binName}.cmd`), path.join(binDir, binName)]
+      : [path.join(binDir, binName)];
+    for (const candidate of candidates) {
+      if (await pathExists(candidate)) return candidate;
+    }
     const parent = path.dirname(current);
     if (parent === current) return null;
     current = parent;
@@ -334,13 +384,13 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    await symlinkOrCopyFile(resolvedSource, target);
     return;
   }
 
   if (!existing.isSymbolicLink()) {
     await fs.rm(target, { recursive: true, force: true });
-    await fs.symlink(resolvedSource, target);
+    await symlinkOrCopyFile(resolvedSource, target);
     return;
   }
 
@@ -351,7 +401,20 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   if (resolvedLinkedPath === resolvedSource) return;
 
   await fs.unlink(target);
-  await fs.symlink(resolvedSource, target);
+  await symlinkOrCopyFile(resolvedSource, target);
+}
+
+async function symlinkOrCopyFile(source: string, target: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (err) {
+    if (!isErrnoException(err, "EPERM")) throw err;
+    await fs.copyFile(source, target);
+  }
+}
+
+function isErrnoException(err: unknown, code: string): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err && err.code === code;
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -687,6 +750,14 @@ async function prepareGeminiSkillRuntime(input: {
         );
       }
     } catch (err) {
+      if (isErrnoException(err, "EPERM")) {
+        const result = await materializePaperclipSkillCopy(entry.source, target);
+        await input.onLog(
+          "stdout",
+          `[paperclip] Copied ACPX Gemini skill "${entry.runtimeName}" into ${skillsHome} because symlinks are unavailable.${result.skippedSymlinks.length > 0 ? ` Skipped ${result.skippedSymlinks.length} nested symlink(s).` : ""}\n`,
+        );
+        continue;
+      }
       await input.onLog(
         "stderr",
         `[paperclip] Failed to link ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -912,76 +983,36 @@ async function writePaperclipClaudeSettings(input: {
   };
 }
 
-async function writeAgentWrapper(input: {
-  stateDir: string;
-  acpxAgent: string;
-  agentCommandShell: string;
-  env: Record<string, string>;
-  childStderrDir: string;
-}): Promise<{ wrapperPath: string; envFilePath: string }> {
-  const wrappersDir = path.join(input.stateDir, "wrappers");
-  await fs.mkdir(wrappersDir, { recursive: true });
-  const envLines = Object.entries(input.env)
-    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const wrapperHash = shortHash({
-    agent: input.acpxAgent,
-    command: input.agentCommandShell,
-    env: envLines,
-    childStderrDir: input.childStderrDir,
-  });
-  const wrapperPath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.sh`);
-  const envFilePath = path.join(wrappersDir, `${input.acpxAgent}-${wrapperHash}.env`);
-  const script = [
-    "#!/usr/bin/env bash",
-    "set -euo pipefail",
-    `env_file=${shellQuote(envFilePath)}`,
-    "if [[ -f \"$env_file\" ]]; then",
-    "  set -a",
-    "  source \"$env_file\"",
-    "  set +a",
-    "fi",
-    `stderr_dir=${shellQuote(input.childStderrDir)}`,
-    "if [[ -n \"${PAPERCLIP_RUN_ID:-}\" ]]; then",
-    "  mkdir -p \"$stderr_dir\"",
-    // Keep the run-stderr file unfiltered, but do not forward the known-benign
-    // ACP nes/close cleanup RPC error to Paperclip's live stderr stream.
-    "  exec 2> >(tee -a \"$stderr_dir/$PAPERCLIP_RUN_ID.log\" | grep -Ev \"method: ['\\\"]nes/close['\\\"].*-32601\" >&2 || true)",
-    "fi",
-    `exec ${input.agentCommandShell} "$@"`,
-    "",
-  ].join("\n");
-  await writeFileAtomically({
-    target: envFilePath,
-    contents: `${envLines.join("\n")}\n`,
-    mode: 0o600,
-  });
-  await writeFileAtomically({
-    target: wrapperPath,
-    contents: script,
-    mode: 0o700,
-  });
-  await cleanupStaleAgentWrappers({
-    wrappersDir,
-    currentFileNames: new Set([path.basename(wrapperPath), path.basename(envFilePath)]),
-  });
-  return { wrapperPath, envFilePath };
-}
-
-async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFileNames: Set<string> }) {
-  const wrappers = await fs.readdir(input.wrappersDir).catch(() => []);
-  const now = Date.now();
-  await Promise.all(
-    wrappers.map(async (name) => {
-      const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
-      if (!isManagedWrapperFile || input.currentFileNames.has(name)) return;
-      const wrapperPath = path.join(input.wrappersDir, name);
-      const stats = await fs.stat(wrapperPath).catch(() => null);
-      if (!stats || now - stats.mtimeMs < WRAPPER_CLEANUP_RETENTION_MS) return;
-      await fs.rm(wrapperPath, { force: true });
-    }),
+// Cross the CLI's staging seam for a runner-backed remote sandbox: ship the
+// workspace into the sandbox and obtain the in-sandbox `workspaceRemoteDir`
+// plus the non-null `runtimeRootDir`/`assetDirs` the bridges and later PRs
+// consume. This is the shared-engine mirror of the CLI lanes (codex/claude/
+// gemini `*-local/execute.ts`). PR 1 stages the workspace + cwd ONLY: it ships
+// no managed-home credential/home asset (no `assets`, no per-adapter home
+// seed) — that is PR 2. The returned `restoreWorkspace` is carried on the
+// prepared runtime for PR 3's session-lifecycle wiring.
+async function stageAcpRemoteRuntime(input: {
+  runId: string;
+  target: AdapterExecutionTarget;
+  adapterKey: string;
+  workspaceLocalDir: string;
+  timeoutSec: number;
+  onLog: AdapterExecutionContext["onLog"];
+  onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
+}): Promise<PreparedAdapterExecutionTargetRuntime> {
+  await input.onLog(
+    "stdout",
+    `[paperclip] Syncing workspace to ${describeAdapterExecutionTarget(input.target)}.\n`,
   );
+  return await prepareAdapterExecutionTargetRuntime({
+    runId: input.runId,
+    target: input.target,
+    adapterKey: input.adapterKey,
+    timeoutSec: input.timeoutSec,
+    workspaceLocalDir: input.workspaceLocalDir,
+    onProgress: (line) => input.onLog("stdout", line),
+    onRuntimeProgress: input.onRuntimeProgress,
+  });
 }
 
 async function buildRuntime(input: {
@@ -1054,8 +1085,6 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
@@ -1110,14 +1139,16 @@ async function buildRuntime(input: {
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
-    // Paperclip has already assigned this run. A PAPERCLIP_* key Paperclip did
-    // NOT set (e.g. an explicitly configured PAPERCLIP_API_KEY, applied here) is
-    // stable per-run config, so it applies and feeds the fingerprint hash below.
+    // Paperclip has already assigned this run. PAPERCLIP_API_KEY is never
+    // accepted from config — the harness-minted run token is the only source.
+    // A PAPERCLIP_* key Paperclip did NOT set is stable per-run config, so it
+    // applies and feeds the fingerprint hash below.
+    if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
     resolvedAdapterEnv[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -1217,27 +1248,46 @@ async function buildRuntime(input: {
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
-  const wrapper = agentCommand
-    ? await writeAgentWrapper({
-        stateDir,
-        acpxAgent,
-        agentCommandShell,
-        env,
-        childStderrDir,
-      })
-    : null;
-  const wrapperPath = wrapper?.wrapperPath ?? null;
-  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
-  if (
+  // A runner-backed remote sandbox is the only lane that crosses the staging
+  // seam: the runner-less ACP→CLI fallback (no `runner`) and local runs keep
+  // their historical behavior untouched. This is the single gate shared by the
+  // workspace stage and both sandbox bridges.
+  const useRemoteProcessSession =
     executionTarget?.kind === "remote" &&
     executionTarget.transport === "sandbox" &&
     Boolean(executionTarget.runner) &&
-    agentCommandShell
-  ) {
+    Boolean(agentCommandShell);
+  // Ship the workspace into the sandbox and capture `{ workspaceRemoteDir,
+  // runtimeRootDir, assetDirs, restoreWorkspace }`. Done once here, before the
+  // bridges, so both bridges receive the real (non-null) `runtimeRootDir`.
+  const stagedRuntime: PreparedAdapterExecutionTargetRuntime | null = useRemoteProcessSession
+    ? await stageAcpRemoteRuntime({
+        runId,
+        target: executionTarget,
+        adapterKey: input.engine.adapterType,
+        workspaceLocalDir: cwd,
+        timeoutSec,
+        onLog: input.ctx.onLog,
+        onRuntimeProgress: input.ctx.onRuntimeProgress,
+      })
+    : null;
+  // `stagedRuntime.restoreWorkspace` is intentionally NOT invoked in this PR:
+  // copy-back of the sandbox edits onto the host workspace is wired into the
+  // run/session teardown path in the follow-up PR (session-lifecycle wiring).
+  // See `stageAcpRemoteRuntime()` above for the full deferral note.
+  // The ACP `session/new` cwd and every cwd-keyed session-state site
+  // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
+  // value so a warm/resumable session created with the in-sandbox cwd is reused
+  // — not invalidated — on the next run. Remote runner-backed → the staged
+  // in-sandbox workspace dir; local and the runner-less fallback → the HOST cwd,
+  // byte-identical to today.
+  const sessionCwd = stagedRuntime?.workspaceRemoteDir ?? cwd;
+  let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
+  if (useRemoteProcessSession) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: { ...executionTarget, streamRunLogs: false },
-      runtimeRootDir: null,
+      runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
       adapterKey: input.engine.adapterType,
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
@@ -1255,35 +1305,31 @@ async function buildRuntime(input: {
   );
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
   try {
-    processSessionBridge =
-      executionTarget?.kind === "remote" &&
-      executionTarget.transport === "sandbox" &&
-      Boolean(executionTarget.runner) &&
-      agentCommandShell
-        ? await startAdapterExecutionTargetProcessSessionBridge({
-            runId,
-            target: executionTarget,
-            runtimeRootDir: null,
-            adapterKey: input.engine.adapterType,
-            command: "sh",
-            args: ["-lc", `exec ${agentCommandShell}`],
-            cwd: effectiveExecutionCwd,
-            env: runtimeEnv,
-            timeoutSec,
-            onLog: input.ctx.onLog,
-          })
-        : null;
+    processSessionBridge = useRemoteProcessSession
+      ? await startAdapterExecutionTargetProcessSessionBridge({
+          runId,
+          target: executionTarget,
+          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+          adapterKey: input.engine.adapterType,
+          command: "sh",
+          args: ["-lc", `exec ${agentCommandShell}`],
+          cwd: sessionCwd,
+          env: runtimeEnv,
+          timeoutSec,
+          onLog: input.ctx.onLog,
+        })
+      : null;
   } catch (err) {
     await paperclipBridge?.stop().catch(() => {});
     throw err;
   }
-  const overrideCommand = processSessionBridge?.agentCommand ?? wrapperPath;
+  const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
   const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const fingerprint = shortHash({
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
-    cwd: path.resolve(cwd),
+    cwd: path.resolve(sessionCwd),
     mode,
     permissionMode,
     nonInteractivePermissions,
@@ -1316,13 +1362,16 @@ async function buildRuntime(input: {
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
     includeRuntimeKeys: ["HOME"],
-    resolvedCommand: wrapperPath ?? agentCommand ?? acpxAgent,
+    resolvedCommand: agentCommand ?? acpxAgent,
   });
 
   return {
     acpxAgent,
     mode,
-    cwd,
+    // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
+    // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
+    // reads `prepared.cwd`, so binding it once here keeps them consistent.
+    cwd: sessionCwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -1342,6 +1391,7 @@ async function buildRuntime(input: {
     agentRegistry,
     processSessionBridge,
     paperclipBridge,
+    stagedRuntime,
     remoteExecutionIdentity,
     skillPromptInstructions,
     skillsIdentity: {
@@ -1978,6 +2028,7 @@ async function closeWarmHandle(input: {
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
   }).catch(() => {});
+  flushChildStderr(input.entry.childStderrState);
 }
 
 function scheduleIdleHandleCleanup(input: {
@@ -2054,6 +2105,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+    const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+    flushChildStderr(childStderrState);
+    childStderrState.logPath = prepared.childStderrLogPath;
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
@@ -2066,6 +2120,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // and custom agents already emit their own per-tool output and don't
       // benefit from doubling the log volume.
       verbose: prepared.acpxAgent === "claude",
+      onAgentStderr: prepared.childStderrLogPath
+        ? (chunk) => routeChildStderr(childStderrState, chunk)
+        : undefined,
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
     if (cached) clearWarmHandleTimer(cached);
@@ -2089,6 +2146,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             mode: prepared.mode,
             cwd: prepared.cwd,
             resumeSessionId,
+            sessionOptions: { env: prepared.env },
           });
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
@@ -2103,6 +2161,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             agent: prepared.acpxAgent,
             mode: prepared.mode,
             cwd: prepared.cwd,
+            sessionOptions: { env: prepared.env },
           });
         }
       }
@@ -2339,6 +2398,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           const entry: RuntimeCacheEntry = {
             runtime,
             handle: sessionHandle,
+            childStderrState,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
           };
@@ -2380,6 +2440,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         message: errorMessage,
       });
       await cleanupRemoteBridges(prepared);
+      flushChildStderr(childStderrState);
       return {
         exitCode: terminal.status === "completed" ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
@@ -2436,6 +2497,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         messageOverride,
       });
       await cleanupRemoteBridges(prepared);
+      flushChildStderr(childStderrState);
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,

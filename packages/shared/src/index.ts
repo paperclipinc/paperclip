@@ -143,15 +143,16 @@ export {
   type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
-  TOOL_APP_GALLERY,
-  getToolAppGalleryEntry,
-  getToolAppGalleryEntryForUrl,
-  type AppGalleryAuthKind,
-  type AppGalleryCredentialField,
-  type AppGalleryEntry,
-  type AppGalleryKey,
-  type AppGalleryTransportTemplate,
-} from "./tool-app-gallery.js";
+  CONNECTABLE_APP_DEFINITIONS,
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  credentialConfigPath,
+  getAppDefinitionForUrl,
+  getAvailableConnectionMethod,
+  getConnectableAppDefinition,
+  recommendedDefaultsForApp,
+} from "./app-definitions.js";
+export { APP_DEFINITIONS } from "./app-definitions.generated.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,
@@ -672,9 +673,12 @@ export type {
   AgentSkillSyncRequest,
   InstanceExecutionMode,
   InstanceExperimentalSettings,
+  InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
   InstanceVisibilitySettings,
+  ManagedExperimentalFeatureKey,
+  ManagedSettingMetadata,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
   BackupRetentionPolicy,
@@ -1113,6 +1117,8 @@ export type {
   ToolCallEvent,
   ToolCatalogEntryKind,
   ToolConnectionHealthStatus,
+  ToolConnectionAuthKind,
+  ToolConnectionOwnership,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -1136,6 +1142,9 @@ export type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
+  ConnectionGrant,
+  ConnectionGrantKind,
+  ConnectionGrantStatus,
   ConnectionTokenScope,
   ConnectionTokenRequest,
   ConnectionTokenAttribution,
@@ -1257,6 +1266,9 @@ export type {
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
+  AppDefinition,
+  ConnectionMethodDef,
+  FieldDef,
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
@@ -1358,6 +1370,7 @@ export {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
 export type {
@@ -1413,6 +1426,8 @@ export {
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  instanceExperimentalSettingsWithManagedSchema,
+  managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   instanceVisibilitySettingsSchema,
   patchInstanceVisibilitySettingsSchema,
@@ -1784,6 +1799,8 @@ export {
   toolTrustRuleBatchApprovalSchema,
   toolTrustRuleScopeSchema,
   connectionTokenRequestSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   toolConnectionTestCallSchema,
   toolPolicyTestRequestSchema,
   importMcpJsonSchema,
@@ -2224,3 +2241,15 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export {
+  FEATURE_TIERS,
+  INSTANCE_FEATURE_CATALOG,
+  INSTANCE_FEATURE_KEYS,
+  buildFeatureCatalogArtifact,
+  featureCatalogArtifactSchema,
+  renderFeatureCatalogArtifact,
+  type FeatureCatalogArtifact,
+  type FeatureCatalogEntry,
+  type FeatureTier,
+  type InstanceFeatureKey,
+} from "./feature-catalog.js";
