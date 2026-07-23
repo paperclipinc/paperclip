@@ -879,7 +879,6 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stderrLog!.text).toContain(stderrTail);
   });
 
-<<<<<<< HEAD
   it("throws AcpxSessionInitError (so the adapter can fall back) when session init fails and lane fallback is allowed", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
