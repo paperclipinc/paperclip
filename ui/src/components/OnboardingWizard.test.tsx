@@ -582,6 +582,56 @@ describe("OnboardingWizard cloud first-run", () => {
     });
   });
 
+  it("offers an Add-a-company-slot link on the slot_required 402 (active subscriber, confirm-first billing)", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated" });
+    mockCloudCompaniesApi.create.mockRejectedValueOnce(
+      new ApiError("slot_required", 402, { error: "slot_required", limit: 2 }),
+    );
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 2,
+        companyName: "Fresh Co",
+        companyGoal: "Ship it",
+        missionPath: "direct",
+      }),
+    );
+    mockDialog.onboardingOptions = {};
+    mockCompany.companies = [{ id: "existing", name: "First Co", issuePrefix: "FST" }];
+
+    const { root } = await mount();
+
+    const confirm = findButton("Confirm mission");
+    expect(confirm).toBeTruthy();
+    await act(async () => {
+      confirm!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Your subscription covers 2 companies");
+    // Not the trial upsell copy - a distinct slot-required prompt.
+    expect(document.body.textContent).not.toContain("Your trial includes one company");
+    const link = Array.from(document.body.querySelectorAll("a")).find(
+      (a) => a.textContent?.includes("Add a company slot"),
+    );
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/subscribe?add=company");
+    // Non-destructive navigation link, not a danger action.
+    expect(link?.className).not.toContain("text-destructive");
+    expect(link?.className).toContain("text-foreground");
+    // No Subscribe (trial) link on this path.
+    const subscribeLink = Array.from(document.body.querySelectorAll("a")).find(
+      (a) => a.textContent?.trim() === "Subscribe",
+    );
+    expect(subscribeLink).toBeFalsy();
+    // Back stays available - never trap the user here.
+    expect(findButton("Back")).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows all five progress segments", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
     mockDialog.onboardingOptions = { initialStep: 1, companyId: "c1" };
