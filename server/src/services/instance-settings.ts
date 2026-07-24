@@ -512,7 +512,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -527,7 +527,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
@@ -564,7 +564,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
@@ -583,7 +583,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
@@ -605,7 +605,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     listCompanyIds: async (): Promise<string[]> =>
