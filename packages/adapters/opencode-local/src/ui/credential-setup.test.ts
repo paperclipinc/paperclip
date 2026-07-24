@@ -28,6 +28,28 @@ describe("openCodeLocalCredentialSetup", () => {
     expect(routerOption?.label).toBe("OpenRouter API key");
   });
 
+  it("keeps the three sk- prefixed provider valuePatterns mutually exclusive", () => {
+    const [anthropicOption, openaiOption, routerOption] = openCodeLocalCredentialSetup.options;
+    const anthropicPattern = new RegExp(anthropicOption.valuePattern!);
+    const openaiPattern = new RegExp(openaiOption.valuePattern!);
+    const routerPattern = new RegExp(routerOption.valuePattern!);
+
+    const anthropicKey = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    const openaiKey = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    const routerKey = "sk-or-v1-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+
+    expect(anthropicPattern.test(anthropicKey)).toBe(true);
+    expect(openaiPattern.test(openaiKey)).toBe(true);
+    expect(routerPattern.test(routerKey)).toBe(true);
+
+    expect(anthropicPattern.test(openaiKey)).toBe(false);
+    expect(anthropicPattern.test(routerKey)).toBe(false);
+    expect(openaiPattern.test(anthropicKey)).toBe(false);
+    expect(openaiPattern.test(routerKey)).toBe(false);
+    expect(routerPattern.test(anthropicKey)).toBe(false);
+    expect(routerPattern.test(openaiKey)).toBe(false);
+  });
+
   it("includes hint on first option noting OpenCode uses whichever provider key matches the selected model", () => {
     const firstOption = openCodeLocalCredentialSetup.options[0];
     expect(firstOption?.hint).toContain("model");

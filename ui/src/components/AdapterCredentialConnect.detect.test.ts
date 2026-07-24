@@ -42,6 +42,22 @@ describe("detectCredentialOptionIndex", () => {
     expect(normalizeCredentialValue("  sk-ant-oat01-AbCdEfGhIjKl\n")).toBe("sk-ant-oat01-AbCdEfGhIjKl");
   });
 
+  it("never routes an Anthropic key to a codex OPENAI_API_KEY option", () => {
+    // Mirrors the codex-local credential setup: the lone OPENAI_API_KEY option
+    // must reject sk-ant-… keys so handleConnect surfaces an error instead of
+    // silently binding an Anthropic key (which fails every run with a 401).
+    const codexOptions: AdapterCredentialSetup["options"] = [
+      {
+        envKey: "OPENAI_API_KEY",
+        kind: "api_key",
+        label: "OpenAI API key",
+        valuePattern: "^sk-(?!ant-)[A-Za-z0-9_-]{20,}$",
+      },
+    ];
+    expect(detectCredentialOptionIndex(codexOptions, "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz")).toBe(-1);
+    expect(detectCredentialOptionIndex(codexOptions, "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(0);
+  });
+
   it("ignores options without a valuePattern and never throws on a bad pattern", () => {
     const opts: AdapterCredentialSetup["options"] = [
       { envKey: "A", kind: "api_key", label: "A" },
