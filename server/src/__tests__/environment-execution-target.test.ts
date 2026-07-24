@@ -155,7 +155,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       leaseId: "lease-1",
       leaseMetadata: {},
       lease: { providerLeaseId: "pl-1" } as never,
-      environmentRuntime: { execute: executeSpy } as never,
+      environmentRuntime: { execute: executeSpy, supportsSync: () => false } as never,
     });
 
     expect(target?.kind).toBe("remote");
@@ -203,7 +203,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       leaseId: "lease-1",
       leaseMetadata: {},
       lease: { providerLeaseId: "pl-1" } as never,
-      environmentRuntime: { execute: executeSpy } as never,
+      environmentRuntime: { execute: executeSpy, supportsSync: () => false } as never,
     });
 
     const runner = (target as { runner?: { execute: (i: unknown) => Promise<unknown> } }).runner!;
