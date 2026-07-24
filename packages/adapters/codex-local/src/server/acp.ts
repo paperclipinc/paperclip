@@ -35,7 +35,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, isCodexInvalidApiKeyError } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -264,27 +264,38 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexAuthFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
-  const authFailure = classifyCodexAuthRefreshFailure({
-    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n"),
-  });
-  if (!authFailure) return result;
-
-  return {
-    ...result,
-    errorCode: authFailure,
-    errorFamily: authFailure,
-    resultJson: {
-      ...(result.resultJson ?? {}),
+  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  const authFailure = classifyCodexAuthRefreshFailure({ errorMessage });
+  if (authFailure) {
+    return {
+      ...result,
+      errorCode: authFailure,
       errorFamily: authFailure,
-    },
-  };
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        errorFamily: authFailure,
+      },
+    };
+  }
+
+  // A rejected/missing OpenAI API key is a permanent auth failure: surface it
+  // as codex_auth_required (no errorFamily; it is not a retry contract) so the
+  // heartbeat pauses the agent and the run card offers credential-connect.
+  if (isCodexInvalidApiKeyError({ errorMessage })) {
+    return {
+      ...result,
+      errorCode: "codex_auth_required",
+    };
+  }
+
+  return result;
 }
 
 /**
@@ -334,7 +345,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexAuthRefreshFailureClassification(result);
+    return withCodexAuthFailureClassification(result);
   };
 }
 

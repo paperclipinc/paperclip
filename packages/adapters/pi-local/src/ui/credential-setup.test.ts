@@ -15,4 +15,14 @@ describe("piLocalCredentialSetup", () => {
     expect(apiKeyOption?.setupUrl).toBe("https://console.anthropic.com/settings/keys");
     expect(apiKeyOption?.placeholder).toBe("sk-ant-…");
   });
+
+  it("anchors valuePattern to the sk-ant prefix and rejects OpenAI-style keys", () => {
+    const apiKeyOption = piLocalCredentialSetup.options.find(o => o.envKey === "ANTHROPIC_API_KEY");
+    const pattern = new RegExp(apiKeyOption!.valuePattern!);
+
+    expect(pattern.test("sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(true);
+
+    expect(pattern.test("sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
+    expect(pattern.test("sk-ant-api03-AbCdEf GhIjKl")).toBe(false);
+  });
 });
