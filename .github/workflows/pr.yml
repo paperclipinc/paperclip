@@ -24,8 +24,12 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
+        # Rebase-promotion branches (rebase-YYYYMMDD) legitimately import
+        # upstream's pnpm-lock.yaml wholesale; the manual-edit block is for
+        # hand-authored PRs, so exempt them alongside the refresh bot.
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
+          !startsWith(github.head_ref, 'rebase-') &&
           github.event.pull_request.user.login != 'dependabot[bot]'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
