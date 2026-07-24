@@ -17,6 +17,7 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableSmokeLab: false,
   enableBuiltInAgents: false,
   enableDecisions: false,
+  enableStatusCards: false,
   enableGoalsSidebarLink: false,
   enableServerInfoDebugView: false,
   enableSummaries: false,

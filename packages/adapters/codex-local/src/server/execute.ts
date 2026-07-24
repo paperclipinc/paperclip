@@ -67,6 +67,7 @@ import {
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
+  stageCodexHomeForSync,
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
@@ -589,6 +590,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env: envConfigStrings,
     codexHome: configuredCodexHome ? null : effectiveCodexHome,
   });
+  // Curated allowlist dir staged for the remote `home` asset (see below). Held
+  // here so the outer `finally` can remove it on every exit path (teardown and
+  // error), never only the happy path.
+  let stagedCodexHomeDir: string | null = null;
   try {
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
@@ -640,6 +645,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             "stdout",
             `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
+          // Stage only the files Codex actually needs into a curated temp dir and
+          // ship THAT as the `home` asset, instead of the whole managed
+          // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
+          // (provider merge + MCP block splice above) and skills injection, so the
+          // staged config.toml/skills reflect their final state. Symlinks (incl.
+          // the single-use `auth.json`) are dereferenced to bytes. This drops the
+          // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
+          // 4-name denylist missed and that a sandbox run never needs.
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
           // Captured at launch time, before the sandbox runs: does the SHARED
           // host credential store (the symlink source the managed homes point
           // their `auth.json` at) hold usable auth? The teardown copy-back
@@ -660,7 +674,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             assets: [
               {
                 key: "home",
-                localDir: effectiveCodexHome,
+                localDir: stagedCodexHomeDir,
                 followSymlinks: true,
                 // Inbound (host→sandbox) auth-merge contribution: stages the two
                 // merge scripts and runs the merge-extract command so a sandbox
@@ -700,18 +714,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     log: (line) => onLog("stdout", `${line}\n`),
                   }));
                 },
-                // Exclude state that the sandbox run never needs so we don't
-                // tar/upload hundreds of MB on every run:
-                // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
-                //   host Codex binary (e.g. `tmp/arg0`); followSymlinks would
-                //   inline those binaries and bloat the archive.
-                // - `sessions`: prior conversation rollouts (host-local history,
-                //   typically the bulk of CODEX_HOME) — irrelevant to a fresh run.
-                // - `shell_snapshots`: host shell captures that don't apply to
-                //   the sandbox's (different) shell/OS.
-                // Auth, config, and skills (the bits Codex actually needs) are
-                // small and still uploaded.
-                exclude: ["tmp", ".tmp", "sessions", "shell_snapshots"],
+                // No `exclude` denylist: `stagedCodexHomeDir` already contains
+                // ONLY the allowlisted files (auth/config/skills), so there is
+                // nothing to filter out.
               },
             ],
           });
@@ -740,8 +745,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
       onEvent,
     });
-    const hasExplicitApiKey =
-      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...paperclipBaseEnv };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
@@ -819,7 +822,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (!hasExplicitApiKey && authToken) {
+    if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
@@ -1389,6 +1392,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    // Remove the staged CODEX_HOME allowlist temp dir on every exit path
+    // (teardown AND error), never only the happy path. Cleanup failure is
+    // logged, not fatal — a leaked temp dir must not crash the run.
+    if (stagedCodexHomeDir) {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    }
     // Restore the managed config.toml so PAPERCLIP_CODEX_PROVIDERS changes
     // (or removal) between runs never leave stale provider routing behind. This
     // finally starts the moment prepareCodexRuntimeConfig returns, so a throw

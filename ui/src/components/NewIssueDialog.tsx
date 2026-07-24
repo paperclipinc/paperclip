@@ -515,7 +515,7 @@ export function NewIssueDialog() {
   const { data: experimentalSettings } = useFeatures();
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(
-    () => (projects ?? []).filter((p) => !p.archivedAt),
+    () => projects ?? [],
     [projects],
   );
   const { orderedProjects } = useProjectOrder({

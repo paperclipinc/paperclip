@@ -91,6 +91,8 @@ describe("onEnvironmentExecute ctx.streams bridge (RPC path)", () => {
         _cmd: string[],
         _stdin: unknown,
         _timeoutMs: number,
+        _maxStdoutBytes?: number,
+        _maxStderrBytes?: number,
         onChunk?: (stream: "stdout" | "stderr", text: string) => void,
       ) => {
         onChunk?.("stdout", "live-1");
@@ -150,7 +152,7 @@ describe("onEnvironmentExecute ctx.streams bridge (RPC path)", () => {
     expect(calls.emit).toEqual([]);
     expect(calls.close).toEqual([]);
     // No sink was active -> onChunk undefined -> execInPod got no onChunk fn.
-    expect(typeof h.execInPod.mock.calls[0][7]).not.toBe("function");
+    expect(typeof h.execInPod.mock.calls[0][9]).not.toBe("function");
     expect(result.streamed).toBeFalsy();
     expect(result.stdout).toBe("buffered");
   });

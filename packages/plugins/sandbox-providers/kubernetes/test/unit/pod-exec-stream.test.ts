@@ -45,6 +45,8 @@ describe("execInPod streaming (onChunk)", () => {
       ["echo", "hi"],
       undefined,
       5_000,
+      undefined,
+      undefined,
       (stream, text) => chunks.push([stream, text]),
     );
 
@@ -100,6 +102,8 @@ describe("execInPod streaming (onChunk)", () => {
       ["echo"],
       undefined,
       5_000,
+      undefined,
+      undefined,
       () => {
         throw new Error("consumer blew up");
       },

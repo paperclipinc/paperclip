@@ -68,6 +68,8 @@ describe("onEnvironmentExecute streaming (sandbox-cr)", () => {
         _cmd: string[],
         _stdin: unknown,
         _timeoutMs: number,
+        _maxStdoutBytes?: number,
+        _maxStderrBytes?: number,
         onChunk?: (stream: "stdout" | "stderr", text: string) => void,
       ) => {
         onChunk?.("stdout", "live-1");
@@ -83,10 +85,10 @@ describe("onEnvironmentExecute streaming (sandbox-cr)", () => {
       }),
     );
 
-    // execInPod was called with an onChunk function (8th positional arg).
+    // execInPod was called with an onChunk function (10th positional arg).
     expect(h.execInPod).toHaveBeenCalledTimes(1);
     const call = h.execInPod.mock.calls[0];
-    expect(typeof call[7]).toBe("function");
+    expect(typeof call[9]).toBe("function");
 
     // Live chunks reached the caller's onOutput.
     expect(received).toEqual([
@@ -106,8 +108,8 @@ describe("onEnvironmentExecute streaming (sandbox-cr)", () => {
     const result = await plugin.definition.onEnvironmentExecute!(executeParams());
 
     expect(h.execInPod).toHaveBeenCalledTimes(1);
-    // 8th positional arg (onChunk) is not a function when no onOutput was passed.
-    expect(typeof h.execInPod.mock.calls[0][7]).not.toBe("function");
+    // 10th positional arg (onChunk) is not a function when no onOutput was passed.
+    expect(typeof h.execInPod.mock.calls[0][9]).not.toBe("function");
     expect(result.streamed).toBeFalsy();
     expect(result.stdout).toBe("buffered");
   });
