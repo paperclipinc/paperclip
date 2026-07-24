@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
@@ -5,6 +6,7 @@ import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
+import { initTelemetry } from "@/telemetry";
 import { resolveCloudZeroCompanyState } from "@/lib/cloud-zero-company";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 import { WorkspaceSetupPendingPage } from "@/components/WorkspaceSetupPendingPage";
@@ -66,6 +68,13 @@ export function CloudAccessGate() {
 
   const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
   const isBootstrapPending = isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending";
+
+  // Cloud-overlay UI telemetry: only ever initialised on the hosted cloud
+  // (initTelemetry re-verifies deploymentMode itself and is idempotent, so a
+  // re-render or a non-cloud install make this a no-op).
+  useEffect(() => {
+    if (isAuthenticatedMode) void initTelemetry();
+  }, [isAuthenticatedMode]);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),

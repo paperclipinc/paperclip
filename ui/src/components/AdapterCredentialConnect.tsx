@@ -124,7 +124,10 @@ export function AdapterCredentialConnect({
 
   if (boundOption && !forceShowForm) {
     return (
-      <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+      <div
+        data-surface="credential_connect"
+        className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2"
+      >
         <div className="flex min-w-0 items-center gap-2 text-sm">
           <Badge variant="secondary" className="gap-1">
             <Check className="h-3 w-3" />
@@ -196,7 +199,7 @@ export function AdapterCredentialConnect({
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-border p-3">
+    <div data-surface="credential_connect" className="space-y-3 rounded-md border border-border p-3">
       {setup.options.length > 1 ? (
         <div className="flex gap-1 rounded-md border border-border bg-muted/30 p-0.5">
           {setup.options.map((option, index) => (
@@ -251,6 +254,9 @@ export function AdapterCredentialConnect({
       <div className="flex items-center gap-2">
         <Input
           type="password"
+          // Paste telemetry opt-in: the tracker records paste METADATA only
+          // (length/whitespace shape) on this field, never the pasted value.
+          data-telemetry="sensitive"
           placeholder={active.placeholder}
           value={value}
           aria-label={`${active.label} value`}

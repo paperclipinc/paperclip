@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AdapterEnvironmentCheck,
@@ -8,6 +8,7 @@ import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
 import { restoreOnboardingState } from "@/lib/onboarding-state";
+import { trackStep } from "@/telemetry";
 import {
   credentialFailureKey,
   credentialRejectionMessage,
@@ -252,6 +253,21 @@ function OnboardingWizardInner({
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
+
+  // Cloud UI telemetry: record wizard step transitions (step number + time
+  // spent on the previous step; never any field content). trackStep is a
+  // no-op off-cloud, so this costs nothing in plain installs.
+  const stepTelemetryRef = useRef<{ step: Step; at: number } | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) {
+      stepTelemetryRef.current = null;
+      return;
+    }
+    const prev = stepTelemetryRef.current;
+    if (prev?.step === step) return;
+    trackStep("onboarding", step, prev?.step, prev ? Date.now() - prev.at : undefined);
+    stepTelemetryRef.current = { step, at: Date.now() };
+  }, [effectiveOnboardingOpen, step]);
 
   // "Grow existing" questionnaire fields
   const [growWorkflows, setGrowWorkflows] = useState((saved?.growWorkflows as string) ?? "");
@@ -1289,7 +1305,7 @@ function OnboardingWizardInner({
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
+        <div className="fixed inset-0 z-50 flex" data-surface="onboarding" onKeyDown={handleKeyDown}>
           {/* Close button */}
           <button
             onClick={handleClose}

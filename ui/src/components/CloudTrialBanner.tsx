@@ -71,7 +71,10 @@ export function CloudTrialBanner() {
   }
 
   return (
-    <div className="border-b border-sky-300/60 bg-sky-50 text-sky-950 dark:border-sky-500/25 dark:bg-sky-500/10 dark:text-sky-100">
+    <div
+      data-surface="billing"
+      className="border-b border-sky-300/60 bg-sky-50 text-sky-950 dark:border-sky-500/25 dark:bg-sky-500/10 dark:text-sky-100"
+    >
       <div className="flex items-center gap-3 px-3 py-2 text-sm">
         <Clock className="h-3.5 w-3.5 shrink-0" />
         <span className="min-w-0 flex-1">
