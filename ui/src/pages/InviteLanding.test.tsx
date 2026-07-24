@@ -506,7 +506,6 @@ describe("InviteLandingPage", () => {
     });
   });
 
-<<<<<<< HEAD
   it("auto-accepts a fresh human invite for a user who arrives already authenticated", async () => {
     // Repro of the cloud signup-via-invite journey: the brand-new user signs up
     // on the marketing /auth pages, then is redirected (already authenticated)
