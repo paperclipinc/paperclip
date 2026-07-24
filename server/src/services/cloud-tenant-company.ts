@@ -5,6 +5,14 @@ export type CloudStackRole = "owner" | "admin" | "member" | "support";
 export interface CloudStackContext {
   stackId: string;
   stackRole: CloudStackRole;
+  /**
+   * The gateway URL slug for this stack (trusted x-paperclip-cloud-stack-slug
+   * header). The gateway proxies /<slug>/... to this instance verbatim, so the
+   * SPA must be able to resolve that slug to the stack's company; it surfaces
+   * as the company's slugAliases (see withCloudStackSlugAlias). Optional: older
+   * gateways do not send it.
+   */
+  stackSlug?: string;
 }
 
 /**
@@ -19,6 +27,26 @@ export function cloudTenantCompanyId(stackId: string): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.subarray(0, 16).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Attach the stack's cloud slug as a slugAliases entry on the stack's own
+ * company payload. The gateway routes /<cloud-slug>/... here verbatim, so the
+ * SPA needs the slug to resolve (and then canonicalize) that URL to the
+ * company's issuePrefix. Companies other than the stack company, actors
+ * without a slug, and a slug that already equals the issuePrefix all pass
+ * through unchanged.
+ */
+export function withCloudStackSlugAlias<T extends { id: string; issuePrefix: string }>(
+  company: T,
+  cloudStack: CloudStackContext | undefined | null,
+): T {
+  if (!cloudStack) return company;
+  const slug = cloudStack.stackSlug?.trim();
+  if (!slug) return company;
+  if (company.id !== cloudTenantCompanyId(cloudStack.stackId)) return company;
+  if (slug.toUpperCase() === company.issuePrefix.toUpperCase()) return company;
+  return { ...company, slugAliases: [slug] };
 }
 
 /** Only a stack owner or admin may create (i.e. onboard) the stack's company. */

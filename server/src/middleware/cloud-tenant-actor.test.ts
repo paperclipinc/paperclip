@@ -151,6 +151,28 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
   });
 
+  it("captures the optional gateway stack slug on the stack context", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "jannes-stubbemann" }),
+    );
+    expect(actor!.cloudStack).toEqual({
+      stackId: "stack-abc",
+      stackRole: "owner",
+      stackSlug: "jannes-stubbemann",
+    });
+  });
+
+  it("ignores a blank stack slug header", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "   " }),
+    );
+    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
+  });
+
   it("exposes a non-creator stack role verbatim", async () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(
