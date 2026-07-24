@@ -222,6 +222,22 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  cloudBilling: {
+    title: "Cloud Billing",
+    description:
+      "Show cloud billing surfaces: checkout, wallet, budget-raise gating, and usage-based plan management.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  cloudTrialBanner: {
+    title: "Cloud Trial Banner",
+    description:
+      "Show the cloud trial status banner with subscription prompt when the company is on a trial plan.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
 };
 
 export const INSTANCE_FEATURE_KEYS = Object.keys(INSTANCE_FEATURE_CATALOG).sort() as InstanceFeatureKey[];
