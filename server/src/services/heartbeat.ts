@@ -11288,13 +11288,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    await db
+    const identicalFailurePauseReason =
+      `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`;
+    const identicalFailurePauseWrite = await db
       .update(agents)
       .set({
         status: "paused",
-        pauseReason: truncateAgentErrorReason(
-          `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`,
-        ),
+        pauseReason: truncateAgentErrorReason(identicalFailurePauseReason),
         pausedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -11304,7 +11304,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { err: pauseErr, agentId: agent.id, runId: run.id },
           "failed to pause agent after repeated identical failures",
         );
+        return null;
       });
+    if (identicalFailurePauseWrite !== null) {
+      // Mirror manual pause: a paused agent must have no live runs, or a
+      // just-enqueued retry can sit in "queued" forever since dequeue skips
+      // paused agents. run is already terminal by the time this runs.
+      await cancelActiveForAgentInternal(
+        agent.id,
+        `Cancelled because the agent was paused: ${identicalFailurePauseReason}`,
+        "agent_paused",
+      );
+    }
   }
 
   async function finalizeAgentStatus(
@@ -14279,13 +14290,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // No valid provider credential: pause the agent so its heartbeat stops
           // re-running (and failing auth) every interval, and surface the reason so
           // a human connects a model key and resumes.
-          await db
+          const authFailurePauseReason =
+            "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.";
+          const authFailurePauseWrite = await db
             .update(agents)
             .set({
               status: "paused",
-              pauseReason: truncateAgentErrorReason(
-                "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.",
-              ),
+              pauseReason: truncateAgentErrorReason(authFailurePauseReason),
               pausedAt: new Date(),
               updatedAt: new Date(),
             })
@@ -14295,7 +14306,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
                 "failed to pause agent after permanent auth failure",
               );
+              return null;
             });
+          if (authFailurePauseWrite !== null) {
+            // Mirror manual pause (routes/agents.ts cancelActiveForAgent): a paused
+            // agent must have no live runs, or a just-enqueued retry can sit in
+            // "queued" forever since dequeue skips paused agents. livenessRun is
+            // already terminal (setRunStatusIfRunning above), so it cannot be
+            // re-cancelled here.
+            await cancelActiveForAgentInternal(
+              agent.id,
+              `Cancelled because the agent was paused: ${authFailurePauseReason}`,
+              "agent_paused",
+            );
+          }
         } else if (outcome === "failed") {
           // Fallback storm breaker for failure codes no dedicated branch handles.
           await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
@@ -14592,13 +14616,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 failedAgent.status !== "paused" &&
                 failedAgent.status !== "terminated"
               ) {
-                await db
+                const setupFailurePauseReason =
+                  `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
+                const setupFailurePauseWrite = await db
                   .update(agents)
                   .set({
                     status: "paused",
-                    pauseReason: truncateAgentErrorReason(
-                      `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`,
-                    ),
+                    pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
                     pausedAt: new Date(),
                     updatedAt: new Date(),
                   })
@@ -14608,7 +14632,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       { err: pauseErr, agentId: failedAgent.id, runId },
                       "failed to pause agent after non-retryable setup failure",
                     );
+                    return null;
                   });
+                if (setupFailurePauseWrite !== null) {
+                  // Mirror manual pause: a paused agent must have no live runs, or
+                  // a just-enqueued retry can sit in "queued" forever since dequeue
+                  // skips paused agents. livenessRun is already terminal (the CAS
+                  // write above only succeeded because it left "running").
+                  await cancelActiveForAgentInternal(
+                    failedAgent.id,
+                    `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
+                    "agent_paused",
+                  );
+                }
               }
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
