@@ -9,6 +9,7 @@ import {
   companies,
   agents,
   activityLog,
+  approvals,
   companySecrets,
   costEvents,
   financeEvents,
@@ -428,6 +429,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
+    await db.delete(approvals);
     await db.delete(companySecrets);
     await db.delete(issues);
     await db.delete(projects);
@@ -1152,6 +1154,162 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       const signals = await costs.listActivationSignals();
 
       expect(signals.find((row) => row.companyId === companyId)).toBeUndefined();
+    });
+
+    it("reports firstSucceededAt and the trailing-7-day week counters, excluding runs older than the window", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const dayMs = 24 * 60 * 60 * 1000;
+      const firstSuccess = new Date(Date.now() - 10 * dayMs); // outside the 7d window
+      const recentSuccess = new Date(Date.now() - 2 * dayMs);
+      const recentFailed = new Date(Date.now() - 1 * dayMs);
+      const recentTimedOut = new Date(Date.now() - 3 * dayMs);
+      const recentErrored = new Date(Date.now() - 4 * dayMs);
+      const oldFailed = new Date(Date.now() - 10 * dayMs);
+      const recentCancelled = new Date(Date.now() - 1 * dayMs);
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Weekly Window Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      const runBase = { companyId, agentId, invocationSource: "on_demand" as const };
+      await db.insert(heartbeatRuns).values([
+        // Oldest success: sets firstSucceededAt but is outside the 7d window.
+        { ...runBase, status: "succeeded", startedAt: firstSuccess, finishedAt: firstSuccess, updatedAt: firstSuccess },
+        { ...runBase, status: "succeeded", startedAt: recentSuccess, finishedAt: recentSuccess, updatedAt: recentSuccess },
+        { ...runBase, status: "failed", startedAt: recentFailed, finishedAt: recentFailed, updatedAt: recentFailed },
+        { ...runBase, status: "timed_out", startedAt: recentTimedOut, finishedAt: recentTimedOut, updatedAt: recentTimedOut },
+        // Not in HEARTBEAT_RUN_STATUSES, but matched defensively as a failure.
+        { ...runBase, status: "error", startedAt: recentErrored, finishedAt: recentErrored, updatedAt: recentErrored },
+        // Failure older than the window: excluded from weekRunsFailed.
+        { ...runBase, status: "failed", startedAt: oldFailed, finishedAt: oldFailed, updatedAt: oldFailed },
+        // A user stopping a run is not a failure signal.
+        { ...runBase, status: "cancelled", startedAt: recentCancelled, finishedAt: recentCancelled, updatedAt: recentCancelled },
+      ]);
+
+      const signals = await costs.listActivationSignals();
+      const row = signals.find((r) => r.companyId === companyId);
+
+      expect(row).toBeDefined();
+      expect(row?.hasCompletedRun).toBe(true);
+      expect(row?.firstSucceededAt).toBe(firstSuccess.toISOString());
+      expect(row?.weekRunsSucceeded).toBe(1); // recentSuccess only; firstSuccess is 10d old
+      expect(row?.weekRunsFailed).toBe(3); // failed + timed_out + defensive 'error'; old failed and cancelled excluded
+    });
+
+    it("counts all pending approvals but lists only the 5 oldest, resolving the requesting agent's name", async () => {
+      const companyId = randomUUID();
+      const requesterId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Approvals Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: requesterId,
+        companyId,
+        name: "Requesting Agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const base = new Date("2026-07-01T00:00:00.000Z").getTime();
+      const pendingIds: string[] = [];
+      const pendingValues = Array.from({ length: 7 }, (_, i) => {
+        const id = randomUUID();
+        pendingIds.push(id);
+        return {
+          id,
+          companyId,
+          type: i === 0 ? "hire_agent" : "budget_increase",
+          status: "pending",
+          payload: {},
+          // Oldest first: approval i was created i hours after `base`.
+          createdAt: new Date(base + i * 60 * 60 * 1000),
+          // Only the OLDEST approval has a requesting agent; the rest are
+          // user-requested (requestedByAgentId null -> agentName null).
+          requestedByAgentId: i === 0 ? requesterId : null,
+        };
+      });
+      // Insert out of order so the ordering comes from created_at, not
+      // insertion order.
+      await db.insert(approvals).values([...pendingValues].reverse());
+      // A decided approval never counts as pending.
+      await db.insert(approvals).values({
+        id: randomUUID(),
+        companyId,
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        createdAt: new Date(base - 60 * 60 * 1000),
+        requestedByAgentId: requesterId,
+      });
+
+      const signals = await costs.listActivationSignals();
+      const row = signals.find((r) => r.companyId === companyId);
+
+      expect(row).toBeDefined();
+      expect(row?.pendingApprovalCount).toBe(7);
+      expect(row?.pendingApprovals).toHaveLength(5);
+      // Oldest-first cap: the 5 earliest created_at values, in order.
+      expect(row?.pendingApprovals.map((a) => a.id)).toEqual(pendingIds.slice(0, 5));
+      expect(row?.pendingApprovals[0]).toEqual({
+        id: pendingIds[0],
+        type: "hire_agent",
+        agentName: "Requesting Agent",
+        createdAt: new Date(base).toISOString(),
+      });
+      expect(row?.pendingApprovals[1]?.agentName).toBeNull();
+    });
+
+    it("includes a company whose only signal is a pending approval", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Approval-only Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(approvals).values({
+        id: randomUUID(),
+        companyId,
+        type: "budget_increase",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: null,
+      });
+
+      const signals = await costs.listActivationSignals();
+      const row = signals.find((r) => r.companyId === companyId);
+
+      expect(row).toBeDefined();
+      expect(row).toMatchObject({
+        hasAgent: false,
+        agentCount: 0,
+        pendingApprovalCount: 1,
+        weekRunsSucceeded: 0,
+        weekRunsFailed: 0,
+        firstSucceededAt: null,
+      });
     });
   });
 });

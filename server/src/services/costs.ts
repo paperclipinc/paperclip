@@ -1,7 +1,7 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, companySecrets, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, approvals, companies, companySecrets, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -21,6 +21,18 @@ export interface ActivationSignalsRow {
   lastActivityAt: Date | null;
   monthRunCount: number;
   monthCostCents: number;
+  firstSucceededAt: string | null;
+  weekRunsSucceeded: number;
+  weekRunsFailed: number;
+  pendingApprovalCount: number;
+  pendingApprovals: ActivationSignalsPendingApproval[];
+}
+
+export interface ActivationSignalsPendingApproval {
+  id: string;
+  type: string;
+  agentName: string | null;
+  createdAt: string;
 }
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -558,9 +570,43 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
      *   basis as lastActivityAt); monthCostCents sums cost_events.cost_cents
      *   whose occurred_at falls in the window (the same column
      *   getMonthlySpendTotal uses for a single company).
+     * - firstSucceededAt: min(heartbeat_runs.updated_at) over succeeded runs,
+     *   as an ISO string. Same "query heartbeat_runs, not activation_events"
+     *   reasoning as hasCompletedRun: activation_events only exists when
+     *   PAPERCLIP_ACTIVATION_SINK=db is set, and updated_at is the terminal-
+     *   transition timestamp setRunStatus() stamps, so its min over succeeded
+     *   runs IS the first success. Serialized to ISO here (not left as a
+     *   Date like lastActivityAt) so the wire shape is explicit rather than
+     *   an accident of res.json's Date serialization.
+     * - weekRunsSucceeded / weekRunsFailed: trailing 7 x 24h window ending at
+     *   query time (now - 7d), NOT a calendar week - the control-plane's
+     *   pull-back sweep runs daily, so a rolling window gives it a stable
+     *   "how did the last week actually go" ratio without day-of-week cliffs.
+     *   Succeeded = status 'succeeded'; failed = status IN ('failed',
+     *   'timed_out', 'error'). 'failed' and 'timed_out' are the two terminal
+     *   failure values in HEARTBEAT_RUN_STATUSES; 'error' is not in that
+     *   list today but is matched defensively so a historical or future
+     *   error-status row still counts as a failure signal. 'interrupted' and
+     *   'cancelled' are deliberately excluded: a user stopping a run is not
+     *   a product failure worth a pull-back email.
+     * - pendingApprovalCount / pendingApprovals: approvals rows with
+     *   status = 'pending'. The count covers ALL pending approvals; the
+     *   detail list is capped to the 5 OLDEST (created_at asc, id as
+     *   tie-break) because the email only needs a few concrete examples and
+     *   the oldest ones are the ones actually blocking the company.
+     *   agentName resolves requested_by_agent_id -> agents.name and is null
+     *   for user-requested approvals (requested_by_agent_id IS NULL). Both
+     *   derive from ONE ordered scan of pending approvals, counted and
+     *   capped in JS during the merge below - pending approvals are rare and
+     *   short-lived (they block work), so the scan stays small and we avoid
+     *   a window-function subquery just to cap at 5.
      *
      * Companies whose signals are entirely false/zero are omitted - the
      * control-plane treats absence as all-false/zero (see the route comment).
+     * A pending approval or a recent failed run IS a signal: a company whose
+     * only sign of life is a stuck approval or a failing week must still
+     * appear, since those are exactly the companies the pull-back sweep
+     * wants to email.
      */
     listActivationSignals: async (): Promise<ActivationSignalsRow[]> => {
       const { start, end } = currentUtcMonthWindow();
@@ -571,8 +617,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       // parses fine for timestamptz comparisons.
       const startIso = start.toISOString();
       const endIso = end.toISOString();
+      const weekStartIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-      const [agentRows, runRows, credentialRows, costRows] = await Promise.all([
+      const [agentRows, runRows, credentialRows, costRows, pendingApprovalRows] = await Promise.all([
         db
           .select({
             companyId: agents.companyId,
@@ -594,6 +641,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
               and ${heartbeatRuns.updatedAt} >= ${startIso}
               and ${heartbeatRuns.updatedAt} < ${endIso}
             )::int`,
+            firstSucceededAt: sql<Date | null>`min(${heartbeatRuns.updatedAt}) filter (where ${heartbeatRuns.status} = 'succeeded')`,
+            weekRunsSucceeded: sql<number>`count(*) filter (
+              where ${heartbeatRuns.status} = 'succeeded'
+              and ${heartbeatRuns.updatedAt} >= ${weekStartIso}
+            )::int`,
+            weekRunsFailed: sql<number>`count(*) filter (
+              where ${heartbeatRuns.status} in ('failed', 'timed_out', 'error')
+              and ${heartbeatRuns.updatedAt} >= ${weekStartIso}
+            )::int`,
           })
           .from(heartbeatRuns)
           .groupBy(heartbeatRuns.companyId),
@@ -613,6 +669,18 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           })
           .from(costEvents)
           .groupBy(costEvents.companyId),
+        db
+          .select({
+            companyId: approvals.companyId,
+            id: approvals.id,
+            type: approvals.type,
+            agentName: agents.name,
+            createdAt: approvals.createdAt,
+          })
+          .from(approvals)
+          .leftJoin(agents, eq(approvals.requestedByAgentId, agents.id))
+          .where(eq(approvals.status, "pending"))
+          .orderBy(asc(approvals.createdAt), asc(approvals.id)),
       ]);
 
       const byCompany = new Map<string, ActivationSignalsRow>();
@@ -628,6 +696,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             lastActivityAt: null,
             monthRunCount: 0,
             monthCostCents: 0,
+            firstSucceededAt: null,
+            weekRunsSucceeded: 0,
+            weekRunsFailed: 0,
+            pendingApprovalCount: 0,
+            pendingApprovals: [],
           };
           byCompany.set(companyId, row);
         }
@@ -644,12 +717,31 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         row.hasCompletedRun = Boolean(r.hasCompletedRun);
         row.lastActivityAt = r.lastActivityAt ? new Date(r.lastActivityAt) : null;
         row.monthRunCount = Number(r.monthRunCount ?? 0);
+        row.firstSucceededAt = r.firstSucceededAt ? new Date(r.firstSucceededAt).toISOString() : null;
+        row.weekRunsSucceeded = Number(r.weekRunsSucceeded ?? 0);
+        row.weekRunsFailed = Number(r.weekRunsFailed ?? 0);
       }
       for (const r of credentialRows) {
         rowFor(r.companyId).hasCredential = Boolean(r.hasCredential);
       }
       for (const r of costRows) {
         rowFor(r.companyId).monthCostCents = Number(r.monthCostCents ?? 0);
+      }
+      // pendingApprovalRows arrive ordered oldest-first (created_at asc, id
+      // tie-break), so counting every row while pushing only the first 5 per
+      // company yields both the full count and the capped oldest-5 detail
+      // list in a single pass.
+      for (const r of pendingApprovalRows) {
+        const row = rowFor(r.companyId);
+        row.pendingApprovalCount += 1;
+        if (row.pendingApprovals.length < 5) {
+          row.pendingApprovals.push({
+            id: r.id,
+            type: r.type,
+            agentName: r.agentName ?? null,
+            createdAt: new Date(r.createdAt).toISOString(),
+          });
+        }
       }
 
       return Array.from(byCompany.values()).filter(
@@ -659,7 +751,9 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           row.hasCredential ||
           row.agentCount > 0 ||
           row.monthRunCount > 0 ||
-          row.monthCostCents > 0,
+          row.monthCostCents > 0 ||
+          row.weekRunsFailed > 0 ||
+          row.pendingApprovalCount > 0,
       );
     },
   };

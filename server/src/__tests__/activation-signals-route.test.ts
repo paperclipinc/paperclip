@@ -22,6 +22,11 @@ const listActivationSignals = vi.hoisted(() =>
       lastActivityAt: Date | null;
       monthRunCount: number;
       monthCostCents: number;
+      firstSucceededAt: string | null;
+      weekRunsSucceeded: number;
+      weekRunsFailed: number;
+      pendingApprovalCount: number;
+      pendingApprovals: Array<{ id: string; type: string; agentName: string | null; createdAt: string }>;
     }>
   > => []),
 );
@@ -80,6 +85,24 @@ describe("GET /api/cloud/activation-signals", () => {
         lastActivityAt,
         monthRunCount: 14,
         monthCostCents: 250,
+        firstSucceededAt: "2026-07-02T10:00:00.000Z",
+        weekRunsSucceeded: 5,
+        weekRunsFailed: 2,
+        pendingApprovalCount: 7,
+        pendingApprovals: [
+          {
+            id: "33333333-3333-4333-8333-333333333333",
+            type: "hire_agent",
+            agentName: "Recruiter Agent",
+            createdAt: "2026-07-15T08:00:00.000Z",
+          },
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            type: "budget_increase",
+            agentName: null,
+            createdAt: "2026-07-16T08:00:00.000Z",
+          },
+        ],
       },
     ]);
     const app = await createApp();
@@ -99,6 +122,24 @@ describe("GET /api/cloud/activation-signals", () => {
           lastActivityAt: lastActivityAt.toISOString(),
           monthRunCount: 14,
           monthCostCents: 250,
+          firstSucceededAt: "2026-07-02T10:00:00.000Z",
+          weekRunsSucceeded: 5,
+          weekRunsFailed: 2,
+          pendingApprovalCount: 7,
+          pendingApprovals: [
+            {
+              id: "33333333-3333-4333-8333-333333333333",
+              type: "hire_agent",
+              agentName: "Recruiter Agent",
+              createdAt: "2026-07-15T08:00:00.000Z",
+            },
+            {
+              id: "44444444-4444-4444-8444-444444444444",
+              type: "budget_increase",
+              agentName: null,
+              createdAt: "2026-07-16T08:00:00.000Z",
+            },
+          ],
         },
       ],
     });
