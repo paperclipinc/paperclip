@@ -537,7 +537,11 @@ export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
 // (e.g. a keyless agent activated without connecting a model key), so every
 // heartbeat run completes with `outcome:"failed"` + this errorCode and will keep
 // failing until a human wires up a credential. Pause the agent instead of looping.
-const PERMANENT_AUTH_FAILURE_CODES = new Set(["claude_auth_required", "inference_auth_invalid"]);
+const PERMANENT_AUTH_FAILURE_CODES = new Set([
+  "claude_auth_required",
+  "codex_auth_required",
+  "inference_auth_invalid",
+]);
 function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
   return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
 }

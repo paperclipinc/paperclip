@@ -207,6 +207,104 @@ describe("NewCompanyDialog", () => {
     container.remove();
   });
 
+  it("shows the add-a-slot prompt (not the trial upsell or a billing error) on a 402 slot_required", async () => {
+    // An active subscriber past their paid company slots gets a 402 too, with
+    // confirm-first billing: nothing is created until they buy another slot.
+    mockCloudCompaniesApi.create.mockRejectedValue(
+      new ApiError("slot_required", 402, { error: "slot_required", limit: 2 }),
+    );
+    const { container, root, queryClient, onOpenChange } = renderDialog();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewCompanyDialog open onOpenChange={onOpenChange} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const input = document.body.querySelector('input[aria-label="Company name"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, "New Co");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create company",
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain(
+      "Your subscription covers 2 companies. Add another company slot to create this one.",
+    );
+    // Distinct from the trial upsell and the billing-failure copy.
+    expect(document.body.textContent).not.toContain("Your trial includes one company");
+    expect(document.body.textContent).not.toContain("We could not update your billing");
+    const slotLink = [...document.body.querySelectorAll("a")].find(
+      (a) => a.textContent?.includes("Add a company slot"),
+    );
+    expect(slotLink?.getAttribute("href")).toBe("/subscribe?add=company");
+    expect(assignSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("singularizes the slot_required copy when limit is 1", async () => {
+    mockCloudCompaniesApi.create.mockRejectedValue(
+      new ApiError("slot_required", 402, { error: "slot_required", limit: 1 }),
+    );
+    const { container, root, queryClient, onOpenChange } = renderDialog();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewCompanyDialog open onOpenChange={onOpenChange} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const input = document.body.querySelector('input[aria-label="Company name"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(async () => {
+      setter?.call(input, "New Co");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create company",
+    );
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain(
+      "Your subscription covers 1 company. Add another company slot to create this one.",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
   it("shows the inline limit message on a 409 and does NOT navigate", async () => {
     mockCloudCompaniesApi.create.mockRejectedValue(
       new ApiError("company_limit_reached", 409, { error: "company_limit_reached" }),

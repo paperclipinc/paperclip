@@ -65,18 +65,31 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
   }
 
   const error = createCompany.error;
-  const errorCode =
-    error instanceof ApiError ? (error.body as { error?: string } | null)?.error : undefined;
-  // Both come back as 402: the plan gate (upgrade_required) and a failed
-  // per-company billing update for an already-paying user (billing_update_failed).
-  // Only the former is an upsell.
+  const errorBody =
+    error instanceof ApiError ? (error.body as { error?: string; limit?: number } | null) : null;
+  const errorCode = errorBody?.error;
+  // Three distinct outcomes all come back as 402: the trial plan gate
+  // (upgrade_required), an active subscriber who must buy another company slot
+  // first (slot_required, confirm-first billing), and a failed per-company
+  // billing update for an already-paying user (billing_update_failed). Only the
+  // first two are actionable prompts; the last is a transient error.
   const isBillingUpdateFailed =
     error instanceof ApiError && error.status === 402 && errorCode === "billing_update_failed";
+  const isSlotRequired =
+    error instanceof ApiError && error.status === 402 && errorCode === "slot_required";
+  const slotLimit = isSlotRequired ? errorBody?.limit : undefined;
   const isUpgradeRequired =
-    error instanceof ApiError && error.status === 402 && !isBillingUpdateFailed;
+    error instanceof ApiError &&
+    error.status === 402 &&
+    !isBillingUpdateFailed &&
+    !isSlotRequired;
   const isLimitReached = error instanceof ApiError && error.status === 409;
   const isGenericError =
-    error != null && !isBillingUpdateFailed && !isUpgradeRequired && !isLimitReached;
+    error != null &&
+    !isBillingUpdateFailed &&
+    !isSlotRequired &&
+    !isUpgradeRequired &&
+    !isLimitReached;
 
   return (
     <Dialog
@@ -116,6 +129,25 @@ export function NewCompanyDialog({ open, onOpenChange }: NewCompanyDialogProps) 
               month.{" "}
               <a href="/account" className="font-medium underline">
                 Subscribe
+              </a>
+            </p>
+          </div>
+        )}
+
+        {isSlotRequired && (
+          <div
+            role="alert"
+            className="rounded-md border border-border bg-muted/40 p-3 text-sm"
+          >
+            <p className="font-medium">Add a company slot</p>
+            <p className="mt-1 text-muted-foreground">
+              {slotLimit != null
+                ? `Your subscription covers ${slotLimit} ${
+                    slotLimit === 1 ? "company" : "companies"
+                  }. Add another company slot to create this one.`
+                : "Your subscription does not cover another company yet. Add a company slot to create this one."}{" "}
+              <a href="/subscribe?add=company" className="font-medium underline">
+                Add a company slot
               </a>
             </p>
           </div>

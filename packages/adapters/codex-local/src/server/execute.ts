@@ -53,6 +53,7 @@ import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
+  isCodexInvalidApiKeyError,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -119,6 +120,29 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+// Benign stderr lines that never explain a nonzero exit and must not be
+// surfaced as the run error: Codex always prints the YOLO approvals warning
+// because this adapter passes the approvals-bypass flag itself, and
+// "[paperclip] ..." lines are diagnostics the adapter injected (e.g. ACP
+// fallback notes). Keep this list conservative so real errors are never
+// skipped.
+const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
+  /^YOLO mode is enabled\b/i,
+  /^\[paperclip\]/,
+];
+
+function isBenignCodexStderrLine(line: string): boolean {
+  return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
+}
+
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
 }
 
 function signalCodexChild(
@@ -616,6 +640,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             "stdout",
             `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
+          // Captured at launch time, before the sandbox runs: does the SHARED
+          // host credential store (the symlink source the managed homes point
+          // their `auth.json` at) hold usable auth? The teardown copy-back
+          // below gates on this instead of re-probing, so a run can never
+          // manufacture a copy-back target that did not exist at launch.
+          const sharedHostCodexHome = resolveSharedCodexHomeDir(process.env);
+          const sharedHostHasUsableAuth = await codexHomeHasUsableAuth(sharedHostCodexHome);
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -646,12 +677,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                restore: async ({ assetDir, readFile }) => {
+                  // The copy-back exists to persist refreshed ChatGPT-subscription
+                  // tokens back to the credential the managed homes symlink to.
+                  // When no shared host credential store exists (cloud/multi-tenant
+                  // servers whose auth lives only in managed per-company homes, or
+                  // a host that never ran `codex login`) there is nothing to merge
+                  // into, and creating a shared `~/.codex` on a multi-tenant server
+                  // would leak one tenant's credential into the store every other
+                  // tenant's managed home is seeded from. Skip instead of letting
+                  // the ENOENT fail the teardown and mark a completed run failed.
+                  if (!sharedHostHasUsableAuth) {
+                    await onLog(
+                      "stdout",
+                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
+                    );
+                    return;
+                  }
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                  })),
+                  }));
+                },
                 // Exclude state that the sandbox run never needs so we don't
                 // tar/upload hundreds of MB on every run:
                 // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
@@ -1218,7 +1266,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         } as Record<string, unknown>)
         : null;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
@@ -1239,9 +1287,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const invalidApiKey =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
+        isCodexInvalidApiKeyError({
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1250,6 +1307,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
+        !invalidApiKey &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
@@ -1269,6 +1327,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorCode:
           authRefreshFailure
             ? authRefreshFailure
+            : invalidApiKey
+            ? "codex_auth_required"
             : providerQuota
             ? "provider_quota"
             : transientUpstream

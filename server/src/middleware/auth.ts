@@ -400,6 +400,10 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
   const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
+  // Optional: the gateway URL slug this stack is served under. Surfaced as the
+  // stack company's slugAliases so the SPA can resolve /<slug>/... URLs the
+  // gateway proxies verbatim (post-checkout and account-page links use it).
+  const stackSlug = req.header("x-paperclip-cloud-stack-slug")?.trim() || undefined;
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const companyId = cloudTenantCompanyId(stackId);
   const now = new Date();
@@ -509,7 +513,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships,
     isInstanceAdmin: false,
     source: "cloud_tenant",
-    cloudStack: { stackId, stackRole },
+    cloudStack: { stackId, stackRole, ...(stackSlug ? { stackSlug } : {}) },
   };
 }
 

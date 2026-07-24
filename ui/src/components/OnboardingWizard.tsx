@@ -266,6 +266,12 @@ function OnboardingWizardInner({
   // handleConfirmMission, the only place that sets it true, so it can never
   // linger onto an unrelated later error.
   const [companyUpgradeRequired, setCompanyUpgradeRequired] = useState(false);
+  // True only while `error` holds the additional-company slot-required message
+  // (the 402 slot_required case: an active subscriber must buy another company
+  // slot before this one is created, confirm-first billing). Lets the error
+  // banner offer an "Add a company slot" link instead of a dead end. Reset at
+  // the top of handleConfirmMission alongside companyUpgradeRequired.
+  const [companySlotRequired, setCompanySlotRequired] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -902,23 +908,38 @@ function OnboardingWizardInner({
       setLoading(true);
       setError(null);
       setCompanyUpgradeRequired(false);
+      setCompanySlotRequired(false);
       try {
         const created = await cloudCompaniesApi.create({ name: companyName.trim() });
         await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
         window.location.assign(created.url);
       } catch (err) {
         if (err instanceof ApiError && err.status === 402) {
-          // Both come back as 402: the plan gate (upgrade_required) and a failed
-          // per-company billing update for an already-paying user
-          // (billing_update_failed). Only the former is an upsell.
-          const code = (err.body as { error?: string } | null)?.error;
-          const upgradeRequired = code !== "billing_update_failed";
-          setCompanyUpgradeRequired(upgradeRequired);
-          setError(
-            code === "billing_update_failed"
-              ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
-              : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
-          );
+          // Three outcomes share the 402: the trial plan gate (upgrade_required),
+          // an active subscriber who must buy another company slot first
+          // (slot_required, confirm-first billing), and a failed per-company
+          // billing update for an already-paying user (billing_update_failed).
+          const body = err.body as { error?: string; limit?: number } | null;
+          const code = body?.error;
+          if (code === "slot_required") {
+            setCompanySlotRequired(true);
+            const limit = body?.limit;
+            setError(
+              limit != null
+                ? `Your subscription covers ${limit} ${
+                    limit === 1 ? "company" : "companies"
+                  }. Add another company slot to create this one.`
+                : "Your subscription does not cover another company yet. Add a company slot to create this one.",
+            );
+          } else {
+            const upgradeRequired = code !== "billing_update_failed";
+            setCompanyUpgradeRequired(upgradeRequired);
+            setError(
+              code === "billing_update_failed"
+                ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
+                : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
+            );
+          }
         } else if (err instanceof ApiError && err.status === 409) {
           setError("You have reached the fair use company limit. Contact us to raise it.");
         } else {
@@ -2171,6 +2192,21 @@ function OnboardingWizardInner({
                             NewCompanyDialog's muted-not-red Subscribe link). */}
                         <a href="/account" className="font-medium text-foreground underline">
                           Subscribe
+                        </a>
+                      </>
+                    )}
+                    {companySlotRequired && (
+                      <>
+                        {" "}
+                        {/* Same non-destructive link treatment: buying another
+                            company slot is a normal navigation, not a danger
+                            action (mirrors NewCompanyDialog's slot-required
+                            prompt). */}
+                        <a
+                          href="/subscribe?add=company"
+                          className="font-medium text-foreground underline"
+                        >
+                          Add a company slot
                         </a>
                       </>
                     )}

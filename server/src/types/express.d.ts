@@ -29,6 +29,8 @@ declare global {
         cloudStack?: {
           stackId: string;
           stackRole: "owner" | "admin" | "member" | "support";
+          /** Optional gateway URL slug for the stack (x-paperclip-cloud-stack-slug). */
+          stackSlug?: string;
         };
         keyId?: string;
         keyScope?: AgentApiKeyScope;

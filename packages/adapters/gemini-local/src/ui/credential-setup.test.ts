@@ -15,4 +15,15 @@ describe("geminiLocalCredentialSetup", () => {
     expect(apiKeyOption?.setupUrl).toBe("https://aistudio.google.com/apikey");
     expect(apiKeyOption?.placeholder).toBe("AIza…");
   });
+
+  it("anchors valuePattern to the Google AIza key shape and rejects other providers' keys", () => {
+    const apiKeyOption = geminiLocalCredentialSetup.options.find(o => o.envKey === "GEMINI_API_KEY");
+    const pattern = new RegExp(apiKeyOption!.valuePattern!);
+
+    expect(pattern.test("AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456")).toBe(true);
+
+    expect(pattern.test("sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
+    expect(pattern.test("sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
+    expect(pattern.test("AIzaSyAbCdEf GhIjKlMnOpQrStUvWxYz0123456")).toBe(false);
+  });
 });
