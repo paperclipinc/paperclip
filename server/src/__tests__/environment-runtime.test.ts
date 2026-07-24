@@ -277,7 +277,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     };
   }
 
-  async function seedReusablePluginSandboxLease() {
+  async function seedReusablePluginSandboxLease(
+    seedInput: { scopedAdapterType?: string | null } = {},
+  ) {
+    const scopedAdapterType = seedInput.scopedAdapterType ?? null;
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -381,11 +384,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType: null,
+          adapterType: scopedAdapterType,
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType: null,
+            adapterType: scopedAdapterType,
             config: providerConfig,
           }),
         },
@@ -1316,11 +1319,16 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType: null,
+          // A concrete, matching adapter type on both the stored scope and
+          // the acquireRunLease call below: null is never a wildcard match
+          // for plugin-backed leases (see reusableSandboxLeaseScopeMatches),
+          // so this resume-then-fallback exercise needs a genuine positive
+          // match to reach the resume RPC at all.
+          adapterType: "codex_local",
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType: null,
+            adapterType: "codex_local",
             config: providerConfig,
           }),
         },
@@ -1359,6 +1367,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       issueId: null,
       agentId,
       heartbeatRunId: runId,
+      adapterType: "codex_local",
       persistedExecutionWorkspace: {
         id: executionWorkspaceId,
         mode: "shared_workspace",
@@ -2174,8 +2183,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     // Contrast to the secret-bearing case: with no secret refs, a legacy lease
     // (runtimeFingerprint, no leaseFingerprint) on the same active run may still
     // be resumed through the runtime fallback.
+    //
+    // The lease is scoped to a concrete adapter type (matched by the run's
+    // adapterType) so it satisfies the plugin-backed positive-match rule
+    // (reusableSandboxLeaseScopeMatches requires storedAdapterType and the run's
+    // adapterType to both be set and equal for a plugin-backed lease). A
+    // null-scope plugin lease is deliberately NOT reused; that case is covered by
+    // "does not reuse a plugin-backed sandbox lease when both the stored scope
+    // and the run's adapter type are null". This test isolates the secret-blind
+    // legacy runtime-fingerprint fallback, which sits behind that adapter gate.
+    const scopedAdapterType = "claude_local";
     const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId } =
-      await seedReusablePluginSandboxLease();
+      await seedReusablePluginSandboxLease({ scopedAdapterType });
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
@@ -2217,6 +2236,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         id: executionWorkspaceId,
         mode: "shared_workspace",
       },
+      adapterType: scopedAdapterType,
     });
 
     // The legacy lease is resumed via the runtime fallback (no fresh acquire).
@@ -2292,6 +2312,327 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
       status: "active",
       cleanupStatus: null,
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease whose stored scope has a null adapter type when the run requests one", async () => {
+    // Gap-1 regression: a lease pooled with scope.adapterType null must never
+    // be matched by ANY run (null is never a wildcard). Re-acquiring on the
+    // SAME run/heartbeatRunId (the self-heal shape) must still go through
+    // environmentAcquireLease for a fresh lease rather than resuming the
+    // null-scoped one.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: null });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-claude",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      adapterType: "claude_local",
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease scoped to a concrete adapter type when the run requests none", async () => {
+    // Symmetric gap-1 case: a lease scoped to a real adapter must not be
+    // handed to a run whose adapterType is null/absent either.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: "claude_local" });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-null-adapter",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-null-adapter");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease when both the stored scope and the run's adapter type are null", async () => {
+    // The core gap-1 case: null must never be treated as a wildcard, even
+    // when it happens to match null-for-null. A null-scoped plugin lease is
+    // ambiguous about which runtime image it actually carries, so no run
+    // (including another null-adapterType one) may resume it; it always
+    // falls through to a fresh environmentAcquireLease.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: null });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-both-null",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-both-null");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease scoped to a different concrete adapter type", async () => {
+    // Concrete-vs-concrete case: both sides are non-null, but different
+    // harnesses. A run requesting claude_local must never resume a lease
+    // scoped to gemini_local, even though neither side is null (the null
+    // cases above prove null is never a wildcard; this proves two distinct
+    // concrete values are also never treated as equal).
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: "gemini_local" });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-claude-vs-gemini",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      adapterType: "claude_local",
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude-vs-gemini");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("persists the plugin's resolved adapter type and image into the reusable lease scope when the server has no per-run hint", async () => {
+    // Gap-1 (second layer, matching plugin.ts's onEnvironmentAcquireLease
+    // change): when the server's own adapterType hint is absent, the scope
+    // must fall back to whatever the plugin actually resolved and returned
+    // in the lease metadata, so the scope is never null even though a
+    // concrete image WAS provisioned.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox With Fallback",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.reusable-sandbox-provider-fallback",
+      packageName: "@acme/reusable-sandbox-provider-fallback",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.reusable-sandbox-provider-fallback",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Reusable Sandbox Provider Fallback",
+        description: "Test provider exercising the adapterType metadata fallback",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "resolved-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              // The plugin's own resolution: no per-run hint came from the
+              // server (acquireRunLease is called below without adapterType),
+              // but the plugin still resolved a concrete adapter/image (e.g.
+              // the environment's configured default).
+              adapterType: "codex_local",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("resolved-plugin-lease");
+    expect(acquired.lease.metadata?.reusableSandboxLease).toMatchObject({
+      adapterType: "codex_local",
+      runtimeImage: "fake:test",
     });
   });
 
