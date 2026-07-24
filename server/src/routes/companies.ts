@@ -34,6 +34,7 @@ import {
   canCreateStackCompany,
   cloudTenantCompanyId,
   isCompanyIdConflict,
+  withCloudStackSlugAlias,
 } from "../services/cloud-tenant-company.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -111,6 +112,13 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
   }
 
+  // Cloud tenants reach their company under the gateway's stack slug too, so
+  // company payloads carry that slug as slugAliases (no-op for other actors).
+  function withActorSlugAliases<T extends { id: string; issuePrefix: string }>(req: Request, company: T): T {
+    const cloudStack = req.actor.source === "cloud_tenant" ? req.actor.cloudStack : undefined;
+    return withCloudStackSlugAlias(company, cloudStack);
+  }
+
   router.get("/", async (req, res) => {
     assertBoard(req);
     const result = await svc.list();
@@ -119,7 +127,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     const allowed = new Set(req.actor.companyIds ?? []);
-    res.json(result.filter((company) => allowed.has(company.id)));
+    res.json(
+      result
+        .filter((company) => allowed.has(company.id))
+        .map((company) => withActorSlugAliases(req, company)),
+    );
   });
 
   router.get("/stats", async (req, res) => {
@@ -216,7 +228,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json(company);
+    res.json(withActorSlugAliases(req, company));
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {

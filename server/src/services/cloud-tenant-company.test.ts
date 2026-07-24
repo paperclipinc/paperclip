@@ -3,6 +3,7 @@ import {
   canCreateStackCompany,
   cloudTenantCompanyId,
   isCompanyIdConflict,
+  withCloudStackSlugAlias,
 } from "./cloud-tenant-company.js";
 
 describe("cloudTenantCompanyId", () => {
@@ -29,6 +30,45 @@ describe("canCreateStackCompany", () => {
     expect(canCreateStackCompany({ stackId: "s", stackRole: "support" })).toBe(false);
     expect(canCreateStackCompany(undefined)).toBe(false);
     expect(canCreateStackCompany(null)).toBe(false);
+  });
+});
+
+describe("withCloudStackSlugAlias", () => {
+  const stackId = "tenant:ten_1";
+  const stackCompany = { id: cloudTenantCompanyId(stackId), issuePrefix: "PAP" };
+
+  it("attaches the gateway slug as a slugAliases entry on the stack's own company", () => {
+    const decorated = withCloudStackSlugAlias(stackCompany, {
+      stackId,
+      stackRole: "owner",
+      stackSlug: "jannes-stubbemann",
+    });
+    expect(decorated).toEqual({ ...stackCompany, slugAliases: ["jannes-stubbemann"] });
+  });
+
+  it("leaves other companies untouched", () => {
+    const other = { id: "11111111-2222-4333-8444-555555555555", issuePrefix: "ACME" };
+    const decorated = withCloudStackSlugAlias(other, {
+      stackId,
+      stackRole: "owner",
+      stackSlug: "jannes-stubbemann",
+    });
+    expect(decorated).toBe(other);
+  });
+
+  it("is a no-op without a cloud stack, without a slug, or for a blank slug", () => {
+    expect(withCloudStackSlugAlias(stackCompany, undefined)).toBe(stackCompany);
+    expect(withCloudStackSlugAlias(stackCompany, null)).toBe(stackCompany);
+    expect(withCloudStackSlugAlias(stackCompany, { stackId, stackRole: "member" })).toBe(stackCompany);
+    expect(
+      withCloudStackSlugAlias(stackCompany, { stackId, stackRole: "member", stackSlug: "  " }),
+    ).toBe(stackCompany);
+  });
+
+  it("skips a slug that already equals the issuePrefix (case-insensitive)", () => {
+    expect(
+      withCloudStackSlugAlias(stackCompany, { stackId, stackRole: "owner", stackSlug: "pap" }),
+    ).toBe(stackCompany);
   });
 });
 
