@@ -2603,8 +2603,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driverKey: "fake-plugin",
       companyId,
       environmentId: environment.id,
+      executionWorkspaceId: undefined,
+      executionWorkspaceSettings: null,
       issueId: null,
       config: { template: "base" },
+      agentId: undefined,
+      adapterType: undefined,
       runId,
       workspaceMode: undefined,
     });
