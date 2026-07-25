@@ -112,6 +112,8 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { environmentRuntimeService } from "../services/environment-runtime.ts";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -2688,7 +2690,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .set({ status: "in_review" })
       .where(eq(issues.id, issueId));
 
-    const heartbeat = heartbeatService(db);
+    // Simulate the worker mid-restart: the manager IS wired into this process,
+    // it just reports the worker as not running yet. That is the transient,
+    // self-healing condition this test is about. A process with no worker
+    // manager at all is a permanent wiring bug and reports a different error.
+    const restartingWorkerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: environmentRuntimeService(db, {
+        pluginWorkerManager: restartingWorkerManager,
+        pluginWorkerReadyTimeoutMs: 0,
+      }),
+    });
     await heartbeat.resumeQueuedRuns();
 
     const runs = await waitForValue(async () => {
