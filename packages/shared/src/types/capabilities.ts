@@ -27,6 +27,7 @@ export interface PublicFeatureFlags {
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
@@ -82,6 +83,7 @@ export function derivePublicFeatureFlags(input: {
     enableExternalObjects: experimental.enableExternalObjects === true,
     enableSmokeLab: experimental.enableSmokeLab === true,
     enableBuiltInAgents: experimental.enableBuiltInAgents === true,
+    enableStatusCards: experimental.enableStatusCards === true,
     enableDecisions: experimental.enableDecisions === true,
     enableGoalsSidebarLink: experimental.enableGoalsSidebarLink === true,
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
