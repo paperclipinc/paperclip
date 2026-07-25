@@ -375,6 +375,48 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  // Credential preflight: a run with no chance to authenticate against any
+  // model provider must fail fast with the permanent errorCode
+  // `inference_auth_invalid` (the heartbeat pauses the agent on it) instead of
+  // launching OpenCode, which wraps the missing credential as an opaque
+  // transient "Unexpected server error" and feeds an endless retry storm.
+  // Host-level auth (`opencode auth login`), host config providers, injected
+  // gateway providers, and env keys all pass, so self-hosted setups that
+  // authenticate on the host are unaffected.
+  //
+  // This MUST run before prepareOpenCodeRuntimeConfig: that call repoints
+  // XDG_CONFIG_HOME at a synthesized runtime config which always carries a
+  // `provider` block now (it registers the configured `provider/model` id so
+  // OpenCode can resolve `--model`). That block is our own artifact, not
+  // evidence that the agent has a credential, so probing it would make the
+  // preflight pass for every run and hide a missing key behind OpenCode's
+  // opaque downstream failures. The user's real config dir is copied into the
+  // runtime config verbatim, so reading it here sees exactly the same
+  // user-authored provider blocks the synthesized copy would have.
+  const hostCredentialEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...env }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const credentialPreflight = await evaluateOpenCodeCredentialPreflight({ env: hostCredentialEnv });
+  if (!credentialPreflight.ready) {
+    await onLog("stderr", `[paperclip] ${OPENCODE_MISSING_CREDENTIAL_MESSAGE}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: OPENCODE_MISSING_CREDENTIAL_MESSAGE,
+      errorCode: inferenceFailureErrorCode("AUTH_INVALID"),
+      errorMeta: {
+        inferenceErrorCode: "AUTH_INVALID",
+        inferenceCause: "credential preflight found no provider credential for this run",
+      },
+      resultJson: {
+        inferenceErrorCode: "AUTH_INVALID",
+        credentialPreflight: "missing_provider_credential",
+      },
+    };
+  }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
@@ -384,33 +426,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    // Credential preflight: a run with no chance to authenticate against any
-    // model provider must fail fast with the permanent errorCode
-    // `inference_auth_invalid` (the heartbeat pauses the agent on it) instead of
-    // launching OpenCode, which wraps the missing credential as an opaque
-    // transient "Unexpected server error" and feeds an endless retry storm.
-    // Host-level auth (`opencode auth login`), host config providers, injected
-    // gateway providers, and env keys all pass, so self-hosted setups that
-    // authenticate on the host are unaffected.
-    const credentialPreflight = await evaluateOpenCodeCredentialPreflight({ env: runtimeEnv });
-    if (!credentialPreflight.ready) {
-      await onLog("stderr", `[paperclip] ${OPENCODE_MISSING_CREDENTIAL_MESSAGE}\n`);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: OPENCODE_MISSING_CREDENTIAL_MESSAGE,
-        errorCode: inferenceFailureErrorCode("AUTH_INVALID"),
-        errorMeta: {
-          inferenceErrorCode: "AUTH_INVALID",
-          inferenceCause: "credential preflight found no provider credential for this run",
-        },
-        resultJson: {
-          inferenceErrorCode: "AUTH_INVALID",
-          credentialPreflight: "missing_provider_credential",
-        },
-      };
-    }
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
