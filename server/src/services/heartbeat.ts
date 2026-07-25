@@ -14262,6 +14262,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           heartbeatRunId: run.id,
           agentId: agent.id,
           persistedExecutionWorkspace,
+          executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
         });
         activeEnvironmentLease = {
           environment: reacquiredEnvironment.environment,
