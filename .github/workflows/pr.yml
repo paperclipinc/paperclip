@@ -27,10 +27,17 @@ jobs:
         # Rebase-promotion branches (rebase-YYYYMMDD) legitimately import
         # upstream's pnpm-lock.yaml wholesale; the manual-edit block is for
         # hand-authored PRs, so exempt them alongside the refresh bot.
-        # Exempting the block does not skip lockfile validation: when manifests
-        # change, "Validate dependency resolution" below regenerates the
-        # lockfile and every downstream job installs with --frozen-lockfile, so
-        # a lockfile that does not match the manifests still fails CI.
+        #
+        # What the exemption does and does not bypass: the downstream
+        # `--frozen-lockfile` installs do NOT validate a committed lockfile.
+        # Whenever manifests change, "Validate dependency resolution" below
+        # regenerates the lockfile and uploads it, and every downstream job
+        # restores that artifact OVER the committed file before installing (and
+        # docker.yml regenerates it outright), so the committed lockfile is not
+        # an input to any of them. That is why the step below also checks the
+        # committed lockfile against a fresh resolution: without it, every
+        # exemption path here (this one, chore/refresh-lockfile, dependabot)
+        # would let an inconsistent lockfile through unexamined.
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
           !startsWith(github.head_ref, 'rebase-') &&
@@ -88,14 +95,46 @@ jobs:
       - name: Validate dependency resolution when manifests change
         id: regen_lockfile
         run: |
+          set -euo pipefail
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
+          manifests_changed=0
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-            echo "regenerated=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "regenerated=0" >> "$GITHUB_OUTPUT"
+            manifests_changed=1
           fi
+          lockfile_committed=0
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+            lockfile_committed=1
+          fi
+
+          if [ "$manifests_changed" = 0 ] && [ "$lockfile_committed" = 0 ]; then
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+
+          # Only a PR that actually commits pnpm-lock.yaml can reach the `!= 0`
+          # branch here, and the block above means that is only the exempted
+          # paths (rebase-* promotions, chore/refresh-lockfile, dependabot).
+          # For those the committed lockfile is authoritative input, yet nothing
+          # downstream ever looks at it: the jobs below restore the regenerated
+          # artifact over it and docker.yml regenerates it outright. So this is
+          # the one place it can be checked. Regeneration is a no-op against an
+          # up-to-date lockfile (pnpm only re-resolves specs the existing
+          # lockfile no longer satisfies), which is the same determinism
+          # docker.yml's "Refresh lockfile for Docker build context" relies on.
+          if [ "$lockfile_committed" = 1 ] && ! git diff --quiet -- pnpm-lock.yaml; then
+            echo "The committed pnpm-lock.yaml is not what pnpm resolves from these manifests."
+            echo "Regenerate it with: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile"
+            git --no-pager diff --stat -- pnpm-lock.yaml
+            exit 1
+          fi
+
+          # Keep the artifact semantics unchanged: it exists for manifest-only
+          # PRs whose lockfile stayed at base, so it is uploaded on exactly the
+          # same condition as before.
+          echo "regenerated=$manifests_changed" >> "$GITHUB_OUTPUT"
 
       # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
       # job above blocks committing it) need the regenerated lockfile for the
