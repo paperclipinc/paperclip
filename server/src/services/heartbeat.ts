@@ -251,6 +251,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { loadConfig } from "../config.js";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -1039,9 +1040,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
       configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
     });
     if (readiness.managed && !readiness.ready) {
+      // "Sign in on the host" is only actionable when the person reading this
+      // IS the operator of the machine. On a multi-user deployment the runner
+      // is a sandbox nobody can log into, so that half of the sentence sends
+      // the user somewhere that does not exist; leave them with the one action
+      // they can actually take.
+      const hostLoginActionable = loadConfig().deploymentMode === "local_trusted";
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
-          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
+          (hostLoginActionable
+            ? `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`
+            : `Add an OPENAI_API_KEY for this agent (Agent settings -> credentials) and run it again.`),
         {
           configurationIncomplete: {
             reason: "codex_credentials_missing",
