@@ -98,12 +98,19 @@ jobs:
           set -euo pipefail
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
+          # Here-strings, not `printf ... | grep`: `grep -q` exits at its first
+          # match, so on a changed-file list larger than the pipe buffer the
+          # writer takes SIGPIPE, and under `pipefail` that failure becomes the
+          # pipeline's status. The `if` would then read false on a list that DID
+          # match, silently zeroing these flags -- skipping the lockfile check or
+          # dropping the artifact. A large rebase-* promotion is exactly the case
+          # that could cross that threshold.
           manifests_changed=0
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+          if grep -Eq "$manifest_pattern" <<<"$changed"; then
             manifests_changed=1
           fi
           lockfile_committed=0
-          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+          if grep -qx 'pnpm-lock.yaml' <<<"$changed"; then
             lockfile_committed=1
           fi
 
@@ -114,16 +121,20 @@ jobs:
 
           pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
 
-          # Only a PR that actually commits pnpm-lock.yaml can reach the `!= 0`
-          # branch here, and the block above means that is only the exempted
-          # paths (rebase-* promotions, chore/refresh-lockfile, dependabot).
-          # For those the committed lockfile is authoritative input, yet nothing
-          # downstream ever looks at it: the jobs below restore the regenerated
-          # artifact over it and docker.yml regenerates it outright. So this is
-          # the one place it can be checked. Regeneration is a no-op against an
-          # up-to-date lockfile (pnpm only re-resolves specs the existing
-          # lockfile no longer satisfies), which is the same determinism
-          # docker.yml's "Refresh lockfile for Docker build context" relies on.
+          # Only a PR that actually commits pnpm-lock.yaml reaches the
+          # `lockfile_committed = 1` branch below, and the block above means that
+          # is only the exempted paths (rebase-* promotions,
+          # chore/refresh-lockfile, dependabot). For those the committed lockfile
+          # is authoritative input, yet nothing downstream ever looks at it: the
+          # jobs below restore the regenerated artifact over it and docker.yml
+          # regenerates it outright. So this is the one place it can be checked.
+          # Regeneration is a no-op against an up-to-date lockfile (pnpm only
+          # re-resolves specs the existing lockfile no longer satisfies), which
+          # is what makes "regenerated == committed" a fair test rather than a
+          # coin flip. Note this is strictly stronger than docker.yml's
+          # "Refresh lockfile for Docker build context": that step accepts a
+          # changed lockfile and only fails when some OTHER file changed, so it
+          # never rejects an inconsistent one.
           if [ "$lockfile_committed" = 1 ] && ! git diff --quiet -- pnpm-lock.yaml; then
             echo "The committed pnpm-lock.yaml is not what pnpm resolves from these manifests."
             echo "Regenerate it with: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile"
