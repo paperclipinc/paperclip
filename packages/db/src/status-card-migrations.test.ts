@@ -7,11 +7,11 @@ import {
 } from "./test-embedded-postgres.js";
 
 const MIGRATION_FILES = [
-  "0185_status_cards.sql",
-  "0186_status_card_compile_provenance.sql",
-  "0187_status_card_pending_change_hash.sql",
-  "0188_status_card_generation_issue_index.sql",
-  "0189_status_card_agent.sql",
+  "0188_status_cards.sql",
+  "0189_status_card_compile_provenance.sql",
+  "0190_status_card_pending_change_hash.sql",
+  "0191_status_card_generation_issue_index.sql",
+  "0192_status_card_agent.sql",
 ] as const;
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
