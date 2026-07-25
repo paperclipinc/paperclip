@@ -108,6 +108,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  resolveHeartbeatRunErrorCode,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -256,6 +257,7 @@ import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.j
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { isAdapterRuntimeImageMismatchError } from "@paperclipai/adapter-utils/execution-target";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -344,6 +346,7 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_QUEUED_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -557,6 +560,27 @@ function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
 // permanent-auth pause, the non-retryable setup pause) already handles.
 export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
 
+// A sandbox provider plugin's worker can be briefly down during its own
+// restart window (e.g. a rolling deploy of the plugin worker process). Lease
+// acquisition fails immediately in that window, but the condition is
+// transient and self-healing, so it must be treated as retryable
+// infrastructure rather than a terminal setup failure. See
+// resolveSandboxProviderPlugin's "worker_unavailable" message in
+// environment-runtime.ts (":808"), e.g. 'Sandbox provider "kubernetes" is
+// installed via plugin "acme.kubernetes-sandbox-provider", but its worker is
+// not running.'
+//
+// This is anchored on both "is installed via plugin" and "but its worker is
+// not running" so it does not also match plugin-environment-driver.ts's
+// unrelated, permanent "provider not installed" message ('Sandbox provider
+// "X" is not installed or its plugin worker is not running.'), which
+// coincidentally contains the same "worker is not running" substring but
+// describes a terminal condition that must not be retried.
+function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -570,7 +594,10 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   return (
     isSpawnLikeFailureMessage(run.error) ||
     isSpawnLikeFailureMessage(resultJson.errorMessage) ||
-    isSpawnLikeFailureMessage(resultJson.message)
+    isSpawnLikeFailureMessage(resultJson.message) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
   );
 }
 
@@ -7785,6 +7812,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: updated.id,
+          agentId: updated.agentId,
+          status: updated.status,
+          invocationSource: updated.invocationSource,
+          triggerDetail: updated.triggerDetail,
+          error: updated.error ?? null,
+          errorCode: updated.errorCode ?? null,
+          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
+  }
+
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
@@ -11340,13 +11418,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    await db
+    const identicalFailurePauseReason =
+      `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`;
+    const identicalFailurePauseWrite = await db
       .update(agents)
       .set({
         status: "paused",
-        pauseReason: truncateAgentErrorReason(
-          `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`,
-        ),
+        pauseReason: truncateAgentErrorReason(identicalFailurePauseReason),
         pausedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -11356,7 +11434,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { err: pauseErr, agentId: agent.id, runId: run.id },
           "failed to pause agent after repeated identical failures",
         );
+        return null;
       });
+    if (identicalFailurePauseWrite !== null) {
+      // Mirror manual pause: a paused agent must have no live runs, or a
+      // just-enqueued retry can sit in "queued" forever since dequeue skips
+      // paused agents. run is already terminal by the time this runs.
+      await cancelActiveForAgentInternal(
+        agent.id,
+        `Cancelled because the agent was paused: ${identicalFailurePauseReason}`,
+        "agent_paused",
+      );
+    }
   }
 
   async function finalizeAgentStatus(
@@ -11635,11 +11724,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
-    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
+    // Find all runs stuck in "running" state (queued runs get a bounded wait below; resumeQueuedRuns handles normal dequeue)
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -11821,6 +11911,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+    }
+
+    // Backstop for any cause of queue stranding (pause races, concurrency starvation,
+    // invokability edge cases): a run should never wait in "queued" forever.
+    // This loop only cancels the run and its wakeup; for issue-linked runs it
+    // deliberately does not touch the issue's checkoutRunId/executionRunId
+    // lock columns. Releasing that lock is left to the same-sweep
+    // reconcileStrandedAssignedIssues() (and the enqueueWakeup self-heal it
+    // triggers), mirroring how sweepStaleIssueLocks documents its own
+    // reliance on that same reconciliation pass.
+    const expiredQueuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          lt(heartbeatRuns.createdAt, new Date(now.getTime() - maxQueuedAgeMs)),
+        ),
+      );
+
+    const maxQueuedAgeHours = maxQueuedAgeMs / (60 * 60 * 1000);
+    const maxQueuedAgeHoursLabel = Number.isInteger(maxQueuedAgeHours)
+      ? String(maxQueuedAgeHours)
+      : maxQueuedAgeHours.toFixed(2);
+    const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
+
+    for (const run of expiredQueuedRuns) {
+      // Guard the cancellation on the row still being "queued": another
+      // scheduler pass or a manual resume can claim this exact run (queued ->
+      // running) between the SELECT above and this UPDATE. Without the guard
+      // we would blindly stamp a now-running/finished run back to
+      // "cancelled" and cancel its wakeup out from under it. Only touch the
+      // wakeup and append the lifecycle event when the guarded update
+      // actually transitioned the row.
+      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+        errorCode: "queue_expired",
+      });
+      if (!cancelResult.updated || !cancelResult.run) continue;
+      const cancelledRun = cancelResult.run;
+      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+      });
+      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queueExpiredMessage,
+      });
+      reaped.push(cancelledRun.id);
     }
 
     if (reaped.length > 0) {
@@ -12148,6 +12290,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    // Self-heal guard for AdapterRuntimeImageMismatchError (a run landed on a
+    // sandbox pod whose runtime image does not carry the harness CLI). Flip
+    // to true the first time recovery is attempted so a second mismatch on
+    // the SAME run surfaces the original typed error terminally instead of
+    // looping.
+    let imageMismatchRecoveryAttempted = false;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -13131,7 +13279,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspace,
       executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
     });
-    const selectedEnvironment = acquiredEnvironment.environment;
+    // `let`, not `const`: the AdapterRuntimeImageMismatchError self-heal
+    // (recoverEnvironmentLeaseAfterImageMismatch below) re-acquires the
+    // environment and must update this reference too, so the re-realization
+    // call uses the fresh environment rather than the one from before
+    // recovery.
+    let selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
     // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
     // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -13177,9 +13330,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: realizationResult.lease,
     };
     persistedExecutionWorkspace = realizationResult.persistedExecutionWorkspace;
-    const workspaceRealization = realizationResult.workspaceRealization;
-    const executionTarget = realizationResult.executionTarget;
-    const remoteExecution = realizationResult.remoteExecution;
+    // `let`, not `const`: a first-attempt AdapterRuntimeImageMismatchError
+    // re-acquires and re-realizes the environment (see
+    // recoverEnvironmentLeaseAfterImageMismatch below), which replaces these
+    // with the values from the fresh lease.
+    let workspaceRealization = realizationResult.workspaceRealization;
+    let executionTarget = realizationResult.executionTarget;
+    let remoteExecution = realizationResult.remoteExecution;
+    // Shared with the AdapterRuntimeImageMismatchError self-heal below: both
+    // the initial setup and the post-recovery re-realization publish the
+    // same contextSnapshot shape, so the field list only lives in one place.
+    const buildPaperclipEnvironmentContext = () => ({
+      id: selectedEnvironment.id,
+      name: selectedEnvironment.name,
+      driver: selectedEnvironment.driver,
+      leaseId: activeEnvironmentLease.lease.id,
+      workspaceRealization,
+      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
+        ? {
+            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
+            host:
+              typeof activeEnvironmentLease.lease.metadata?.host === "string"
+                ? activeEnvironmentLease.lease.metadata.host
+                : undefined,
+            port:
+              typeof activeEnvironmentLease.lease.metadata?.port === "number"
+                ? activeEnvironmentLease.lease.metadata.port
+                : undefined,
+            username:
+              typeof activeEnvironmentLease.lease.metadata?.username === "string"
+                ? activeEnvironmentLease.lease.metadata.username
+                : undefined,
+          }
+        : {}),
+    });
     if (!executionTarget || executionTarget.kind === "local") {
       try {
         runScratch = await prepareHeartbeatRunScratch({
@@ -13221,30 +13405,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipScratch;
     }
-    context.paperclipEnvironment = {
-      id: selectedEnvironment.id,
-      name: selectedEnvironment.name,
-      driver: selectedEnvironment.driver,
-      leaseId: activeEnvironmentLease.lease.id,
-      workspaceRealization,
-      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
-        ? {
-            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
-            host:
-              typeof activeEnvironmentLease.lease.metadata?.host === "string"
-                ? activeEnvironmentLease.lease.metadata.host
-                : undefined,
-            port:
-              typeof activeEnvironmentLease.lease.metadata?.port === "number"
-                ? activeEnvironmentLease.lease.metadata.port
-                : undefined,
-            username:
-              typeof activeEnvironmentLease.lease.metadata?.username === "string"
-                ? activeEnvironmentLease.lease.metadata.username
-                : undefined,
-          }
-        : {}),
-    };
+    context.paperclipEnvironment = buildPaperclipEnvironmentContext();
     await db
       .update(heartbeatRuns)
       .set({
@@ -13971,8 +14132,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterFinalizeOutcome = status;
       };
 
-      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
-      try {
+      // Runs the adapter once against the CURRENT (possibly re-acquired)
+      // lease/executionTarget. Extracted so the AdapterRuntimeImageMismatchError
+      // self-heal below can call it a second time, after
+      // recoverEnvironmentLeaseAfterImageMismatch has refreshed the closed-over
+      // executionTarget/remoteExecution, without duplicating the MCP/context
+      // setup.
+      const runAdapterExecuteAttempt = async (): Promise<Awaited<ReturnType<typeof adapter.execute>>> => {
         const adapterContext = { ...context };
         const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
           db,
@@ -13991,7 +14157,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
-        adapterResult = await adapter.execute({
+        return await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
@@ -14030,6 +14196,128 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
+      };
+
+      // Gap-2 self-heal (closes what #9950's fail-fast gate left open): the
+      // gate detects a run on the wrong runtime image but does not recover.
+      // Destroy the mismatched lease and re-acquire + re-realize the
+      // environment ONCE so the retried adapter.execute has a chance to land
+      // on a pod carrying the right harness. There is no existing in-run
+      // setup-retry seam in heartbeat.ts to hook (EnvironmentRunError from
+      // acquireForRun/realizeForRun is not retried anywhere today); this is
+      // the narrowest insertion point available short of restructuring the
+      // ~800-line acquire/realize/execute sequence into a generic retry loop.
+      const recoverEnvironmentLeaseAfterImageMismatch = async (): Promise<void> => {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            environmentId: selectedEnvironment.id,
+            leaseId: activeEnvironmentLease.lease.id,
+          },
+          "adapter runtime image mismatch on sandbox lease; destroying lease and re-acquiring once",
+        );
+        const mismatchedLeaseId = activeEnvironmentLease.lease.id;
+        try {
+          await envOrchestrator.runtime.destroyRunLease({
+            environment: activeEnvironmentLease.environment,
+            lease: activeEnvironmentLease.lease,
+            failureReason: "adapter_runtime_image_mismatch",
+          });
+        } catch (destroyErr) {
+          logger.warn(
+            { err: destroyErr, runId: run.id, leaseId: mismatchedLeaseId },
+            "failed to destroy mismatched sandbox lease before re-acquiring; continuing with re-acquire",
+          );
+          // The destroy RPC threw before the driver's destroyRunLease could
+          // mark this lease "failed" (that only happens AFTER a successful
+          // destroy), so the row is still "active" and still owned by this
+          // run's heartbeatRunId. If the healed retry below succeeds, run
+          // teardown (releaseEnvironmentLeasesForRun ->
+          // leaseReleaseStatusForRunStatus("succeeded")) releases every lease
+          // still tied to this run with status "released", which would put
+          // this KNOWN-BAD lease back into the reusable pool. Mark it
+          // non-reusable directly here, mirroring the exact call the driver's
+          // destroyRunLease would have made on success. Best-effort: this
+          // must not block recovery from proceeding even if it also fails.
+          try {
+            await environmentsSvc.releaseLease(mismatchedLeaseId, "failed", {
+              failureReason: "adapter_runtime_image_mismatch",
+            });
+          } catch (markFailedErr) {
+            logger.warn(
+              { err: markFailedErr, runId: run.id, leaseId: mismatchedLeaseId },
+              "failed to mark mismatched sandbox lease as failed after destroy RPC error; it may remain reusable",
+            );
+          }
+        }
+
+        const reacquiredEnvironment = await envOrchestrator.acquireForRun({
+          companyId: agent.companyId,
+          selectedEnvironmentId,
+          localEnvironmentId: localEnvironment.id,
+          adapterType: agent.adapterType,
+          issueId: issueId ?? null,
+          heartbeatRunId: run.id,
+          agentId: agent.id,
+          persistedExecutionWorkspace,
+        });
+        activeEnvironmentLease = {
+          environment: reacquiredEnvironment.environment,
+          lease: reacquiredEnvironment.lease,
+          leaseContext: reacquiredEnvironment.leaseContext,
+        };
+        // Keep selectedEnvironment in sync with the freshly reacquired
+        // environment (same pattern as the initial setup, which sources it
+        // from acquiredEnvironment.environment) so the re-realization call
+        // below never uses the stale pre-recovery reference.
+        selectedEnvironment = reacquiredEnvironment.environment;
+        const rerealizationResult = await envOrchestrator.realizeForRun({
+          environment: selectedEnvironment,
+          lease: activeEnvironmentLease.lease,
+          adapterType: agent.adapterType,
+          companyId: agent.companyId,
+          issueId: issueId ?? null,
+          heartbeatRunId: run.id,
+          executionWorkspace,
+          effectiveExecutionWorkspaceMode,
+          persistedExecutionWorkspace,
+        });
+        activeEnvironmentLease = {
+          ...activeEnvironmentLease,
+          lease: rerealizationResult.lease,
+        };
+        persistedExecutionWorkspace = rerealizationResult.persistedExecutionWorkspace;
+        workspaceRealization = rerealizationResult.workspaceRealization;
+        executionTarget = rerealizationResult.executionTarget;
+        remoteExecution = rerealizationResult.remoteExecution;
+        context.paperclipEnvironment = buildPaperclipEnvironmentContext();
+        await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+      };
+
+      const recordAdapterFinalizeFailure = async (err: unknown) => {
+        try {
+          await recordWorkspaceFinalize("failed", {
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
+        } catch (recordErr) {
+          logger.warn(
+            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+            "failed to record workspace_finalize=failed operation; dependents may remain gated",
+          );
+        }
+      };
+
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
+        adapterResult = await runAdapterExecuteAttempt();
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -14038,22 +14326,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // finalize row.
         await recordWorkspaceFinalize("succeeded");
       } catch (adapterErr) {
-        // Adapter (or its restore finally) threw — or the finalize record
-        // write itself threw. Either way the workspace may be in a partial
-        // state. Best-effort record finalize=failed so the dependent readiness
-        // check keeps the gate closed instead of waking on stale local state,
-        // and surface the original error to the caller.
-        try {
-          await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
-          });
-        } catch (recordErr) {
-          logger.warn(
-            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
-            "failed to record workspace_finalize=failed operation; dependents may remain gated",
-          );
+        if (isAdapterRuntimeImageMismatchError(adapterErr) && !imageMismatchRecoveryAttempted) {
+          imageMismatchRecoveryAttempted = true;
+          try {
+            await recoverEnvironmentLeaseAfterImageMismatch();
+            adapterResult = await runAdapterExecuteAttempt();
+            await recordWorkspaceFinalize("succeeded");
+          } catch (retryErr) {
+            // Either recovery itself failed (e.g. the re-acquire could not
+            // find a healthy lease) or the retried adapter.execute mismatched
+            // again. Either way this run gets exactly one recovery attempt:
+            // surface whatever the second attempt threw as the terminal
+            // failure (the same AdapterRuntimeImageMismatchError on a repeat
+            // mismatch; a different error if recovery infrastructure itself
+            // failed).
+            await recordAdapterFinalizeFailure(retryErr);
+            throw retryErr;
+          }
+        } else {
+          // Adapter (or its restore finally) threw, or the finalize record
+          // write itself threw. Either way the workspace may be in a partial
+          // state. Best-effort record finalize=failed so the dependent readiness
+          // check keeps the gate closed instead of waking on stale local state,
+          // and surface the original error to the caller.
+          await recordAdapterFinalizeFailure(adapterErr);
+          throw adapterErr;
         }
-        throw adapterErr;
       } finally {
         try {
           await revokeHeartbeatRunGatewayTokens({
@@ -14157,17 +14455,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-      const runErrorCode =
-        outcome === "timed_out"
-          ? "timeout"
-          : outcome === "cancelled"
-            ? (latestRun?.errorCode ?? "cancelled")
-            : outcome === "failed"
-              ? (adapterResult.errorCode ??
-                recordedResponsibleUserDenialCode ??
-                classifySandboxInfraFailure(adapterResult.errorMessage) ??
-                "adapter_failed")
-              : null;
+      const runErrorCode = resolveHeartbeatRunErrorCode({
+        outcome,
+        adapterErrorCode: adapterResult.errorCode,
+        cancelledErrorCode: latestRun?.errorCode,
+        responsibleUserDenialCode: recordedResponsibleUserDenialCode,
+        infraFailureCode: classifySandboxInfraFailure(adapterResult.errorMessage),
+      });
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -14362,13 +14656,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // No valid provider credential: pause the agent so its heartbeat stops
           // re-running (and failing auth) every interval, and surface the reason so
           // a human connects a model key and resumes.
-          await db
+          const authFailurePauseReason =
+            "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.";
+          const authFailurePauseWrite = await db
             .update(agents)
             .set({
               status: "paused",
-              pauseReason: truncateAgentErrorReason(
-                "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.",
-              ),
+              pauseReason: truncateAgentErrorReason(authFailurePauseReason),
               pausedAt: new Date(),
               updatedAt: new Date(),
             })
@@ -14378,7 +14672,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
                 "failed to pause agent after permanent auth failure",
               );
+              return null;
             });
+          if (authFailurePauseWrite !== null) {
+            // Mirror manual pause (routes/agents.ts cancelActiveForAgent): a paused
+            // agent must have no live runs, or a just-enqueued retry can sit in
+            // "queued" forever since dequeue skips paused agents. livenessRun is
+            // already terminal (setRunStatusIfRunning above), so it cannot be
+            // re-cancelled here.
+            await cancelActiveForAgentInternal(
+              agent.id,
+              `Cancelled because the agent was paused: ${authFailurePauseReason}`,
+              "agent_paused",
+            );
+          }
         } else if (outcome === "failed") {
           // Fallback storm breaker for failure codes no dedicated branch handles.
           await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
@@ -14472,10 +14779,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
+      // A repeat adapter_runtime_image_mismatch (the one-shot self-heal above
+      // already destroyed+re-acquired once and still landed on the wrong
+      // image) surfaces its own typed error code instead of the generic
+      // adapter_failed, so operators see the real cause on the terminal run.
+      const adapterRuntimeImageMismatchFailure = isAdapterRuntimeImageMismatchError(err) ? err : null;
       const failureErrorCode =
         workspaceValidationFailure?.code ??
         configurationIncompleteFailure?.code ??
         recordedResponsibleUserDenialCode ??
+        adapterRuntimeImageMismatchFailure?.code ??
         classifySandboxInfraFailure(message) ??
         "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -14675,13 +14988,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 failedAgent.status !== "paused" &&
                 failedAgent.status !== "terminated"
               ) {
-                await db
+                const setupFailurePauseReason =
+                  `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
+                const setupFailurePauseWrite = await db
                   .update(agents)
                   .set({
                     status: "paused",
-                    pauseReason: truncateAgentErrorReason(
-                      `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`,
-                    ),
+                    pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
                     pausedAt: new Date(),
                     updatedAt: new Date(),
                   })
@@ -14691,7 +15004,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       { err: pauseErr, agentId: failedAgent.id, runId },
                       "failed to pause agent after non-retryable setup failure",
                     );
+                    return null;
                   });
+                if (setupFailurePauseWrite !== null) {
+                  // Mirror manual pause: a paused agent must have no live runs, or
+                  // a just-enqueued retry can sit in "queued" forever since dequeue
+                  // skips paused agents. livenessRun is already terminal (the CAS
+                  // write above only succeeded because it left "running").
+                  await cancelActiveForAgentInternal(
+                    failedAgent.id,
+                    `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
+                    "agent_paused",
+                  );
+                }
               }
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {

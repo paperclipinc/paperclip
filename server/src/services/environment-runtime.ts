@@ -498,10 +498,31 @@ function buildReusableSandboxLeaseScope(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
+  // Mirrors the `sandboxProviderPlugin === true` gate that
+  // reusableSandboxLeaseScopeMatches uses for its strict adapterType-equality
+  // rule. Only plugin-backed sandbox leases resolve a per-run adapter/image
+  // through the plugin worker RPC, so only they may fall back to reading
+  // adapterType/image out of providerMetadata; a built-in provider's
+  // providerMetadata is not per-run-image-keyed the way the plugin pool is,
+  // so treating any stray adapterType/image key there as a positive match
+  // would be unfounded. Built-in callers omit this flag (default false),
+  // making the fallback inert for them today; it exists so the two functions
+  // stay symmetric if a built-in provider ever starts publishing those keys.
+  isPluginBackedLease?: boolean;
 }): Record<string, unknown> | null {
   if (!input.executionWorkspaceId || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
-  const adapterType = input.adapterType ?? null;
+  // Prefer the server's own per-run hint; fall back to the plugin's actually
+  // resolved adapter type when the server's hint is absent (e.g. a run whose
+  // adapterType wasn't threaded through). This is what keeps the persisted
+  // scope from ever being null for a plugin sandbox lease that DID resolve a
+  // concrete adapter/image: a null scope has no positive proof of which
+  // image the pod carries and can be matched by any run's reuse lookup.
+  const adapterType =
+    input.adapterType ??
+    (input.isPluginBackedLease ? readString(providerMetadata.adapterType) : null) ??
+    null;
+  const runtimeImage = input.isPluginBackedLease ? readString(providerMetadata.image) : null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
   const workspaceSentinel = isRecord(providerMetadata.workspaceSentinel)
     ? { ...providerMetadata.workspaceSentinel }
@@ -522,6 +543,7 @@ function buildReusableSandboxLeaseScope(input: {
     ...(input.leaseFingerprint
       ? { leaseFingerprint: serializeLeaseFingerprint(input.leaseFingerprint) }
       : {}),
+    ...(runtimeImage ? { runtimeImage } : {}),
     ...(remoteCwd ? { remoteCwd } : {}),
     ...(workspaceSentinel ? { workspaceSentinel } : {}),
   };
@@ -544,12 +566,30 @@ function reusableSandboxLeaseScopeMatches(input: {
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
+  const storedAdapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
+  // Plugin-backed sandbox leases pick a per-run runtime image keyed on the
+  // adapter type; a lease published (or resumed from before this fix) with
+  // adapterType null carries no positive proof of which image its pod is
+  // running. Treating null as a wildcard let ANY run reuse it, including one
+  // requesting a different harness (the production adapter_runtime_image_mismatch
+  // case this closes). Require a POSITIVE match instead: both sides must be
+  // set and equal, never null-on-either-side.
+  //
+  // Built-in (non-plugin) sandbox providers never publish adapterType in the
+  // scope at all (they are not per-run-image-keyed the way the plugin pool
+  // is), so their leases legitimately keep the permissive equality check:
+  // scoping the strict rule to `sandboxProviderPlugin === true` leaves that
+  // reuse path unaffected.
+  const isPluginBackedLease = input.lease.metadata?.sandboxProviderPlugin === true;
+  const adapterTypeMatches = isPluginBackedLease
+    ? storedAdapterType !== null && adapterType !== null && storedAdapterType === adapterType
+    : scope.adapterType === adapterType;
   const baseScopeMatches =
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
     scope.agentId === input.agentId &&
-    scope.adapterType === adapterType &&
+    adapterTypeMatches &&
     scope.provider === input.provider;
   if (!baseScopeMatches) return false;
 
@@ -1061,6 +1101,7 @@ function createSandboxEnvironmentDriver(
               config: providerConfigForLease,
               leaseFingerprint,
               providerMetadata: sanitizedProviderMetadata,
+              isPluginBackedLease: true,
             })
           : null;
 
