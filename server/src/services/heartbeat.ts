@@ -249,8 +249,14 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import {
+  extractSkillMentionIds,
+  HEARTBEAT_RUN_TERMINAL_STATUSES,
+  isHeartbeatRunTerminalStatus,
+  isUuidLike,
+} from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { loadConfig } from "../config.js";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -351,7 +357,6 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
-const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
@@ -1039,9 +1044,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
       configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
     });
     if (readiness.managed && !readiness.ready) {
+      // "Sign in on the host" is only actionable when the person reading this
+      // IS the operator of the machine. On a multi-user deployment the runner
+      // is a sandbox nobody can log into, so that half of the sentence sends
+      // the user somewhere that does not exist; leave them with the one action
+      // they can actually take.
+      const hostLoginActionable = loadConfig().deploymentMode === "local_trusted";
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
-          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
+          (hostLoginActionable
+            ? `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`
+            : `Add an OPENAI_API_KEY for this agent (Agent settings -> credentials) and run it again.`),
         {
           configurationIncomplete: {
             reason: "codex_credentials_missing",
@@ -1986,6 +1999,10 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  // The log route needs the status to tell "no log YET" (an active run whose
+  // runner has not opened the file) from "no log EVER" (a terminal run that
+  // never wrote one). Same row, so this costs nothing on the poll path.
+  status: heartbeatRuns.status,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -4787,15 +4804,7 @@ function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
 
-function isHeartbeatRunTerminalStatus(
-  status: string | null | undefined,
-): status is (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number] {
-  return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-    status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-  );
-}
-
-function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
+export function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
   return status === "queued" || status === "running";
 }
 
@@ -17595,6 +17604,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runOrLookup: string | {
         id: string;
         companyId: string;
+        status?: string | null;
         logStore: string | null;
         logRef: string | null;
       },

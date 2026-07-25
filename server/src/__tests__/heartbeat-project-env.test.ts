@@ -556,6 +556,41 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     ).resolves.not.toContain("sk-");
   });
 
+  it.each([
+    ["local_trusted", true],
+    ["authenticated", false],
+  ] as const)(
+    "tells a %s deployment only what its user can actually do about missing Codex credentials",
+    async (deploymentMode, expectHostLogin) => {
+      // On a multi-user deployment the runner is a sandbox nobody can log into,
+      // so "sign in on the host" is an instruction with no destination.
+      vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", deploymentMode);
+      const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
+      const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+        config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+        secretKeys: new Set<string>(),
+        manifest: [],
+      });
+
+      const message = await resolveExecutionRunAdapterConfig({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+        projectEnv: null,
+        secretsSvc: {
+          resolveAdapterConfigForRuntime,
+          resolveEnvBindings: vi.fn(),
+          collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+        } as any,
+      }).catch((err) => err.message as string);
+
+      expect(message).toContain("no Codex credentials available");
+      expect(/Sign in to Codex on the host/.test(message)).toBe(expectHostLogin);
+      if (!expectHostLogin) expect(message).toContain("Add an OPENAI_API_KEY for this agent");
+    },
+  );
+
   it("dispatches normally when a per-agent OPENAI_API_KEY is resolved", async () => {
     const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
