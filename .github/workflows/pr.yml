@@ -27,6 +27,10 @@ jobs:
         # Rebase-promotion branches (rebase-YYYYMMDD) legitimately import
         # upstream's pnpm-lock.yaml wholesale; the manual-edit block is for
         # hand-authored PRs, so exempt them alongside the refresh bot.
+        # Exempting the block does not skip lockfile validation: when manifests
+        # change, "Validate dependency resolution" below regenerates the
+        # lockfile and every downstream job installs with --frozen-lockfile, so
+        # a lockfile that does not match the manifests still fails CI.
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
           !startsWith(github.head_ref, 'rebase-') &&
