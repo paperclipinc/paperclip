@@ -18,6 +18,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { initAnalytics } from "./analytics";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -27,6 +28,9 @@ initPluginBridge(React, ReactDOM);
 // DevTools performance tracks and never clears them; on a long-lived tab they
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
+
+// Hosted deployment only; a no-op everywhere else. See ./analytics.
+initAnalytics();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
