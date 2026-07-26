@@ -139,11 +139,15 @@ describe("hosted app analytics gate", () => {
     expect(posthogMock.init.mock.calls[0][1].api_host).toBe("/ingest");
   });
 
-  it("tags events with the app surface", async () => {
+  it("tags events with the app surface synchronously, not from loaded()", async () => {
+    // register() has to land before the initial pageview is queued, and it has
+    // to run on every load: the marketing site shares this origin and therefore
+    // this persisted super-property store, so without an unconditional write
+    // the app inherits surface:"marketing" from the page the user arrived from.
     setEnvironment({ consent: "granted" });
     const { initAnalytics } = await loadAnalytics();
     initAnalytics();
-    posthogMock.init.mock.calls[0][1].loaded(posthogMock);
     expect(posthogMock.register).toHaveBeenCalledWith({ surface: "app" });
+    expect(posthogMock.init.mock.calls[0][1].loaded).toBeUndefined();
   });
 });
