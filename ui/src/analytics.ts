@@ -98,8 +98,16 @@ export function initAnalytics(): void {
       // where people get stuck.
       maskTextSelector: CONTENT_SELECTORS,
     },
-    loaded: (ph) => ph.register({ surface: "app" }),
   });
+
+  // Registered synchronously rather than from the `loaded` callback, which runs
+  // after the initial pageview has already been queued. It also has to be
+  // re-registered on every page load: super-properties are persisted, and the
+  // marketing site is served from this same origin, so it shares this storage.
+  // Without an unconditional write here the app inherits `surface: "marketing"`
+  // from whichever marketing page the user came through, and every app event is
+  // filed under the wrong surface.
+  posthog.register({ surface: "app" });
 }
 
 /**
