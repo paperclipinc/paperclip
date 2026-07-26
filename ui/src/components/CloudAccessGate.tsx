@@ -7,6 +7,7 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { initTelemetry } from "@/telemetry";
+import { identifyUser } from "@/analytics";
 import { resolveCloudZeroCompanyState } from "@/lib/cloud-zero-company";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 import { WorkspaceSetupPendingPage } from "@/components/WorkspaceSetupPendingPage";
@@ -95,6 +96,15 @@ export function CloudAccessGate() {
   // flight, react-query keeps the query in a pending/fetching state, not
   // "error", so this only reflects a SUSTAINED session-check failure.
   const sessionCheckFailing = isAuthenticatedMode && sessionQuery.isError;
+
+  // Stitch this browser's earlier anonymous marketing activity to the signed-in
+  // user, so a funnel can run from first visit through to a completed run.
+  // identifyUser is a no-op without analytics consent and off the hosted
+  // domains, so this needs no gate of its own.
+  const sessionUserId = sessionQuery.data?.user?.id ?? null;
+  useEffect(() => {
+    identifyUser(sessionUserId);
+  }, [sessionUserId]);
   // The one and only definitive "not authenticated" signal: the query
   // resolved successfully (no error, no retries pending) and the resolved
   // session is null.

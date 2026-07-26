@@ -17,7 +17,12 @@
  *
  * The tracker must never throw into app code: every listener body is wrapped
  * in try/catch and every network failure is swallowed.
+ *
+ * Events are also mirrored into PostHog (see ./analytics) so the funnel can be
+ * followed across the marketing site and the app in one place. The first-party
+ * ui_events pipeline stays the system of record; PostHog is the analysis view.
  */
+import { captureAnalytics } from "./analytics";
 
 const TELEMETRY_ENDPOINT = "/api/telemetry/ui";
 const FLUSH_INTERVAL_MS = 5000;
@@ -167,10 +172,39 @@ function topStackFrame(stack: unknown): string | undefined {
   return frame ? frame.slice(0, MAX_ERROR_TEXT_LEN) : undefined;
 }
 
+// Event types worth mirroring into PostHog for funnel analysis. "click" is
+// deliberately excluded: PostHog autocaptures clicks already, so mirroring them
+// would double-count every interaction. "paste_meta" is excluded because it
+// exists to diagnose one specific credential-paste failure mode and has no
+// place in a funnel.
+const POSTHOG_MIRRORED_TYPES: ReadonlySet<TelemetryEventType> = new Set([
+  "step",
+  "client_error",
+  "http_error",
+]);
+
 function enqueue(event: TelemetryEvent): void {
   if (!state.installed) return;
   state.queue.push(event);
+  mirrorToPostHog(event);
   if (state.queue.length >= FLUSH_AT_EVENTS) flush();
+}
+
+// Every explicit instrumentation point in the cloud overlay already funnels
+// through enqueue(), so mirroring here gets PostHog the whole existing event
+// set rather than instrumenting the same components a second time. The meta
+// shape is already a strict allowlist (see TelemetryMeta) with no field
+// content in it, so nothing extra needs sanitising on the way out.
+function mirrorToPostHog(event: TelemetryEvent): void {
+  try {
+    if (!POSTHOG_MIRRORED_TYPES.has(event.eventType)) return;
+    captureAnalytics(`${event.surface}_${event.eventType}`, {
+      ...event.meta,
+      target: event.target,
+    });
+  } catch {
+    // Never throw into app code.
+  }
 }
 
 function takeBatch(): TelemetryEvent[] {
