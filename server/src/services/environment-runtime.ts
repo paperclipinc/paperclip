@@ -40,6 +40,7 @@ import {
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { getProcessPluginWorkerManager } from "./plugin-worker-process-registry.js";
 import type { PluginStreamBus } from "./plugin-stream-bus.js";
 import {
   destroyPluginEnvironmentLease,
@@ -730,7 +731,15 @@ function createSandboxEnvironmentDriver(
     pluginWorkerReadyPollMs?: number;
   } = {},
 ): EnvironmentRuntimeDriver {
-  const pluginWorkerManager = options.pluginWorkerManager;
+  // Fall back to the process-scoped manager when a caller did not pass one.
+  // Every path that dispatches a run funnels through here, so this single
+  // fallback covers all of them: the six runtime construction sites, and the
+  // `heartbeatService(db)` calls that pass no options at all (which is how
+  // `assignment` and `automation` dispatches used to reach a manager-less
+  // runtime and fail with "sandbox plugin workers are unavailable in this
+  // server process"). An explicitly passed manager still wins, so tests can
+  // inject their own.
+  const pluginWorkerManager = options.pluginWorkerManager ?? getProcessPluginWorkerManager();
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   const environmentsSvc = environmentService(db);

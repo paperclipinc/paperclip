@@ -64,6 +64,7 @@ import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-brandi
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { setProcessPluginWorkerManager } from "./services/plugin-worker-process-registry.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
@@ -239,6 +240,11 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  // Register the manager for this process so that any code path which dispatches
+  // a run can find it without being handed it explicitly. Without this, a
+  // construction site that omits the manager builds a run engine that can never
+  // acquire a sandbox lease, and it only shows up when a customer hits that path.
+  setProcessPluginWorkerManager(workerManager);
 
   // Mount API routes
   const api = Router();
