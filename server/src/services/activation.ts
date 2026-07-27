@@ -22,6 +22,17 @@ export function resolveActivationSink(
   return env.PAPERCLIP_ACTIVATION_SINK === "db" ? "db" : null;
 }
 
+/**
+ * The only run status that may produce an activation event. The row this
+ * module writes is `first_successful_run`, and every consumer reads it as
+ * proof the customer got a working run: the admin console derives the
+ * "Activated" milestone from MIN(occurred_at) with no join back to the run,
+ * and the lifecycle/outreach rules treat activation as the aha moment.
+ * Anything short of a completed run must therefore not count, however many
+ * tokens it burned on the way to failing.
+ */
+const ACTIVATING_RUN_STATUS = "succeeded";
+
 export async function recordActivationEvent(
   store: ActivationStore,
   args: {
@@ -29,10 +40,18 @@ export async function recordActivationEvent(
     agentId: string;
     heartbeatRunId: string | null;
     sink: ActivationSink | null;
+    /**
+     * Terminal status of the run being recorded. Required, and deliberately
+     * not defaulted: the caller sits on the cost-event path, which fires for
+     * any run with token usage including failed ones, so an omitted status
+     * must fail closed rather than silently activate.
+     */
+    runStatus: string | null | undefined;
     occurredAt?: Date;
   },
 ): Promise<void> {
   if (!args.sink) return;
+  if (args.runStatus !== ACTIVATING_RUN_STATUS) return;
   try {
     const prior = await store.countActivationForCompany(args.companyId);
     await store.insertActivationEvent({

@@ -2,10 +2,14 @@
 ARG BASE_TAG=dev
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
+# Pinned, not @latest: @latest resolves at build time, so the mutable `v3`
+# tag silently froze @anthropic-ai/claude-code at whatever npm served on the
+# build date and drifted from there with nothing to make it visible.
+ARG CLAUDE_CODE_VERSION=2.1.220
+
 USER root
-RUN npm install -g @anthropic-ai/claude-code@latest \
-    && chown -R 1000:1000 /usr/lib/node_modules \
-    || true
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 # @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'
 RUN command -v claude >/dev/null 2>&1 && ln -s /usr/bin/claude /usr/bin/claude-code || true
@@ -14,3 +18,7 @@ USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v claude-code >/dev/null 2>&1 || (echo "claude-code not on PATH"; exit 1)
+
+# Verify the pinned version actually landed, not just that a binary exists.
+RUN claude --version 2>&1 | grep -qF "${CLAUDE_CODE_VERSION}" \
+    || (echo "claude version mismatch: wanted ${CLAUDE_CODE_VERSION}, got $(claude --version 2>&1)"; exit 1)
