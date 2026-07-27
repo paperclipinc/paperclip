@@ -1,0 +1,31 @@
+# Models in the codex_local catalog (packages/adapters/codex-local/src/index.ts)
+# that the PINNED Codex CLI has no metadata for. Running one of these makes the
+# CLI fall back to default metadata and emit, as the FIRST item of the run:
+#
+#   {"type":"item.completed","item":{"id":"item_0","type":"error",
+#    "message":"Model metadata for `<id>` not found. Defaulting to fallback
+#    metadata; this can degrade performance and cause issues."}}
+#
+# That item is non-fatal (the turn proceeds and the run can still succeed) but
+# it renders as an error at the top of the transcript, so a healthy run looks
+# broken to the customer and to us. Fallback metadata also means the context
+# window and compaction thresholds are guesses.
+#
+# This file is a BASELINE, not an approval. verify-model-catalog.sh fails the
+# image build when the measured set of unknown models differs from this list in
+# EITHER direction, so newly-added catalog entries that the CLI does not know
+# turn the build red, and fixing one forces the line to be removed here.
+#
+# Measured against @openai/codex 0.145.0 on 2026-07-27. Every id below is a
+# legacy or not-yet-shipped model that predates or postdates the CLI's metadata
+# table; the gpt-5.6-* variants the product actually steers people to
+# (sol/terra/luna) and the gpt-5.4 pair are all known and must stay known.
+gpt-5.6
+gpt-5.3-codex-spark
+gpt-5
+o3
+o4-mini
+gpt-5-mini
+gpt-5-nano
+o3-mini
+codex-mini-latest

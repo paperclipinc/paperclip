@@ -2,15 +2,23 @@
 ARG BASE_TAG=dev
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
+# Pinned, not @latest: @latest resolves at build time, so the mutable `v3`
+# tag silently froze @mariozechner/pi-coding-agent at whatever npm served on the
+# build date and drifted from there with nothing to make it visible.
+ARG PI_VERSION=0.73.1
+
 USER root
 # pi is the multi-provider Pi coding-agent router. Verified npm package:
 # @mariozechner/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
 # is used by SANDBOX_INSTALL_COMMAND in pi-local/src/index.ts.
-RUN npm install -g @mariozechner/pi-coding-agent@latest \
-    && chown -R 1000:1000 /usr/lib/node_modules \
-    || true
+RUN npm install -g @mariozechner/pi-coding-agent@${PI_VERSION} \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v pi >/dev/null 2>&1 || (echo "pi not on PATH"; exit 1)
+
+# Verify the pinned version actually landed, not just that a binary exists.
+RUN pi --version 2>&1 | grep -qF "${PI_VERSION}" \
+    || (echo "pi version mismatch: wanted ${PI_VERSION}, got $(pi --version 2>&1)"; exit 1)

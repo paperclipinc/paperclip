@@ -43,6 +43,7 @@ describe("recordActivationEvent", () => {
       agentId: "a1",
       heartbeatRunId: "r1",
       sink: null,
+      runStatus: "succeeded",
     });
     expect(db.insertActivationEvent).not.toHaveBeenCalled();
     expect(inserted).toHaveLength(0);
@@ -55,6 +56,7 @@ describe("recordActivationEvent", () => {
       agentId: "a1",
       heartbeatRunId: "r1",
       sink: "db",
+      runStatus: "succeeded",
     });
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toMatchObject({
@@ -73,8 +75,56 @@ describe("recordActivationEvent", () => {
       agentId: "a1",
       heartbeatRunId: "r1",
       sink: "db",
+      runStatus: "succeeded",
     });
     expect(inserted[0]).toMatchObject({ firstForCompany: false });
+  });
+
+  // The event this table records is literally called `first_successful_run`,
+  // and every consumer (admin-console journeys/cohortFunnel/signupFeed) reads
+  // MIN(occurred_at) with no join back to the run. A run that failed but still
+  // burned tokens must therefore never land here: in prod this counted 3 of 48
+  // companies as activated off `adapter_failed` / `inference_auth_invalid` /
+  // `inference_model_unavailable` runs.
+  it.each(["failed", "cancelled", "timed_out", "interrupted", "running", "queued"])(
+    "does not write activation for a %s run even when it burned tokens",
+    async (runStatus) => {
+      const { db, inserted } = makeDb(0);
+      await recordActivationEvent(db as never, {
+        companyId: "c1",
+        agentId: "a1",
+        heartbeatRunId: "r1",
+        sink: "db",
+        runStatus,
+      });
+      expect(db.insertActivationEvent).not.toHaveBeenCalled();
+      expect(inserted).toHaveLength(0);
+    },
+  );
+
+  it("writes activation for a succeeded run", async () => {
+    const { db, inserted } = makeDb(0);
+    await recordActivationEvent(db as never, {
+      companyId: "c1",
+      agentId: "a1",
+      heartbeatRunId: "r1",
+      sink: "db",
+      runStatus: "succeeded",
+    });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ eventType: "first_successful_run" });
+  });
+
+  it("does not write when the run status is unknown", async () => {
+    const { db } = makeDb(0);
+    await recordActivationEvent(db as never, {
+      companyId: "c1",
+      agentId: "a1",
+      heartbeatRunId: "r1",
+      sink: "db",
+      runStatus: null,
+    });
+    expect(db.insertActivationEvent).not.toHaveBeenCalled();
   });
 
   it("swallows insert errors so it never breaks a run", async () => {
@@ -90,6 +140,7 @@ describe("recordActivationEvent", () => {
         agentId: "a1",
         heartbeatRunId: "r1",
         sink: "db",
+        runStatus: "succeeded",
       }),
     ).resolves.toBeUndefined();
   });

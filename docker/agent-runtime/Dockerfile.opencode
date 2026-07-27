@@ -2,13 +2,21 @@
 ARG BASE_TAG=dev
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
+# Pinned, not @latest: @latest resolves at build time, so the mutable `v3`
+# tag silently froze opencode-ai at whatever npm served on the
+# build date and drifted from there with nothing to make it visible.
+ARG OPENCODE_VERSION=0.0.0-dev-202607270438
+
 USER root
 # opencode-ai npm package; binary on PATH is `opencode`.
-RUN npm install -g opencode-ai@latest \
-    && chown -R 1000:1000 /usr/lib/node_modules \
-    || true
+RUN npm install -g opencode-ai@${OPENCODE_VERSION} \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v opencode >/dev/null 2>&1 || (echo "opencode not on PATH"; exit 1)
+
+# Verify the pinned version actually landed, not just that a binary exists.
+RUN opencode --version 2>&1 | grep -qF "${OPENCODE_VERSION}" \
+    || (echo "opencode version mismatch: wanted ${OPENCODE_VERSION}, got $(opencode --version 2>&1)"; exit 1)

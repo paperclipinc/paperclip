@@ -12107,11 +12107,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // event is the activation point (first successful agent run). No-op
       // unless PAPERCLIP_ACTIVATION_SINK is set; swallows its own errors so it
       // can never affect run completion.
+      //
+      // The run status has to be passed explicitly because this block is on the
+      // cost-event path, which fires for ANY run carrying token usage -- and
+      // `run` here is whatever the finalize chain produced, including a run
+      // that setRunStatus() marked "failed". Without the status, a BYOK run
+      // that burned tokens and then failed on auth counted as activation.
       await recordActivationEvent(createDrizzleActivationStore(db), {
         companyId: agent.companyId,
         agentId: agent.id,
         heartbeatRunId: run.id,
         sink: resolveActivationSink(),
+        runStatus: run.status,
       });
     }
   }
