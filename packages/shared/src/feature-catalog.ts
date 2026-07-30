@@ -213,6 +213,22 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  cloudBilling: {
+    title: "Cloud Billing",
+    description:
+      "Enable the cloud billing and subscription management surfaces on cloud-managed instances.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: false,
+  },
+  cloudTrialBanner: {
+    title: "Cloud Trial Banner",
+    description:
+      "Show the trial-period banner and upgrade prompts on cloud-managed instances.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: false,
+  },
   enableWorkspaceBranchReconcileForward: {
     title: "Workspace Branch Reconcile Forward",
     description:
