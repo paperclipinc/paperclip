@@ -550,11 +550,54 @@
   animation: shimmer-text-slide 2.5s linear infinite;
 }
 
+.paperclip-thinking-icon {
+  transform-origin: 50% 50%;
+}
+
+@keyframes paperclip-thinking-draw {
+  0% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: -85.717;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.455, 0.03, 0.515, 0.955);
+  }
+  39.0625% {
+    stroke-dasharray: 85.717 85.717;
+    stroke-dashoffset: 0;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.55, 0.055, 0.675, 0.19);
+  }
+  78.125% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  78.225% {
+    opacity: 0;
+  }
+  100% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+.paperclip-thinking-icon-path {
+  animation: paperclip-thinking-draw 1s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shimmer-text {
     animation: none;
     -webkit-text-fill-color: unset;
     background: none;
+  }
+
+  .paperclip-thinking-icon-path {
+    animation: none;
+    opacity: 1;
+    stroke-dasharray: 85.717 85.717;
+    stroke-dashoffset: 0;
   }
 }
 
@@ -1573,6 +1616,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
   --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
   --sz-16rem: 16rem; /* Extracted from ui/src/components/ActivityFeed.tsx (max-w-[16rem]). */
+  --sz-20rem: 20rem; /* AgentSkillReleasePicker.tsx release menu width cap. */
   --sz-18px: 18px; /* Extracted from ui/src/components/ActivityFeed.tsx (p-[18px]). */
   --sz-44px: 44px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[44px]). */
   --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */
@@ -1835,6 +1879,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-62: 1fr minmax(0,18rem);
   --gtc-63: 280px 1fr;
   --gtc-64: minmax(0,20rem) 1fr;
+  --gtc-65: minmax(8rem,0.38fr) minmax(0,0.62fr) auto;
   --gtr-1: auto auto; /* Extracted from ui/src/components/ui/card.tsx (grid-rows-[auto_auto]). */
   --gtr-2: 1fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[1fr]). */
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */

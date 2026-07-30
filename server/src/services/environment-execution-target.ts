@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
@@ -33,14 +34,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
   }
 
   if (input.environment.driver === "sandbox") {
-    if (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) {
+    // Keep this gate in lockstep with the shared capability metadata that the
+    // environment selector and capabilities API expose; a drift here lets the
+    // UI offer environments the runtime then refuses.
+    if (!adapterSupportsRemoteManagedEnvironments(input.adapterType)) {
       return null;
     }
 
@@ -75,6 +72,20 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // the install path; built-in sandbox providers (e.g. e2b) never set it.
     const prebakedRuntime = input.leaseMetadata?.runtimeImagePrebaked === true;
 
+    // Per-lease-runner cumulative counters for startup-step attribution (Open
+    // Q1). Closed over by the `runner.execute` seam below and read back as
+    // deltas by `measureStartupStep`.
+    let execCount = 0;
+    let providerExecMs = 0;
+    let providerGetMs = 0;
+    const accumulateProviderDurations = (metadata: Record<string, unknown> | undefined): void => {
+      if (!metadata) return;
+      const exec = metadata.durationMs;
+      const get = metadata.getDurationMs;
+      if (typeof exec === "number" && Number.isFinite(exec)) providerExecMs += exec;
+      if (typeof get === "number" && Number.isFinite(get)) providerGetMs += get;
+    };
+
     return {
       kind: "remote",
       transport: "sandbox",
@@ -91,8 +102,22 @@ export async function resolveEnvironmentExecutionTarget(input: {
       streamRunLogs: parsed.config.streamRunLogs !== false,
       runner: input.environmentRuntime && input.lease
         ? {
+            // Provider-backed sandbox RPCs do not surface bounded mid-stream
+            // progress for a single stdin upload, so keep the capability disabled
+            // here. The client falls back to the chunked upload path when this is
+            // false.
             supportsSingleStreamStdinProgress: false,
+            // Round-trip counter + provider-duration accumulators on the single
+            // host→sandbox exec seam (Open Q1). `measureStartupStep` reads the
+            // per-step delta of each via the `() => number` closures below. The
+            // provider durations ride the exec result's free-form `metadata`
+            // (set by the Daytona plugin), so no protocol/schema change is
+            // needed and providers that omit them simply accumulate nothing.
+            execCount: () => execCount,
+            providerExecMs: () => providerExecMs,
+            providerGetMs: () => providerGetMs,
             execute: async (commandInput) => {
+              execCount += 1;
               const startedAt = new Date().toISOString();
               const result = await input.environmentRuntime!.execute({
                 environment: input.environment as Environment,
@@ -113,6 +138,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // RPC boundary (channel env-exec-output:${runId}).
                 runId: commandInput.runId,
               });
+              accumulateProviderDurations(result.metadata);
               // Only emit the buffered stdout/stderr when the driver did NOT
               // already stream it live via onOutput. Legacy (non-streaming)
               // drivers leave `streamed` unset, preserving the original dump.
@@ -131,20 +157,35 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 streamed: result.streamed,
               };
             },
+            // Expose the native file-sync capability only when the provider's
+            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
+            // undefined so the orchestrator keeps the byte-identical base64 path.
+            ...(input.environmentRuntime.supportsSync({
+              environment: input.environment as Environment,
+              lease: input.lease,
+            })
+              ? {
+                  syncIn: (operations) =>
+                    input.environmentRuntime!.syncIn({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                  syncOut: (operations) =>
+                    input.environmentRuntime!.syncOut({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      operations,
+                    }),
+                }
+              : {}),
           }
         : undefined,
     };
   }
 
   if (
-    (
-      input.adapterType !== "codex_local" &&
-      input.adapterType !== "claude_local" &&
-      input.adapterType !== "gemini_local" &&
-      input.adapterType !== "opencode_local" &&
-      input.adapterType !== "pi_local" &&
-      input.adapterType !== "cursor"
-    ) ||
+    !adapterSupportsRemoteManagedEnvironments(input.adapterType) ||
     input.environment.driver !== "ssh"
   ) {
     return null;
