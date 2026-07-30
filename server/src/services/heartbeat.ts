@@ -255,7 +255,6 @@ import {
 import {
   extractSkillMentionIds,
   HEARTBEAT_RUN_TERMINAL_STATUSES,
-  isHeartbeatRunTerminalStatus,
   isUuidLike,
 } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
@@ -15090,6 +15089,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           heartbeatRunId: run.id,
           agentId: agent.id,
           persistedExecutionWorkspace,
+          executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
         });
         activeEnvironmentLease = {
           environment: reacquiredEnvironment.environment,
