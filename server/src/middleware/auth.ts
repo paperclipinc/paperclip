@@ -472,11 +472,16 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // never fabricated here. Until it exists this actor simply has no
   // membership in it; once it exists, this upsert keeps late-joining stack
   // users (and role changes from the gateway) in sync on every request.
-  const stackCompanyExists = await db
-    .select({ id: companies.id })
-    .from(companies)
-    .where(eq(companies.id, companyId))
-    .then((rows) => rows.length > 0);
+  let stackCompanyExists = false;
+  try {
+    stackCompanyExists = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows.length > 0);
+  } catch {
+    stackCompanyExists = false;
+  }
 
   if (stackCompanyExists) {
     const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;

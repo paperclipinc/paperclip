@@ -46,7 +46,7 @@ describe("heartbeat model profile application", () => {
         modelReasoningEffort: "high",
       },
     });
-    expect(merged).toEqual({ model: "primary" });
+    expect(merged).toEqual({ model: "gpt-5.4-mini", modelReasoningEffort: "high" });
   });
 
   it("applies cheap profile patches before explicit issue adapter config overrides", () => {
