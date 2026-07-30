@@ -316,10 +316,9 @@ describe("Sidebar", () => {
   });
 
   it("shows Status directly below Decisions in primary navigation", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableDecisions: true,
-      enableStatusCards: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({
+      features: { enableDecisions: true, enableStatusCards: true },
+    }));
     const root = await renderSidebar();
 
     const primaryNavLinks = [...container.querySelectorAll("nav > div:first-child a")];
