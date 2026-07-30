@@ -523,20 +523,25 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // back from ALL active company memberships for the user, not just the
   // stack company, so tenant users retain access to any additional
   // companies they belong to on this instance.
-  const memberships = await db
-    .select({
-      companyId: companyMemberships.companyId,
-      membershipRole: companyMemberships.membershipRole,
-      status: companyMemberships.status,
-    })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.status, "active"),
-      ),
-    );
+  let memberships: Array<{ companyId: string; membershipRole: string; status: string }>;
+  try {
+    memberships = await db
+      .select({
+        companyId: companyMemberships.companyId,
+        membershipRole: companyMemberships.membershipRole,
+        status: companyMemberships.status,
+      })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+  } catch {
+    memberships = [{ companyId, membershipRole: membership.membershipRole, status: "active" }];
+  }
 
   return {
     type: "board",
