@@ -735,10 +735,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                  })),
-                // No `exclude` denylist: `stagedCodexHomeDir` already contains
-                // ONLY the allowlisted files (auth/config/skills), so there is
-                // nothing to filter out.
+                  }));
+                },
               },
             ],
           });
