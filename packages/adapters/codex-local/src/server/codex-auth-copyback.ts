@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -121,7 +121,6 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
   }
 
   const hostDir = path.dirname(hostAuthPath);
-  await mkdir(hostDir, { recursive: true });
   try {
     return await withDirectoryMergeLock(hostDir, async () => {
       // Stage on the same filesystem as the host target so both the predicate read
