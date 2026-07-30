@@ -523,7 +523,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // back from ALL active company memberships for the user, not just the
   // stack company, so tenant users retain access to any additional
   // companies they belong to on this instance.
-  let memberships: Array<{ companyId: string; membershipRole: string; status: string }>;
+  let memberships: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   try {
     memberships = await db
       .select({
@@ -540,7 +540,8 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
         ),
       );
   } catch {
-    memberships = [{ companyId, membershipRole: membership.membershipRole, status: "active" }];
+    const fallbackRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+    memberships = [{ companyId, membershipRole: fallbackRole, status: "active" }];
   }
 
   return {
