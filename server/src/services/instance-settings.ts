@@ -482,6 +482,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return managedConfig ? { ...experimental, managedKeys } : experimental;
   }
 
+  function toManagedInstanceSettings(
+    row: typeof instanceSettings.$inferSelect,
+    ov: InstanceSettingsOverrides,
+  ): InstanceSettings {
+    const base = toInstanceSettings(row, ov);
+    if (!managedConfig) return base;
+    const { experimental, managedKeys } = applyManagedExperimentalOverlay(base.experimental, managedConfig);
+    return { ...base, experimental: { ...experimental, managedKeys } } as InstanceSettings;
+  }
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -522,7 +532,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -537,7 +547,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
@@ -547,7 +557,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
       const row = await getOrCreateRow();
-      return resolveExperimentalSettings(row.experimental, overrides.experimental);
+      return toExperimentalView(resolveExperimentalSettings(row.experimental, overrides.experimental));
     },
 
     getVisibility: async (): Promise<InstanceVisibilitySettings> => {
@@ -574,7 +584,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
@@ -593,7 +603,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
@@ -615,7 +625,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     listCompanyIds: async (): Promise<string[]> =>
