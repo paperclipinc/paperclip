@@ -688,6 +688,20 @@ export interface AdapterCredentialOption {
    * OAuth token ("^sk-ant-oat"). Prevents binding a value to the wrong envKey.
    */
   valuePattern?: string;
+  /**
+   * Render a multi-line, visible field instead of a single-line password box.
+   *
+   * For a credential that is a whole FILE rather than a key — Codex's
+   * `auth.json` is the live case — the password box is unusable in both
+   * directions: the user cannot see what they pasted to check it arrived
+   * whole, and a pretty-printed document collapses into one unreadable line.
+   * A file is also not shoulder-surfing-sensitive the way a short key is; the
+   * risk it carries is storage, not display.
+   *
+   * Values are still handled as credential material everywhere else: paste
+   * telemetry stays metadata-only and the value is never logged.
+   */
+  multiline?: boolean;
 }
 
 /**

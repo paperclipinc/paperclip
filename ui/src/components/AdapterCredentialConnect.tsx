@@ -4,6 +4,7 @@ import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { ApiError } from "../api/client";
 import { secretsApi } from "../api/secrets";
@@ -251,7 +252,33 @@ export function AdapterCredentialConnect({
         </a>
       ) : null}
 
-      <div className="flex items-center gap-2">
+      <div className={active.multiline ? "flex flex-col gap-2" : "flex items-center gap-2"}>
+        {active.multiline ? (
+          // A credential that is a whole file, not a key. A password box would
+          // hide a 2KB document the user needs to confirm arrived intact, and
+          // collapse a pretty-printed one onto a single line. Enter must insert
+          // a newline here rather than submit, so no onKeyDown handler.
+          <Textarea
+            // Paste telemetry opt-in: metadata only (length/whitespace shape),
+            // never the pasted value. Same contract as the single-line field.
+            data-telemetry="sensitive"
+            rows={6}
+            spellCheck={false}
+            className="font-mono text-xs"
+            placeholder={active.placeholder}
+            value={value}
+            aria-label={`${active.label} value`}
+            aria-describedby={error ? errorId : undefined}
+            onChange={(event) => {
+              const next = event.target.value;
+              setValue(next);
+              if (error) setError(null);
+              const match = detectCredentialOptionIndex(setup.options, next);
+              setDetectedIndex(match);
+              if (match >= 0 && match !== activeIndex) setActiveIndex(match);
+            }}
+          />
+        ) : (
         <Input
           type="password"
           // Paste telemetry opt-in: the tracker records paste METADATA only
@@ -279,6 +306,7 @@ export function AdapterCredentialConnect({
             void handleConnect();
           }}
         />
+        )}
         <Button
           type="button"
           size="sm"

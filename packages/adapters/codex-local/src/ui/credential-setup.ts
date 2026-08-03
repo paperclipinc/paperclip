@@ -27,7 +27,11 @@ export const codexLocalCredentialSetup: AdapterCredentialSetup = {
       label: "ChatGPT Plus or Pro plan",
       hint: "Run `codex login` on your own computer, then paste the whole contents of ~/.codex/auth.json. Paperclip keeps it refreshed for you, so you only do this once.",
       setupCommand: "codex login",
-      placeholder: '{"tokens":{"access_token":"…","refresh_token":"…","account_id":"…"}}',
+      placeholder: '{\n  "tokens": {\n    "access_token": "…",\n    "refresh_token": "…",\n    "account_id": "…"\n  }\n}',
+      // This credential is a whole file. A single-line password box would hide
+      // it and flatten it, which is how a paste arrives truncated and nobody
+      // notices until the first run fails.
+      multiline: true,
       // Deliberately loose: this is a JSON document Codex owns and may extend,
       // so anchoring on today's exact fields would reject a valid credential the
       // day OpenAI adds one. This catches the two mistakes people actually make
