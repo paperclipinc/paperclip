@@ -14117,6 +14117,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
+          // Persist a credential the runtime rotated mid-run. Codex is the live
+          // case: a ChatGPT-plan auth.json carries a single-use refresh token
+          // that the CLI rotates whenever the access token expires, and the
+          // rotated copy dies with the sandbox. Without this the stored
+          // credential is invalid from the next run onward, so the plan route
+          // would work for about an hour and then break for good.
+          onCredentialRotated: async ({ envKey, value }) => {
+            try {
+              const bindings = await secretsSvc.listBindings(agent.companyId);
+              const binding = bindings.find(
+                (candidate) =>
+                  candidate.targetType === "agent" &&
+                  candidate.targetId === agent.id &&
+                  candidate.configPath === `env.${envKey}`,
+              );
+              if (!binding) return;
+              // Attributed to the agent, not a user: nobody typed this value,
+              // the runtime produced it. Keeps the secret's audit trail honest
+              // about who wrote each version.
+              await secretsSvc.rotate(binding.secretId, { value }, { agentId: agent.id });
+            } catch (err) {
+              // Never fail a run that already did the user's work over a
+              // bookkeeping write. A missed rotation surfaces later as an
+              // ordinary auth error, which is recoverable; a failed run is not.
+              // No value or fragment of it is ever logged.
+              await onLog(
+                "stdout",
+                `[paperclip] Could not store the refreshed ${envKey} credential: ${
+                  err instanceof Error ? err.message : String(err)
+                }\n`,
+              );
+            }
+          },
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
