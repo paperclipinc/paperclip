@@ -66,3 +66,36 @@ describe("detectCredentialOptionIndex", () => {
     expect(detectCredentialOptionIndex(opts, "anything")).toBe(-1);
   });
 });
+
+describe("normalizeCredentialValue on a file-shaped credential", () => {
+  // Codex's auth.json is a whole file, and whitespace in a file is structure.
+  // The key-shaped rule (strip every space and newline) happens to leave
+  // today's auth.json parseable, because no token field contains a space. That
+  // is luck, not correctness: one space inside any string value and the
+  // credential is silently corrupted, surfacing as an unexplained auth failure
+  // days later rather than as a rejected paste.
+  const file = '{\n  "tokens": {\n    "account_id": "acct 1",\n    "refresh_token": "rt"\n  }\n}\n';
+
+  it("preserves whitespace inside a multiline credential, trimming only the ends", () => {
+    const normalized = normalizeCredentialValue(file, { multiline: true });
+    expect(normalized).toBe(file.trim());
+    expect(JSON.parse(normalized).tokens.account_id).toBe("acct 1");
+  });
+
+  it("still strips all whitespace from a key-shaped credential", () => {
+    // Unchanged: a line-wrapped key from a terminal is a real failure mode and
+    // stripping is the right repair there.
+    expect(normalizeCredentialValue("sk-ant-oat01-AbCdEf\nGhIjKl")).toBe("sk-ant-oat01-AbCdEfGhIjKl");
+    expect(normalizeCredentialValue("sk-ant-oat01-AbCdEf\nGhIjKl", { multiline: false })).toBe(
+      "sk-ant-oat01-AbCdEfGhIjKl",
+    );
+  });
+
+  it("would have corrupted a spaced value under the old rule", () => {
+    // Guard on the specific regression, so nobody reinstates the blanket strip.
+    const corrupted = file.replace(/\s+/g, "");
+    expect(JSON.parse(corrupted).tokens.account_id).toBe("acct1");
+    expect(normalizeCredentialValue(file, { multiline: true })).not.toBe(corrupted);
+  });
+});
+

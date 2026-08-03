@@ -39,13 +39,28 @@ function toKebab(value: string): string {
  * every run with a 401. Not for the generic secrets editor, where multi-line
  * values are legitimate.
  */
-export function normalizeCredentialValue(value: string): string {
-  return value.replace(/\s+/g, "");
+export function normalizeCredentialValue(value: string, option?: { multiline?: boolean }): string {
+  // A key-shaped credential never legitimately contains whitespace, and a
+  // terminal that line-wrapped one on the way to the clipboard is a real and
+  // common way to arrive with a broken paste. Stripping all of it is the right
+  // repair there.
+  //
+  // A file-shaped credential is the opposite case: whitespace is structure.
+  // Codex's auth.json survives an aggressive strip only by luck, because none
+  // of today's token fields contain a space; the day one does, or a field with
+  // a space in its value is added, this would silently corrupt the credential
+  // and surface as an unexplained auth failure days later. Trim the ends only.
+  return option?.multiline ? value.trim() : value.replace(/\s+/g, "");
 }
 
 const MIN_CREDENTIAL_VALUE_LENGTH = 20;
 const INCOMPLETE_TOKEN_ERROR =
   "This does not look like a complete token. Paste the whole value with no line breaks.";
+// The advice above is wrong for a credential that IS a multi-line file: line
+// breaks are expected there, and telling someone to remove them would make a
+// good paste look wrong.
+const INCOMPLETE_FILE_ERROR =
+  "This does not look like a complete file. Paste the whole contents, from the opening brace to the closing one.";
 
 // An invalid valuePattern must never lock the user out of submitting.
 function patternAllows(pattern: string, value: string): boolean {
@@ -155,7 +170,7 @@ export function AdapterCredentialConnect({
   }
 
   async function handleConnect() {
-    const normalized = normalizeCredentialValue(value);
+    const normalized = normalizeCredentialValue(value, active);
     if (!normalized || submitting) return;
 
     // Strict completeness check: an anchored valuePattern mismatch or a
@@ -165,7 +180,7 @@ export function AdapterCredentialConnect({
       normalized.length < MIN_CREDENTIAL_VALUE_LENGTH ||
       (active.valuePattern && !patternAllows(active.valuePattern, normalized))
     ) {
-      setError(INCOMPLETE_TOKEN_ERROR);
+      setError(active.multiline ? INCOMPLETE_FILE_ERROR : INCOMPLETE_TOKEN_ERROR);
       return;
     }
 
