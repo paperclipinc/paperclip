@@ -41,6 +41,8 @@ const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
 const AUTH_FAILURE_TEST_ADAPTER = "auth_failure_test";
 const CODEX_AUTH_FAILURE_TEST_ADAPTER = "codex_auth_failure_test";
 const IDENTICAL_FAILURE_TEST_ADAPTER = "identical_failure_test";
+const TRANSIENT_STORM_TEST_ADAPTER = "transient_storm_test";
+const TRANSIENT_STORM_TEST_ERROR_CODE = "inference_upstream_error";
 const IDENTICAL_FAILURE_TEST_ERROR_CODE = "stuck_failure_test";
 const SETUP_FAILURE_TEST_ADAPTER = "setup_failure_test";
 
@@ -52,6 +54,7 @@ const SETUP_FAILURE_TEST_ADAPTER = "setup_failure_test";
 // (default), execute() resolves immediately as before.
 let authFailureGate: Promise<void> | null = null;
 let identicalFailureGate: Promise<void> | null = null;
+let transientStormGate: Promise<void> | null = null;
 let setupFailureGate: Promise<void> | null = null;
 
 if (!embeddedPostgresSupport.supported) {
@@ -194,6 +197,35 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       }),
     });
     registerServerAdapter({
+      // Fails the same transient-looking way every run, with a deliberately
+      // tight retry budget so a single run can exhaust it. Mirrors the real
+      // production shape: an OpenRouter key asked for an amazon-bedrock model
+      // answers "Unexpected server error", which classifies as a retryable
+      // upstream fault forever even though it will never start working.
+      type: TRANSIENT_STORM_TEST_ADAPTER,
+      execute: async () => {
+        if (transientStormGate) await transientStormGate;
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Unexpected server error. Check server logs for details.",
+          errorCode: TRANSIENT_STORM_TEST_ERROR_CODE,
+          errorFamily: "transient_upstream" as const,
+          resultJson: {
+            errorFamily: "transient_upstream",
+            transientRetryMaxAttempts: 1,
+          },
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType: TRANSIENT_STORM_TEST_ADAPTER,
+        status: "pass" as const,
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
       type: SETUP_FAILURE_TEST_ADAPTER,
       // Registration only: the agent needs a resolvable adapter type, but the
       // non-retryable-setup-failure test never actually reaches execute(). It
@@ -253,6 +285,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   afterEach(async () => {
     authFailureGate = null;
     identicalFailureGate = null;
+    transientStormGate = null;
     setupFailureGate = null;
     await heartbeat?.drain();
     await cleanupRetryFixture();
@@ -575,6 +608,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   async function seedIdenticalFailureFixture(input: {
     companyId: string;
     agentId: string;
+    adapterType?: string;
     priorRuns: Array<{ status: "failed" | "succeeded"; errorCode?: string | null }>;
   }) {
     await db.insert(companies).values({
@@ -591,7 +625,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Stuck Agent",
       role: "engineer",
       status: "idle",
-      adapterType: IDENTICAL_FAILURE_TEST_ADAPTER,
+      adapterType: input.adapterType ?? IDENTICAL_FAILURE_TEST_ADAPTER,
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -671,6 +705,111 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(pausedAgent?.pauseReason).toContain("then resume");
 
     await expectSiblingCancelledAsPaused(db, queuedSiblingId);
+  });
+
+  // A transient recovery contract used to take the bounded-retry branch and
+  // return before the identical-failure storm breaker was ever evaluated. The
+  // bounded retry caps attempts inside ONE chain, but each heartbeat opens a
+  // fresh chain, so a permanent misconfiguration that merely looks transient
+  // looped failed runs forever (521 in 48 hours for one real company).
+  async function runTransientStormAgent(input: {
+    companyId: string;
+    agentId: string;
+    priorFailures: number;
+    priorErrorCode?: string;
+    exhaustBudget: boolean;
+  }) {
+    await seedIdenticalFailureFixture({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      adapterType: TRANSIENT_STORM_TEST_ADAPTER,
+      priorRuns: Array.from({ length: input.priorFailures }, () => ({
+        status: "failed" as const,
+        errorCode: input.priorErrorCode ?? TRANSIENT_STORM_TEST_ERROR_CODE,
+      })),
+    });
+
+    const gate = createGate();
+    transientStormGate = gate.promise;
+
+    const run = await heartbeat.invoke(input.agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    await waitForRunClaimed(heartbeat, run!.id);
+
+    if (input.exhaustBudget) {
+      // The adapter caps the budget at 1 attempt, so a run already carrying
+      // attempt 1 has nothing left: nextAttempt (2) > maxAttempts (1).
+      await db
+        .update(heartbeatRuns)
+        .set({ scheduledRetryAttempt: 1 })
+        .where(eq(heartbeatRuns.id, run!.id));
+    }
+    gate.release();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe(TRANSIENT_STORM_TEST_ERROR_CODE);
+    return run!.id;
+  }
+
+  async function agentStatus(agentId: string) {
+    return db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  it("pauses an agent whose exhausted transient retries keep failing the same way", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await runTransientStormAgent({
+      companyId,
+      agentId,
+      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
+      exhaustBudget: true,
+    });
+
+    await expect
+      .poll(() => agentStatus(agentId).then((row) => row?.status ?? null), {
+        timeout: 5_000,
+        interval: 50,
+      })
+      .toBe("paused");
+
+    const paused = await agentStatus(agentId);
+    expect(paused?.pauseReason).toContain(TRANSIENT_STORM_TEST_ERROR_CODE);
+  });
+
+  it("keeps retrying while the transient budget still has attempts left", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await runTransientStormAgent({
+      companyId,
+      agentId,
+      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
+      exhaustBudget: false,
+    });
+
+    // Give the breaker the same window the passing case needs before asserting
+    // the absence of a pause.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect((await agentStatus(agentId))?.status).not.toBe("paused");
+  });
+
+  it("does not pause when the exhausted failures carry different error codes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await runTransientStormAgent({
+      companyId,
+      agentId,
+      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
+      priorErrorCode: "some_other_error",
+      exhaustBudget: true,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect((await agentStatus(agentId))?.status).not.toBe("paused");
   });
 
   it("pauses an agent whose run throws a non-retryable adapter setup failure instead of re-running it", async () => {
