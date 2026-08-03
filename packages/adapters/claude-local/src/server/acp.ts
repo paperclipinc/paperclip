@@ -441,6 +441,7 @@ export async function testClaudeAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "claude_engine_selected",
@@ -533,6 +534,15 @@ export async function testClaudeAcpEnvironment(
     const authAdvice = resolveClaudeAuthAdvice(envConfig);
     if (authAdvice) {
       checks.push(authAdvice);
+    } else if (!callerControlsHost) {
+      // ACP-lane mirror of the CLI-lane branch in test.ts: name the token
+      // route, which the user can actually complete from their own machine.
+      checks.push({
+        code: "claude_acp_subscription_mode_possible",
+        level: "info",
+        message: "No Claude credentials are configured for this agent yet.",
+        hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
+      });
     } else if (!targetIsRemote) {
       checks.push({
         code: "claude_acp_subscription_mode_possible",

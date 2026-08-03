@@ -6,7 +6,13 @@ export const codexLocalCredentialSetup: AdapterCredentialSetup = {
       envKey: "OPENAI_API_KEY",
       kind: "api_key",
       label: "OpenAI API key",
-      hint: "Create a key in the OpenAI API console. Alternatively, you can log in with `codex login` locally and Paperclip's CODEX_HOME sync will ship the credential to remote runs.",
+      // The `codex login` half of this hint was true only for a self-hosted
+      // install, where "locally" means the machine running Paperclip and the
+      // CODEX_HOME sync ships that operator's own credential outward. On a
+      // hosted install the sync source is the shared server, which no tenant
+      // can log into, so the sentence promised a route that does not exist and
+      // sent at least one paying customer hunting for it until they gave up.
+      hint: "Create a key in the OpenAI API console and make sure the account has credit. A ChatGPT Plus or Pro plan does not cover this and cannot be used here.",
       setupUrl: "https://platform.openai.com/api-keys",
       placeholder: "sk-…",
       // OpenAI keys are "sk-" plus a long url-safe body (sk-proj-…, sk-svcacct-…,
