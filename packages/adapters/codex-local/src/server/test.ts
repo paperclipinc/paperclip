@@ -302,7 +302,7 @@ export async function testEnvironment(
       code: "codex_openai_api_key_missing",
       level: "warn",
       message: "No OpenAI API key is configured for this agent. Codex runs will fail until one is added.",
-      hint: "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
+      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
     });
   } else if (!targetIsRemote) {
     // Local-only auth file check. On remote targets, the probe will surface
@@ -435,7 +435,7 @@ export async function testEnvironment(
                 : "The key was provided but Codex still rejected it. Check that it is a valid OpenAI API key and that the account behind it has credit, then paste it again."
               : callerControlsHost
                 ? "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first."
-                : "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
+                : "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
           });
         } else {
           checks.push({

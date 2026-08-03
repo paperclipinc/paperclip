@@ -75,12 +75,13 @@ describe("Codex ACP credential advice on a hosted install", () => {
     const missing = result.checks.find((check) => check.code === "codex_acp_credentials_missing");
     expect(missing).toBeTruthy();
     expect(missing?.hint).toContain("Add an OpenAI API key");
-    // The plan question is the one they actually arrived with. Leaving it
-    // unanswered is what sent the customer looking for a route that is not there.
-    expect(missing?.hint).toContain("ChatGPT Plus or Pro plan cannot be used here");
-    // `codex login` may still be NAMED as the reason a plan cannot work, but
-    // never issued as something to go and do on the server.
-    expect(missing?.hint).not.toContain("run `codex login`");
+    // The plan question is the one they actually arrived with. It must be
+    // answered here, and the answer is now a real route rather than a refusal.
+    expect(missing?.hint).toContain("ChatGPT Plus or Pro plan");
+    // The load-bearing phrase. `codex login` is fine to name, and is now the
+    // right thing to do, but ONLY on the user's own machine: the version of
+    // this hint that sent them to do it on the server is what cost us a customer.
+    expect(missing?.hint).toContain("on your own computer");
   });
 
   it("never reports the host's own credential as the tenant's", async () => {

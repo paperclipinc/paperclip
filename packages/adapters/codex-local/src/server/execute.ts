@@ -75,6 +75,7 @@ import {
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
+  shouldReplaceStoredCodexAuth,
 } from "./codex-home.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
@@ -538,6 +539,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  // A Codex `auth.json` the user minted with `codex login` on their own machine.
+  // This is how a ChatGPT plan reaches a hosted install: there is no shared host
+  // login for a tenant to inherit, and inheriting one would be another tenant's.
+  // An explicit OPENAI_API_KEY still wins, matching the precedence Codex itself
+  // applies inside auth.json.
+  const configuredCodexAuthJson =
+    typeof envConfig.CODEX_AUTH_JSON === "string" && envConfig.CODEX_AUTH_JSON.trim().length > 0
+      ? envConfig.CODEX_AUTH_JSON.trim()
+      : null;
   // A configured CODEX_HOME that lives under the Paperclip-managed company tree
   // (the per-agent home set by the server isolation guard) still needs auth
   // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
@@ -549,10 +559,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
+      authJson: configuredCodexAuthJson,
     });
   } else if (configuredHomeIsManaged) {
     await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
       apiKey: configuredOpenAiApiKey,
+      authJson: configuredCodexAuthJson,
     });
   }
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
@@ -572,13 +584,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    configuredAuthJson: configuredCodexAuthJson,
   });
   if (credentialReadiness.managed && !credentialReadiness.ready) {
     throw new Error(
       `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
         `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
-        `OPENAI_API_KEY.`,
+        `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
+        `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
+        `self-hosted install, signing in to Codex on the host also works.`,
     );
   }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
@@ -683,6 +697,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
                 restore: async ({ assetDir, readFile }) => {
+                  // Hosted path first. When the run authenticated with a
+                  // credential the USER supplied, the refreshed copy has to go
+                  // back to where that credential came from — the credential
+                  // store — not to any host file. This is not an optimisation:
+                  // OpenAI rotates the refresh token on every refresh and the
+                  // old one dies immediately, so skipping this would leave the
+                  // stored credential invalid from the next run onward. The
+                  // feature would look fine for about an hour and then break
+                  // permanently, which is worse than not shipping it.
+                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
+                    try {
+                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
+                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
+                        await ctx.onCredentialRotated({
+                          envKey: "CODEX_AUTH_JSON",
+                          value: rotated,
+                        });
+                        await onLog(
+                          "stdout",
+                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
+                        );
+                      }
+                    } catch (err) {
+                      // A failed copy-back must never fail a run that already
+                      // did the user's work. The cost is a stale stored
+                      // credential, which surfaces as a normal auth error on a
+                      // later run, not as a lost result here.
+                      await onLog(
+                        "stdout",
+                        `[paperclip] Codex plan credential copy-back skipped: ${
+                          err instanceof Error ? err.message : String(err)
+                        }\n`,
+                      );
+                    }
+                    return;
+                  }
                   // The copy-back exists to persist refreshed ChatGPT-subscription
                   // tokens back to the credential the managed homes symlink to.
                   // When no shared host credential store exists (cloud/multi-tenant

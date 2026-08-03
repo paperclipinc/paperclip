@@ -4,7 +4,7 @@ import { codexLocalCredentialSetup } from "./credential-setup.js";
 describe("codexLocalCredentialSetup", () => {
   it("exports credential options with correct envKeys", () => {
     const envKeys = codexLocalCredentialSetup.options.map(o => o.envKey);
-    expect(envKeys).toEqual(["OPENAI_API_KEY"]);
+    expect(envKeys).toEqual(["OPENAI_API_KEY", "CODEX_AUTH_JSON"]);
   });
 
   it("configures api_key option with correct label and setupUrl", () => {
@@ -35,20 +35,43 @@ describe("codexLocalCredentialSetup", () => {
     expect(pattern.test("sk-proj-AbCdEf\nGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
   });
 
-  it("does not offer `codex login` as a ChatGPT-subscription route", () => {
-    // This assertion used to be its exact inverse: the hint advertised
-    // "log in with `codex login` locally and Paperclip's CODEX_HOME sync will
-    // ship the credential to remote runs", and this test held it in place.
+  it("offers the plan route as a credential the USER supplies, not one read off the server", () => {
+    // History worth keeping, because the distinction is the whole bug. The
+    // api-key hint used to advertise "log in with `codex login` locally and
+    // Paperclip's CODEX_HOME sync will ship the credential to remote runs",
+    // and a test asserted that it did. That is true only when you self-host,
+    // where the sync source is your own machine; on a hosted install it is the
+    // shared server, so the promise was empty and cost us a customer.
     //
-    // That is true only when you self-host, where the sync source is your own
-    // machine. On a hosted install the source is the shared server, so there is
-    // no login a customer could perform and no credential of theirs to ship. A
-    // paying customer followed the promise, found nothing, and asked for a
-    // refund. The hint must offer the key, and must not imply a plan will do.
+    // `codex login` is back, but inverted: the user runs it on their machine
+    // and hands us the RESULT, which we store as their credential. Nothing is
+    // read off the server. So the assertion is not "never mention codex login"
+    // but "the plan route carries its own credential".
     const apiKeyOption = codexLocalCredentialSetup.options.find(o => o.envKey === "OPENAI_API_KEY");
-    expect(apiKeyOption?.hint).not.toContain("codex login");
     expect(apiKeyOption?.hint).not.toContain("CODEX_HOME");
-    expect(apiKeyOption?.hint).toContain("credit");
-    expect(apiKeyOption?.hint).toContain("ChatGPT Plus or Pro plan does not cover this");
+    expect(apiKeyOption?.hint).not.toContain("codex login");
+
+    const planOption = codexLocalCredentialSetup.options.find(o => o.envKey === "CODEX_AUTH_JSON");
+    expect(planOption).toBeDefined();
+    expect(planOption?.kind).toBe("subscription_token");
+    expect(planOption?.setupCommand).toBe("codex login");
+    // "on your own computer" is the load-bearing phrase: without it this reads
+    // exactly like the instruction nobody could follow.
+    expect(planOption?.hint).toContain("on your own computer");
+    expect(planOption?.hint).toContain("auth.json");
+  });
+
+  it("accepts a pasted auth.json and rejects the things people paste by mistake", () => {
+    const planOption = codexLocalCredentialSetup.options.find(o => o.envKey === "CODEX_AUTH_JSON");
+    const pattern = new RegExp(planOption!.valuePattern!);
+
+    expect(pattern.test('{"tokens":{"account_id":"a","refresh_token":"r"}}')).toBe(true);
+    // Real files are pretty-printed and trail a newline.
+    expect(pattern.test('\n{\n  "tokens": {\n    "account_id": "a"\n  }\n}\n')).toBe(true);
+
+    // The two actual mistakes: pasting the key, or the path to the file.
+    expect(pattern.test("sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
+    expect(pattern.test("~/.codex/auth.json")).toBe(false);
+    expect(pattern.test("")).toBe(false);
   });
 });

@@ -43,6 +43,14 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+/** Same as setInputValue, but works for the multiline (textarea) credential field. */
+function setFieldValue(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const proto =
+    field.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function makeSecret(overrides: Partial<CompanySecret> = {}): CompanySecret {
   return {
     id: "secret-1",
@@ -88,6 +96,29 @@ const claudeLocalSetup: AdapterCredentialSetup = {
       hint: "Mint a long-lived token with `claude setup-token`.",
       setupCommand: "claude setup-token",
       placeholder: "sk-ant-oat01-…",
+    },
+  ],
+};
+
+// A credential that is a whole file rather than a key: Codex's auth.json,
+// which a ChatGPT-plan user produces with `codex login` on their own machine.
+const codexLocalSetup: AdapterCredentialSetup = {
+  options: [
+    {
+      envKey: "OPENAI_API_KEY",
+      kind: "api_key",
+      label: "OpenAI API key",
+      placeholder: "sk-…",
+      valuePattern: "^sk-(?!ant-)[A-Za-z0-9_-]{20,}$",
+    },
+    {
+      envKey: "CODEX_AUTH_JSON",
+      kind: "subscription_token",
+      label: "ChatGPT Plus or Pro plan",
+      setupCommand: "codex login",
+      placeholder: "{}",
+      multiline: true,
+      valuePattern: "^\\s*\\{[\\s\\S]*\\}\\s*$",
     },
   ],
 };
@@ -533,5 +564,51 @@ describe("AdapterCredentialConnect", () => {
     expect(errorEl?.textContent).toBe("boom");
     expect(errorEl?.id).toBeTruthy();
     expect(input.getAttribute("aria-describedby")).toBe(errorEl?.id);
+  });
+
+  it("gives a file-shaped credential a visible multi-line field, not a password box", async () => {
+    // The Codex plan credential is a whole auth.json. In a single-line password
+    // box the user cannot see whether their paste arrived intact and a
+    // pretty-printed file collapses to one line, which is exactly how a
+    // truncated paste reaches production unnoticed.
+    await render({ setup: codexLocalSetup });
+
+    const planTab = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "ChatGPT Plus or Pro plan",
+    );
+    await act(() => {
+      planTab!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const field = container.querySelector('[aria-label="ChatGPT Plus or Pro plan value"]');
+    expect(field).toBeTruthy();
+    expect(field?.tagName).toBe("TEXTAREA");
+    // Paste telemetry must stay metadata-only on this field too.
+    expect(field?.getAttribute("data-telemetry")).toBe("sensitive");
+  });
+
+  it("keeps the password box for a key-shaped credential", async () => {
+    await render({ setup: codexLocalSetup });
+
+    const field = container.querySelector('[aria-label="OpenAI API key value"]');
+    expect(field?.tagName).toBe("INPUT");
+    expect(field?.getAttribute("type")).toBe("password");
+  });
+
+  it("routes a pasted auth.json to the plan slot, not the API-key slot", async () => {
+    // Binding a JSON document to OPENAI_API_KEY would fail every run with a
+    // 401 and give the user no clue why.
+    await render({ setup: codexLocalSetup });
+
+    const field = container.querySelector("textarea, input[type=password]") as
+      | HTMLTextAreaElement
+      | HTMLInputElement;
+    await act(async () => {
+      setFieldValue(field, '{\n  "tokens": { "account_id": "a", "refresh_token": "r" }\n}');
+    });
+
+    expect(
+      container.querySelector('[aria-label="ChatGPT Plus or Pro plan value"]'),
+    ).toBeTruthy();
   });
 });

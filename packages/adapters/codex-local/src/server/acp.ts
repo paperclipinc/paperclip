@@ -471,7 +471,7 @@ export async function testCodexAcpEnvironment(
       code: "codex_acp_credentials_missing",
       level: "warn",
       message: "No Codex credentials are configured for this agent.",
-      hint: "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
+      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
     });
   } else if (!targetIsRemote) {
     const codexHome = isNonEmpty(envConfig.CODEX_HOME)

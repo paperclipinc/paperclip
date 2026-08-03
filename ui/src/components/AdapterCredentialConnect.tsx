@@ -4,6 +4,7 @@ import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { ApiError } from "../api/client";
 import { secretsApi } from "../api/secrets";
@@ -38,13 +39,28 @@ function toKebab(value: string): string {
  * every run with a 401. Not for the generic secrets editor, where multi-line
  * values are legitimate.
  */
-export function normalizeCredentialValue(value: string): string {
-  return value.replace(/\s+/g, "");
+export function normalizeCredentialValue(value: string, option?: { multiline?: boolean }): string {
+  // A key-shaped credential never legitimately contains whitespace, and a
+  // terminal that line-wrapped one on the way to the clipboard is a real and
+  // common way to arrive with a broken paste. Stripping all of it is the right
+  // repair there.
+  //
+  // A file-shaped credential is the opposite case: whitespace is structure.
+  // Codex's auth.json survives an aggressive strip only by luck, because none
+  // of today's token fields contain a space; the day one does, or a field with
+  // a space in its value is added, this would silently corrupt the credential
+  // and surface as an unexplained auth failure days later. Trim the ends only.
+  return option?.multiline ? value.trim() : value.replace(/\s+/g, "");
 }
 
 const MIN_CREDENTIAL_VALUE_LENGTH = 20;
 const INCOMPLETE_TOKEN_ERROR =
   "This does not look like a complete token. Paste the whole value with no line breaks.";
+// The advice above is wrong for a credential that IS a multi-line file: line
+// breaks are expected there, and telling someone to remove them would make a
+// good paste look wrong.
+const INCOMPLETE_FILE_ERROR =
+  "This does not look like a complete file. Paste the whole contents, from the opening brace to the closing one.";
 
 // An invalid valuePattern must never lock the user out of submitting.
 function patternAllows(pattern: string, value: string): boolean {
@@ -154,7 +170,7 @@ export function AdapterCredentialConnect({
   }
 
   async function handleConnect() {
-    const normalized = normalizeCredentialValue(value);
+    const normalized = normalizeCredentialValue(value, active);
     if (!normalized || submitting) return;
 
     // Strict completeness check: an anchored valuePattern mismatch or a
@@ -164,7 +180,7 @@ export function AdapterCredentialConnect({
       normalized.length < MIN_CREDENTIAL_VALUE_LENGTH ||
       (active.valuePattern && !patternAllows(active.valuePattern, normalized))
     ) {
-      setError(INCOMPLETE_TOKEN_ERROR);
+      setError(active.multiline ? INCOMPLETE_FILE_ERROR : INCOMPLETE_TOKEN_ERROR);
       return;
     }
 
@@ -251,7 +267,33 @@ export function AdapterCredentialConnect({
         </a>
       ) : null}
 
-      <div className="flex items-center gap-2">
+      <div className={active.multiline ? "flex flex-col gap-2" : "flex items-center gap-2"}>
+        {active.multiline ? (
+          // A credential that is a whole file, not a key. A password box would
+          // hide a 2KB document the user needs to confirm arrived intact, and
+          // collapse a pretty-printed one onto a single line. Enter must insert
+          // a newline here rather than submit, so no onKeyDown handler.
+          <Textarea
+            // Paste telemetry opt-in: metadata only (length/whitespace shape),
+            // never the pasted value. Same contract as the single-line field.
+            data-telemetry="sensitive"
+            rows={6}
+            spellCheck={false}
+            className="font-mono text-xs"
+            placeholder={active.placeholder}
+            value={value}
+            aria-label={`${active.label} value`}
+            aria-describedby={error ? errorId : undefined}
+            onChange={(event) => {
+              const next = event.target.value;
+              setValue(next);
+              if (error) setError(null);
+              const match = detectCredentialOptionIndex(setup.options, next);
+              setDetectedIndex(match);
+              if (match >= 0 && match !== activeIndex) setActiveIndex(match);
+            }}
+          />
+        ) : (
         <Input
           type="password"
           // Paste telemetry opt-in: the tracker records paste METADATA only
@@ -279,6 +321,7 @@ export function AdapterCredentialConnect({
             void handleConnect();
           }}
         />
+        )}
         <Button
           type="button"
           size="sm"

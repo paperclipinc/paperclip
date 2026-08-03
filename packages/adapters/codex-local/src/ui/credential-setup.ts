@@ -6,13 +6,13 @@ export const codexLocalCredentialSetup: AdapterCredentialSetup = {
       envKey: "OPENAI_API_KEY",
       kind: "api_key",
       label: "OpenAI API key",
-      // The `codex login` half of this hint was true only for a self-hosted
-      // install, where "locally" means the machine running Paperclip and the
-      // CODEX_HOME sync ships that operator's own credential outward. On a
-      // hosted install the sync source is the shared server, which no tenant
-      // can log into, so the sentence promised a route that does not exist and
-      // sent at least one paying customer hunting for it until they gave up.
-      hint: "Create a key in the OpenAI API console and make sure the account has credit. A ChatGPT Plus or Pro plan does not cover this and cannot be used here.",
+      // The original hint pointed at `codex login` + CODEX_HOME sync, which is
+      // real only when you self-host: the sync source is the machine running
+      // Paperclip. On a hosted install that is the shared server, so the
+      // sentence promised a route that did not exist and cost us a customer.
+      // The plan route now exists as its own option below, where the user
+      // supplies the credential instead of us reading one off the server.
+      hint: "Create a key in the OpenAI API console and make sure the account has credit. Billed by usage, separately from any ChatGPT plan.",
       setupUrl: "https://platform.openai.com/api-keys",
       placeholder: "sk-…",
       // OpenAI keys are "sk-" plus a long url-safe body (sk-proj-…, sk-svcacct-…,
@@ -20,6 +20,25 @@ export const codexLocalCredentialSetup: AdapterCredentialSetup = {
       // the "sk-" prefix and would otherwise bind silently to OPENAI_API_KEY and
       // fail every run with a 401.
       valuePattern: "^sk-(?!ant-)[A-Za-z0-9_-]{20,}$",
+    },
+    {
+      envKey: "CODEX_AUTH_JSON",
+      kind: "subscription_token",
+      label: "ChatGPT Plus or Pro plan",
+      hint: "Run `codex login` on your own computer, then paste the whole contents of ~/.codex/auth.json. Paperclip keeps it refreshed for you, so you only do this once.",
+      setupCommand: "codex login",
+      placeholder: '{\n  "tokens": {\n    "access_token": "…",\n    "refresh_token": "…",\n    "account_id": "…"\n  }\n}',
+      // This credential is a whole file. A single-line password box would hide
+      // it and flatten it, which is how a paste arrives truncated and nobody
+      // notices until the first run fails.
+      multiline: true,
+      // Deliberately loose: this is a JSON document Codex owns and may extend,
+      // so anchoring on today's exact fields would reject a valid credential the
+      // day OpenAI adds one. This catches the two mistakes people actually make
+      // (pasting an API key, or a file path instead of the file contents); the
+      // real shape check runs server-side, where a bad payload can be explained
+      // rather than silently refused by a regex.
+      valuePattern: "^\\s*\\{[\\s\\S]*\\}\\s*$",
     },
   ],
 };
