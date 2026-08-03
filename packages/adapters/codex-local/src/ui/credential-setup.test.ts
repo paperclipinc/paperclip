@@ -35,9 +35,20 @@ describe("codexLocalCredentialSetup", () => {
     expect(pattern.test("sk-proj-AbCdEf\nGhIjKlMnOpQrStUvWxYz0123456789")).toBe(false);
   });
 
-  it("includes hint mentioning codex login and CODEX_HOME sync as ChatGPT-subscription alternative", () => {
+  it("does not offer `codex login` as a ChatGPT-subscription route", () => {
+    // This assertion used to be its exact inverse: the hint advertised
+    // "log in with `codex login` locally and Paperclip's CODEX_HOME sync will
+    // ship the credential to remote runs", and this test held it in place.
+    //
+    // That is true only when you self-host, where the sync source is your own
+    // machine. On a hosted install the source is the shared server, so there is
+    // no login a customer could perform and no credential of theirs to ship. A
+    // paying customer followed the promise, found nothing, and asked for a
+    // refund. The hint must offer the key, and must not imply a plan will do.
     const apiKeyOption = codexLocalCredentialSetup.options.find(o => o.envKey === "OPENAI_API_KEY");
-    expect(apiKeyOption?.hint).toContain("codex login");
-    expect(apiKeyOption?.hint).toContain("CODEX_HOME");
+    expect(apiKeyOption?.hint).not.toContain("codex login");
+    expect(apiKeyOption?.hint).not.toContain("CODEX_HOME");
+    expect(apiKeyOption?.hint).toContain("credit");
+    expect(apiKeyOption?.hint).toContain("ChatGPT Plus or Pro plan does not cover this");
   });
 });

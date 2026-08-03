@@ -385,6 +385,7 @@ export async function testCodexAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "codex_engine_selected",
@@ -457,6 +458,20 @@ export async function testCodexAcpEnvironment(
       level: "info",
       message: "OPENAI_API_KEY is set for Codex ACP authentication.",
       detail: `Detected in ${source}.`,
+    });
+  } else if (!callerControlsHost) {
+    // Hosted multi-tenant: the host's `~/.codex` is not this user's, and they
+    // have no shell to run `codex login` on, so neither the native-auth check
+    // nor the login hint below can mean anything to them. Say the one thing
+    // they can act on. Deliberately explicit that a ChatGPT plan is not a
+    // route here: it authenticates only through that local login, so a
+    // subscriber who reads a bare "set OPENAI_API_KEY" keeps hunting for the
+    // plan option instead of buying the credit the key needs.
+    checks.push({
+      code: "codex_acp_credentials_missing",
+      level: "warn",
+      message: "No Codex credentials are configured for this agent.",
+      hint: "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
     });
   } else if (!targetIsRemote) {
     const codexHome = isNonEmpty(envConfig.CODEX_HOME)
