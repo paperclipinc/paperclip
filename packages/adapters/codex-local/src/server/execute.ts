@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  firstMeaningfulStderrLine,
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
   detectSandboxExecTimeout,
@@ -119,37 +124,11 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-// Benign stderr lines that never explain a nonzero exit and must not be
-// surfaced as the run error: Codex always prints the YOLO approvals warning
-// because this adapter passes the approvals-bypass flag itself, and
-// "[paperclip] ..." lines are diagnostics the adapter injected (e.g. ACP
-// fallback notes). Keep this list conservative so real errors are never
-// skipped.
-const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
-  /^YOLO mode is enabled\b/i,
-  /^\[paperclip\]/,
-];
-
-function isBenignCodexStderrLine(line: string): boolean {
-  return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
-}
-
-export function firstMeaningfulStderrLine(text: string): string {
-  const meaningful = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line && !isBenignCodexStderrLine(line));
-  return meaningful ?? firstNonEmptyLine(text);
-}
+// The benign-banner filter this adapter used to carry privately now lives in
+// adapter-utils, so every adapter that derives a fallback run error from stderr
+// shares one list. Re-exported here because callers (and the adapter's own
+// regression suite) import it from this module.
+export { firstMeaningfulStderrLine };
 
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },

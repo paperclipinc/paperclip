@@ -68,6 +68,10 @@ export {
   redactCommandText,
   redactSensitiveText,
 } from "./command-redaction.js";
+export {
+  firstMeaningfulStderrLine,
+  isBenignAdapterStderrLine,
+} from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
