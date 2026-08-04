@@ -14612,7 +14612,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          const transientRetry = await scheduleBoundedRetryForRun(livenessRun, agent);
+          // A bounded retry caps attempts inside ONE chain, but the next
+          // heartbeat opens a fresh chain, so a permanent misconfiguration that
+          // merely looks transient loops failed runs forever. One company
+          // reached 521 failed runs in 48 hours this way: an OpenRouter key
+          // asked for an amazon-bedrock model, which answers "Unexpected server
+          // error" and classifies as a retryable upstream fault every time.
+          // Once the budget is spent, hand the run to the storm breaker, which
+          // still only pauses after CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD
+          // terminal runs share one error code. A real upstream blip recovers
+          // long before that.
+          if (transientRetry?.outcome === "retry_exhausted") {
+            await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
+          }
         } else if (
           outcome === "failed" &&
           isPermanentAuthFailureRun(livenessRun) &&
