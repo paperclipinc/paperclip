@@ -135,3 +135,57 @@ describe("buildSandboxCrManifest", () => {
     expect(cr.spec.podTemplate.spec.imagePullSecrets).toBeUndefined();
   });
 });
+
+describe("buildSandboxCrManifest: baked home seeding", () => {
+  // The image builds a home directory the pod then throws away. Dockerfile
+  // .gemini writes /home/paperclip/.gemini/settings.json to pre-select the
+  // auth mode (gemini-cli refuses a headless run without it), and the `home`
+  // emptyDir mounted at /home/paperclip shadows it at runtime. Every hosted
+  // Gemini ACP run therefore started with no auth method selected and idled
+  // until the 4h backstop: five runs were hung on this at once in prod on
+  // 2026-08-04. The mount wins over the image by definition, so the baked
+  // content has to be copied into the volume before the agent starts.
+  it("seeds the home volume from the image before the agent container runs", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const initContainers = cr.spec.podTemplate.spec.initContainers;
+    expect(Array.isArray(initContainers)).toBe(true);
+    expect(initContainers).toHaveLength(1);
+
+    const seed = initContainers[0];
+    // Same image, so whatever that harness baked into its home is what gets
+    // copied. A generic busybox would have nothing to copy.
+    expect(seed.image).toBe(baseInput.image);
+    // Writes into the volume at a staging path, NOT at /home/paperclip: the
+    // whole point is to read the image's own home, which a mount there would
+    // shadow in this container too.
+    const mount = seed.volumeMounts.find((m: { name: string }) => m.name === "home");
+    expect(mount.mountPath).not.toBe("/home/paperclip");
+    expect(String(seed.command?.[seed.command.length - 1] ?? "")).toContain(mount.mountPath);
+  });
+
+  it("never clobbers content already in the home volume", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const seed = cr.spec.podTemplate.spec.initContainers[0];
+    const script = String(seed.command?.[seed.command.length - 1] ?? "");
+    // -n: no-clobber. A reused volume keeps whatever the last run left.
+    expect(script).toMatch(/cp\s+-[a-zA-Z]*n/);
+  });
+
+  it("holds the seed container to the same security baseline as the agent", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const seed = cr.spec.podTemplate.spec.initContainers[0];
+    expect(seed.securityContext.runAsNonRoot).toBe(true);
+    expect(seed.securityContext.runAsUser).toBe(1000);
+    expect(seed.securityContext.readOnlyRootFilesystem).toBe(true);
+    expect(seed.securityContext.allowPrivilegeEscalation).toBe(false);
+    expect(seed.securityContext.capabilities.drop).toEqual(["ALL"]);
+  });
+
+  it("does not let a seed failure block the run", () => {
+    // An image with nothing baked into its home is the normal case for four of
+    // the five harnesses. That must not be a CrashLoopBackOff.
+    const cr = buildSandboxCrManifest(baseInput);
+    const seed = cr.spec.podTemplate.spec.initContainers[0];
+    expect(String(seed.command?.[seed.command.length - 1] ?? "")).toMatch(/\|\|\s*true/);
+  });
+});
