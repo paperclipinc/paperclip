@@ -262,7 +262,10 @@ import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.j
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
-import { isAdapterRuntimeImageMismatchError } from "@paperclipai/adapter-utils/execution-target";
+import {
+  isAdapterRuntimeImageMismatchError,
+  isAdapterSandboxProbeUnansweredError,
+} from "@paperclipai/adapter-utils/execution-target";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -14763,11 +14766,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // image) surfaces its own typed error code instead of the generic
       // adapter_failed, so operators see the real cause on the terminal run.
       const adapterRuntimeImageMismatchFailure = isAdapterRuntimeImageMismatchError(err) ? err : null;
+      // The sandbox never answered the runtime probe. Distinct from the mismatch
+      // above on purpose: no image is at fault, so recording it as one sends
+      // operators (and the user-facing run error) after the wrong thing.
+      const adapterSandboxProbeUnansweredFailure = isAdapterSandboxProbeUnansweredError(err)
+        ? err
+        : null;
       const failureErrorCode =
         workspaceValidationFailure?.code ??
         configurationIncompleteFailure?.code ??
         recordedResponsibleUserDenialCode ??
         adapterRuntimeImageMismatchFailure?.code ??
+        adapterSandboxProbeUnansweredFailure?.code ??
         classifySandboxInfraFailure(message) ??
         "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");

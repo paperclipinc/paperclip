@@ -270,6 +270,31 @@ export async function buildOpenCodeSkillsDir(
   return target;
 }
 
+/**
+ * Whether to pass `--print-logs` to OpenCode.
+ *
+ * OpenCode reports a rejected model, a key that does not serve it, and several
+ * other upstream faults as the same opaque "Unexpected server error. Check
+ * server logs for details.", with the real cause only in its own log file. On a
+ * managed sandbox that file is unreachable by construction: the pod is
+ * destroyed with the lease, so the advice the message gives is impossible to
+ * follow and the run's recorded error names no cause at all. Default the
+ * diagnostic ON there, where the logs have nowhere else to go.
+ *
+ * A local run keeps the old default: the operator can read the log file, and
+ * OpenCode's logs on stderr would be noise in an interactive session. An
+ * explicit PAPERCLIP_OPENCODE_PRINT_LOGS still wins either way.
+ */
+export function resolveOpenCodePrintLogs(input: {
+  configured: string | undefined;
+  usesManagedSandbox: boolean;
+}): boolean {
+  if (typeof input.configured === "string" && input.configured.trim().length > 0) {
+    return isTruthyEnvFlag(input.configured);
+  }
+  return input.usesManagedSandbox;
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -665,14 +690,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
-    // run result) so failures that OpenCode otherwise wraps as an opaque
-    // "Unexpected server error" can be diagnosed in remote/sandbox runs where the
-    // log file is unreachable. Toggle via PAPERCLIP_OPENCODE_PRINT_LOGS (run env,
-    // then process env).
-    const printLogs = isTruthyEnvFlag(
-      env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
-    );
+    // Surface OpenCode's own logs on stderr (captured into the run result) so
+    // failures OpenCode wraps as the opaque "Unexpected server error. Check
+    // server logs for details." can actually be diagnosed. See
+    // resolveOpenCodePrintLogs for why a managed sandbox defaults this on.
+    const printLogs = resolveOpenCodePrintLogs({
+      configured: env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
+      usesManagedSandbox: adapterExecutionTargetUsesManagedHome(executionTarget),
+    });
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");

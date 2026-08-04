@@ -16,6 +16,11 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+// Where the seed init container mounts the home volume. Deliberately not
+// /home/paperclip: mounting there would shadow the image's baked home in the
+// init container too, leaving nothing to copy.
+const SEED_HOME_STAGING_PATH = "/mnt/seed-home";
+
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -81,6 +86,44 @@ export function buildSandboxCrManifest(
             fsGroupChangePolicy: "OnRootMismatch",
             seccompProfile: { type: "RuntimeDefault" },
           },
+          // The `home` emptyDir below mounts over /home/paperclip and so hides
+          // anything the runtime image baked there. That is load-bearing for at
+          // least one harness: Dockerfile.gemini writes
+          // /home/paperclip/.gemini/settings.json to pre-select the auth mode,
+          // without which gemini-cli starts with no auth method and an ACP run
+          // idles until the wall-clock backstop rather than failing. A mount
+          // always wins over image content, so the image's own home is copied
+          // into the volume first, from the SAME image (a generic helper image
+          // would have nothing to copy). Reading it requires NOT mounting the
+          // volume at /home/paperclip here, hence the staging path.
+          initContainers: [
+            {
+              name: "seed-home",
+              image: input.image,
+              imagePullPolicy: "IfNotPresent",
+              command: [
+                "/bin/sh",
+                "-c",
+                // -a preserves modes/symlinks, -n keeps anything already in the
+                // volume, and the trailing `|| true` keeps a harness that baked
+                // nothing into its home from CrashLoopBackOff-ing the sandbox.
+                `cp -an /home/paperclip/. ${SEED_HOME_STAGING_PATH}/ 2>/dev/null || true`,
+              ],
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 1000,
+                runAsGroup: 1000,
+                readOnlyRootFilesystem: true,
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ["ALL"] },
+              },
+              resources: {
+                requests: { cpu: "50m", memory: "64Mi" },
+                limits: { cpu: "500m", memory: "256Mi" },
+              },
+              volumeMounts: [{ name: "home", mountPath: SEED_HOME_STAGING_PATH }],
+            },
+          ],
           containers: [
             {
               name: "agent",

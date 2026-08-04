@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   AdapterRuntimeImageMismatchError,
+  AdapterSandboxProbeUnansweredError,
   adapterExecutionTargetSessionIdentity,
   adapterExecutionTargetToRemoteSpec,
   adapterExecutionTargetUsesPaperclipBridge,
@@ -18,6 +19,7 @@ import {
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
   isAdapterRuntimeImageMismatchError,
+  isAdapterSandboxProbeUnansweredError,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -1093,6 +1095,113 @@ describe("sandbox adapter execution targets", () => {
     }));
   });
 
+  describe("command resolvability on a pre-baked (managed) sandbox", () => {
+    // `adapterConfig.command` is a free-form string. On a managed sandbox the
+    // image is fixed and pre-baked, so a command that is not part of it can
+    // never resolve. A prod user set command="kimi" on an opencode agent and
+    // every run burned the full 14400s timeout on a network install that
+    // locked egress was never going to let through, then reported that the CLI
+    // was "not installed or not on PATH", which reads as something a retry or
+    // an operator could fix.
+    const prebakedTarget = (): AdapterSandboxExecutionTarget => ({
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      timeoutMs: 300_000,
+      prebakedRuntime: true,
+      runner: {
+        execute: vi.fn().mockResolvedValue({
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      },
+    });
+
+    it("never attempts a network install for a command the pre-baked image lacks", async () => {
+      const target = prebakedTarget();
+      await expect(
+        ensureAdapterExecutionTargetCommandResolvable("kimi", target, "/local/workspace", {}, {
+          installCommand: "npm install -g kimi",
+          timeoutSec: 14400,
+        }),
+      ).rejects.toThrow();
+
+      // One probe, no install: locked egress makes the install stall until the
+      // adapter's whole timeout budget is gone.
+      const runner = target.runner as { execute: ReturnType<typeof vi.fn> };
+      expect(runner.execute).toHaveBeenCalledTimes(1);
+      for (const call of runner.execute.mock.calls) {
+        expect(String(call[0].args?.[1] ?? "")).not.toContain("npm install");
+      }
+    });
+
+    it("says the image is fixed, rather than implying the CLI could be installed", async () => {
+      const target = prebakedTarget();
+      let thrown: unknown;
+      try {
+        await ensureAdapterExecutionTargetCommandResolvable("kimi", target, "/local/workspace", {}, {
+          installCommand: "npm install -g kimi",
+        });
+      } catch (err) {
+        thrown = err;
+      }
+      const message = (thrown as Error).message;
+      expect(message).toContain("kimi");
+      expect(message).not.toContain("not installed or not on PATH");
+      expect(message.toLowerCase()).toContain("pre-baked");
+    });
+
+    it("still installs on a sandbox that is not pre-baked", async () => {
+      const runner = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          })
+          .mockResolvedValueOnce({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          })
+          .mockResolvedValueOnce({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "/usr/bin/opencode\n",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          }),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        timeoutMs: 300_000,
+        runner,
+      };
+      await ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/local/workspace", {}, {
+        installCommand: "npm install -g opencode",
+      });
+      expect(runner.execute).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe("pre-baked (managed) sandbox runtime install", () => {
     it("fails fast with a runtime-image-mismatch error and never attempts an install when the CLI is missing", async () => {
       // The detect probe reports the CLI missing (exit 1). On a pre-baked
@@ -1182,6 +1291,105 @@ describe("sandbox adapter execution targets", () => {
 
       // Only the detect probe ran; no install attempt.
       expect(runner.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries a detect probe that never answered before judging the image", async () => {
+      // `command -v` returns in microseconds. A timeout is the exec channel
+      // failing to answer (a dropped WebSocket, an apiserver blip), never
+      // evidence about what the image contains, so the probe is asked again.
+      const runner = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({
+            exitCode: null,
+            signal: null,
+            timedOut: true,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          })
+          .mockResolvedValueOnce({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          }),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        timeoutMs: 300_000,
+        prebakedRuntime: true,
+        runner,
+      };
+
+      await expect(
+        ensureAdapterExecutionTargetRuntimeCommandInstalled({
+          runId: "run-prebaked-flaky-probe",
+          target,
+          detectCommand: "gemini",
+          installCommand: "npm install -g @google/gemini-cli",
+          cwd: "/local/workspace",
+          env: {},
+        }),
+      ).resolves.toBeUndefined();
+
+      // Probed twice, installed never.
+      expect(runner.execute).toHaveBeenCalledTimes(2);
+      for (const call of runner.execute.mock.calls) {
+        expect(String(call[0].args?.[1] ?? "")).not.toContain("npm install");
+      }
+    });
+
+    it("blames the exec channel, not the image, when the probe never answers at all", async () => {
+      // Two companies were told in August that their run "landed on the wrong
+      // runtime image" when the probe had simply timed out. That reads as a
+      // permanent platform fault, it is wrong, and it spends the one-shot
+      // image-mismatch self-heal on a problem no new image can fix.
+      const runner = {
+        execute: vi.fn().mockResolvedValue({
+          exitCode: null,
+          signal: null,
+          timedOut: true,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        timeoutMs: 300_000,
+        prebakedRuntime: true,
+        runner,
+      };
+
+      let thrown: unknown;
+      try {
+        await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+          runId: "run-prebaked-dead-channel",
+          target,
+          detectCommand: "gemini",
+          installCommand: "npm install -g @google/gemini-cli",
+          cwd: "/local/workspace",
+          env: {},
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(isAdapterRuntimeImageMismatchError(thrown)).toBe(false);
+      expect(isAdapterSandboxProbeUnansweredError(thrown)).toBe(true);
+      expect((thrown as AdapterSandboxProbeUnansweredError).code).toBe("sandbox_exec_timeout");
+      expect((thrown as Error).message).not.toContain("wrong runtime image");
+      expect((thrown as Error).message).toContain("gemini");
     });
   });
 
