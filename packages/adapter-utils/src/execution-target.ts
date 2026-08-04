@@ -36,6 +36,7 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { SANDBOX_EXEC_TIMEOUT_ERROR_CODE } from "./sandbox-exec-timeout.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
@@ -93,6 +94,12 @@ export type AdapterExecutionTarget =
 /** Stable error code for a wrong-runtime-image sandbox run. */
 export const ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE = "adapter_runtime_image_mismatch" as const;
 
+// How many times the pre-baked runtime probe is asked before the sandbox is
+// declared unreachable. Two, because the probe is a shell builtin: one lost
+// answer is a channel blip worth re-asking, and a second says the channel is
+// genuinely gone rather than slow.
+const PREBAKED_RUNTIME_PROBE_ATTEMPTS = 2;
+
 /**
  * Thrown when a managed, pre-baked sandbox does not carry the adapter's runtime
  * CLI on PATH. The run landed on a runtime image for a different harness, so the
@@ -121,6 +128,39 @@ export function isAdapterRuntimeImageMismatchError(
   return (
     value instanceof Error &&
     (value as { code?: unknown }).code === ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE
+  );
+}
+
+/**
+ * Thrown when the pre-baked runtime probe never answered. `command -v` returns
+ * in microseconds, so a timeout says the exec channel died (a dropped exec
+ * WebSocket, an apiserver restart, a pod evicted mid-probe), not that the image
+ * is missing the CLI. Keeping this distinct from
+ * {@link AdapterRuntimeImageMismatchError} matters twice over: the user is told
+ * the truth rather than that their run "landed on the wrong runtime image", and
+ * recovery does not spend the one-shot image self-heal re-leasing a fresh
+ * sandbox for a fault no image can fix. Carries the same stable code as the
+ * exec watchdog so downstream attribution is unchanged.
+ */
+export class AdapterSandboxProbeUnansweredError extends Error {
+  readonly code = SANDBOX_EXEC_TIMEOUT_ERROR_CODE;
+  readonly adapterCommand: string;
+  constructor(command: string, targetDescription: string, attempts: number) {
+    super(
+      `the sandbox never answered the '${command}' runtime probe in the ${targetDescription} (${attempts} attempts). The exec channel dropped before the probe could report, so the runtime image was never established either way.`,
+    );
+    this.name = "AdapterSandboxProbeUnansweredError";
+    this.adapterCommand = command;
+  }
+}
+
+export function isAdapterSandboxProbeUnansweredError(
+  value: unknown,
+): value is AdapterSandboxProbeUnansweredError {
+  return (
+    value instanceof Error &&
+    (value as { code?: unknown }).code === SANDBOX_EXEC_TIMEOUT_ERROR_CODE &&
+    value.name === "AdapterSandboxProbeUnansweredError"
   );
 }
 
@@ -897,24 +937,42 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
       // Nothing to assert (no probe command); never attempt an install either.
       return;
     }
-    const probe = await runAdapterExecutionTargetShellCommand(
-      input.runId,
-      input.target,
-      `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
-      {
-        cwd: input.cwd,
-        env: input.env,
-        timeoutSec: input.timeoutSec,
-        graceSec: input.graceSec,
-      },
-    );
-    if (!probe.timedOut && probe.exitCode === 0) {
+    // A probe that times out has told us nothing about the image: `command -v`
+    // is a shell builtin that answers instantly, so no answer means the exec
+    // channel dropped. Ask again before drawing any conclusion; the retry is
+    // free when the sandbox is healthy.
+    let probe: Awaited<ReturnType<typeof runAdapterExecutionTargetShellCommand>> | null = null;
+    for (let attempt = 1; attempt <= PREBAKED_RUNTIME_PROBE_ATTEMPTS; attempt += 1) {
+      probe = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        input.target,
+        `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+        {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: input.timeoutSec,
+          graceSec: input.graceSec,
+        },
+      );
+      if (!probe.timedOut) break;
+    }
+    if (probe && !probe.timedOut && probe.exitCode === 0) {
       return;
     }
+    // Still no answer after every attempt: the sandbox is unreachable, which is
+    // a transient infrastructure fault and NOT a verdict on the image.
+    if (!probe || probe.timedOut) {
+      throw new AdapterSandboxProbeUnansweredError(
+        detectCommand,
+        describeAdapterExecutionTarget(input.target),
+        PREBAKED_RUNTIME_PROBE_ATTEMPTS,
+      );
+    }
+    // The probe answered and the CLI is not there: the image really is wrong.
     throw new AdapterRuntimeImageMismatchError(
       detectCommand,
       describeAdapterExecutionTarget(input.target),
-      probe.timedOut ? "detect probe timed out" : `detect probe exited ${probe.exitCode ?? "?"}`,
+      `detect probe exited ${probe.exitCode ?? "?"}`,
     );
   }
 
