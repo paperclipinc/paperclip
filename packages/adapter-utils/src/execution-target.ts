@@ -559,6 +559,20 @@ async function ensureSandboxCommandResolvable(
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
   }
 
+  // A managed, pre-baked image is fixed: its CLI set is decided at build time.
+  // `adapterConfig.command` is a free-form string, so an agent can ask for a
+  // binary that is simply not in the image, and there the install below is
+  // doomed twice over. Locked/sovereign egress blocks it, so it stalls until
+  // the adapter's entire timeout budget is spent, and even a successful
+  // install would be thrown away with the lease. Say what is actually true
+  // and stop, rather than reporting "not installed or not on PATH", which
+  // reads as something a retry or an operator could fix.
+  if (target.prebakedRuntime === true) {
+    throw new Error(
+      `Command "${command}" is not part of this sandbox's pre-baked runtime image, and a managed sandbox cannot install one. Set the agent's command back to the adapter's own CLI.`,
+    );
+  }
+
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
