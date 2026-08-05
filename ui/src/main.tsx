@@ -18,6 +18,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+import { shouldRetryQuery } from "./lib/query-auth-policy";
+import { installAuthFailureRecheck } from "./lib/query-auth-recheck";
 import { initAnalytics } from "./analytics";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -47,9 +49,19 @@ const queryClient = new QueryClient({
       // tuning point if we need to trim the cache footprint further.
       gcTime: 5 * 60_000,
       refetchOnWindowFocus: true,
+      // A 401/403 is an answer, not a transient failure. Without this every
+      // query on the page burns the full retry budget against a session that
+      // is already gone. See ./lib/query-auth-policy.
+      retry: shouldRetryQuery,
     },
   },
 });
+
+// ...and once a query does report an auth failure, make the access gate re-ask
+// whether we are still signed in, so a session that dies mid-visit sends the
+// user to sign-in instead of silently breaking the page. See
+// ./lib/query-auth-recheck.
+installAuthFailureRecheck(queryClient);
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();
