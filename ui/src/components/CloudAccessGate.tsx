@@ -32,6 +32,15 @@ const SESSION_QUERY_MAX_RETRIES = SESSION_QUERY_RETRY_DELAYS_MS.length;
 const SESSION_QUERY_ERROR_REFETCH_INTERVAL_MS =
   SESSION_QUERY_RETRY_DELAYS_MS[SESSION_QUERY_RETRY_DELAYS_MS.length - 1];
 
+/**
+ * Pages that exist precisely so an unauthenticated visitor has somewhere to go.
+ * Whoever serves them — the cloud gateway, or the SPA itself on a self-hosted
+ * deploy — they must never be redirected to sign-in for not being signed in.
+ */
+function isAuthRoute(pathname: string): boolean {
+  return pathname === "/auth" || pathname.startsWith("/auth/");
+}
+
 function NoBoardAccessPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -188,7 +197,7 @@ export function CloudAccessGate() {
     );
   }
 
-  if (sessionDefinitivelyUnauthenticated) {
+  if (sessionDefinitivelyUnauthenticated && !isAuthRoute(location.pathname)) {
     // cloud: the auth pages live OUTSIDE the SPA (the gateway serves the
     // marketing /auth/* pages). A client-side <Navigate to="/auth"> would render
     // the SPA's own AuthPage instead, so this must be a full page load.
@@ -198,6 +207,12 @@ export function CloudAccessGate() {
     // on the session-check request itself is handled by sessionCheckFailing
     // further up instead, and never reaches a redirect while the session
     // cookie could still be perfectly valid.
+    //
+    // The isAuthRoute() guard is what keeps this from eating itself: being
+    // unauthenticated ON an auth page is the normal state, not a reason to
+    // redirect. Without it a deployment where the SPA (rather than a gateway)
+    // serves /auth/* sends sign-in back to sign-in, nesting `next` one level
+    // per pass until the request line hits HTTP 414 — paperclipinc/paperclip#311.
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     window.location.replace(`/auth/sign-in?next=${next}`);
     return null;

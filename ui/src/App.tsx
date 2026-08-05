@@ -80,6 +80,7 @@ import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
+import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -531,6 +532,15 @@ export function App() {
     <>
       <Routes>
         <Route path="auth" element={<CloudAuthRedirect />} />
+        {/*
+          Only ever reached when the SPA itself is serving auth, i.e. a
+          self-hosted `authenticated` deploy. On cloud the gateway reserves
+          /auth/* and this request never gets as far as the bundle, so this
+          route is inert there. Without it /auth/sign-in falls through to the
+          catch-all below and CloudAccessGate bounces it back to itself
+          forever — paperclipinc/paperclip#311.
+        */}
+        <Route path="auth/sign-in" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
