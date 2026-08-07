@@ -1,6 +1,7 @@
 import type { KubeClients } from "./kube-client.js";
 import { buildNetworkPolicyManifests } from "./network-policy.js";
 import { buildCiliumNetworkPolicyManifest } from "./cilium-network-policy.js";
+import { TENANT_CONTAINER_MIN_RESOURCES } from "./utils.js";
 
 export interface EnsureTenantInput {
   namespace: string;
@@ -201,7 +202,7 @@ async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput):
               {
                 type: "Container",
                 max: { cpu: input.limitRange.maxCpu, memory: input.limitRange.maxMemory },
-                min: { cpu: "100m", memory: "128Mi" },
+                min: { ...TENANT_CONTAINER_MIN_RESOURCES },
                 // The k8s client-node type names this `_default` but the actual
                 // Kubernetes API field is `default`. We produce a JSON-shape
                 // manifest so the cast is safe.

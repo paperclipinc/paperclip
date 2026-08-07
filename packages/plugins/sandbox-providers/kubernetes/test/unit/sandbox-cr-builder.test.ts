@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildSandboxCrManifest } from "../../src/sandbox-cr-builder.js";
+import { TENANT_CONTAINER_MIN_RESOURCES } from "../../src/utils.js";
 
 const baseInput = {
   namespace: "paperclip-acme",
@@ -179,6 +180,20 @@ describe("buildSandboxCrManifest: baked home seeding", () => {
     expect(seed.securityContext.readOnlyRootFilesystem).toBe(true);
     expect(seed.securityContext.allowPrivilegeEscalation).toBe(false);
     expect(seed.securityContext.capabilities.drop).toEqual(["ALL"]);
+  });
+
+  // Every container in a tenant namespace is admitted against the LimitRange
+  // this same plugin installs. An init container below that floor is not a
+  // degraded pod, it is no pod at all: the apiserver refuses the create, the
+  // Sandbox never materializes, and every exec the server tries afterwards
+  // goes unanswered until the probe budget runs out. That is exactly how
+  // hosted runs failed from 2026-08-04 to 2026-08-07, on every adapter, with
+  // "the sandbox never answered the runtime probe" as the only symptom.
+  it("requests at least the LimitRange floor for the seed container", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    const seed = cr.spec.podTemplate.spec.initContainers[0];
+    expect(seed.resources.requests.cpu).toBe(TENANT_CONTAINER_MIN_RESOURCES.cpu);
+    expect(seed.resources.requests.memory).toBe(TENANT_CONTAINER_MIN_RESOURCES.memory);
   });
 
   it("does not let a seed failure block the run", () => {
