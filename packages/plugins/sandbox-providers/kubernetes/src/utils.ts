@@ -59,3 +59,19 @@ export function paperclipLabels(input: LabelsInput): Record<string, string> {
     "paperclip.io/managed-by": "paperclip-k8s-plugin",
   };
 }
+
+/**
+ * The per-container resource floor the tenant LimitRange enforces
+ * (`ensureLimitRange`, min for type `Container`). Every container this plugin
+ * puts in a tenant namespace, init containers included, has to request at
+ * least this much or the apiserver rejects the whole pod at admission.
+ *
+ * Shared rather than written out twice: a seed init container that asked for
+ * less than the floor its own plugin installs took down every hosted run for
+ * three days, and the two literals sitting in different files is what let the
+ * drift happen silently.
+ */
+export const TENANT_CONTAINER_MIN_RESOURCES = {
+  cpu: "100m",
+  memory: "128Mi",
+} as const;
