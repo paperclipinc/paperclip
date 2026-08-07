@@ -198,16 +198,38 @@ export function Layout() {
     return () => setForceCollapsed(false);
   }, [forceRailCollapsed, setForceCollapsed]);
 
+  // A secondary sidebar always collapses the app sidebar to its rail (still
+  // peek-able) — a hard invariant that overrides the user pin while the route
+  // is active, but does NOT mutate the persisted preference. Clearing the force
+  // on cleanup restores the user's expanded/collapsed choice when navigating
+  // off the takeover route (PAP-10694).
+  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
+  useLayoutEffect(() => {
+    setForceCollapsed(forceRailCollapsed);
+    return () => setForceCollapsed(false);
+  }, [forceRailCollapsed, setForceCollapsed]);
+
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
+<<<<<<< HEAD
     // In authenticated mode, CloudAccessGate has already routed users who
     // cannot create a company (waiting page / no-access page), so anyone who
     // reaches an empty companies list here is allowed to onboard.
+=======
+    if (health?.deploymentMode === "authenticated") return;
+    // Cloud provisions the single company for a stack, and POST /companies is a
+    // 403 floor there — auto-opening the wizard could only dead-end.
+    if (health?.cloud) return;
+>>>>>>> origin/master
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
+<<<<<<< HEAD
   }, [companies, companiesLoading, openOnboarding]);
+=======
+  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
+>>>>>>> origin/master
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
@@ -553,7 +575,10 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
+<<<<<<< HEAD
       <CloudTrialBanner />
+=======
+>>>>>>> origin/master
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button

@@ -10,9 +10,12 @@ const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
+=======
+>>>>>>> origin/master
 const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -75,10 +78,13 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
+=======
+>>>>>>> origin/master
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -115,9 +121,12 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true }),
     );
+=======
+>>>>>>> origin/master
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],
@@ -153,9 +162,9 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Instance settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
-    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(container.textContent).toContain("Export");
+    expect(container.textContent).toContain("Import");
     expect(container.textContent).toContain("Members");
-    expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
     expect(container.textContent).not.toContain("Tools & Access");
@@ -168,6 +177,22 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
+<<<<<<< HEAD
+=======
+        to: "/company/export",
+        label: "Export",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/import",
+        label: "Import",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+>>>>>>> origin/master
         to: "/company/settings/instance/environments",
         label: "Environments",
         end: true,
@@ -195,6 +220,7 @@ describe("CompanySettingsSidebar", () => {
         end: true,
       }),
     );
+<<<<<<< HEAD
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/instance/profile",
@@ -251,11 +277,37 @@ describe("CompanySettingsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Cloud upstream");
+=======
+>>>>>>> origin/master
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
+        to: "/company/settings/instance/profile",
+        label: "Profile",
         end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/general",
+        label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/plugins",
+        label: "Plugins",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/instance/adapters",
+        label: "Adapters",
+      }),
+    );
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/settings/tools",
       }),
     );
 
@@ -310,10 +362,43 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
+<<<<<<< HEAD
   it("registers the cloud upstream nav item with the expected route and label when cloud sync is enabled", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
     );
+=======
+  it("renders instance plugin links while filtering sandbox-provider-only plugins", async () => {
+    mockPluginsApi.list.mockResolvedValue([
+      {
+        id: "linear",
+        packageName: "@example/linear",
+        manifestJson: {
+          displayName: "Linear",
+          environmentDrivers: [],
+        },
+      },
+      {
+        id: "sandbox-only",
+        packageName: "@example/sandbox",
+        manifestJson: {
+          displayName: "Sandbox only",
+          environmentDrivers: [{ kind: "sandbox_provider", driverKey: "e2b" }],
+        },
+      },
+      {
+        id: "hybrid",
+        packageName: "@example/hybrid",
+        manifestJson: {
+          displayName: "Hybrid",
+          environmentDrivers: [
+            { kind: "sandbox_provider", driverKey: "e2b" },
+            { kind: "environment_driver", driverKey: "ssh" },
+          ],
+        },
+      },
+    ]);
+>>>>>>> origin/master
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -328,14 +413,16 @@ describe("CompanySettingsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Cloud upstream");
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
-        end: true,
-      }),
+    const pluginLinks = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>('a[href^="/company/settings/instance/plugins/"]'),
     );
+    expect(pluginLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "/company/settings/instance/plugins/linear",
+      "/company/settings/instance/plugins/hybrid",
+    ]);
+    expect(container.textContent).toContain("Linear");
+    expect(container.textContent).toContain("Hybrid");
+    expect(container.textContent).not.toContain("Sandbox only");
 
     await act(async () => {
       root.unmount();

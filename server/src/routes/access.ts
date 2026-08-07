@@ -2637,11 +2637,19 @@ export function accessRoutes(
   //
   // The key is deliberately NOT `requestIp()`: that helper prefers the
   // client-supplied `X-Forwarded-For` header (fine for log/audit fields,
+<<<<<<< HEAD
   // but trivially spoofable as a rate-limit key -- rotating fake XFF values
   // would mint a fresh budget per request). `req.ip` honors Express's
   // `trust proxy` setting (configured from TRUST_PROXY in app.ts, default:
   // trust nothing), so it is the socket's remote address unless the
   // operator explicitly trusts a proxy -- an unforgeable key either way.
+=======
+  // but trivially spoofable as a rate-limit key — rotating fake XFF values
+  // would mint a fresh budget per request). `req.ip` honors Express's
+  // `trust proxy` setting (configured from TRUST_PROXY in app.ts, default:
+  // trust nothing), so it is the socket's remote address unless the
+  // operator explicitly trusts a proxy — an unforgeable key either way.
+>>>>>>> origin/master
   const inviteRateLimiter = opts.inviteRateLimiter ?? createInviteRateLimiter();
   router.use("/invites/:token", (req, res, next) => {
     const result = inviteRateLimiter.consume(

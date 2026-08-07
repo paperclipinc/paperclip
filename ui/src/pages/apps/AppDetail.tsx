@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
-  AppGalleryEntry,
   ToolConnection,
   ToolPolicy,
   ToolProfileWithDetails,
@@ -23,11 +22,18 @@ import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
+import {
+  appDefinitionLogoUrl,
+  appDefinitionName,
+  appDefinitionSlug,
+  type AppGalleryDisplayEntry,
+} from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { SetupPanel } from "./app-detail/SetupPanel";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
@@ -147,7 +153,7 @@ export function AppDetail() {
     return labels;
   }, [userDirectoryQuery.data, sessionQuery.data]);
   const logoEntry = useMemo(
-    () => galleryEntryFor(galleryQuery.data?.apps ?? [], connection),
+    () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection),
     [galleryQuery.data, connection],
   );
 
@@ -234,7 +240,7 @@ export function AppDetail() {
   const startOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connectionId),
     onSuccess: ({ authorizationUrl }) => {
-      window.location.assign(authorizationUrl);
+      navigateTopLevel(authorizationUrl);
     },
     onError: (error) =>
       pushToast({
@@ -479,7 +485,7 @@ function AppDetailHeader({
 }: {
   appName: string;
   connection: ToolConnection;
-  logoEntry: AppGalleryEntry | null;
+  logoEntry: AppGalleryDisplayEntry | null;
   status: StatusInfo;
   actionCount: number;
   renaming: boolean;
@@ -493,7 +499,7 @@ function AppDetailHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
-        <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={44} />
+        <AppLogo name={appName} logoUrl={appDefinitionLogoUrl(logoEntry)} size={44} />
         <div>
           {renaming ? (
             <form
@@ -607,10 +613,15 @@ function accessFrom(profile: ToolProfileWithDetails | undefined): AccessDraft {
   return { mode: "specific", agentIds };
 }
 
-function galleryEntryFor(apps: AppGalleryEntry[], connection: ToolConnection | undefined): AppGalleryEntry | null {
+function galleryEntryFor(
+  apps: AppGalleryDisplayEntry[],
+  connection: ToolConnection | undefined,
+): AppGalleryDisplayEntry | null {
   if (!connection) return null;
   const name = connection.name.toLowerCase();
-  return apps.find((a) => a.name.toLowerCase() === name) ?? apps.find((a) => a.key === name) ?? null;
+  return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
+    apps.find((app) => appDefinitionSlug(app) === name) ??
+    null;
 }
 
 function addAll(set: Set<string>, ids: string[]): Set<string> {

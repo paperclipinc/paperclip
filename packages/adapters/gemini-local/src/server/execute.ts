@@ -58,7 +58,10 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+<<<<<<< HEAD
   detectGeminiQuotaExhausted,
+=======
+>>>>>>> origin/master
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
@@ -99,6 +102,7 @@ function buildGeminiHeadlessEnv(env: Record<string, string>): Record<string, str
   return next;
 }
 
+<<<<<<< HEAD
 /**
  * The Gemini CLI's --sandbox flag asks the CLI to relaunch itself inside a
  * Docker or Podman container. A managed sandbox target already runs the CLI
@@ -123,6 +127,8 @@ export function resolveGeminiSandboxFlag(input: {
   };
 }
 
+=======
+>>>>>>> origin/master
 function buildGeminiRuntimeEnv(env: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...buildGeminiHeadlessEnv(env) })).filter(
@@ -293,8 +299,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
@@ -346,10 +350,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (executionTargetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
+<<<<<<< HEAD
   if (sandboxFlag.suppressedReason) {
     await onLog("stderr", `[paperclip] ${sandboxFlag.suppressedReason}\n`);
   }
   if (!hasExplicitApiKey && authToken) {
+=======
+  if (authToken) {
+>>>>>>> origin/master
     env.PAPERCLIP_API_KEY = authToken;
   }
   const runtimeEnv = buildGeminiRuntimeEnv(env);
@@ -680,11 +688,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+<<<<<<< HEAD
     const quotaMeta = detectGeminiQuotaExhausted({
       parsed: attempt.parsed.resultEvent,
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+=======
+>>>>>>> origin/master
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
@@ -693,6 +704,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
+<<<<<<< HEAD
         errorMessage: sandboxExecTimedOut
           ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
           : `Timed out after ${timeoutSec}s`,
@@ -703,6 +715,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : networkUnavailable
               ? "gemini_network_unavailable"
               : null,
+=======
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : networkUnavailable
+            ? "gemini_network_unavailable"
+            : null,
+>>>>>>> origin/master
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -760,8 +780,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "max_turns_exhausted"
         : failed && networkUnavailable
         ? "gemini_network_unavailable"
+<<<<<<< HEAD
         : failed && quotaMeta.exhausted
         ? "gemini_quota_exhausted"
+=======
+>>>>>>> origin/master
         : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,

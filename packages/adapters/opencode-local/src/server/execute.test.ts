@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -107,6 +108,11 @@ describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
     expect(entries).not.toContain("paperclip-create-agent");
   });
 });
+=======
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+>>>>>>> origin/master
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {

@@ -81,14 +81,20 @@ describe("onEnvironmentResumeLease", () => {
         phase: "Running",
         backend: "sandbox-cr",
         resumedLease: true,
+<<<<<<< HEAD
         // Capability signal the server reads to disable the network-install shim
         // and fail fast on a wrong runtime image (Finding 2 in PR #9950): the
         // k8s plugin's runtime images are pre-baked, so it declares it per-lease.
         runtimeImagePrebaked: true,
+=======
+        // sandbox-cr has a pod-exec channel, so native file sync stays enabled.
+        nativeFileSyncUnsupported: false,
+>>>>>>> origin/master
       }),
     );
   });
 
+<<<<<<< HEAD
   it("carries the originally-resolved adapter type and image forward on resume", async () => {
     // Gap-1 (second layer): a Kubernetes pod's image cannot change in place,
     // so the resumed lease must surface the SAME adapterType/image it was
@@ -103,6 +109,16 @@ describe("onEnvironmentResumeLease", () => {
         readNamespacedPod: vi.fn().mockResolvedValue({
           metadata: {},
           status: { phase: "Running" },
+=======
+  it("flags a resumed job-backend lease as native-sync-unsupported so the server keeps the base64 fallback", async () => {
+    h.clients = {
+      batch: {
+        readNamespacedJobStatus: vi.fn().mockResolvedValue({ status: { active: 1 } }),
+      },
+      core: {
+        listNamespacedPod: vi.fn().mockResolvedValue({
+          items: [{ metadata: { name: "pc-job-pod" }, status: { phase: "Running" } }],
+>>>>>>> origin/master
         }),
       },
     };
@@ -111,6 +127,7 @@ describe("onEnvironmentResumeLease", () => {
       driverKey: "kubernetes",
       companyId: "acme",
       environmentId: "env-1",
+<<<<<<< HEAD
       config: CONFIG,
       providerLeaseId: "pc-abc",
       leaseMetadata: leaseMetadata({
@@ -123,6 +140,20 @@ describe("onEnvironmentResumeLease", () => {
       expect.objectContaining({
         adapterType: "claude_local",
         image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+=======
+      config: { inCluster: true, backend: "job" },
+      providerLeaseId: "pc-job",
+      leaseMetadata: leaseMetadata({ jobName: "pc-job", backend: "job", podName: "pc-job-pod" }),
+    });
+
+    expect(lease.providerLeaseId).toBe("pc-job");
+    expect(lease.metadata).toEqual(
+      expect.objectContaining({
+        backend: "job",
+        // The job backend has no exec channel; its native sync hook rejects, so
+        // the lease must fall back to the byte-identical base64 transport.
+        nativeFileSyncUnsupported: true,
+>>>>>>> origin/master
       }),
     );
   });
@@ -271,6 +302,7 @@ describe("onEnvironmentDestroyLease", () => {
     expect(deleteCr).not.toHaveBeenCalled();
   });
 });
+<<<<<<< HEAD
 
 describe("onEnvironmentReleaseLease (per-run Secret cleanup)", () => {
   it("explicitly deletes the per-run Secret on normal release (defense against a wedged ownerRef cascade)", async () => {
@@ -340,3 +372,5 @@ describe("onEnvironmentReleaseLease (per-run Secret cleanup)", () => {
     });
   });
 });
+=======
+>>>>>>> origin/master

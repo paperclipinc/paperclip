@@ -263,6 +263,7 @@ describe("probeEnvironment", () => {
     }));
   });
 
+<<<<<<< HEAD
   it("pins the runtime probe to the environment's default adapter so a mixed-harness pool does not reject it", async () => {
     // A mixed-harness pool rejects an absent per-run adapter (a real run must
     // never fall back to a different harness's image). A connectivity probe
@@ -330,6 +331,8 @@ describe("probeEnvironment", () => {
     }));
   });
 
+=======
+>>>>>>> origin/master
   it("routes plugin environment probes through the plugin worker host", async () => {
     mockProbePluginEnvironmentDriver.mockResolvedValue({
       ok: true,

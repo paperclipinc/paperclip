@@ -6,7 +6,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+=======
+import { ToastProvider } from "../context/ToastContext";
+>>>>>>> origin/master
 import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 
@@ -22,13 +26,24 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+  getGeneral: vi.fn(),
+>>>>>>> origin/master
 }));
 
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
+<<<<<<< HEAD
   create: vi.fn(),
+=======
+  listProposals: vi.fn(),
+>>>>>>> origin/master
 }));
 
 vi.mock("../api/agents", () => ({
@@ -39,8 +54,13 @@ vi.mock("../api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+=======
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("../api/secrets", () => ({
@@ -73,6 +93,7 @@ vi.mock("../adapters", () => ({
       model: values.model || undefined,
     }),
     parseStdoutLine: () => [],
+<<<<<<< HEAD
     credentialSetup:
       type === "claude_local"
         ? {
@@ -87,6 +108,8 @@ vi.mock("../adapters", () => ({
             ],
           }
         : undefined,
+=======
+>>>>>>> origin/master
   }),
 }));
 
@@ -222,6 +245,7 @@ async function renderForm(
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
+<<<<<<< HEAD
         <TooltipProvider>
           <AgentConfigForm
             mode="edit"
@@ -232,6 +256,20 @@ async function renderForm(
             showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
           />
         </TooltipProvider>
+=======
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="edit"
+              agent={makeAgent(agentOverrides)}
+              onSave={vi.fn()}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+            />
+          </TooltipProvider>
+        </ToastProvider>
+>>>>>>> origin/master
       </QueryClientProvider>,
     );
   });
@@ -267,6 +305,7 @@ async function renderCreateForm(
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
+<<<<<<< HEAD
         <TooltipProvider>
           <AgentConfigForm
             mode="create"
@@ -277,6 +316,20 @@ async function renderCreateForm(
             showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
           />
         </TooltipProvider>
+=======
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="create"
+              values={values}
+              onChange={onChange}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+            />
+          </TooltipProvider>
+        </ToastProvider>
+>>>>>>> origin/master
       </QueryClientProvider>,
     );
   });
@@ -299,12 +352,20 @@ describe("AgentConfigForm environment selector", () => {
       checks: [],
       testedAt: new Date(0).toISOString(),
     });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
     mockSecretsApi.list.mockResolvedValue([]);
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+>>>>>>> origin/master
   });
 
   afterEach(async () => {
@@ -619,6 +680,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Network unavailable");
   });
 });
+<<<<<<< HEAD
 
 describe("AgentConfigForm guided credential connect", () => {
   let roots: Root[] = [];
@@ -839,3 +901,5 @@ describe("AgentConfigForm guided credential connect", () => {
     expect(result.container.textContent).toContain("claude-local-anthropic-api-key");
   });
 });
+=======
+>>>>>>> origin/master

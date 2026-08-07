@@ -76,12 +76,15 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["standard", "cilium"],
             description: "Network policy mode. `cilium` enables FQDN-based egress filtering via CiliumNetworkPolicy.",
           },
+<<<<<<< HEAD
           egressPolicy: {
             type: "string",
             enum: ["allowlist", "open-internet"],
             description:
               "allowlist (default): tenant egress restricted to egressAllowFqdns/egressAllowCidrs. open-internet: public internet on ports 80/443 with private ranges, link-local metadata, and CGNAT blocked.",
           },
+=======
+>>>>>>> origin/master
           runtimeClassName: {
             type: "string",
             description:
@@ -114,12 +117,15 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
           },
+<<<<<<< HEAD
           cloudInferenceKeyResolverUrl: {
             type: "string",
             format: "uri",
             description:
               "Cloud-only. Control-plane URL that resolves a per-company inference key (Bifrost virtual key). When set, the plugin POSTs {companyId} to <url>/internal/bifrost-key, expects 200 {keyValue}, and overrides the inference auth env vars (ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY) on the per-run Secret with it. Fail-closed: a failed resolve rejects the lease (never falls back to the shared key). Leave unset for OSS/local.",
           },
+=======
+>>>>>>> origin/master
         },
         anyOf: [
           { required: ["inCluster"] },

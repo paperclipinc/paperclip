@@ -28,7 +28,15 @@
           metaDefault && metaDefault.getAttribute("content") === "light" ? "light" : "dark";
         try {
           const stored = window.localStorage.getItem(key);
+<<<<<<< HEAD
           const theme = stored === "light" || stored === "dark" ? stored : defaultTheme;
+=======
+          const prefersDark =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const fallback = prefersDark ? "dark" : "light";
+          const theme = stored === "light" || stored === "dark" ? stored : fallback;
+>>>>>>> origin/master
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";

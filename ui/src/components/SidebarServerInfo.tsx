@@ -1,7 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Clock3, FileDiff, GitCommit, type LucideIcon } from "lucide-react";
 import { healthApi, type HealthStatus } from "@/api/health";
+<<<<<<< HEAD
 import { useFeatures } from "@/hooks/useFeatures";
+=======
+import { instanceSettingsApi } from "@/api/instanceSettings";
+>>>>>>> origin/master
 import { queryKeys } from "@/lib/queryKeys";
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -78,7 +82,14 @@ function ServerInfoRow({
 }
 
 export function SidebarServerInfo() {
+<<<<<<< HEAD
   const experimentalQuery = useFeatures();
+=======
+  const experimentalQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+>>>>>>> origin/master
   const enabled = experimentalQuery.data?.enableServerInfoDebugView === true;
   const healthQuery = useQuery({
     queryKey: queryKeys.health,

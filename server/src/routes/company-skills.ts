@@ -12,7 +12,12 @@ import {
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
   companySkillListQuerySchema,
+<<<<<<< HEAD
+=======
+  companySkillProjectBrowseRequestSchema,
+>>>>>>> origin/master
   companySkillProjectScanRequestSchema,
+  companySkillRenameSchema,
   companySkillResetSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
@@ -47,7 +52,10 @@ import {
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+<<<<<<< HEAD
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+=======
+>>>>>>> origin/master
 import {
   normalizeSkillPolicySourceLocator,
   type SkillPolicyAction,
@@ -82,17 +90,25 @@ type SkillPolicyResourceInput =
   | Promise<SkillPolicyEvaluationResource>
   | (() => SkillPolicyEvaluationResource | Promise<SkillPolicyEvaluationResource>);
 
+<<<<<<< HEAD
 export function companySkillRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
+=======
+export function companySkillRoutes(db: Db) {
+>>>>>>> origin/master
   const router = Router();
   const access = accessService(db);
   const svc = companySkillService(db);
   const issues = issueService(db);
+<<<<<<< HEAD
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+=======
+  const heartbeat = heartbeatService(db);
+>>>>>>> origin/master
   const skillPolicies = companySkillPolicyService(db);
 
   function asString(value: unknown): string | null {
@@ -861,6 +877,52 @@ export function companySkillRoutes(
     },
   );
 
+<<<<<<< HEAD
+=======
+  router.post(
+    "/companies/:companyId/skills/:skillId/rename",
+    validate(companySkillRenameSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(
+        req,
+        companyId,
+        "skills.edit",
+        () => skillPolicyResource({ companyId, skillId }),
+      );
+      const result = await svc.renameSkill(companyId, skillId, req.body);
+      const changed = result.previousName !== result.skill.name
+        || result.previousSlug !== result.skill.slug
+        || result.previousKey !== result.skill.key;
+      if (changed) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "company.skill_renamed",
+          entityType: "company_skill",
+          entityId: result.skill.id,
+          details: {
+            previousName: result.previousName,
+            previousSlug: result.previousSlug,
+            previousKey: result.previousKey,
+            name: result.skill.name,
+            slug: result.skill.slug,
+            key: result.skill.key,
+            reassignedAgentIds: result.reassignments.map((entry: { agentId: string }) => entry.agentId),
+          },
+        });
+      }
+      res.json(result);
+    },
+  );
+
+>>>>>>> origin/master
   router.get("/companies/:companyId/skills/:skillId/comments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
@@ -1169,6 +1231,17 @@ export function companySkillRoutes(
       });
 
       res.status(result.action === "created" ? 201 : 200).json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/browse-project",
+    validate(companySkillProjectBrowseRequestSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId, "skills.import", { sourceType: "workspace" });
+      const result = await svc.browseProjectWorkspace(companyId, req.body);
+      res.json(result);
     },
   );
 

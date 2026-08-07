@@ -7,7 +7,12 @@ import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
+<<<<<<< HEAD
   { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
+=======
+  { value: "export", label: "Export", href: "/company/export" },
+  { value: "import", label: "Import", href: "/company/import" },
+>>>>>>> origin/master
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
@@ -26,6 +31,41 @@ type CompanySettingsTab = (typeof items)[number]["value"];
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
     return "instance-profile";
+<<<<<<< HEAD
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
+    return "instance-access";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`)) {
+    return "instance-environments";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`)) {
+    return "instance-heartbeats";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
+    return "instance-experimental";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
+    return "instance-plugins";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`)) {
+    return "instance-adapters";
+  }
+
+  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/general`)) {
+    return "instance-general";
+  }
+
+  if (pathname.includes("/company/settings/environments")) {
+    return "instance-environments";
+=======
+>>>>>>> origin/master
   }
 
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
@@ -60,8 +100,12 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "instance-environments";
   }
 
-  if (pathname.includes("/company/settings/cloud-upstream")) {
-    return "cloud-upstream";
+  if (pathname.includes("/company/export")) {
+    return "export";
+  }
+
+  if (pathname.includes("/company/import")) {
+    return "import";
   }
 
   if (pathname.includes("/company/settings/members") || pathname.includes("/company/settings/access")) {

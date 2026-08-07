@@ -160,7 +160,6 @@ function AwaitingJoinApprovalPanel({
   claimApiKeyPath = null,
   onboardingTextUrl = null,
 }: AwaitingJoinApprovalPanelProps) {
-  const approvalUrl = `${window.location.origin}/company/settings/members`;
   const approverLabel = invitedByUserName ?? "A company admin";
 
   return (
@@ -179,6 +178,7 @@ function AwaitingJoinApprovalPanel({
           <p className="text-sm text-muted-foreground">
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
+<<<<<<< HEAD
           <div className="border border-border p-3">
             <p className="text-xs text-muted-foreground mb-1">Approval page</p>
             <a
@@ -190,6 +190,14 @@ function AwaitingJoinApprovalPanel({
           </div>
           <p className="text-sm text-muted-foreground">
             Ask them to visit <a href={approvalUrl} className="text-foreground underline underline-offset-2 hover:opacity-80">Company Settings → Members</a> to approve your request.
+=======
+          <div className="border border-zinc-800 p-3">
+            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
+            <p className="text-sm text-zinc-200">Company Settings → Members</p>
+          </div>
+          <p className="text-sm text-zinc-400">
+            Ask them to visit <span className="text-zinc-200">Company Settings → Members</span> to approve your request.
+>>>>>>> origin/master
           </p>
           <p className="text-xs text-muted-foreground">
             Refresh this page after you've been approved — you'll be redirected automatically.
@@ -228,6 +236,7 @@ export function InviteLandingPage() {
   const [result, setResult] = useState<{ kind: "bootstrap" | "join"; payload: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
+<<<<<<< HEAD
   const [autoAcceptAttempts, setAutoAcceptAttempts] = useState(0);
   const authErrorId = "invite-auth-error";
   // A valid human invite reached while authenticated should join the user
@@ -236,6 +245,10 @@ export function InviteLandingPage() {
   // instead of hammering the endpoint, but a single transient failure (session
   // or membership not yet propagated) still recovers on its own.
   const MAX_AUTO_ACCEPT_ATTEMPTS = 2;
+=======
+  const [autoAcceptStarted, setAutoAcceptStarted] = useState(false);
+  const authErrorId = "invite-auth-error";
+>>>>>>> origin/master
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -615,7 +628,11 @@ export function InviteLandingPage() {
                 className="h-16 w-16 rounded-none border border-border"
               />
               <div className="min-w-0">
+<<<<<<< HEAD
                 <p className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">
+=======
+                <p className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">
+>>>>>>> origin/master
                   You&apos;ve been invited to join Paperclip
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
@@ -632,6 +649,7 @@ export function InviteLandingPage() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
+<<<<<<< HEAD
               <div className="border border-border p-3">
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Company</div>
                 <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
@@ -649,13 +667,37 @@ export function InviteLandingPage() {
               <div className="border border-border p-3">
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invite expires</div>
                 <div className="mt-1 text-sm text-foreground">{formatDate(invite.expiresAt)}</div>
+=======
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Company</div>
+                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
+              </div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invited by</div>
+                <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
+              </div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Requested access</div>
+                <div className="mt-1 text-sm text-zinc-100">
+                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
+                </div>
+              </div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invite expires</div>
+                <div className="mt-1 text-sm text-zinc-100">{formatDate(invite.expiresAt)}</div>
+>>>>>>> origin/master
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
+<<<<<<< HEAD
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-200/80">Message from inviter</div>
                 <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-50">{inviteMessage}</p>
+=======
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-200/80">Message from inviter</div>
+                <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
+>>>>>>> origin/master
               </div>
             ) : null}
 
@@ -776,7 +818,11 @@ export function InviteLandingPage() {
                 >
                   {authMode === "sign_up" ? (
                     <label className="block text-sm" htmlFor="invite-name">
+<<<<<<< HEAD
                       <span className="mb-1 block text-muted-foreground">Name</span>
+=======
+                      <span className="mb-1 block text-zinc-400">Name</span>
+>>>>>>> origin/master
                       <input
                         id="invite-name"
                         name="name"
@@ -796,7 +842,11 @@ export function InviteLandingPage() {
                     </label>
                   ) : null}
                   <label className="block text-sm" htmlFor="invite-email">
+<<<<<<< HEAD
                     <span className="mb-1 block text-muted-foreground">Email</span>
+=======
+                    <span className="mb-1 block text-zinc-400">Email</span>
+>>>>>>> origin/master
                     <input
                       id="invite-email"
                       name="email"
@@ -816,7 +866,11 @@ export function InviteLandingPage() {
                     />
                   </label>
                   <label className="block text-sm" htmlFor="invite-password">
+<<<<<<< HEAD
                     <span className="mb-1 block text-muted-foreground">Password</span>
+=======
+                    <span className="mb-1 block text-zinc-400">Password</span>
+>>>>>>> origin/master
                     <input
                       id="invite-password"
                       name="password"

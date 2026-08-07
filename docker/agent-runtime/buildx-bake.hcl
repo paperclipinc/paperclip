@@ -3,7 +3,11 @@ group "default" {
 }
 
 variable "VERSION" { default = "dev" }
+<<<<<<< HEAD
 variable "REGISTRY" { default = "ghcr.io/paperclipinc" }
+=======
+variable "REGISTRY" { default = "ghcr.io/paperclipai" }
+>>>>>>> origin/master
 
 target "base" {
   context = "."
@@ -21,7 +25,11 @@ target "claude" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }
 
@@ -34,7 +42,11 @@ target "codex" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }
 
@@ -47,7 +59,11 @@ target "gemini" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }
 
@@ -60,7 +76,11 @@ target "opencode" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }
 
@@ -73,7 +93,11 @@ target "pi" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }
 
@@ -86,6 +110,10 @@ target "hermes" {
     BASE_TAG = "${VERSION}"
   }
   contexts = {
+<<<<<<< HEAD
     "paperclipinc/agent-runtime-base:${VERSION}" = "target:base"
+=======
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+>>>>>>> origin/master
   }
 }

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+<<<<<<< HEAD
 
 /**
  * E2E: post-wizard onboarding launch.
@@ -13,10 +14,27 @@ const MISSION = "Verify the dashboard launch survives the wizard handoff.";
 const FIRST_TASK_TITLE = "Hire your first engineer and create a hiring plan";
 
 test.describe("Dashboard launch after onboarding wizard", () => {
+=======
+import { completeCloudOnboarding, HIRING_TASK_TITLE } from "./onboarding-flow";
+
+/**
+ * E2E: post-onboarding launch.
+ *
+ * Completing the onboarding flow creates the first assigned task and lands the
+ * user on the company dashboard. The chat intro still has unit coverage in
+ * BoardChat tests; the onboarding handoff no longer routes there.
+ */
+
+const COMPANY_NAME = `E2E-TypingIntro-${Date.now()}`;
+const MISSION = "Verify the dashboard launch survives the onboarding handoff.";
+
+test.describe("Dashboard launch after onboarding", () => {
+>>>>>>> origin/master
   test("creates the first task and opens the dashboard", async ({
     page,
     baseURL,
   }) => {
+<<<<<<< HEAD
     // Intercept env-test → instant pass (avoid running a real CLI check).
     await page.route("**/test-environment", (route) =>
       route.fulfill({
@@ -27,6 +45,11 @@ test.describe("Dashboard launch after onboarding wizard", () => {
 
     // Intercept hire → perform a REAL hire server-side with an inert http
     // adapter so no real agent process spawns.
+=======
+    // Intercept hire → perform a REAL hire server-side with an inert http
+    // adapter so no real agent process spawns. (The cloud flow hires with
+    // requireEnvProbe: false, so there is no adapter-environment probe to stub.)
+>>>>>>> origin/master
     await page.route("**/agent-hires", async (route) => {
       const req = route.request();
       const body = JSON.parse(req.postData() || "{}");
@@ -54,6 +77,7 @@ test.describe("Dashboard launch after onboarding wizard", () => {
 
     await page.goto("/onboarding");
 
+<<<<<<< HEAD
     // Launcher card path (existing companies) — enter the wizard if the
     // route shows a launcher instead of opening the wizard directly.
     const startBtn = page.getByRole("button", { name: /Start Onboarding/i });
@@ -95,6 +119,15 @@ test.describe("Dashboard launch after onboarding wizard", () => {
     const getStarted = page.getByRole("button", { name: /Get started/ });
     await getStarted.waitFor({ timeout: 20_000 });
     await getStarted.click();
+=======
+    // Welcome → company (name + mission) → agent (role picker) → first task.
+    // "Get started" on the task step creates the task and opens the dashboard.
+    await completeCloudOnboarding(page, {
+      companyName: COMPANY_NAME,
+      mission: MISSION,
+      choice: "hiring",
+    });
+>>>>>>> origin/master
 
     await expect(page).toHaveURL(/\/dashboard$/, { timeout: 30_000 });
 
@@ -107,8 +140,14 @@ test.describe("Dashboard launch after onboarding wizard", () => {
     const issuesRes = await page.request.get(`/api/companies/${company.id}/issues`);
     expect(issuesRes.ok()).toBe(true);
     const issues = await issuesRes.json();
+<<<<<<< HEAD
     const firstTask = issues.find((candidate: { title: string }) => candidate.title === FIRST_TASK_TITLE);
     expect(firstTask).toBeTruthy();
     await expect(page.getByText(FIRST_TASK_TITLE).first()).toBeVisible({ timeout: 15_000 });
+=======
+    const firstTask = issues.find((candidate: { title: string }) => candidate.title === HIRING_TASK_TITLE);
+    expect(firstTask).toBeTruthy();
+    await expect(page.getByText(HIRING_TASK_TITLE).first()).toBeVisible({ timeout: 15_000 });
+>>>>>>> origin/master
   });
 });

@@ -3,6 +3,89 @@ export const queryKeys = {
     all: ["companies"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
+    exportFidelity: (companyId: string) => ["companies", companyId, "export-fidelity"] as const,
+  },
+  apps: {
+    gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
+    attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+  },
+  tools: {
+    applications: (companyId: string) => ["tools", companyId, "applications"] as const,
+    connections: (companyId: string) => ["tools", companyId, "connections"] as const,
+    connection: (connectionId: string) => ["tools", "connection", connectionId] as const,
+    connectionInstalls: (connectionId: string) =>
+      ["tools", "connection", connectionId, "installs"] as const,
+    catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
+    connectionActivity: (connectionId: string) =>
+      ["tools", "connection", connectionId, "activity"] as const,
+    testAgents: (connectionId: string) =>
+      ["tools", "connection", connectionId, "test-agents"] as const,
+    testCallStatus: (connectionId: string, actionRequestId: string) =>
+      ["tools", "connection", connectionId, "test-calls", actionRequestId] as const,
+    actionRequests: (companyId: string, status: string) =>
+      ["tools", companyId, "action-requests", status] as const,
+    gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
+    profileNewTools: (profileId: string) => ["tools", "profiles", profileId, "new-tools"] as const,
+    effectiveProfilesForAgent: (companyId: string, agentId: string) =>
+      ["tools", companyId, "profiles", "effective", "agent", agentId] as const,
+    stdioTemplates: (companyId: string) => ["tools", companyId, "stdio-templates"] as const,
+    runtimeSlots: (companyId: string) => ["tools", companyId, "runtime-slots"] as const,
+    runtimeHealth: (companyId: string) => ["tools", companyId, "runtime-health"] as const,
+    runDecisions: (companyId: string, runId: string) => ["tools", companyId, "runs", runId, "decisions"] as const,
+    liveRuntimeSlots: (companyId: string) => ["tools", companyId, "runtime-slots", "live"] as const,
+    policies: (companyId: string) => ["tools", companyId, "policies"] as const,
+    trustRules: (companyId: string) => ["tools", companyId, "trust-rules"] as const,
+    audit: (companyId: string, limit: number) => ["tools", companyId, "audit", limit] as const,
+    activity: (
+      companyId: string,
+      filters: { app?: string; agent?: string; outcome?: string; window?: string; search?: string },
+    ) =>
+      [
+        "tools",
+        companyId,
+        "activity",
+        filters.app ?? "__all",
+        filters.agent ?? "__all",
+        filters.outcome ?? "__all",
+        filters.window ?? "24h",
+        filters.search ?? "",
+      ] as const,
+  },
+  audit: {
+    agentActions: (
+      companyId: string,
+      filters: {
+        actorScope?: "agents" | "all" | null;
+        agentId?: string | null;
+        responsibleUserId?: string | null;
+        runId?: string | null;
+        entityType?: string | null;
+        action?: string | null;
+        from?: string | null;
+        to?: string | null;
+        actorType?: string | null;
+      },
+    ) =>
+      [
+        "audit",
+        companyId,
+        "agent-actions",
+        filters.actorScope ?? "agents",
+        filters.agentId ?? "__all",
+        filters.responsibleUserId ?? "__all",
+        filters.runId ?? "__all",
+        filters.entityType ?? "__all",
+        filters.action ?? "__all",
+        filters.actorType ?? "__all",
+        filters.from ?? "",
+        filters.to ?? "",
+      ] as const,
+  },
+  smokeLab: {
+    services: (companyId: string) => ["smoke-lab", companyId, "services"] as const,
+    runs: (companyId: string) => ["smoke-lab", companyId, "runs"] as const,
+    run: (companyId: string, runId: string) => ["smoke-lab", companyId, "runs", runId] as const,
   },
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
@@ -118,6 +201,17 @@ export const queryKeys = {
     revisions: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
       ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null, "revisions"] as const,
   },
+<<<<<<< HEAD
+=======
+  statusCards: {
+    list: (companyId: string, archived: boolean) =>
+      ["status-cards", companyId, archived ? "archived" : "active"] as const,
+    detail: (id: string) => ["status-cards", "detail", id] as const,
+    updates: (id: string) => ["status-cards", "detail", id, "updates"] as const,
+    summaryRevisions: (id: string) => ["status-cards", "detail", id, "summary-revisions"] as const,
+    dryRun: (id: string) => ["status-cards", "detail", id, "dry-run"] as const,
+  },
+>>>>>>> origin/master
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
@@ -243,7 +337,9 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
-    list: (companyId: string) => ["projects", companyId] as const,
+    all: (companyId: string) => ["projects", companyId] as const,
+    list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
+      ["projects", companyId, { includeArchived: opts.includeArchived === true }] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
   cases: {
@@ -335,8 +431,10 @@ export const queryKeys = {
     status: (companyId: string) =>
       ["activation", "status", companyId] as const,
   },
-  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
+  cloud: {
+    stacks: ["cloud", "stacks"] as const,
+  },
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
@@ -347,6 +445,11 @@ export const queryKeys = {
     userDefinitionCoverage: (companyId: string, definitionId: string) =>
       ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
     myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
+<<<<<<< HEAD
+=======
+    proposals: (companyId: string, status: string = "pending") =>
+      ["secret-proposals", companyId, status] as const,
+>>>>>>> origin/master
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
@@ -358,6 +461,23 @@ export const queryKeys = {
     list: (companyId: string) => ["decision-training", companyId] as const,
     detail: (id: string) => ["decision-training", "detail", id] as const,
   },
+<<<<<<< HEAD
+=======
+  decisions: {
+    list: (companyId: string, status?: string) =>
+      ["decisions", companyId, status ?? "__all-statuses__"] as const,
+    detail: (id: string) => ["decisions", "detail", id] as const,
+    forTargetIssue: (companyId: string, issueId: string) =>
+      ["decisions", companyId, "target", issueId] as const,
+  },
+  decisionQueues: {
+    list: (companyId: string) => ["decision-queues", companyId] as const,
+    items: (companyId: string, key: string) => ["decision-queues", companyId, "items", key] as const,
+    seedRules: (companyId: string) => ["decision-queues", companyId, "seed-rules"] as const,
+    triage: (companyId: string, sourceKind: string, sourceId: string) =>
+      ["decision-triage", companyId, sourceKind, sourceId] as const,
+  },
+>>>>>>> origin/master
   workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,

@@ -92,7 +92,14 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/environments")).toBe("instance-environments");
+<<<<<<< HEAD
     expect(getCompanySettingsTab("/company/settings/cloud-upstream")).toBe("cloud-upstream");
+=======
+    expect(getCompanySettingsTab("/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/PAP/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/company/import")).toBe("import");
+    expect(getCompanySettingsTab("/PAP/company/import")).toBe("import");
+>>>>>>> origin/master
     expect(getCompanySettingsTab("/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
@@ -129,6 +136,11 @@ describe("CompanySettingsNav", () => {
         value: "members",
         items: [
           { value: "general", label: "General" },
+<<<<<<< HEAD
+=======
+          { value: "export", label: "Export" },
+          { value: "import", label: "Import" },
+>>>>>>> origin/master
           { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },

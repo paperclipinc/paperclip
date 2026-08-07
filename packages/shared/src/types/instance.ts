@@ -53,6 +53,7 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+<<<<<<< HEAD
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
@@ -71,6 +72,41 @@ export interface InstanceExperimentalSettings {
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
+=======
+  enableTaskChatRedesign: boolean;
+  enableTaskWatchdogs: boolean;
+  enableIssuePlanDecompositions: boolean;
+  enableExperimentalFileViewer: boolean;
+  enableExternalObjects: boolean;
+  enableSmokeLab: boolean;
+  enableBuiltInAgents: boolean;
+  enableBetaSkills: boolean;
+  enableSummaries: boolean;
+  enableStatusCards: boolean;
+  enableDecisions: boolean;
+  enableGoalsSidebarLink: boolean;
+  enableServerInfoDebugView: boolean;
+  /**
+   * Instructs agents to write user-interaction content (confirmations,
+   * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
+   * Technical English with brief decision context. Prompt-side only; no
+   * behavior change outside interaction wording.
+   */
+  enableSimplifiedEnglishInteractions: boolean;
+  autoRestartDevServerWhenIdle: boolean;
+  enableIssueGraphLivenessAutoRecovery: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
+  enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * On cloud-managed instances, grant the stack owner instance-admin access
+   * to their own dedicated instance. Elevation is computed per request at the
+   * trusted-header auth boundary (owner stack role + this flag); no
+   * `instance_user_roles` row is ever written. Inert on self-hosted
+   * instances, which have no trusted cloud tenant path.
+   */
+  enableOwnerInstanceAdmin: boolean;
+  /**
+>>>>>>> origin/master
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
    * this is enabled the worktree-instance scheduling suppression is lifted so
@@ -91,6 +127,7 @@ export interface InstanceExperimentalSettings {
 }
 
 /**
+<<<<<<< HEAD
  * Instance-wide settings-surface visibility policy (PR-1). Decides which
  * company-scoped settings surfaces non-admin company members may use.
  * Instance-scoped surfaces are never part of the policy. Default: all
@@ -103,13 +140,45 @@ export interface InstanceVisibilitySettings {
 export const DEFAULT_INSTANCE_VISIBILITY_SETTINGS: InstanceVisibilitySettings = {
   companySurfaces: [...COMPANY_SETTINGS_SURFACES],
 };
+=======
+ * Boolean feature-flag keys of the experimental settings — the only keys a
+ * cloud managed-config overlay may target. Server-managed bookkeeping fields
+ * (activation cutoffs, lookback hours) are excluded by construction.
+ */
+export type ManagedExperimentalFeatureKey = {
+  [K in keyof InstanceExperimentalSettings]-?: InstanceExperimentalSettings[K] extends boolean
+    ? K
+    : never;
+}[keyof InstanceExperimentalSettings];
+
+export const PAPERCLIP_CLOUD_MANAGED_BY = "paperclip-cloud" as const;
+
+/** Per-key metadata attached to settings responses for cloud-overlaid keys. */
+export interface ManagedSettingMetadata {
+  managed: true;
+  managedBy: typeof PAPERCLIP_CLOUD_MANAGED_BY;
+}
+
+/**
+ * Experimental settings as returned by the settings API. On cloud-managed
+ * instances (`PAPERCLIP_MANAGED_CONFIG` present) `managedKeys` lists every key
+ * whose value is overlaid by the harness; self-hosted responses omit it.
+ */
+export interface InstanceExperimentalSettingsWithManaged extends InstanceExperimentalSettings {
+  managedKeys?: Partial<Record<ManagedExperimentalFeatureKey, ManagedSettingMetadata>>;
+}
+>>>>>>> origin/master
 
 export interface InstanceSettings {
   id: string;
   defaultEnvironmentId: string | null;
   general: InstanceGeneralSettings;
+<<<<<<< HEAD
   experimental: InstanceExperimentalSettings;
   visibility: InstanceVisibilitySettings;
+=======
+  experimental: InstanceExperimentalSettingsWithManaged;
+>>>>>>> origin/master
   createdAt: Date;
   updatedAt: Date;
 }

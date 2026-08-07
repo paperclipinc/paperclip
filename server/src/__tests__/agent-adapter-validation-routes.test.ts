@@ -9,10 +9,13 @@ const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
+<<<<<<< HEAD
 }));
 
 const mockAdapterPluginStore = vi.hoisted(() => ({
   getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
+=======
+>>>>>>> origin/master
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -118,6 +121,7 @@ function registerModuleMocks() {
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
   }));
+<<<<<<< HEAD
 
   // The adapter registry reads the disabled set from this store. Mock it so a
   // test can declare an adapter disabled without writing to the real
@@ -130,6 +134,8 @@ function registerModuleMocks() {
     getAdapterPluginByType: () => undefined,
     setAdapterDisabled: vi.fn(),
   }));
+=======
+>>>>>>> origin/master
 }
 
 const externalAdapter: ServerAdapterModule = {
@@ -341,6 +347,7 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+<<<<<<< HEAD
   it("inherits a same-adapter company agent's secret_ref env when creating an agent", async () => {
     const app = await createApp({
       agentRows: [
@@ -430,6 +437,8 @@ describe("agent routes adapter validation", () => {
     });
   });
 
+=======
+>>>>>>> origin/master
   it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -520,6 +529,7 @@ describe("agent routes adapter validation", () => {
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
+<<<<<<< HEAD
   it("does not materialize a default instructions bundle for an inert process agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -535,6 +545,8 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
   });
 
+=======
+>>>>>>> origin/master
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

@@ -42,7 +42,11 @@ import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+<<<<<<< HEAD
 import { useFeatures } from "../hooks/useFeatures";
+=======
+import { instanceSettingsApi } from "../api/instanceSettings";
+>>>>>>> origin/master
 import { projectsApi } from "../api/projects";
 import { secretsApi } from "../api/secrets";
 import { ApiError } from "../api/client";
@@ -1347,7 +1351,15 @@ export function PipelineSettings() {
     queryFn: () => authApi.getSession(),
   });
 
+<<<<<<< HEAD
   const experimentalSettingsQuery = useFeatures();
+=======
+  const experimentalSettingsQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+>>>>>>> origin/master
 
   const healthQuery = useQuery({
     queryKey: pipelineId ? queryKeys.pipelines.health(pipelineId) : ["pipelines", "health", "none"],
@@ -1368,7 +1380,11 @@ export function PipelineSettings() {
   });
   const currentUserId = sessionQuery.data?.user?.id ?? sessionQuery.data?.session?.userId ?? null;
   const activeProjects = useMemo(
+<<<<<<< HEAD
     () => (projectsQuery.data ?? []).filter((project) => !project.archivedAt),
+=======
+    () => projectsQuery.data ?? [],
+>>>>>>> origin/master
     [projectsQuery.data],
   );
   const { orderedProjects } = useProjectOrder({

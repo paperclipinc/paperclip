@@ -4,7 +4,11 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { WorkspaceOverviewItem } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
+<<<<<<< HEAD
 import { useFeatures } from "../hooks/useFeatures";
+=======
+import { instanceSettingsApi } from "../api/instanceSettings";
+>>>>>>> origin/master
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { PageSkeleton } from "../components/PageSkeleton";

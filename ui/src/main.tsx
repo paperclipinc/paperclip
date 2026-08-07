@@ -18,7 +18,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
+<<<<<<< HEAD
 import { initAnalytics } from "./analytics";
+=======
+>>>>>>> origin/master
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -29,9 +32,12 @@ initPluginBridge(React, ReactDOM);
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
 
+<<<<<<< HEAD
 // Hosted deployment only; a no-op everywhere else. See ./analytics.
 initAnalytics();
 
+=======
+>>>>>>> origin/master
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js");

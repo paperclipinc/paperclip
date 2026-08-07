@@ -6,7 +6,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -125,6 +128,10 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   capabilities: vi.fn(),
+<<<<<<< HEAD
+=======
+  secretRefs: vi.fn(),
+>>>>>>> origin/master
   probe: vi.fn(),
   probeConfig: vi.fn(),
   create: vi.fn(),
@@ -140,8 +147,14 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   rollbackCustomImageTemplate: vi.fn(),
   disableCustomImageTemplate: vi.fn(),
 }));
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+>>>>>>> origin/master
 }));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -168,8 +181,13 @@ vi.mock("@/api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+=======
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("@/api/secrets", () => ({
@@ -391,10 +409,17 @@ describe("CompanyEnvironments — test provider button", () => {
     FakeWebSocket.instances = [];
     xtermMocks.reset();
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { defaultEnvironmentId: null, enableEnvironments: true } }),
     );
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
+    mockEnvironmentsApi.secretRefs.mockResolvedValue({ refs: [] });
+>>>>>>> origin/master
     mockSecretsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: null,

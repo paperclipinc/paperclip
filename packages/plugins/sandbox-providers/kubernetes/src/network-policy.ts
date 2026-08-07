@@ -13,6 +13,7 @@ export interface BuildNetworkPolicyInput {
    * "cilium"` for exact FQDN allow-listing in production.
    */
   egressAllowFqdns?: string[];
+<<<<<<< HEAD
   /**
    * "allowlist" (default): egress restricted to egressAllowFqdns/egressAllowCidrs
    * (plus the public-IPv4 FQDN fallback below when applicable). "open-internet":
@@ -20,6 +21,12 @@ export interface BuildNetworkPolicyInput {
    * configuration.
    */
   egressPolicy?: "allowlist" | "open-internet";
+=======
+  name?: string;
+  podSelector?: Record<string, string>;
+  includeBaseRules?: boolean;
+  ownerReferences?: Record<string, unknown>[];
+>>>>>>> origin/master
 }
 
 /**
@@ -29,7 +36,11 @@ export interface BuildNetworkPolicyInput {
  * cluster loopback (127.0.0.0/8), CGNAT (100.64.0.0/10), this-network
  * (0.0.0.0/8), and multicast (224.0.0.0/4).
  */
+<<<<<<< HEAD
 export const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
+=======
+const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
+>>>>>>> origin/master
   "0.0.0.0/8",
   "10.0.0.0/8",
   "100.64.0.0/10",
@@ -66,15 +77,25 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata: {
+<<<<<<< HEAD
       name: "paperclip-egress-allow",
+=======
+>>>>>>> origin/master
       namespace: input.namespace,
       labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
     },
     spec: {
+<<<<<<< HEAD
       podSelector: { matchLabels: { "paperclip.io/role": "agent" } },
       policyTypes: ["Egress"],
       egress: [
         {
+=======
+      podSelector: { matchLabels: input.podSelector ?? { "paperclip.io/role": "agent" } },
+      policyTypes: ["Egress"],
+      egress: [
+        ...(input.includeBaseRules === false ? [] : [{
+>>>>>>> origin/master
           to: [
             {
               namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
@@ -85,8 +106,13 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
             { protocol: "UDP", port: 53 },
             { protocol: "TCP", port: 53 },
           ],
+<<<<<<< HEAD
         },
         {
+=======
+        }]),
+        ...(input.includeBaseRules === false ? [] : [{
+>>>>>>> origin/master
           to: [
             {
               namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": input.paperclipServerNamespace } },
@@ -94,7 +120,11 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
             },
           ],
           ports: [{ protocol: "TCP", port: 3100 }],
+<<<<<<< HEAD
         },
+=======
+        }]),
+>>>>>>> origin/master
         // NOTE: operator-supplied CIDRs are intentionally NOT port-scoped —
         // operators may need them for non-HTTP services (e.g. private VCS
         // mirrors, S3 endpoints, internal artifact registries). Operators
@@ -112,8 +142,13 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
         // the box for cloud LLM APIs without inadvertently exposing
         // cluster internals or link-local metadata endpoints. Operators
         // who want exact FQDN enforcement should use `egressMode: "cilium"`.
+<<<<<<< HEAD
         ...(input.egressPolicy === "open-internet" ||
           (input.egressAllowCidrs.length === 0 && (input.egressAllowFqdns?.length ?? 0) > 0)
+=======
+        ...(input.egressAllowCidrs.length === 0 &&
+          (input.egressAllowFqdns?.length ?? 0) > 0
+>>>>>>> origin/master
           ? [
               {
                 to: [
@@ -135,5 +170,13 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
     },
   };
 
+<<<<<<< HEAD
+=======
+  (egressAllow.metadata as Record<string, unknown>).name = input.name ?? "paperclip-egress-allow";
+  if (input.ownerReferences) {
+    (egressAllow.metadata as Record<string, unknown>).ownerReferences = input.ownerReferences;
+  }
+
+>>>>>>> origin/master
   return [denyAll, egressAllow];
 }

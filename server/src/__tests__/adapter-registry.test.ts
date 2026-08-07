@@ -268,7 +268,11 @@ describe("server adapter registry", () => {
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
+<<<<<<< HEAD
         adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
+=======
+        adapterConfig: {},
+>>>>>>> origin/master
         source: "adapter_default",
       }),
     ]);

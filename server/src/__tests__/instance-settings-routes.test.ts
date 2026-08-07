@@ -1,12 +1,15 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
+<<<<<<< HEAD
   getVisibility: vi.fn(),
+=======
+>>>>>>> origin/master
   update: vi.fn(),
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
@@ -84,9 +87,15 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: false,
         enableIssuePlanDecompositions: false,
         enableExperimentalFileViewer: false,
+<<<<<<< HEAD
         enableCloudSync: false,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
+=======
+        enableExternalObjects: false,
+        enableBuiltInAgents: false,
+        enableBetaSkills: false,
+>>>>>>> origin/master
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
@@ -112,9 +121,15 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
+<<<<<<< HEAD
       enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
+=======
+      enableExternalObjects: false,
+      enableBuiltInAgents: false,
+      enableBetaSkills: false,
+>>>>>>> origin/master
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
@@ -139,9 +154,15 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: true,
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
+<<<<<<< HEAD
         enableCloudSync: true,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
+=======
+        enableExternalObjects: false,
+        enableBuiltInAgents: false,
+        enableBetaSkills: false,
+>>>>>>> origin/master
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
@@ -172,7 +193,10 @@ describe("instance settings routes", () => {
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
         enableTaskWatchdogs: true,
+<<<<<<< HEAD
         enableCloudSync: true,
+=======
+>>>>>>> origin/master
         enableExternalObjects: false,
         enableBuiltInAgents: true,
         enableGoalsSidebarLink: false,
@@ -246,9 +270,15 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
+<<<<<<< HEAD
       enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
+=======
+      enableExternalObjects: false,
+      enableBuiltInAgents: false,
+      enableBetaSkills: false,
+>>>>>>> origin/master
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
@@ -525,7 +555,11 @@ describe("instance settings routes", () => {
     });
   });
 
+<<<<<<< HEAD
   it("rejects non-admin board users from reading or updating experimental settings", async () => {
+=======
+  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
+>>>>>>> origin/master
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -534,13 +568,21 @@ describe("instance settings routes", () => {
       companyIds: ["company-1"],
     });
 
+<<<<<<< HEAD
     await request(app).get("/api/instance/settings/experimental").expect(403);
     expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
+=======
+    await request(app).get("/api/instance/settings/experimental").expect(200);
+>>>>>>> origin/master
 
     await request(app)
       .patch("/api/instance/settings/experimental")
       .send({ enableTaskWatchdogs: true })
       .expect(403);
+<<<<<<< HEAD
+=======
+
+>>>>>>> origin/master
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
@@ -640,6 +682,7 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
   });
 
+<<<<<<< HEAD
   it("allows instance admins to read and update the visibility policy", async () => {
     const app = await createApp({
       type: "board",
@@ -736,5 +779,100 @@ describe("instance settings routes", () => {
     await request(app).get("/api/instance/settings/general").expect(200);
     await request(app).get("/api/instance/settings/experimental").expect(200);
     await request(app).get("/api/instance/settings/visibility").expect(200);
+=======
+  describe("executionMode floor on cloud-managed instances", () => {
+    const adminActor = {
+      type: "board",
+      userId: "owner-1",
+      source: "cloud_tenant",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+    };
+
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it("rejects a write that changes executionMode", async () => {
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        executionMode: "kubernetes",
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "any" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "execution_mode_platform_managed" });
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("rejects pinning executionMode when the platform left it unrestricted", async () => {
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes" });
+
+      expect(res.status).toBe(403);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        executionMode: "kubernetes",
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+        executionMode: "kubernetes",
+        keyboardShortcuts: true,
+      });
+    });
+
+    it("allows general-settings writes that do not touch executionMode", async () => {
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ keyboardShortcuts: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+    });
+
+    it("keeps executionMode writable on self-hosted instances", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      const app = await createApp({
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes" });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ executionMode: "kubernetes" });
+    });
+>>>>>>> origin/master
   });
 });

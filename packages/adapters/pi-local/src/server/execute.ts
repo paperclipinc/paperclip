@@ -274,8 +274,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Build environment
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
@@ -326,7 +324,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   // Materialize custom Pi providers (PAPERCLIP_PI_PROVIDERS) into a managed
@@ -749,15 +747,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+<<<<<<< HEAD
         const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
+=======
+>>>>>>> origin/master
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
+<<<<<<< HEAD
           errorMessage: sandboxExecTimedOut
             ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
             : `Timed out after ${timeoutSec}s`,
           errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+=======
+          errorMessage: `Timed out after ${timeoutSec}s`,
+>>>>>>> origin/master
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -778,7 +783,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         : null;
 
+<<<<<<< HEAD
       const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+=======
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+>>>>>>> origin/master
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
       const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;

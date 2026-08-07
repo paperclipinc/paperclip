@@ -42,7 +42,7 @@ import {
   rememberIssueDetailLocationState,
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
-import { prefetchIssueDetail } from "../lib/issueDetailCache";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
@@ -55,12 +55,26 @@ import {
   resolveIssueLiveDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
+<<<<<<< HEAD
   cancelInboxIssueQueries,
   invalidateInboxIssueQueries,
+=======
+  beginLocalInboxArchive,
+  boundLocalInboxArchive,
+  cancelInboxIssueQueries,
+  clearLocalInboxArchive,
+  confirmLocalInboxArchive,
+  invalidateInboxIssueQueries,
+  getIssuePresenceInActiveInboxCaches,
+>>>>>>> origin/master
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
   type InboxIssueCacheSnapshot,
+<<<<<<< HEAD
+=======
+  useLocalInboxArchiveIssueIds,
+>>>>>>> origin/master
 } from "../lib/inboxArchiveCache";
 import { EmptyState } from "../components/EmptyState";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
@@ -167,6 +181,16 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import {
+  captureInboxOrderPin,
+  reconcileInboxOrderPin,
+  type InboxOrderPin,
+} from "../lib/inboxOrderPin";
+
+const INBOX_HEARTBEAT_RUN_LIMIT = 200;
+const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_HOT_PATH_STALE_MS = 30_000;
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -750,8 +774,8 @@ export function Inbox() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -918,7 +942,11 @@ export function Inbox() {
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
+<<<<<<< HEAD
     // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+=======
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+>>>>>>> origin/master
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -929,13 +957,27 @@ export function Inbox() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+<<<<<<< HEAD
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+=======
+>>>>>>> origin/master
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
+  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
+  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
+  const guardedArchiveIssueIds = useLocalInboxArchiveIssueIds(selectedCompanyId);
+  const locallyArchivedIssueIds = useMemo(() => {
+    const issueIds = new Set(guardedArchiveIssueIds);
+    for (const issueId of undoableArchiveIssueIds) issueIds.add(issueId);
+    for (const issueId of archivingIssueIds) issueIds.add(issueId);
+    for (const issueId of unarchivingIssueIds) issueIds.delete(issueId);
+    return issueIds;
+  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
@@ -946,8 +988,19 @@ export function Inbox() {
     [companyMembers?.users],
   );
 
+<<<<<<< HEAD
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const touchedIssues = useMemo(() => getRecentTouchedIssues(touchedIssuesRaw), [touchedIssuesRaw]);
+=======
+  const mineIssues = useMemo(
+    () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, mineIssuesRaw],
+  );
+  const touchedIssues = useMemo(
+    () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+    [locallyArchivedIssueIds, touchedIssuesRaw],
+  );
+>>>>>>> origin/master
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
@@ -968,6 +1021,18 @@ export function Inbox() {
     enabled: shouldUseIssueSearchSupplement,
     placeholderData: (previousData) => previousData,
   });
+<<<<<<< HEAD
+=======
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(liveRuns, [
+      ...(issues ?? []),
+      ...mineIssuesRaw,
+      ...touchedIssuesRaw,
+      ...remoteIssueSearchResults,
+    ]),
+    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+  );
+>>>>>>> origin/master
   const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
     const issueIds = new Set<string>();
     for (const issue of mineIssues) issueIds.add(issue.id);
@@ -1352,7 +1417,7 @@ export function Inbox() {
       return next;
     });
   }, [selectedCompanyId]);
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+  const freshGroupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
     ...buildGroupedInboxSections(
       getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
@@ -1374,6 +1439,79 @@ export function Inbox() {
     issueSearchSupplementResults,
     nestingEnabled,
   ]);
+
+  // --- Order pinning (PAP-16015) ---
+  // The freshly computed sort is only *displayed* at attention boundaries. Between
+  // them we reconcile the fresh sections against the last committed order so that
+  // archiving mid-engagement (which drops rows from the caches, and can lower a
+  // parent's subtree-max sort ts) can no longer reshuffle the list under the
+  // cursor. New items still land at their algorithmic position; archived rows hold
+  // their slot for the 5s undo grace before collapsing. See `inboxOrderPin.ts`.
+  const orderPinRef = useRef<InboxOrderPin>({ sections: [] });
+  // Bumped by an attention commit to force `groupedSections` to adopt the fresh order.
+  const [orderCommitToken, setOrderCommitToken] = useState(0);
+  const orderCommitRequestedRef = useRef(false);
+  const commitInboxOrder = useCallback(() => {
+    orderCommitRequestedRef.current = true;
+    setOrderCommitToken((token) => token + 1);
+  }, []);
+
+  // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
+  // held order so we never carry one view's layout into another.
+  const inboxSortViewIdentity = useMemo(
+    () =>
+      JSON.stringify([
+        selectedCompanyId,
+        tab,
+        groupBy,
+        nestingEnabled,
+        normalizedSearchQuery,
+        allCategoryFilter,
+        allApprovalFilter,
+        issueFilters,
+      ]),
+    [
+      allApprovalFilter,
+      allCategoryFilter,
+      groupBy,
+      issueFilters,
+      nestingEnabled,
+      normalizedSearchQuery,
+      selectedCompanyId,
+      tab,
+    ],
+  );
+  // Adopt the fresh order in the SAME render the view identity changes, so a
+  // section key shared between the two views never briefly shows the previous
+  // view's order before the hook's passive commit effect runs.
+  const previousInboxSortViewIdentityRef = useRef(inboxSortViewIdentity);
+  if (previousInboxSortViewIdentityRef.current !== inboxSortViewIdentity) {
+    previousInboxSortViewIdentityRef.current = inboxSortViewIdentity;
+    orderCommitRequestedRef.current = true;
+  }
+
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
+    const nowMs = Date.now();
+    // An attention boundary (or a view change) fired: adopt the fresh order
+    // wholesale and re-pin it.
+    if (orderCommitRequestedRef.current) {
+      orderCommitRequestedRef.current = false;
+      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
+      return freshGroupedSections;
+    }
+    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
+    orderPinRef.current = pin;
+    return sections;
+    // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
+    // forces it on a view change even when the fresh sections keep their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+
+  const inboxSortAttention = useInboxSortAttention({
+    viewIdentity: inboxSortViewIdentity,
+    onCommit: commitInboxOrder,
+  });
+  const noteInboxSortInteraction = inboxSortAttention.noteInteraction;
 
   const openCreateIssueForGroup = useCallback((group: InboxGroupedSection) => {
     const defaults = buildInboxIssueGroupCreateDefaults(
@@ -1602,9 +1740,6 @@ export function Inbox() {
 
   const [fadingOutIssues, setFadingOutIssues] = useState<Set<string>>(new Set());
   const [showMarkAllReadConfirm, setShowMarkAllReadConfirm] = useState(false);
-  const [archivingIssueIds, setArchivingIssueIds] = useState<Set<string>>(new Set());
-  const [undoableArchiveIssueIds, setUndoableArchiveIssueIds] = useState<string[]>([]);
-  const [unarchivingIssueIds, setUnarchivingIssueIds] = useState<Set<string>>(new Set());
   const [fadingNonIssueItems, setFadingNonIssueItems] = useState<Set<string>>(new Set());
   const [archivingNonIssueIds, setArchivingNonIssueIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -1630,13 +1765,21 @@ export function Inbox() {
   const hoveredNavKeyRef = useRef<string | null>(null);
   const setSelectedIndexFromPointer = useCallback((idx: number) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
+<<<<<<< HEAD
+=======
+    noteInboxSortInteraction();
+>>>>>>> origin/master
     hoveredIndexRef.current = idx;
     hoveredNavKeyRef.current = navEntryKey(flatNavItemsRef.current[idx]);
     // Drop any keyboard selection band the moment the mouse takes over, so we
     // never show two identical highlights at once. React bails out when the
     // value is already -1, so continuous hovering triggers no re-render.
     setSelectedIndex((prev) => (prev < 0 ? prev : -1));
+<<<<<<< HEAD
   }, []);
+=======
+  }, [noteInboxSortInteraction]);
+>>>>>>> origin/master
 
   const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
@@ -1646,19 +1789,33 @@ export function Inbox() {
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
+      // Keep the sort pinned: archiving is engagement, so defer any idle re-sort.
+      noteInboxSortInteraction();
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
       if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+<<<<<<< HEAD
+=======
+      beginLocalInboxArchive(selectedCompanyId, id);
+>>>>>>> origin/master
 
       await cancelInboxIssueQueries(queryClient, selectedCompanyId);
       const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
 
+<<<<<<< HEAD
       return { previousData };
     },
     onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to archive task");
+=======
+      return { companyId: selectedCompanyId, previousData };
+    },
+    onError: (err, id, context) => {
+      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
+>>>>>>> origin/master
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -1669,14 +1826,24 @@ export function Inbox() {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
     },
-    onSettled: (_data, _error, id) => {
+    onSettled: async (_data, error, id, context) => {
       // Clean up archiving state and refetch to sync with server
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+<<<<<<< HEAD
       invalidateInboxIssueQueryCaches();
+=======
+      if (!context?.companyId) return;
+      if (!error) boundLocalInboxArchive(context.companyId, id);
+      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
+      }
+>>>>>>> origin/master
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
@@ -1688,9 +1855,15 @@ export function Inbox() {
     onMutate: (id) => {
       setActionError(null);
       setUnarchivingIssueIds((prev) => new Set(prev).add(id));
+      if (selectedCompanyId) clearLocalInboxArchive(selectedCompanyId, id);
+      return { companyId: selectedCompanyId };
     },
-    onError: (err) => {
+    onError: (err, id, context) => {
       setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      if (context?.companyId) {
+        beginLocalInboxArchive(context.companyId, id);
+        boundLocalInboxArchive(context.companyId, id);
+      }
     },
     onSuccess: (_data, id) => {
       setUndoableArchiveIssueIds((prev) => {
@@ -1772,6 +1945,7 @@ export function Inbox() {
   }, [markItemRead]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
+    noteInboxSortInteraction();
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
       if (key.startsWith("alert:")) {
@@ -1785,7 +1959,7 @@ export function Inbox() {
         return next;
       });
     }, 200);
-  }, [dismissAlert, dismissInboxItem]);
+  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1823,6 +1997,15 @@ export function Inbox() {
   useEffect(() => {
     selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
   }, [flatNavItems, selectedIndex]);
+<<<<<<< HEAD
+=======
+
+  useEffect(() => {
+    setUndoableArchiveIssueIds((prev) =>
+      prev.filter((issueId) => guardedArchiveIssueIds.has(issueId) || unarchivingIssueIds.has(issueId)),
+    );
+  }, [guardedArchiveIssueIds, unarchivingIssueIds]);
+>>>>>>> origin/master
 
   useEffect(() => {
     setUndoableArchiveIssueIds([]);
@@ -1929,6 +2112,12 @@ export function Inbox() {
       const navCount = navItems.length;
       if (navCount === 0) return;
 
+<<<<<<< HEAD
+=======
+      // Any inbox keystroke (nav, archive, undo) is engagement: hold the sort.
+      noteInboxSortInteraction();
+
+>>>>>>> origin/master
       /** Resolve the nav entry at an index to an issue (for child entries) or work item. */
       const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
         const entry = navItems[idx];
@@ -2046,7 +2235,7 @@ export function Inbox() {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetail(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2055,7 +2244,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetail(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -2071,7 +2260,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [issueLinkState, keyboardShortcutsEnabled]);
+  }, [issueLinkState, keyboardShortcutsEnabled, noteInboxSortInteraction]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -2500,7 +2689,16 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
+<<<<<<< HEAD
             <div ref={listRef} className="overflow-hidden">
+=======
+            <div
+              ref={listRef}
+              className="overflow-hidden"
+              onPointerDownCapture={noteInboxSortInteraction}
+              onWheelCapture={noteInboxSortInteraction}
+            >
+>>>>>>> origin/master
               {(() => {
                 const renderInboxIssue = ({
                   issue,
@@ -2554,8 +2752,11 @@ export function Inbox() {
                       issue={issue}
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
+<<<<<<< HEAD
                       hideDivider={hasChildren && isExpanded}
                       externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
+=======
+>>>>>>> origin/master
                       selected={selected}
                       className={
                         isArchiving

@@ -1,11 +1,21 @@
+<<<<<<< HEAD
 import { PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS } from "./network-policy.js";
 
+=======
+>>>>>>> origin/master
 export interface BuildCiliumNetworkPolicyInput {
   namespace: string;
   paperclipServerNamespace: string;
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
+<<<<<<< HEAD
   egressPolicy?: "allowlist" | "open-internet";
+=======
+  name?: string;
+  endpointSelector?: Record<string, string>;
+  includeBaseRules?: boolean;
+  ownerReferences?: Record<string, unknown>[];
+>>>>>>> origin/master
 }
 
 // Design note: no ingress rules are defined here. Paperclip-server does NOT
@@ -15,7 +25,11 @@ export interface BuildCiliumNetworkPolicyInput {
 export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicyInput): Record<string, unknown> {
   const egress: Record<string, unknown>[] = [];
 
+<<<<<<< HEAD
   egress.push({
+=======
+  if (input.includeBaseRules !== false) egress.push({
+>>>>>>> origin/master
     toEndpoints: [
       { matchLabels: { "k8s:io.kubernetes.pod.namespace": "kube-system", "k8s-app": "kube-dns" } },
     ],
@@ -37,6 +51,7 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
     });
   }
 
+<<<<<<< HEAD
   if (input.egressPolicy === "open-internet") {
     // Hardened public internet: HTTP(S) only, with private ranges,
     // link-local metadata (cloud IMDS), loopback, CGNAT, this-network,
@@ -55,6 +70,9 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
   }
 
   egress.push({
+=======
+  if (input.includeBaseRules !== false) egress.push({
+>>>>>>> origin/master
     toEndpoints: [
       {
         matchLabels: {
@@ -76,12 +94,22 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
     apiVersion: "cilium.io/v2",
     kind: "CiliumNetworkPolicy",
     metadata: {
+<<<<<<< HEAD
       name: "paperclip-egress-fqdn",
       namespace: input.namespace,
       labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
     },
     spec: {
       endpointSelector: { matchLabels: { "paperclip.io/role": "agent" } },
+=======
+      name: input.name ?? "paperclip-egress-fqdn",
+      namespace: input.namespace,
+      labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" },
+      ...(input.ownerReferences ? { ownerReferences: input.ownerReferences } : {}),
+    },
+    spec: {
+      endpointSelector: { matchLabels: input.endpointSelector ?? { "paperclip.io/role": "agent" } },
+>>>>>>> origin/master
       egress,
     },
   };

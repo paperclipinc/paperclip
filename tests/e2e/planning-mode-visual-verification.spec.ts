@@ -1,13 +1,52 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { completeCloudOnboarding, HIRING_TASK_TITLE } from "./onboarding-flow";
 
+<<<<<<< HEAD
 const AGENT_NAME = "Chief of staff";
 const TASK_TITLE = "Hire your first engineer and create a hiring plan";
+=======
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+>>>>>>> origin/master
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
-  const screenshotDir = "test-results/planning-mode";
+  // Resolve against this file, not the cwd, so screenshots land in the
+  // gitignored tests/e2e/test-results/ rather than an untracked dir at the
+  // repo root that a contributor could commit by accident.
+  const screenshotDir = path.join(__dirname, "test-results", "planning-mode");
 
+  // Intercept hire → perform a REAL hire server-side with an inert http adapter
+  // so no real agent process spawns. (The cloud flow hires with
+  // requireEnvProbe: false, so there is no adapter-environment probe to stub.)
+  await page.route("**/agent-hires", async (route) => {
+    const req = route.request();
+    const body = JSON.parse(req.postData() || "{}");
+    const auth = req.headers().authorization;
+    const real = await fetch(new URL(req.url()).toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: auth } : {}),
+      },
+      body: JSON.stringify({
+        name: body.name,
+        role: body.role,
+        adapterType: "http",
+        adapterConfig: { url: "http://127.0.0.1:1/dead" },
+        runtimeConfig: { heartbeat: { enabled: false } },
+      }),
+    });
+    await route.fulfill({
+      status: real.status,
+      contentType: "application/json",
+      body: await real.text(),
+    });
+  });
+
+<<<<<<< HEAD
   await page.route("**/test-environment", (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -76,6 +115,18 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
+=======
+  await page.goto("/onboarding");
+
+  // This spec only needs a company with a seeded first task to screenshot the
+  // planning-mode UI against; drive the whole onboarding flow to get one.
+  await completeCloudOnboarding(page, {
+    companyName,
+    mission: "Capture planning mode visual evidence for the graduated task UI.",
+    choice: "hiring",
+  });
+
+>>>>>>> origin/master
   await expect(page).toHaveURL(/\/dashboard$/, { timeout: 30_000 });
 
   const baseOrigin = new URL(page.url()).origin;
@@ -89,7 +140,11 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const issues = await issueRes.json();
   const planningSeedIssue = issues.find(
     (candidate: { id: string; identifier?: string; title: string }) =>
+<<<<<<< HEAD
       candidate.title === TASK_TITLE,
+=======
+      candidate.title === HIRING_TASK_TITLE,
+>>>>>>> origin/master
   );
   expect(planningSeedIssue).toBeTruthy();
 

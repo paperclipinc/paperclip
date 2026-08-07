@@ -13,7 +13,10 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+<<<<<<< HEAD
   closeDbClient,
+=======
+>>>>>>> origin/master
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -30,6 +33,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+<<<<<<< HEAD
   // Drain per-test heartbeat instances before deleting rows / closing the client
   // so detached executeRun chains never query a torn-down socket.
   const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
@@ -39,6 +43,8 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     heartbeats.push(heartbeat);
     return heartbeat;
   }
+=======
+>>>>>>> origin/master
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-lock-release-on-reassignment-");
@@ -46,9 +52,12 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   }, 60_000);
 
   afterEach(async () => {
+<<<<<<< HEAD
     while (heartbeats.length > 0) {
       await heartbeats.pop()?.drain();
     }
+=======
+>>>>>>> origin/master
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -59,7 +68,10 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   });
 
   afterAll(async () => {
+<<<<<<< HEAD
     await closeDbClient(db);
+=======
+>>>>>>> origin/master
     await tempDb?.cleanup();
   });
 
@@ -151,7 +163,11 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     const { coderAgentId, reviewerAgentId, issueId, holderRunId, wakeupRequestId } =
       await seedCrossAgentScenario({ holderStatus: "running" });
 
+<<<<<<< HEAD
     const heartbeat = makeHeartbeat(db);
+=======
+    const heartbeat = heartbeatService(db);
+>>>>>>> origin/master
     const followupRun = await heartbeat.wakeup(reviewerAgentId, {
       source: "automation",
       triggerDetail: "system",

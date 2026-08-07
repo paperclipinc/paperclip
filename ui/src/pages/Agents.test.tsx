@@ -10,7 +10,10 @@ import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 const mockRouterState = vi.hoisted(() => ({
   pathname: "/agents/all",
@@ -37,8 +40,13 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+>>>>>>> origin/master
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -90,8 +98,13 @@ vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
+=======
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -222,6 +235,7 @@ function makeInstanceSettings({
   enableEnvironments?: boolean;
   enableBuiltInAgents?: boolean;
 } = {}) {
+<<<<<<< HEAD
   return buildCurrentBoardAccess({
     features: {
       defaultEnvironmentId,
@@ -231,15 +245,47 @@ function makeInstanceSettings({
       executionMode: "any",
       enableEnvironments,
       enableIsolatedWorkspaces: true,
+=======
+  return {
+    id: "instance-settings-1",
+    defaultEnvironmentId,
+    general: {
+      censorUsernameInLogs: true,
+      keyboardShortcuts: true,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+      executionMode: "any",
+    },
+    experimental: {
+      enableEnvironments,
+      enableIsolatedWorkspaces: true,
+      enableStreamlinedLeftNavigation: false,
+>>>>>>> origin/master
       enableConferenceRoomChat: false,
       enableTaskWatchdogs: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,
+<<<<<<< HEAD
       enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
     },
   });
+=======
+      enableExternalObjects: false,
+      enableBuiltInAgents,
+      autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: false,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    },
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  };
+>>>>>>> origin/master
 }
 
 const invalidOrgChainHealth: AgentOrgChainHealth = {
@@ -317,7 +363,11 @@ describe("Agents", () => {
       makeEnvironment({ id: "env-daytona" }),
     ]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings());
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
+>>>>>>> origin/master
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
@@ -431,7 +481,11 @@ describe("Agents", () => {
 
   it("uses the built-in agents route segment as the built-in filter", async () => {
     mockRouterState.pathname = "/agents/builtin";
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+>>>>>>> origin/master
     const builtInAgent = makeAgent({
       id: "built-in-agent",
       name: "Briefs Agent",
@@ -615,7 +669,11 @@ describe("Agents", () => {
   });
 
   it("hides the environment column when environments are experimentally disabled", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableEnvironments: false }));
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableEnvironments: false }));
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
         id: "agent-local",
@@ -718,7 +776,11 @@ describe("Agents", () => {
         config: { provider: "daytona" },
       }),
     ]);
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ defaultEnvironmentId: "env-default" }));
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ defaultEnvironmentId: "env-default" }));
+>>>>>>> origin/master
 
     root = createRoot(container);
     await act(async () => {
@@ -822,7 +884,11 @@ describe("Agents", () => {
 
   it("shows and filters built-in agents when the experimental flag is enabled", async () => {
     mockRouterState.pathname = "/agents/builtin";
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+=======
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({
         id: "built-in-agent",

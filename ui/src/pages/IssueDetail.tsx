@@ -26,7 +26,11 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, formatAssigneeUserLabel, formatUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
+<<<<<<< HEAD
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
+=======
+import { extractIssueTimelineEvents, extractIssueWorkModeChanges } from "../lib/issue-timeline-events";
+>>>>>>> origin/master
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -41,8 +45,18 @@ import {
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
+<<<<<<< HEAD
   cancelInboxIssueQueries,
   invalidateInboxIssueQueries,
+=======
+  beginLocalInboxArchive,
+  boundLocalInboxArchive,
+  cancelInboxIssueQueries,
+  clearLocalInboxArchive,
+  confirmLocalInboxArchive,
+  invalidateInboxIssueQueries,
+  getIssuePresenceInActiveInboxCaches,
+>>>>>>> origin/master
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
@@ -61,6 +75,7 @@ import {
   createOptimisticIssueComment,
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
+  ISSUE_COMMENT_PAGE_SIZE,
   isQueuedIssueComment,
   loadRemainingIssueCommentPages,
   matchesIssueRef,
@@ -75,15 +90,25 @@ import {
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+<<<<<<< HEAD
 import { getDisplayCurrency } from "../lib/display-currency";
+=======
+>>>>>>> origin/master
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { ProjectTile } from "../components/ProjectTile";
 import { InlineEditor } from "../components/InlineEditor";
 import {
   IssueChatThread,
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+<<<<<<< HEAD
+=======
+import { TaskChatThread } from "../components/TaskChatThread";
+import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
+import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+>>>>>>> origin/master
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -102,6 +127,9 @@ import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
+import { IssueFieldChangeReceipt } from "../components/IssueFieldChangeReceipt";
+import { IssueWriteDenialNotice } from "../components/IssueWriteDenialNotice";
+import { issueWriteDenialForActivity } from "../lib/issue-write-denial-activity";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import {
   IssueMonitorBanner,
@@ -123,6 +151,7 @@ import { ArtifactFileChip } from "../components/ArtifactFileChip";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
@@ -170,7 +199,10 @@ import {
   ScanEye,
   Flag,
   FileCode2,
+<<<<<<< HEAD
   Hexagon,
+=======
+>>>>>>> origin/master
   ListTree,
   MessageSquare,
   MoreHorizontal,
@@ -245,7 +277,6 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
@@ -679,9 +710,16 @@ function IssueDetailLoadingState({
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
+  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div
+      className={
+        taskChatShellEnabled
+          ? "mx-auto w-full max-w-(--tc-shell-max-w) space-y-6"
+          : "max-w-3xl space-y-6"
+      }
+    >
       <div className="space-y-3">
         <Skeleton className="h-3 w-40" />
 
@@ -689,7 +727,8 @@ function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon status={headerSeed.status} blockerAttention={headerSeed.blockerAttention} />
-              <PriorityIcon priority={headerSeed.priority} />
+              {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+              {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority={headerSeed.priority} />}
               {identifier ? (
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
@@ -702,16 +741,18 @@ function IssueDetailLoadingState({
                   Routine
                 </Badge>
               ) : null}
+              {/* Seeded header — same anatomy as the resolved one below, so the
+                  eyebrow does not change shape when the real issue arrives. */}
               {headerSeed.projectId ? (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground rounded px-1 -mx-1 py-0.5 min-w-0">
-                  <Hexagon className="h-3 w-3 shrink-0" />
+                  <ProjectTile size="xs" />
                   <span className="truncate">
                     {headerSeed.projectName ?? headerSeed.projectId.slice(0, 8)}
                   </span>
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
-                  <Hexagon className="h-3 w-3 shrink-0" />
+                  <ProjectTile size="xs" />
                   No project
                 </span>
               )}
@@ -856,6 +897,8 @@ type IssueDetailChatTabProps = {
   companyId: string;
   projectId: string | null;
   issueStatus: Issue["status"];
+  /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId: Issue["assigneeAgentId"];
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -880,6 +923,7 @@ type IssueDetailChatTabProps = {
     title?: string | null;
   } | null;
   comments: IssueDetailComment[];
+  commentsInitialLoading?: boolean;
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
@@ -890,6 +934,20 @@ type IssueDetailChatTabProps = {
   composerRef: Ref<IssueChatComposerHandle>;
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
   composerAccessory?: ReactNode;
+<<<<<<< HEAD
+=======
+  /**
+   * Issue header (title row, badges, plugin toolbars) that the redesigned
+   * thread renders inside its scroll viewport so it scrolls away with the
+   * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
+   */
+  threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble in the
+   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   */
+  issueBrief?: TaskChatIssueBrief;
+>>>>>>> origin/master
   footer?: ReactNode;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -950,6 +1008,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   projectId,
   issueWorkMode,
   issueStatus,
+  issueAssigneeAgentId,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -969,6 +1028,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
+  commentsInitialLoading = false,
   locallyQueuedCommentRunIds,
   interactions,
   hasOlderComments,
@@ -978,6 +1038,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onWorkModeChange,
   composerRef,
   composerAccessory,
+<<<<<<< HEAD
+=======
+  threadHeader,
+  issueBrief,
+>>>>>>> origin/master
   footer,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -1017,7 +1082,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
+<<<<<<< HEAD
   const ThreadComponent = IssueChatThread;
+=======
+  // Seam for the Task Chat Redesign (flag: enableTaskChatRedesign). Flag OFF
+  // renders IssueChatThread verbatim — the flag-off branch is provably today's
+  // UI. Both components share one prop type, so no cast is needed.
+  const { enabled: taskChatRedesignEnabled } = useTaskChatRedesignEnabled();
+  const ThreadComponent = taskChatRedesignEnabled ? TaskChatThread : IssueChatThread;
+>>>>>>> origin/master
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1152,8 +1225,27 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+  const workModeChanges = useMemo(
+    () => extractIssueWorkModeChanges(resolvedActivity),
+    [resolvedActivity],
+  );
+
+  const loadOlderButton = hasOlderComments ? (
+    <div className="flex justify-center">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={commentsLoadingOlder}
+        onClick={onLoadOlderComments}
+      >
+        {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+      </Button>
+    </div>
+  ) : null;
 
   return (
+<<<<<<< HEAD
     <div className="space-y-3">
       {hasOlderComments ? (
         <div className="flex justify-center">
@@ -1171,6 +1263,27 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       <ThreadComponent
         composerRef={composerRef}
         composerAccessory={composerAccessory}
+=======
+    <div className={taskChatRedesignEnabled ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
+      {/* Redesign: the button rides inside the thread's scroll viewport with the
+          header so nothing sits above the thread in the page flow. */}
+      {taskChatRedesignEnabled ? null : loadOlderButton}
+      {commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
+        <IssueChatSkeleton />
+      ) : (
+      <ThreadComponent
+        composerRef={composerRef}
+        composerAccessory={composerAccessory}
+        threadHeader={
+          taskChatRedesignEnabled && (threadHeader || loadOlderButton) ? (
+            <>
+              {threadHeader}
+              {loadOlderButton}
+            </>
+          ) : undefined
+        }
+        issueBrief={issueBrief}
+>>>>>>> origin/master
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}
@@ -1178,6 +1291,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         feedbackTermsUrl={feedbackTermsUrl}
         linkedRuns={timelineRuns}
         timelineEvents={timelineEvents}
+        workModeChanges={workModeChanges}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
         issueId={issueId}
@@ -1201,6 +1315,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
+        issueAssigneeAgentId={issueAssigneeAgentId}
         agentMap={agentMap}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
@@ -1250,6 +1365,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         externalReferences={externalReferences}
         linkCaseReferences={linkCaseReferences}
       />
+      )}
     </div>
   );
 });
@@ -1481,6 +1597,24 @@ function IssueDetailActivityTab({
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
                 <IssueReferenceActivitySummary event={evt} />
+                {/* Field-level who/what/why receipt for agent and board edits alike. */}
+                <IssueFieldChangeReceipt
+                  event={evt}
+                  resolveAgentLabel={(agentId) => agentMap.get(agentId)?.name ?? null}
+                  resolveUserLabel={(userId) => userProfileMap.get(userId)?.label ?? null}
+                />
+                {/* A refused write explains itself here, not just in the API error. */}
+                {(() => {
+                  const denial = issueWriteDenialForActivity(evt.action, evt.details, {
+                    actorLabel: evt.agentId ? agentMap.get(evt.agentId)?.name ?? null : null,
+                    responsibleUserName: evt.responsibleUserId
+                      ? userProfileMap.get(evt.responsibleUserId)?.label ?? null
+                      : null,
+                  });
+                  return denial ? (
+                    <IssueWriteDenialNotice code={denial.code} context={denial.context} />
+                  ) : null;
+                })()}
               </div>
             );
           }}
@@ -1520,6 +1654,18 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
+  // Task Chat Redesign (flag: enableTaskChatRedesign): with the flag ON the
+  // thread owns the center column — the legacy title/description block,
+  // sub-tasks table, plan decompositions and Documents section are gated off
+  // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
+  // page byte-identically.
+  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
+  // Flag ON the page wrapper spans the full center pane so the thread's scroll
+  // viewport (and its scrollbar) reaches the properties-pane border; every
+  // non-thread section re-centers itself at the 60rem shell cap instead.
+  const shellSectionClass = taskChatShellEnabled
+    ? "mx-auto w-full max-w-(--tc-shell-max-w)"
+    : undefined;
   const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
@@ -1534,6 +1680,9 @@ export function IssueDetail() {
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
+  // Redesign: the center tab strip is hidden, so chat is the only surface —
+  // deep links that would switch tabs (e.g. #document- hashes) stay on chat.
+  const resolvedDetailTab = taskChatShellEnabled ? "chat" : detailTab;
   const [handoffFocusSignal, setHandoffFocusSignal] = useState(0);
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
@@ -1697,7 +1846,11 @@ export function IssueDetail() {
     resourceKey: "live-runs",
     queryKey: companyLiveRunsQueryKey,
     enabled: !!resolvedCompanyId,
+<<<<<<< HEAD
     // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+=======
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
+>>>>>>> origin/master
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -1871,7 +2024,10 @@ export function IssueDetail() {
     },
     [issue?.id, rawChildIssues],
   );
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(companyLiveRuns), [companyLiveRuns]);
+  const liveIssueIds = useMemo(
+    () => collectLiveIssueIds(companyLiveRuns, issue ? [issue, ...childIssues] : childIssues),
+    [childIssues, companyLiveRuns, issue],
+  );
   const issuePanelKey = useMemo(
     () => buildIssuePropertiesPanelKey(issue ?? null, childIssues),
     [childIssues, issue],
@@ -1935,6 +2091,10 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
+<<<<<<< HEAD
+=======
+  const breadcrumbIdentifier = issue?.identifier ?? issueHeaderSeed?.identifier ?? undefined;
+>>>>>>> origin/master
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -2112,7 +2272,7 @@ export function IssueDetail() {
 
       return { previousDetailQueries, previousList, selectedCompanyId };
     },
-    onSuccess: ({ comment: _comment, ...nextIssue }) => {
+    onSuccess: ({ comment: _comment, changes: _changes, blockedByIssueIds: _blockedByIssueIds, ...nextIssue }) => {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
@@ -3059,10 +3219,18 @@ export function IssueDetail() {
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
       if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+<<<<<<< HEAD
       await cancelInboxIssueQueries(queryClient, selectedCompanyId);
       const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       return { previousData };
+=======
+      beginLocalInboxArchive(selectedCompanyId, id);
+      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
+      removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
+      return { companyId: selectedCompanyId, previousData };
+>>>>>>> origin/master
     },
     onSuccess: (_data, id) => {
       if (selectedCompanyId) {
@@ -3073,6 +3241,10 @@ export function IssueDetail() {
       pushToast({ title: "Task archived from inbox", tone: "success" });
     },
     onError: (err, id, context) => {
+<<<<<<< HEAD
+=======
+      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
+>>>>>>> origin/master
       if (context?.previousData) {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
@@ -3082,8 +3254,19 @@ export function IssueDetail() {
         tone: "error",
       });
     },
+<<<<<<< HEAD
     onSettled: () => {
       if (selectedCompanyId) invalidateInboxIssueQueries(queryClient, selectedCompanyId);
+=======
+    onSettled: async (_data, error, id, context) => {
+      if (!context?.companyId) return;
+      if (!error) boundLocalInboxArchive(context.companyId, id);
+      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
+      }
+>>>>>>> origin/master
     },
   });
 
@@ -3094,12 +3277,17 @@ export function IssueDetail() {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
         label: breadcrumbTitle,
+<<<<<<< HEAD
+=======
+        identifier: breadcrumbIdentifier,
+>>>>>>> origin/master
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
       },
     ]);
   }, [
     breadcrumbTitle,
+    breadcrumbIdentifier,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,
@@ -4037,12 +4225,22 @@ export function IssueDetail() {
     </>
   );
 
+<<<<<<< HEAD
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
     <div className="max-w-3xl space-y-6">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
+=======
+  // Task Chat Redesign ("not sticky" header): the parent breadcrumb, the
+  // title/badge block, and the plugin toolbars render INSIDE the thread's
+  // scroll viewport, so they scroll away with the messages and the composer
+  // stays near the viewport bottom. Flag OFF renders the same nodes in the
+  // page flow, in their original order relative to the alert banners.
+  const ancestorsNav = ancestors.length > 0 && (
+        <nav className={cn("flex items-center gap-1 text-xs text-muted-foreground flex-wrap", shellSectionClass)}>
+>>>>>>> origin/master
           {[...ancestors].reverse().map((ancestor, i) => (
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -4065,8 +4263,9 @@ export function IssueDetail() {
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span className="text-foreground/60 truncate max-w-(--sz-200px)">{issue.title}</span>
         </nav>
-      )}
+  );
 
+<<<<<<< HEAD
       {issue.hiddenAt && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           <EyeOff className="h-4 w-4 shrink-0" />
@@ -4150,6 +4349,10 @@ export function IssueDetail() {
       )}
 
       <div className="space-y-3">
+=======
+  const issueHeaderBlock = (
+      <div className={cn("space-y-3", shellSectionClass)}>
+>>>>>>> origin/master
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -4157,10 +4360,13 @@ export function IssueDetail() {
             blockerAttention={issue.blockerAttention}
             onChange={(status) => updateIssue.mutate({ status })}
           />
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => updateIssue.mutate({ priority })}
-          />
+          {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && (
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => updateIssue.mutate({ priority })}
+            />
+          )}
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
@@ -4208,7 +4414,15 @@ export function IssueDetail() {
             </Badge>
           ) : null}
 
+<<<<<<< HEAD
           {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
+=======
+          {/* Task Chat Redesign: no mode chip in the header — mode is a
+              per-request choice made in the composer, and each agent reply
+              carries its own mode chip; a header chip would misread as a
+              task-global setting. Flag OFF keeps the legacy badge. */}
+          {!taskChatShellEnabled && (issue.workMode === "ask" || issue.workMode === "planning") ? (() => {
+>>>>>>> origin/master
             const workModeMeta = workModeMetaFor(issue.workMode);
             const WorkModeIcon = workModeMeta.icon;
             return (
@@ -4233,17 +4447,24 @@ export function IssueDetail() {
             </Badge>
           ) : null}
 
+          {/* Project reads as a tile plus a name, matching the project rows in
+              the sidebar and the Projects list rather than a bare outline
+              glyph. The tile stays neutral here on purpose: the eyebrow already
+              carries the status glyph's colour, and a second tinted swatch
+              beside it competes with the one signal that means something.
+              Project colour still identifies the project on project-native
+              surfaces. */}
           {issue.projectId ? (
             <Link
               to={`/projects/${issue.projectId}`}
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
             >
-              <Hexagon className="h-3 w-3 shrink-0" />
+              <ProjectTile size="xs" icon={resolvedProject?.icon ?? issue.project?.icon} />
               <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
             </Link>
           ) : (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
-              <Hexagon className="h-3 w-3 shrink-0" />
+              <ProjectTile size="xs" />
               No project
             </span>
           )}
@@ -4470,13 +4691,14 @@ export function IssueDetail() {
           value={issue.title}
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
 
         <IssueMonitorBanner
           issue={issue}
           onCheckNow={() => checkIssueMonitorNow.mutate()}
           checkingNow={checkIssueMonitorNow.isPending}
+<<<<<<< HEAD
         />
 
         <InlineEditor
@@ -4496,9 +4718,35 @@ export function IssueDetail() {
           onDropFile={async (file) => {
             await uploadAttachment.mutateAsync(file);
           }}
+=======
+>>>>>>> origin/master
         />
-      </div>
 
+        {taskChatShellEnabled ? null : (
+          <InlineEditor
+            value={issue.description ?? ""}
+            onSave={(description) => updateIssue.mutateAsync({ description })}
+            as="p"
+            className="text-sm leading-7 text-foreground"
+            placeholder="Add a description..."
+            multiline
+            foldable
+            mentions={mentionOptions}
+            externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onDropFile={async (file) => {
+              await uploadAttachment.mutateAsync(file);
+            }}
+          />
+        )}
+      </div>
+  );
+
+  const pluginOutletsBlock = (
+    <>
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
         entityType="issue"
@@ -4508,7 +4756,7 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="flex flex-wrap gap-2"
+        className={cn("flex flex-wrap gap-2", shellSectionClass)}
         itemClassName="inline-flex"
         missingBehavior="placeholder"
       />
@@ -4522,7 +4770,7 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="flex flex-wrap gap-2"
+        className={cn("flex flex-wrap gap-2", shellSectionClass)}
         itemClassName="inline-flex"
       />
 
@@ -4535,12 +4783,126 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="space-y-3"
+        className={cn("space-y-3", shellSectionClass)}
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
+    </>
+  );
 
-      {showRichSubIssuesSection ? (
+  const taskChatThreadHeader = taskChatShellEnabled ? (
+    <>
+      {ancestorsNav}
+      {issueHeaderBlock}
+      {pluginOutletsBlock}
+    </>
+  ) : undefined;
+
+  return (
+    <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
+    <div
+      className={
+        taskChatShellEnabled
+          ? isMobile
+            ? // Mobile shell scrolls the DOCUMENT (main is overflow-visible,
+              // auto height) — the thread renders in normal flow (PAP-360).
+              "flex w-full flex-col gap-6"
+            : // Fill main exactly so the outer page never scrolls — the
+              // thread's own viewport is the only scroll surface.
+              "flex h-full min-h-0 w-full flex-col gap-6"
+          : "max-w-3xl space-y-6"
+      }
+    >
+      {/* Parent chain breadcrumb (redesign: rendered inside the thread viewport) */}
+      {taskChatShellEnabled ? null : ancestorsNav}
+
+      {issue.hiddenAt && (
+        <div className={cn("flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive", shellSectionClass)}>
+          <EyeOff className="h-4 w-4 shrink-0" />
+          This task is hidden
+        </div>
+      )}
+      {activePauseHold && (
+        <div className={cn("rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200", shellSectionClass)}>
+          {activePauseHold.isRoot ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">
+                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
+                </span>
+                <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                  {childIssues.length === 0
+                    ? "Task execution is held until resume. Human comments can still wake the assignee for triage."
+                    : "Root and descendant execution is held until resume. Human comments can still wake assignee agents for triage."}
+                </span>
+              </div>
+              <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                {childIssues.length === 0
+                  ? "1 task held"
+                  : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
+                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+              </div>
+              {canShowSubtreeControls || canResumeLeafWork ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    {childIssues.length === 0 ? "Resume work" : "Resume subtree"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    View affected ({childIssues.length === 0 ? 1 : heldDescendantCount})
+                  </Button>
+                  {canShowSubtreeControls ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                      }}
+                    >
+                      Cancel subtree...
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-xs">
+              This task is paused by ancestor{" "}
+              {activePauseHoldRoot?.identifier ? (
+                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
+                  {activePauseHoldRoot.identifier}
+                </Link>
+              ) : (
+                activePauseHold.rootIssueId.slice(0, 8)
+              )}
+              . Resume from the root task to deliver deferred work.
+            </div>
+          )}
+        </div>
+      )}
+
+      {taskChatShellEnabled ? null : issueHeaderBlock}
+
+      {taskChatShellEnabled ? null : pluginOutletsBlock}
+
+      {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-muted-foreground">Sub-tasks</h3>
@@ -4575,7 +4937,7 @@ export function IssueDetail() {
         </div>
       )}
 
-      {showPlanDecompositionsSection ? (
+      {!taskChatShellEnabled && showPlanDecompositionsSection ? (
         <IssuePlanDecompositionsSection
           issueId={issue.id}
           issueIdentifier={issue.identifier}
@@ -4583,6 +4945,9 @@ export function IssueDetail() {
         />
       ) : null}
 
+      {/* Flag ON: attachments/work products/workspace live in the properties
+          pane (Artifacts tab) — the center column belongs to the thread. */}
+      {taskChatShellEnabled ? null : (
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -4610,7 +4975,12 @@ export function IssueDetail() {
         agentMap={agentMap}
         userProfileMap={userProfileMap}
       />
+      )}
 
+<<<<<<< HEAD
+=======
+      {taskChatShellEnabled ? null : (
+>>>>>>> origin/master
       <IssueOutputSection
         workProducts={workProducts}
         onMediaClick={(item) => {
@@ -4625,8 +4995,12 @@ export function IssueDetail() {
           setGalleryOpen(true);
         }}
       />
+<<<<<<< HEAD
+=======
+      )}
+>>>>>>> origin/master
 
-      {attachmentsInitialLoading ? (
+      {taskChatShellEnabled ? null : attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
       ) : hasAttachments ? (
         <IssueAttachmentsSection
@@ -4664,6 +5038,7 @@ export function IssueDetail() {
         onOpenChange={setGalleryOpen}
       />
 
+      {taskChatShellEnabled ? null : (
       <IssueWorkspaceCard
         issue={issue}
         project={resolvedProject}
@@ -4671,7 +5046,9 @@ export function IssueDetail() {
         onBrowseFiles={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
         onOpenFileByPath={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
       />
+      )}
 
+<<<<<<< HEAD
       {fileViewerEnabled && issue.workProducts && issue.workProducts.length > 0 && (() => {
         const workProductsWithFileRefs = issue.workProducts
           .map((product) => ({ product, fileRef: extractWorkspaceFileRefFromWorkProduct(product) }))
@@ -4698,9 +5075,44 @@ export function IssueDetail() {
       })()}
 
       <Separator />
+=======
+      {!taskChatShellEnabled && fileViewerEnabled && issue.workProducts && issue.workProducts.length > 0 && (() => {
+        const workProductsWithFileRefs = issue.workProducts
+          .map((product) => ({ product, fileRef: extractWorkspaceFileRefFromWorkProduct(product) }))
+          .filter(({ fileRef }) => fileRef !== null);
+>>>>>>> origin/master
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
+        if (workProductsWithFileRefs.length === 0) return null;
+
+        return (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-muted-foreground">Artifacts</h3>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {workProductsWithFileRefs.map(({ product, fileRef }) => (
+                <ArtifactFileChip
+                  key={product.id}
+                  workspaceFileRef={fileRef!}
+                  title={product.title}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {taskChatShellEnabled ? null : <Separator className={shellSectionClass} />}
+
+      <Tabs
+        value={resolvedDetailTab}
+        onValueChange={setDetailTab}
+        className={taskChatShellEnabled ? (isMobile ? undefined : "min-h-0 flex-1") : "space-y-3"}
+      >
+        {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
+            strip is hidden and the thread renders as the only surface. */}
+        {taskChatShellEnabled ? null : (
+        <TabsList variant="line" className={cn("w-full justify-start gap-1", shellSectionClass)}>
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
             Chat
@@ -4719,14 +5131,56 @@ export function IssueDetail() {
             </TabsTrigger>
           ))}
         </TabsList>
+        )}
 
-        <TabsContent value="chat">
-          {detailTab === "chat" ? (
+        {/* Flag ON the thread viewport extends under main's horizontal padding
+            (symmetric, so the centered column keeps the same axis) and the
+            scrollbar sits flush against the properties-pane border. */}
+        <TabsContent
+          value="chat"
+          className={
+            taskChatShellEnabled
+              ? isMobile
+                ? "-mx-4"
+                : "-mx-4 md:-mx-6 flex min-h-0 flex-col"
+              : undefined
+          }
+        >
+          {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab
+              threadHeader={taskChatThreadHeader}
+              issueBrief={
+                taskChatShellEnabled
+                  ? {
+                      description: issue.description ?? "",
+                      author: issue.createdByAgentId ? "agent" : "human",
+                      authorName: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.name ?? "Agent"
+                        : undefined,
+                      agentIcon: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.icon
+                        : undefined,
+                      createdAt: issue.createdAt,
+                      onSave: (description) => updateIssue.mutateAsync({ description }),
+                      mentions: mentionOptions,
+                      externalReferences: externalObjectsState.isEnabled
+                        ? externalObjectsState.markdownReferences
+                        : undefined,
+                      imageUploadHandler: async (file) => {
+                        const attachment = await uploadAttachment.mutateAsync(file);
+                        return attachment.contentPath;
+                      },
+                      onDropFile: async (file) => {
+                        await uploadAttachment.mutateAsync(file);
+                      },
+                    }
+                  : undefined
+              }
               issueId={issue.id}
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}
               issueStatus={issue.status}
+              issueAssigneeAgentId={issue.assigneeAgentId}
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
@@ -4747,6 +5201,7 @@ export function IssueDetail() {
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}
+              commentsInitialLoading={commentsLoading}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
               interactions={interactions}
               hasOlderComments={hasOlderComments}
@@ -4764,7 +5219,7 @@ export function IssueDetail() {
                 ) : null
               }
               footer={
-                siblingNavigation ? (
+                !taskChatShellEnabled && siblingNavigation ? (
                   <IssueSiblingNavigation
                     navigation={siblingNavigation}
                     linkState={resolvedIssueDetailState ?? location.state}
@@ -4821,7 +5276,7 @@ export function IssueDetail() {
           ) : null}
         </TabsContent>
 
-        <TabsContent value="activity">
+        <TabsContent value="activity" className={shellSectionClass}>
           {detailTab === "activity" ? (
             <IssueDetailActivityTab
               issue={issue}
@@ -4843,7 +5298,11 @@ export function IssueDetail() {
           ) : null}
         </TabsContent>
 
+<<<<<<< HEAD
         <TabsContent value="related-work">
+=======
+        <TabsContent value="related-work" className={shellSectionClass}>
+>>>>>>> origin/master
           <IssueRelatedWorkPanel
             relatedWork={issue.relatedWork}
             externalObjectsEnabled={externalObjectsState.isEnabled}
@@ -4855,7 +5314,7 @@ export function IssueDetail() {
         </TabsContent>
 
         {activePluginTab && (
-          <TabsContent value={activePluginTab.value}>
+          <TabsContent value={activePluginTab.value} className={shellSectionClass}>
             <PluginSlotMount
               slot={activePluginTab.slot}
               context={{

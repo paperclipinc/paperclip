@@ -16,7 +16,10 @@ import {
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -70,6 +73,18 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+<<<<<<< HEAD
+=======
+const mockDecisionsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
+>>>>>>> origin/master
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/issues/PAP-1",
@@ -130,6 +145,16 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
+<<<<<<< HEAD
+=======
+vi.mock("../api/decisions", () => ({
+  decisionsApi: mockDecisionsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+>>>>>>> origin/master
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -275,6 +300,13 @@ vi.mock("../components/IssueChatThread", () => ({
   },
 }));
 
+// The redesign thread pulls in the MarkdownEditor composer, whose @mdxeditor
+// dependency cannot load under jsdom's CSSOM. These tests exercise the legacy
+// (flag-off) path, so an inert stub keeps the suite unit-scoped.
+vi.mock("../components/TaskChatThread", () => ({
+  TaskChatThread: () => <div data-testid="task-chat-thread">Task chat thread</div>,
+}));
+
 vi.mock("../components/IssueDocumentsSection", () => ({
   IssueDocumentsSection: () => <div>Documents</div>,
 }));
@@ -324,13 +356,36 @@ vi.mock("../components/ScrollToBottom", () => ({
 }));
 
 vi.mock("../components/StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
-  ),
+  StatusIcon: ({
+    status,
+    blockerAttention,
+    onChange,
+  }: {
+    status: string;
+    blockerAttention?: Issue["blockerAttention"];
+    onChange?: (status: string) => void;
+  }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change status (current: ${status})`}
+      data-status-icon-state={blockerAttention?.state}
+      onClick={() => onChange("done")}
+    >
+      {status}
+    </button>
+  ) : <span data-status-icon-state={blockerAttention?.state}>{status}</span>,
 }));
 
 vi.mock("../components/PriorityIcon", () => ({
-  PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
+  PriorityIcon: ({ priority, onChange }: { priority: string; onChange?: (priority: string) => void }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change priority (current: ${priority})`}
+      onClick={() => onChange("high")}
+    >
+      {priority}
+    </button>
+  ) : <span>{priority}</span>,
 }));
 
 vi.mock("../components/ApprovalCard", () => ({
@@ -978,6 +1033,19 @@ describe("IssueDetail", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
+<<<<<<< HEAD
+=======
+    mockDecisionsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+    });
+>>>>>>> origin/master
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
@@ -1025,6 +1093,85 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
+<<<<<<< HEAD
+=======
+  it("does not load or render decision sections in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review",
+      reviewAttention: {
+        state: "covered",
+        reason: "Review has a maintained action path.",
+        paths: [
+          {
+            kind: "interaction",
+            label: "Pending request confirmation",
+            responder: "Board",
+            since: "2026-04-21T00:00:00.000Z",
+            ref: "interaction-1",
+          },
+        ],
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Issue detail smoke");
+    expect(container.querySelector('[data-testid="issue-review-panel"]')).toBeNull();
+    expect(mockDecisionsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("updates status from the task header control and hides the priority control (PAP-411)", async () => {
+    const issue = createIssue({ status: "todo", priority: "medium" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
+      ...issue,
+      ...data,
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: todo)"]',
+    );
+    const priorityButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change priority (current: medium)"]',
+    );
+    expect(statusButton).not.toBeNull();
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off), so the header
+    // priority control must not render.
+    expect(priorityButton).toBeNull();
+
+    await act(async () => {
+      statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
+    });
+    expect(mockIssuesApi.update).not.toHaveBeenCalledWith(
+      issue.identifier,
+      expect.objectContaining({ priority: expect.anything() }),
+    );
+
+    mockIssuesApi.update.mockReset();
+  });
+
+>>>>>>> origin/master
   it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
     const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
     const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
@@ -1449,6 +1596,7 @@ describe("IssueDetail", () => {
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({
         companyIds: ["company-1"],
@@ -1456,6 +1604,12 @@ describe("IssueDetail", () => {
         features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: true },
       }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: true,
+    });
+>>>>>>> origin/master
 
     await act(async () => {
       root.render(
@@ -1476,6 +1630,7 @@ describe("IssueDetail", () => {
 
   it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({
         companyIds: ["company-1"],
@@ -1483,6 +1638,12 @@ describe("IssueDetail", () => {
         features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false },
       }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: false,
+    });
+>>>>>>> origin/master
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
       {
         id: "decomp-1",
@@ -2610,7 +2771,10 @@ describe("canBoardManageRuntime", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardManageRuntime("company-1", {
+<<<<<<< HEAD
         ...buildCurrentBoardAccess(),
+=======
+>>>>>>> origin/master
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -2625,7 +2789,10 @@ describe("canBoardManageRuntime", () => {
   it("denies viewers the runtime-manage-gated break-glass affordance", () => {
     expect(
       canBoardManageRuntime("company-1", {
+<<<<<<< HEAD
         ...buildCurrentBoardAccess(),
+=======
+>>>>>>> origin/master
         companyIds: ["company-1"],
         memberships: [
           {
@@ -2646,7 +2813,10 @@ describe("canBoardManageRuntime", () => {
   it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
     expect(
       canBoardManageRuntime("company-1", {
+<<<<<<< HEAD
         ...buildCurrentBoardAccess(),
+=======
+>>>>>>> origin/master
         companyIds: ["company-1"],
         memberships: [
           {

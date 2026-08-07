@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+<<<<<<< HEAD
 import { COMPANY_SETTINGS_SURFACES, type InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
@@ -11,6 +12,13 @@ import {
   resolveGeneralSettings,
   resolveVisibilitySettings,
   stripOverriddenPatchKeys,
+=======
+import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import {
+  applyExperimentalSettingsPatch,
+  normalizeExperimentalSettings,
+  resolveWorktreeRunExecutionActivationState,
+>>>>>>> origin/master
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
@@ -21,7 +29,10 @@ describe("instance settings service", () => {
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
+<<<<<<< HEAD
       enableCloudSync: true,
+=======
+>>>>>>> origin/master
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
@@ -37,6 +48,10 @@ describe("instance settings service", () => {
       enableStreamlinedLeftNavigation: true,
       enableApps: false,
       enableConferenceRoomChat: false,
+<<<<<<< HEAD
+=======
+      enableTaskChatRedesign: false,
+>>>>>>> origin/master
       enableExternalObjects: false,
       enableSmokeLab: false,
       enablePipelines: false,
@@ -44,6 +59,7 @@ describe("instance settings service", () => {
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
+<<<<<<< HEAD
       enableCloudSync: true,
       enableBuiltInAgents: true,
       enableSummaries: false,
@@ -56,6 +72,21 @@ describe("instance settings service", () => {
       cloudTrialBanner: false,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
+=======
+      enableBuiltInAgents: true,
+      enableBetaSkills: false,
+      enableSummaries: false,
+      enableStatusCards: false,
+      enableDecisions: false,
+      enableGoalsSidebarLink: true,
+      enableServerInfoDebugView: true,
+      enableSimplifiedEnglishInteractions: false,
+      autoRestartDevServerWhenIdle: true,
+      enableIssueGraphLivenessAutoRecovery: true,
+      enableWorkspaceBranchReconcileForward: true,
+      enableWorkspaceDirtyQuarantineRepair: false,
+      enableOwnerInstanceAdmin: false,
+>>>>>>> origin/master
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
@@ -78,6 +109,22 @@ describe("instance settings service", () => {
     ).toBe(false);
   });
 
+<<<<<<< HEAD
+=======
+  it("defaults enableSimplifiedEnglishInteractions to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSimplifiedEnglishInteractions).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
+        .enableSimplifiedEnglishInteractions,
+    ).toBe(true);
+  });
+
+>>>>>>> origin/master
   it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
     expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
@@ -158,6 +205,15 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({ enableExternalObjects: true }).enableBuiltInAgents).toBe(false);
   });
 
+<<<<<<< HEAD
+=======
+  it("preserves enableBetaSkills and defaults it off for legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableBetaSkills).toBe(false);
+    expect(normalizeExperimentalSettings({ enableBetaSkills: true }).enableBetaSkills).toBe(true);
+  });
+
+>>>>>>> origin/master
   it("sets worktree run execution activation fields on a false to true transition", () => {
     const activatedAt = new Date("2026-07-10T12:00:00.000Z");
 
@@ -361,6 +417,7 @@ describe("instance settings service", () => {
     expect(getExperimental).not.toHaveBeenCalled();
   });
 
+<<<<<<< HEAD
   it("defaults visibility to all company surfaces for empty/legacy rows", () => {
     expect(normalizeVisibilitySettings(undefined)).toEqual({
       companySurfaces: [...COMPANY_SETTINGS_SURFACES],
@@ -558,4 +615,6 @@ describe("instanceSettingsService with env overrides", () => {
     const visibility = await svc.getVisibility();
     expect(visibility.companySurfaces).toEqual([...COMPANY_SETTINGS_SURFACES]);
   });
+=======
+>>>>>>> origin/master
 });

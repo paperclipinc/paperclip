@@ -22,10 +22,13 @@ import {
   AppWindow,
   MessagesSquare,
   GanttChartSquare,
+<<<<<<< HEAD
+=======
+  LayoutGrid,
+>>>>>>> origin/master
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
@@ -58,14 +61,25 @@ export function Sidebar() {
   const { isMobile, collapsed, collapseLocked, peeking, toggleCollapsed, setCollapsed } = useSidebar();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
+<<<<<<< HEAD
   const { data: experimentalSettings } = useFeatures();
+=======
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+>>>>>>> origin/master
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
+<<<<<<< HEAD
     // Event-sourced via LiveUpdatesProvider (#9627) + reconnect reconcile — no
+=======
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627) + reconnect reconcile — no
+>>>>>>> origin/master
     // interval poll needed. Polling here also re-armed React Query's timer on
     // every live-event cache write, a major source of steady-state churn.
     refetchInterval: false,
@@ -82,6 +96,10 @@ export function Sidebar() {
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showApps = experimentalSettings?.enableApps === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
+<<<<<<< HEAD
+=======
+  const showStatusCards = experimentalSettings?.enableStatusCards === true;
+>>>>>>> origin/master
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
   // Decisions (attention home) is an experimental surface (PAP-13481): the nav
@@ -114,9 +132,14 @@ export function Sidebar() {
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
+      {/* Top bar: Company name (bold) + collapse control — aligned with top
+          sections (no visible border). Search deliberately does NOT live here:
+          the header's spare width goes to the workspace/organization name,
+          which is the user's orientation anchor and truncates otherwise.
+          Search is the first nav item below instead. */}
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <SidebarCompanyMenu />
+<<<<<<< HEAD
         {/* In the collapsed rail the search/toggle controls don't fit beside the
             logo — keeping them would overflow the 64px rail and squeeze the logo
             out of alignment with the icon column below it (PAP-10676). They return
@@ -136,6 +159,15 @@ export function Sidebar() {
                 <Search className="h-4 w-4" />
               </NavLink>
             </Button>
+=======
+        {/* In the collapsed rail the toggle doesn't fit beside the logo —
+            keeping it would overflow the 64px rail and squeeze the logo out of
+            alignment with the icon column below it. It returns as
+            soon as the panel is expanded (pinned) or peeking. Expansion in the
+            rail is still reachable via hover-peek + Pin and Cmd/Ctrl+B. */}
+        {!rail ? (
+          <>
+>>>>>>> origin/master
             {/* Desktop-only collapse/expand affordance. While peeking (hover flyout
                 over the collapsed rail) it becomes a Pin that promotes the peek to a
                 pinned-expanded sidebar; otherwise it toggles the pinned rail. Mobile
@@ -196,6 +228,14 @@ export function Sidebar() {
               newTaskButton
             );
           })()}
+<<<<<<< HEAD
+=======
+          {/* Search moved out of the header so the workspace name keeps the
+              width; a nav row also keeps search reachable from the
+              collapsed rail, where the old header icon was dropped entirely.
+              Cmd/Ctrl+K remains the keyboard path (command palette). */}
+          <SidebarNavItem to="/search" label="Search" icon={Search} />
+>>>>>>> origin/master
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
@@ -215,6 +255,12 @@ export function Sidebar() {
               badgeLabel="decisions"
             />
           ) : null}
+<<<<<<< HEAD
+=======
+          {showStatusCards ? (
+            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
+          ) : null}
+>>>>>>> origin/master
           {conferenceRoomChatEnabled ? (
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
@@ -274,6 +320,7 @@ export function Sidebar() {
           {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>

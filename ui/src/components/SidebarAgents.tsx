@@ -143,6 +143,7 @@ function SidebarAgentItem({
   const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
+<<<<<<< HEAD
   // Surface a custom pause reason (e.g. an auth-failure pause) in the row tooltip
   // instead of leaving it hidden. Recognized tokens keep their own messaging.
   const customPauseReason =
@@ -154,6 +155,8 @@ function SidebarAgentItem({
     agent.pauseReason !== "manual"
       ? agent.pauseReason
       : null;
+=======
+>>>>>>> origin/master
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
+<<<<<<< HEAD
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
 # Pinned, not @latest: @latest resolves at build time, so the mutable `v3`
@@ -9,6 +10,12 @@ ARG GEMINI_CLI_VERSION=0.52.0
 
 USER root
 RUN npm install -g @google/gemini-cli@${GEMINI_CLI_VERSION} \
+=======
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @google/gemini-cli@latest \
+>>>>>>> origin/master
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
@@ -24,7 +31,10 @@ RUN command -v gemini >/dev/null 2>&1 || (echo "gemini not on PATH"; exit 1)
 # OAuth flows are interactive and out of scope for sandbox pods.
 RUN mkdir -p /home/paperclip/.gemini \
     && printf '%s\n' '{"selectedAuthType":"gemini-api-key","security":{"auth":{"selectedType":"gemini-api-key"}}}' > /home/paperclip/.gemini/settings.json
+<<<<<<< HEAD
 
 # Verify the pinned version actually landed, not just that a binary exists.
 RUN gemini --version 2>&1 | grep -qF "${GEMINI_CLI_VERSION}" \
     || (echo "gemini version mismatch: wanted ${GEMINI_CLI_VERSION}, got $(gemini --version 2>&1)"; exit 1)
+=======
+>>>>>>> origin/master

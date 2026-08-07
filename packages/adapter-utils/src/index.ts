@@ -31,7 +31,10 @@ export type {
   ConfigFieldSchema,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
+<<<<<<< HEAD
   AdapterRuntimeCommandSpecOptions,
+=======
+>>>>>>> origin/master
   AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,
@@ -73,6 +76,14 @@ export {
   isBenignAdapterStderrLine,
 } from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
+<<<<<<< HEAD
+=======
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
+>>>>>>> origin/master
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
   RuntimeProgressSink,

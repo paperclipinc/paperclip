@@ -8,7 +8,10 @@ import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
+<<<<<<< HEAD
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+=======
+>>>>>>> origin/master
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -70,6 +73,7 @@ function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentStat
   };
 }
 
+<<<<<<< HEAD
 export function builtInAgentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -79,6 +83,12 @@ export function builtInAgentRoutes(
   const svc = builtInAgentService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+=======
+export function builtInAgentRoutes(db: Db) {
+  const router = Router();
+  const access = accessService(db);
+  const svc = builtInAgentService(db);
+>>>>>>> origin/master
   const settings = instanceSettingsService(db);
 
   async function assertBuiltInAgentsEnabled() {

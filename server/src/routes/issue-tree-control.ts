@@ -10,7 +10,10 @@ import {
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, issueService, issueTreeControlService, logActivity } from "../services/index.js";
 import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
+<<<<<<< HEAD
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+=======
+>>>>>>> origin/master
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
 

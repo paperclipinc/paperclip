@@ -45,11 +45,19 @@ const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
     new Set(["issues"]),
   ],
   [
+<<<<<<< HEAD
     "0133_repair_run_responsible_user_context_refs.sql",
     new Set(["heartbeat_runs"]),
   ],
   [
     "0136_repair_run_responsible_user_updated_at_sweep.sql",
+=======
+    "0131_repair_run_responsible_user_context_refs.sql",
+    new Set(["heartbeat_runs"]),
+  ],
+  [
+    "0135_repair_run_responsible_user_updated_at_sweep.sql",
+>>>>>>> origin/master
     new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
   ],
 ]);
@@ -654,7 +662,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const builtInResourcesHash = await migrationHash(
+<<<<<<< HEAD
         "0141_built_in_managed_resources.sql",
+=======
+        "0140_built_in_managed_resources.sql",
+>>>>>>> origin/master
       );
       const legacyBuiltInResourcesHash = createHash("sha256")
         .update("legacy 0136_built_in_managed_resources.sql")
@@ -685,7 +697,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
+<<<<<<< HEAD
         pendingMigrations: ["0141_built_in_managed_resources.sql"],
+=======
+        pendingMigrations: ["0140_built_in_managed_resources.sql"],
+>>>>>>> origin/master
         reason: "pending-migrations",
       });
 
@@ -760,7 +776,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const runResponsibleUserHash = await migrationHash(
+<<<<<<< HEAD
           "0132_run_responsible_user_invariant.sql",
+=======
+          "0134_run_responsible_user_invariant.sql",
+>>>>>>> origin/master
         );
 
         await sql.unsafe(`
@@ -845,7 +865,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
+<<<<<<< HEAD
         pendingMigrations: ["0132_run_responsible_user_invariant.sql"],
+=======
+        pendingMigrations: ["0134_run_responsible_user_invariant.sql"],
+>>>>>>> origin/master
         reason: "pending-migrations",
       });
 
@@ -891,7 +915,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       await applyPendingMigrations(connectionString);
 
       const repairSweepHash = await migrationHash(
+<<<<<<< HEAD
         "0136_repair_run_responsible_user_updated_at_sweep.sql",
+=======
+        "0135_repair_run_responsible_user_updated_at_sweep.sql",
+>>>>>>> origin/master
       );
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -1289,7 +1317,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
         const runResponsibleUserRepairHash = await migrationHash(
+<<<<<<< HEAD
           "0133_repair_run_responsible_user_context_refs.sql",
+=======
+          "0131_repair_run_responsible_user_context_refs.sql",
+>>>>>>> origin/master
         );
 
         await sql.unsafe(`
@@ -1384,7 +1416,11 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
+<<<<<<< HEAD
         pendingMigrations: ["0133_repair_run_responsible_user_context_refs.sql"],
+=======
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
+>>>>>>> origin/master
         reason: "pending-migrations",
       });
 

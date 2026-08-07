@@ -49,6 +49,7 @@ describe("ensureTenant", () => {
     egressAllowFqdns: ["api.anthropic.com"],
     egressAllowCidrs: [] as string[],
     resourceQuota: { pods: "20", requestsCpu: "5", requestsMemory: "20Gi", limitsCpu: "20", limitsMemory: "80Gi" },
+<<<<<<< HEAD
     limitRange: {
       defaultCpu: "1",
       defaultMemory: "2Gi",
@@ -57,6 +58,8 @@ describe("ensureTenant", () => {
       maxCpu: "4",
       maxMemory: "8Gi",
     },
+=======
+>>>>>>> origin/master
   };
 
   it("creates all required resources in the correct order on a fresh tenant", async () => {
@@ -85,6 +88,7 @@ describe("ensureTenant", () => {
     expect((npCalls[0].body as { metadata: { name: string } }).metadata.name).toBe("paperclip-deny-all");
   });
 
+<<<<<<< HEAD
   it("threads egressPolicy=open-internet into the CiliumNetworkPolicy manifest", async () => {
     const clients = makeMockClients();
     await ensureTenant(clients as never, { ...baseInput, egressMode: "cilium", egressPolicy: "open-internet" });
@@ -95,6 +99,8 @@ describe("ensureTenant", () => {
     expect(openRule).toBeDefined();
   });
 
+=======
+>>>>>>> origin/master
   it("applies serviceAccountAnnotations to the ServiceAccount", async () => {
     const clients = makeMockClients();
     await ensureTenant(clients as never, {
@@ -113,6 +119,7 @@ describe("ensureTenant", () => {
     expect(clients.core.createNamespace).not.toHaveBeenCalled();
   });
 
+<<<<<<< HEAD
   it("flows a configured limitRange.maxCpu into the created LimitRange manifest", async () => {
     const clients = makeMockClients();
     await ensureTenant(clients as never, {
@@ -125,6 +132,8 @@ describe("ensureTenant", () => {
     expect(lr.spec.limits[0].max.cpu).toBe("9");
   });
 
+=======
+>>>>>>> origin/master
   it("tolerates a 409 AlreadyExists from a concurrent ensure for the same tenant", async () => {
     const clients = makeMockClients();
     // Both racers saw the 404 read; the loser's create returns 409, which means

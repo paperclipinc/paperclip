@@ -5,6 +5,7 @@ import type {
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
+  EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
@@ -26,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -52,6 +54,12 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+<<<<<<< HEAD
+=======
+import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { useProposalReview } from "../pages/secrets/proposal-review";
+import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
+>>>>>>> origin/master
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -229,6 +237,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+<<<<<<< HEAD
+=======
+    retry: false,
+  });
+  // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
+  // non-permitted viewers simply get an empty list.
+  const editAgentId = !isCreate ? props.agent.id : null;
+  const { data: pendingProposals = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "none"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+    retry: false,
+  });
+  const agentBindingProposals = useMemo(
+    () =>
+      pendingProposals.filter(
+        (proposal) => proposal.kind === "binding" && proposal.target?.id === editAgentId,
+      ),
+    [pendingProposals, editAgentId],
+  );
+  const proposalReview = useProposalReview(selectedCompanyId, []);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+>>>>>>> origin/master
     retry: false,
   });
   const { data: experimentalSettings } = useFeatures();
@@ -238,7 +273,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
   // Reuses the same general-settings query the rest of the UI uses.
+<<<<<<< HEAD
   const { data: generalSettings } = useFeatures();
+=======
+  const { data: generalSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
+>>>>>>> origin/master
 
   const { data: environments = [] } = useQuery<Environment[]>({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
@@ -312,6 +360,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
   }
 
+<<<<<<< HEAD
+=======
+  /**
+   * Replace the agent's API-access grants (top-level `access.<ALIAS>` keys) with
+   * the complete set emitted by the Secret access editor. Added/changed aliases
+   * are marked into the overlay; aliases dropped from the set are marked
+   * `undefined` so `buildAgentUpdatePatch` strips them.
+   */
+  const applyAccessGrants = useCallback((next: Record<string, EnvSecretRefBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const nextAdapterConfig: Record<string, unknown> = { ...prev.adapterConfig };
+      for (const [alias, binding] of Object.entries(next)) {
+        nextAdapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`] = binding;
+      }
+      for (const key of Object.keys(effective)) {
+        if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) continue;
+        const alias = key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+        if (!(alias in next)) nextAdapterConfig[key] = undefined;
+      }
+      return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+>>>>>>> origin/master
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
@@ -374,6 +448,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
+<<<<<<< HEAD
 
   // Env editor state: single source of truth shared by the environment
   // variables editor and the guided credential-connect card, so a bind from
@@ -414,6 +489,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
   }
 
+=======
+>>>>>>> origin/master
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -427,11 +504,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [currentDefaultEnvironmentId, environments],
   );
   const instanceDefaultEnvironmentId = useMemo(() => {
+<<<<<<< HEAD
     const environmentId = generalSettings?.defaultEnvironmentId ?? null;
     if (!environmentId) return "";
     const selected = environments.find((environment) => environment.id === environmentId) ?? null;
     return selected?.driver === "local" ? "" : environmentId;
   }, [environments, generalSettings?.defaultEnvironmentId]);
+=======
+    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
+    if (!environmentId) return "";
+    const selected = environments.find((environment) => environment.id === environmentId) ?? null;
+    return selected?.driver === "local" ? "" : environmentId;
+  }, [environments, instanceSettings?.defaultEnvironmentId]);
+>>>>>>> origin/master
   const instanceDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],
@@ -665,7 +750,41 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       const primaryModel = currentModelId.trim() || null;
       const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
+<<<<<<< HEAD
       const environmentId = currentDefaultEnvironmentId || null;
+=======
+      // Probe where a real run would actually execute: the agent's own
+      // environment, else the instance default. Testing the host for an
+      // agent that runs in the instance-default sandbox reports failures
+      // (e.g. a CLI that only exists in the sandbox image) a real run would
+      // never hit. The raw id is sent even for a local environment — the
+      // server resolves the driver and probes the host in that case.
+      //
+      // Test can be clicked before the settings query settles (or after it
+      // failed with retry:false), so when the agent relies on the instance
+      // default, resolve the settings here rather than trusting the
+      // render-time cache. A fetch that still fails FAILS the test with an
+      // honest diagnostic — silently probing the host instead would report
+      // the exact false command-not-found failure this resolution exists to
+      // fix. Agents with their own environment never need the settings.
+      let settings = instanceSettings;
+      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+        try {
+          settings = await queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.settings,
+            queryFn: () => instanceSettingsApi.get(),
+          });
+        } catch {
+          throw new Error(
+            "Could not load instance settings to determine which environment to test in. Retry the test.",
+          );
+        }
+      }
+      const environmentId = resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+      });
+>>>>>>> origin/master
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
           label: "Primary model",
@@ -1401,7 +1520,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
+<<<<<<< HEAD
                   value={currentEnv}
+=======
+                  value={
+                    isCreate
+                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+                      )
+                  }
+>>>>>>> origin/master
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {
@@ -1411,6 +1539,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onChange={updateEnv}
                 />
               </Field>
+
+              {!isCreate && (
+                <Field label="Secret access" hint={help.secretAccess}>
+                  <AgentSecretAccessEditor
+                    config={{ ...config, ...overlay.adapterConfig }}
+                    secrets={availableSecrets}
+                    onChange={applyAccessGrants}
+                    proposals={agentBindingProposals}
+                    onApproveProposal={proposalReview.requestApprove}
+                    onRejectProposal={proposalReview.requestReject}
+                  />
+                  {proposalReview.dialogs}
+                </Field>
+              )}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (

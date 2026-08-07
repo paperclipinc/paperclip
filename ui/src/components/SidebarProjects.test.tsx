@@ -8,7 +8,10 @@ import type { Project, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProjects } from "./SidebarProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -22,8 +25,13 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateProject: vi.fn(),
 }));
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+>>>>>>> origin/master
 }));
 
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
@@ -93,12 +101,21 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+=======
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("../api/auth", () => ({
@@ -292,12 +309,20 @@ describe("SidebarProjects", () => {
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
     });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
       enableIsolatedWorkspaces: false,
     } }));
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
+>>>>>>> origin/master
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
+      starredDocumentIds: [],
+      documentStarredAt: {},
       updatedAt: null,
     };
     mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));

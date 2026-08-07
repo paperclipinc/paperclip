@@ -5,12 +5,40 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
+<<<<<<< HEAD
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.6", "gpt-5.5", "gpt-5.4"] as const;
+=======
+// Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
+// bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
+// Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
+export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
+export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+] as const;
+>>>>>>> origin/master
 
 function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
+}
+
+// Legacy model aliases with no OpenAI-published metadata are rewritten to the concrete slug the
+// Codex CLI actually knows. Without this, agents still configured with the bare `gpt-5.6` alias
+// (the old default) keep triggering "Model metadata for `gpt-5.6` not found" warnings and Codex
+// falls back to generic context-window limits, even on a Codex build that ships the 5.6 family.
+const CODEX_LOCAL_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  "gpt-5.6": "gpt-5.6-sol",
+};
+
+export function normalizeCodexModel(model: string | null | undefined): string {
+  const normalizedModel = normalizeModelId(model);
+  return CODEX_LOCAL_MODEL_ALIASES[normalizedModel] ?? normalizedModel;
 }
 
 export function isCodexLocalKnownModel(model: string | null | undefined): boolean {
@@ -37,13 +65,21 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 }
 
 export const models = [
+<<<<<<< HEAD
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+=======
+  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, so it doubles as the first (default) 5.6 entry.
+  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+>>>>>>> origin/master
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
+<<<<<<< HEAD
   { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
+=======
+>>>>>>> origin/master
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -57,6 +93,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
+<<<<<<< HEAD
     description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
     adapterConfig: {
       model: "gpt-5.4-mini",
@@ -66,6 +103,10 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
       // usable for delegated work.
       modelReasoningEffort: "high",
     },
+=======
+    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
+    adapterConfig: {},
+>>>>>>> origin/master
     source: "adapter_default",
   },
 ];
@@ -82,7 +123,11 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
+<<<<<<< HEAD
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6, GPT-5.5, GPT-5.4 and passed through for manual model IDs
+=======
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+>>>>>>> origin/master
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -98,7 +143,11 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+<<<<<<< HEAD
 - outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets whenever the child emits stdout or stderr bytes, including non-JSON progress from long-running verification commands. Defaults to 30 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex output for {N}m {S}s".
+=======
+- outputInactivityTimeoutMs (number | null, optional): inactivity monitor around the codex child. Resets whenever the child emits stdout/stderr bytes or, on Linux, its process group shows meaningful CPU, disk I/O, or child-process churn during a silent build. Defaults to 30 * 60_000 ms when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no codex activity (output or process) for {N}m {S}s".
+>>>>>>> origin/master
 - agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to the package-local codex-acp binary
 - mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
 - nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
@@ -113,7 +162,11 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
+<<<<<<< HEAD
 - Fast mode is supported on GPT-5.6, GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+=======
+- Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+>>>>>>> origin/master
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 `;

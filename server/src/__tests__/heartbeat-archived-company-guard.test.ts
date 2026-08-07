@@ -44,9 +44,12 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   }, 20_000);
 
   afterEach(async () => {
+<<<<<<< HEAD
     while (heartbeats.length > 0) {
       await heartbeats.pop()?.drain();
     }
+=======
+>>>>>>> origin/master
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -279,7 +282,11 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   it("rejects explicit user invokes for invalid-org-chain agents", async () => {
     const { childId } = await insertInvalidOrgChainAgent();
 
+<<<<<<< HEAD
     const heartbeat = makeHeartbeat(db);
+=======
+    const heartbeat = heartbeatService(db);
+>>>>>>> origin/master
 
     await expect(heartbeat.wakeup(childId, {
       source: "on_demand",
@@ -322,7 +329,11 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       wakeupRequestId,
     });
 
+<<<<<<< HEAD
     const heartbeat = makeHeartbeat(db);
+=======
+    const heartbeat = heartbeatService(db);
+>>>>>>> origin/master
     await heartbeat.resumeQueuedRuns();
 
     const run = await db
@@ -375,7 +386,11 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       scheduledRetryAttempt: 1,
     });
 
+<<<<<<< HEAD
     const heartbeat = makeHeartbeat(db);
+=======
+    const heartbeat = heartbeatService(db);
+>>>>>>> origin/master
     const promoted = await heartbeat.promoteDueScheduledRetries(now);
 
     expect(promoted).toEqual({ promoted: 0, runIds: [] });

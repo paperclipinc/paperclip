@@ -261,6 +261,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
   });
 
+<<<<<<< HEAD
   it("removes heartbeat run events by run id before deleting agent-owned runs (even when event agentId differs)", async () => {
     const { agentId, companyId, runId } = await seedFixture();
     const otherAgentId = randomUUID();
@@ -300,6 +301,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(agents).where(eq(agents.id, otherAgentId))).resolves.toHaveLength(1);
   });
 
+=======
+>>>>>>> origin/master
   it("removes routines before deleting company agents", async () => {
     const { agentId, companyId } = await seedFixture();
     const routineId = randomUUID();

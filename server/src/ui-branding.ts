@@ -231,6 +231,7 @@ export function resolveDefaultTheme(env: NodeJS.ProcessEnv = process.env): "ligh
   return nonEmpty(env.PAPERCLIP_DEFAULT_THEME)?.toLowerCase() === "light" ? "light" : "dark";
 }
 
+<<<<<<< HEAD
 const DEFAULT_DISPLAY_CURRENCY = "USD";
 
 export function resolveDisplayCurrency(env: NodeJS.ProcessEnv = process.env): string {
@@ -260,6 +261,18 @@ export function renderRuntimeBrandingMeta(
     }
   }
   return parts.join("\n");
+=======
+  const tags = [
+    '<meta name="paperclip-worktree-enabled" content="true" />',
+    `<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
+    `<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
+    `<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
+  ];
+  if (branding.instanceId) {
+    tags.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
+  }
+  return tags.join("\n");
+>>>>>>> origin/master
 }
 
 function replaceMarkedBlock(html: string, startMarker: string, endMarker: string, content: string): string {

@@ -9,6 +9,7 @@ export interface AdapterDefaults {
   defaultEnv?: Record<string, string>;
 }
 
+<<<<<<< HEAD
 // Each adapter's `envKeys` are the host env vars materialized into the sandbox
 // Job. They include the provider API key AND the provider base URL (e.g.
 // ANTHROPIC_BASE_URL / OPENAI_BASE_URL): the CLIs honor a custom OpenAI-compatible
@@ -21,41 +22,68 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
     envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
+=======
+const REGISTRY: Record<string, AdapterDefaults> = {
+  claude_local: {
+    runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
+    envKeys: ["ANTHROPIC_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["claude", "--version"],
   },
   codex_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:v1",
+<<<<<<< HEAD
     envKeys: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
+=======
+    envKeys: ["OPENAI_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["api.openai.com"],
     probeCommand: ["codex", "--version"],
   },
   gemini_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:v1",
+<<<<<<< HEAD
     envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL"],
+=======
+    envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
   cursor_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
+<<<<<<< HEAD
     envKeys: ["CURSOR_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
+=======
+    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["api.anthropic.com", "api.openai.com"],
     probeCommand: ["cursor-agent", "--version"],
   },
   opencode_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
+<<<<<<< HEAD
     envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"],
+=======
+    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["api.anthropic.com", "api.openai.com", "openrouter.ai"],
     probeCommand: ["opencode", "--version"],
   },
   pi_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:v1",
+<<<<<<< HEAD
     envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
+=======
+    envKeys: ["ANTHROPIC_API_KEY"],
+>>>>>>> origin/master
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["pi", "--version"],
   },
 };
 
+<<<<<<< HEAD
 // The cursor adapter package's `type` is "cursor" while this registry (and
 // environment configs in the wild) use "cursor_local". Normalize so a per-run
 // adapter hint carrying the package's own type string resolves.
@@ -65,6 +93,8 @@ function normalizeAdapterType(adapterType: string): string {
   return ADAPTER_TYPE_ALIASES[adapterType] ?? adapterType;
 }
 
+=======
+>>>>>>> origin/master
 export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
 
 function fromRegistryEntry(entry: AdapterRegistryEntry): AdapterDefaults {
@@ -95,7 +125,10 @@ export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
 ): AdapterDefaults {
+<<<<<<< HEAD
   adapterType = normalizeAdapterType(adapterType);
+=======
+>>>>>>> origin/master
   if (registry && registry.length > 0) {
     const entry = registry.find((e) => e.adapterType === adapterType);
     if (!entry) {
@@ -110,6 +143,7 @@ export function getAdapterDefaults(
   return defaults;
 }
 
+<<<<<<< HEAD
 /** Stable error code for a rejected lease that lacked a required per-run adapter. */
 export const RUN_ADAPTER_REQUIRED_CODE = "run_adapter_required" as const;
 
@@ -156,10 +190,13 @@ export interface ResolveRunAdapterTypeOptions {
   configuredAdapterTypes?: readonly string[];
 }
 
+=======
+>>>>>>> origin/master
 /**
  * Resolve the adapter type for a single run: prefer the run's adapter (the agent's,
  * from the lease params) so one environment can serve mixed harnesses; fall back to
  * the environment's configured default adapter when the run does not specify one.
+<<<<<<< HEAD
  *
  * The image the plugin picks MUST match the harness the server exec's. Never
  * substitute a different harness for an absent per-run adapter. The env-default
@@ -176,10 +213,13 @@ export interface ResolveRunAdapterTypeOptions {
  *   - `options.requireRunAdapter` forces the same rejection for any pool.
  * Adapter-less callers that must keep working (connectivity probes) pass an
  * explicit adapter instead of relying on the fallback.
+=======
+>>>>>>> origin/master
  */
 export function resolveRunAdapterType(
   runAdapterType: string | null | undefined,
   configAdapterType: string,
+<<<<<<< HEAD
   options: ResolveRunAdapterTypeOptions = {},
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
@@ -210,6 +250,11 @@ export function resolveRunAdapterType(
     throw new RunAdapterRequiredError(configAdapterType);
   }
   return configAdapterType;
+=======
+): string {
+  const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
+  return trimmed.length > 0 ? trimmed : configAdapterType;
+>>>>>>> origin/master
 }
 
 /**

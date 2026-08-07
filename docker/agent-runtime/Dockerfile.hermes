@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
+<<<<<<< HEAD
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
+=======
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+>>>>>>> origin/master
 
 # hermes_local is in the legacy sessioned-adapter set but has no upstream
 # npm package wired into Paperclip locally yet (see

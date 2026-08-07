@@ -345,8 +345,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
@@ -400,7 +398,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
@@ -690,6 +688,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       heartbeatPromptChars: renderedPrompt.length,
     };
 
+<<<<<<< HEAD
     // Surface OpenCode's own logs on stderr (captured into the run result) so
     // failures OpenCode wraps as the opaque "Unexpected server error. Check
     // server logs for details." can actually be diagnosed. See
@@ -698,6 +697,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       configured: env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
       usesManagedSandbox: adapterExecutionTargetUsesManagedHome(executionTarget),
     });
+=======
+    // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
+    // run result) so failures that OpenCode otherwise wraps as an opaque
+    // "Unexpected server error" can be diagnosed in remote/sandbox runs where the
+    // log file is unreachable. Toggle via PAPERCLIP_OPENCODE_PRINT_LOGS (run env,
+    // then process env).
+    const printLogs = isTruthyEnvFlag(
+      env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
+    );
+>>>>>>> origin/master
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");

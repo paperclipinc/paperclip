@@ -8,7 +8,10 @@ export interface EnsureTenantInput {
   paperclipServerNamespace: string;
   serviceAccountAnnotations: Record<string, string>;
   egressMode: "standard" | "cilium";
+<<<<<<< HEAD
   egressPolicy?: "allowlist" | "open-internet";
+=======
+>>>>>>> origin/master
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
   resourceQuota: {
@@ -18,6 +21,7 @@ export interface EnsureTenantInput {
     limitsCpu: string;
     limitsMemory: string;
   };
+<<<<<<< HEAD
   limitRange: {
     defaultCpu: string;
     defaultMemory: string;
@@ -26,6 +30,8 @@ export interface EnsureTenantInput {
     maxCpu: string;
     maxMemory: string;
   };
+=======
+>>>>>>> origin/master
 }
 
 const SERVICE_ACCOUNT_NAME = "paperclip-tenant-sa";
@@ -200,13 +206,22 @@ async function ensureLimitRange(clients: KubeClients, input: EnsureTenantInput):
             limits: [
               {
                 type: "Container",
+<<<<<<< HEAD
                 max: { cpu: input.limitRange.maxCpu, memory: input.limitRange.maxMemory },
+=======
+                max: { cpu: "4", memory: "8Gi" },
+>>>>>>> origin/master
                 min: { cpu: "100m", memory: "128Mi" },
                 // The k8s client-node type names this `_default` but the actual
                 // Kubernetes API field is `default`. We produce a JSON-shape
                 // manifest so the cast is safe.
+<<<<<<< HEAD
                 default: { cpu: input.limitRange.defaultCpu, memory: input.limitRange.defaultMemory },
                 defaultRequest: { cpu: input.limitRange.defaultRequestCpu, memory: input.limitRange.defaultRequestMemory },
+=======
+                default: { cpu: "1", memory: "2Gi" },
+                defaultRequest: { cpu: "250m", memory: "512Mi" },
+>>>>>>> origin/master
               },
             ],
           },
@@ -221,7 +236,10 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
     paperclipServerNamespace: input.paperclipServerNamespace,
     egressAllowCidrs: input.egressAllowCidrs,
     egressAllowFqdns: input.egressAllowFqdns,
+<<<<<<< HEAD
     egressPolicy: input.egressPolicy,
+=======
+>>>>>>> origin/master
   });
 
   await ensureNetworkPolicy(clients, input.namespace, denyAll);
@@ -232,7 +250,10 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
       paperclipServerNamespace: input.paperclipServerNamespace,
       egressAllowFqdns: input.egressAllowFqdns,
       egressAllowCidrs: input.egressAllowCidrs,
+<<<<<<< HEAD
       egressPolicy: input.egressPolicy,
+=======
+>>>>>>> origin/master
     });
     await ensureCiliumNetworkPolicy(clients, input.namespace, cnp);
   } else {

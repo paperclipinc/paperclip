@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
+<<<<<<< HEAD
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
 # Pinned, not @latest: @latest resolves at build time, so the mutable `v3`
@@ -13,12 +14,27 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
 
 # @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'
 RUN command -v claude >/dev/null 2>&1 && ln -s /usr/bin/claude /usr/bin/claude-code || true
+=======
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @anthropic-ai/claude-code@latest \
+    && { chown -R 1000:1000 /usr/lib/node_modules || true; }
+
+# @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'.
+# Resolve the real install path and fail the build if claude is missing.
+RUN CLAUDE_BIN="$(command -v claude)" \
+    && ln -s "$CLAUDE_BIN" /usr/bin/claude-code
+>>>>>>> origin/master
 
 USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v claude-code >/dev/null 2>&1 || (echo "claude-code not on PATH"; exit 1)
+<<<<<<< HEAD
 
 # Verify the pinned version actually landed, not just that a binary exists.
 RUN claude --version 2>&1 | grep -qF "${CLAUDE_CODE_VERSION}" \
     || (echo "claude version mismatch: wanted ${CLAUDE_CODE_VERSION}, got $(claude --version 2>&1)"; exit 1)
+=======
+>>>>>>> origin/master

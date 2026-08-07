@@ -46,6 +46,7 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
     return parseAcpxStdoutLine(line, ts);
   }
 
+<<<<<<< HEAD
   // Claude Code emits high-frequency control frames alongside the message stream
   // (rate-limit polls, partial-message token estimates). They carry no transcript
   // value and, when rendered raw, dump JSON between the nicely-formatted messages.
@@ -77,6 +78,17 @@ export function parseClaudeStdoutLine(line: string, ts: string): TranscriptEntry
       return [{ kind: "system", ts, text: status ? `task ${status}` : "task update" }];
     }
     return [{ kind: "system", ts, text: subtype ? `system: ${subtype}` : "system event" }];
+=======
+  if (type === "system" && parsed.subtype === "init") {
+    return [
+      {
+        kind: "init",
+        ts,
+        model: typeof parsed.model === "string" ? parsed.model : "unknown",
+        sessionId: typeof parsed.session_id === "string" ? parsed.session_id : "",
+      },
+    ];
+>>>>>>> origin/master
   }
 
   if (type === "assistant") {

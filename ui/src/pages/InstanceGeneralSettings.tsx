@@ -8,7 +8,6 @@ import {
   DEFAULT_BACKUP_RETENTION,
 } from "@paperclipai/shared";
 import { LogOut, SlidersHorizontal } from "lucide-react";
-import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
@@ -18,6 +17,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
+import { useSignOut } from "@/hooks/useSignOut";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -26,6 +26,7 @@ export function InstanceGeneralSettings() {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
 
+<<<<<<< HEAD
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
@@ -36,6 +37,9 @@ export function InstanceGeneralSettings() {
       setActionError(error instanceof Error ? error.message : "Failed to sign out.");
     },
   });
+=======
+  const signOutMutation = useSignOut();
+>>>>>>> origin/master
 
   useEffect(() => {
     setBreadcrumbs([
@@ -57,8 +61,13 @@ export function InstanceGeneralSettings() {
 
   const updateGeneralMutation = useMutation({
     mutationFn: instanceSettingsApi.updateGeneral,
+    onMutate: () => {
+      setActionError(null);
+      signOutMutation.reset();
+    },
     onSuccess: async () => {
       setActionError(null);
+      signOutMutation.reset();
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
     },
@@ -85,6 +94,11 @@ export function InstanceGeneralSettings() {
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const feedbackDataSharingPreference = generalQuery.data?.feedbackDataSharingPreference ?? "prompt";
   const backupRetention: BackupRetentionPolicy = generalQuery.data?.backupRetention ?? DEFAULT_BACKUP_RETENTION;
+  const visibleActionError = signOutMutation.error instanceof Error
+    ? signOutMutation.error.message
+    : signOutMutation.error
+      ? "Failed to sign out."
+      : actionError;
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -99,9 +113,9 @@ export function InstanceGeneralSettings() {
         </p>
       </div>
 
-      {actionError && (
+      {visibleActionError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {actionError}
+          {visibleActionError}
         </div>
       )}
 
@@ -151,7 +165,7 @@ export function InstanceGeneralSettings() {
           <ToggleSwitch
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
-            disabled={updateGeneralMutation.isPending}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
             aria-label="Toggle username log censoring"
           />
         </div>
@@ -169,7 +183,7 @@ export function InstanceGeneralSettings() {
           <ToggleSwitch
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
-            disabled={updateGeneralMutation.isPending}
+            disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
             aria-label="Toggle keyboard shortcuts"
           />
         </div>
@@ -195,7 +209,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={days}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -225,7 +239,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={weeks}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -255,7 +269,7 @@ export function InstanceGeneralSettings() {
                   <button
                     key={months}
                     type="button"
-                    disabled={updateGeneralMutation.isPending}
+                    disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                     className={cn(
                       "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                       active
@@ -320,7 +334,7 @@ export function InstanceGeneralSettings() {
                 <button
                   key={option.value}
                   type="button"
-                  disabled={updateGeneralMutation.isPending}
+                  disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
                   className={cn(
                     "rounded-lg border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
                     active
@@ -364,8 +378,11 @@ export function InstanceGeneralSettings() {
           <Button
             variant="outline"
             size="sm"
-            disabled={signOutMutation.isPending}
-            onClick={() => signOutMutation.mutate()}
+            disabled={signOutMutation.isPending || updateGeneralMutation.isPending}
+            onClick={() => {
+              setActionError(null);
+              signOutMutation.mutate();
+            }}
           >
             <LogOut className="size-4" />
             {signOutMutation.isPending ? "Signing out..." : "Sign out"}

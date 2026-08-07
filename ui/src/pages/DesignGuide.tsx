@@ -120,11 +120,21 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import {
+  Chip,
+  ChoiceCard,
+  ConnectorRow,
+  OnboardingCard,
+  OnboardingHeading,
+  Stepper,
+} from "@/components/onboarding/OnboardingPrimitives";
+import { CONNECTORS, MISSION_CHIPS } from "@/components/onboarding/onboarding-data";
 import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
 import { ActionCard, ActionCardMobile, BindingsTable } from "@/components/actions/ActionCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
@@ -248,6 +258,61 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
     <div className="space-y-3">
       <h4 className="text-sm font-medium">{title}</h4>
       {children}
+    </div>
+  );
+}
+
+// Onboarding flow primitives (ported prototype): interactive demos need local
+// selection state, mirroring how OnboardingFlow drives them.
+function OnboardingChipsShowcase() {
+  const [active, setActive] = useState<string | null>(MISSION_CHIPS[0] ?? null);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {MISSION_CHIPS.map((chip) => (
+        <Chip key={chip} label={chip} active={active === chip} onClick={() => setActive(chip)} />
+      ))}
+    </div>
+  );
+}
+
+function OnboardingChoiceShowcase() {
+  const [choice, setChoice] = useState<"hiring" | "strategy">("hiring");
+  return (
+    <div className="flex max-w-xl flex-col gap-3">
+      <ChoiceCard
+        icon={<Bot className="size-5" />}
+        title="Create a hiring plan"
+        description="A staffing plan for the agents your team needs — roles, order, and what each one owns."
+        selected={choice === "hiring"}
+        onClick={() => setChoice("hiring")}
+      />
+      <ChoiceCard
+        icon={<ListTodo className="size-5" />}
+        title="Write a team strategy doc"
+        description="Turn your mission into a one-page strategy: goals, bets, and how you'll measure them."
+        selected={choice === "strategy"}
+        onClick={() => setChoice("strategy")}
+      />
+    </div>
+  );
+}
+
+function OnboardingConnectorShowcase() {
+  const [connected, setConnected] = useState<string[]>([CONNECTORS[0]?.name ?? ""]);
+  return (
+    <div className="flex max-w-xl flex-col gap-3">
+      {CONNECTORS.slice(0, 2).map((c) => (
+        <ConnectorRow
+          key={c.name}
+          connector={c}
+          connected={connected.includes(c.name)}
+          onToggle={() =>
+            setConnected((prev) =>
+              prev.includes(c.name) ? prev.filter((n) => n !== c.name) : [...prev, c.name],
+            )
+          }
+        />
+      ))}
     </div>
   );
 }
@@ -384,7 +449,10 @@ export function DesignGuide() {
   );
   const [filters, setFilters] = useState<FilterValue[]>([
     { key: "status", label: "Status", value: "Active" },
-    { key: "priority", label: "Priority", value: "High" },
+    // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
+    ...(SHOW_TASK_PRIORITY_UI
+      ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+      : []),
   ]);
   const [allowExternal, setAllowExternal] = useState(false);
   const [allowUnpinned, setAllowUnpinned] = useState(false);
@@ -428,6 +496,7 @@ export function DesignGuide() {
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
                 "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip",
+                "AgentCapsule", "OnboardingCard", "Stepper", "Chip", "ChoiceCard", "ConnectorRow",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -637,6 +706,8 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        {/* PAP-411: PriorityIcon showcase gated behind SHOW_TASK_PRIORITY_UI per board decision. */}
+        {SHOW_TASK_PRIORITY_UI && (
         <SubSection title="PriorityIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["critical", "high", "medium", "low"].map((p) => (
@@ -651,6 +722,7 @@ export function DesignGuide() {
             <span className="text-sm">Click the icon to change (current: {priority})</span>
           </div>
         </SubSection>
+        )}
 
         <SubSection title="Agent status dots">
           <div className="flex items-center gap-4 flex-wrap">
@@ -756,6 +828,38 @@ export function DesignGuide() {
               </div>
             ))}
           </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  ONBOARDING FLOW                                              */}
+      {/* ============================================================ */}
+      <Section title="Onboarding Flow">
+        <p className="text-sm text-muted-foreground max-w-prose">
+          Primitives for the full-screen onboarding flow (
+          <code className="font-mono">components/onboarding/</code>). Bespoke surfaces keep
+          their prototype dimensions via verbatim size tokens (
+          <code className="font-mono">--sz-560px</code> card,{" "}
+          <code className="font-mono">--sz-320px</code> start tiles); type, fields, and focus
+          treatment come from the shared primitives and scale.
+        </p>
+        <SubSection title="Card frame + heading + stepper">
+          <OnboardingCard>
+            <Stepper step={2} />
+            <OnboardingHeading
+              title="Create your first agent"
+              lede="Display heading (text-4xl) with a supporting lede, inside the 560px card frame."
+            />
+          </OnboardingCard>
+        </SubSection>
+        <SubSection title="Mission chips">
+          <OnboardingChipsShowcase />
+        </SubSection>
+        <SubSection title="Choice cards">
+          <OnboardingChoiceShowcase />
+        </SubSection>
+        <SubSection title="Connector rows">
+          <OnboardingConnectorShowcase />
         </SubSection>
       </Section>
 
@@ -1123,7 +1227,8 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="in_progress" />
-                <PriorityIcon priority="high" />
+                {/* PAP-411: PriorityIcon hidden behind SHOW_TASK_PRIORITY_UI. */}
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="high" />}
               </>
             }
             identifier="PAP-001"
@@ -1136,7 +1241,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="done" />
-                <PriorityIcon priority="medium" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="medium" />}
               </>
             }
             identifier="PAP-002"
@@ -1149,7 +1254,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="todo" />
-                <PriorityIcon priority="low" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="low" />}
               </>
             }
             identifier="PAP-003"
@@ -1161,7 +1266,7 @@ export function DesignGuide() {
             leading={
               <>
                 <StatusIcon status="blocked" />
-                <PriorityIcon priority="critical" />
+                {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority="critical" />}
               </>
             }
             identifier="PAP-004"
@@ -1249,7 +1354,10 @@ export function DesignGuide() {
             onClick={() =>
               setFilters([
                 { key: "status", label: "Status", value: "Active" },
-                { key: "priority", label: "Priority", value: "High" },
+                // PAP-411: priority filter demo row suppressed while SHOW_TASK_PRIORITY_UI is off.
+                ...(SHOW_TASK_PRIORITY_UI
+                  ? [{ key: "priority", label: "Priority", value: "High" } as FilterValue]
+                  : []),
               ])
             }
           >
@@ -1429,10 +1537,13 @@ export function DesignGuide() {
             <span className="text-xs text-muted-foreground">Status</span>
             <StatusBadge status="active" />
           </div>
-          <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Priority</span>
-            <PriorityIcon priority="high" />
-          </div>
+          {/* PAP-411: priority metadata row hidden behind SHOW_TASK_PRIORITY_UI. */}
+          {SHOW_TASK_PRIORITY_UI && (
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-xs text-muted-foreground">Priority</span>
+              <PriorityIcon priority="high" />
+            </div>
+          )}
           <div className="flex items-center justify-between py-1.5">
             <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
@@ -1500,14 +1611,15 @@ export function DesignGuide() {
             <span className="text-xs text-muted-foreground ml-1">2</span>
           </div>
           <div className="border border-border rounded-b-md">
+            {/* PAP-411: leading PriorityIcon hidden behind SHOW_TASK_PRIORITY_UI. */}
             <EntityRow
-              leading={<PriorityIcon priority="high" />}
+              leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="high" /> : undefined}
               identifier="PAP-101"
               title="Build agent heartbeat system"
               onClick={() => {}}
             />
             <EntityRow
-              leading={<PriorityIcon priority="medium" />}
+              leading={SHOW_TASK_PRIORITY_UI ? <PriorityIcon priority="medium" /> : undefined}
               identifier="PAP-102"
               title="Add cost tracking dashboard"
               onClick={() => {}}

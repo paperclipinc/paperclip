@@ -50,6 +50,7 @@ export interface SandboxOrchestrator {
   /** Tear down the sandbox. Implementations MUST cascade-delete child resources. */
   release(clients: KubeClients, namespace: string, name: string): Promise<void>;
 
+<<<<<<< HEAD
   /**
    * Block until phase is Succeeded or Failed, or throw on timeout.
    *
@@ -58,11 +59,18 @@ export interface SandboxOrchestrator {
    * when the pod stays Unschedulable past this grace period. Backends without
    * that signal (job) ignore it.
    */
+=======
+  /** Block until phase is Succeeded or Failed, or throw on timeout. */
+>>>>>>> origin/master
   waitForCompletion(
     clients: KubeClients,
     namespace: string,
     name: string,
+<<<<<<< HEAD
     opts: { timeoutMs: number; pollMs?: number; unschedulableGraceMs?: number },
+=======
+    opts: { timeoutMs: number; pollMs?: number },
+>>>>>>> origin/master
   ): Promise<SandboxStatus>;
 
   // Optional warm-pool / Kata-FC extension slots. Job-backed implementation

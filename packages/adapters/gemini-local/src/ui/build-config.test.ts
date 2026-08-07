@@ -67,6 +67,7 @@ describe("buildGeminiLocalConfig", () => {
     });
   });
 });
+<<<<<<< HEAD
 
 describe("gemini CLI sandbox", () => {
   it("does not enable the Gemini CLI sandbox from the Codex-shaped bypass toggle", () => {
@@ -74,3 +75,5 @@ describe("gemini CLI sandbox", () => {
     expect(buildGeminiLocalConfig(makeValues({ dangerouslyBypassSandbox: true })).sandbox).toBeUndefined();
   });
 });
+=======
+>>>>>>> origin/master

@@ -3,8 +3,11 @@ import {
   getAdapterDefaults,
   buildAdapterEnv,
   resolveRunAdapterType,
+<<<<<<< HEAD
   RunAdapterRequiredError,
   RUN_ADAPTER_REQUIRED_CODE,
+=======
+>>>>>>> origin/master
   KNOWN_ADAPTER_TYPES,
   type AdapterDefaults,
 } from "../../src/adapter-defaults.js";
@@ -26,6 +29,7 @@ describe("adapter-defaults (built-in)", () => {
     expect(d.probeCommand).toEqual(["codex", "--version"]);
   });
 
+<<<<<<< HEAD
   it("allowlists the provider base-url env so a custom OpenAI-compatible endpoint can be set", () => {
     // Without the base-url key in envKeys it is stripped before the sandbox Job,
     // so the agent always hits the default public endpoint and cannot be routed
@@ -38,6 +42,8 @@ describe("adapter-defaults (built-in)", () => {
     expect(getAdapterDefaults("gemini_local").envKeys).toContain("GOOGLE_GEMINI_BASE_URL");
   });
 
+=======
+>>>>>>> origin/master
   it("throws on unknown adapter type", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
@@ -54,6 +60,7 @@ describe("adapter-defaults (built-in)", () => {
       ]),
     );
   });
+<<<<<<< HEAD
 
   it("cursor_local carries the Cursor API key and both provider base URLs", () => {
     const d = getAdapterDefaults("cursor_local");
@@ -80,13 +87,19 @@ describe("adapter-defaults (built-in)", () => {
     expect(d.envKeys).toContain("OPENROUTER_API_KEY");
     expect(d.allowFqdns).toContain("openrouter.ai");
   });
+=======
+>>>>>>> origin/master
 });
 
 describe("getAdapterDefaults", () => {
   it("returns built-in defaults when no registry is supplied", () => {
     const d = getAdapterDefaults("claude_local");
     expect(d.runtimeImage).toContain("agent-runtime-claude");
+<<<<<<< HEAD
     expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]);
+=======
+    expect(d.envKeys).toEqual(["ANTHROPIC_API_KEY"]);
+>>>>>>> origin/master
     expect(d.defaultEnv).toBeUndefined();
   });
 
@@ -177,6 +190,7 @@ describe("resolveRunAdapterType", () => {
   it("prefers the run/agent adapter when provided (mixed-harness env)", () => {
     expect(resolveRunAdapterType("pi_local", "opencode_local")).toBe("pi_local");
   });
+<<<<<<< HEAD
   it("rejects an adapter-less lease when no registry positively proves a single-adapter env", () => {
     // Without an authoritative adapter set the env-default fallback is unsafe:
     // the built-in registry still exposes every harness, so an adapter-less run
@@ -184,10 +198,17 @@ describe("resolveRunAdapterType", () => {
     for (const absent of [undefined, null, "   "]) {
       expect(() => resolveRunAdapterType(absent, "opencode_local")).toThrow(RunAdapterRequiredError);
     }
+=======
+  it("falls back to the environment default when the run adapter is missing/blank", () => {
+    expect(resolveRunAdapterType(undefined, "opencode_local")).toBe("opencode_local");
+    expect(resolveRunAdapterType(null, "opencode_local")).toBe("opencode_local");
+    expect(resolveRunAdapterType("   ", "opencode_local")).toBe("opencode_local");
+>>>>>>> origin/master
   });
   it("trims the run adapter", () => {
     expect(resolveRunAdapterType("  pi_local  ", "opencode_local")).toBe("pi_local");
   });
+<<<<<<< HEAD
 
   describe("strict mode (requireRunAdapter)", () => {
     it("returns the run's own harness, never a different one, when the run adapter is present", () => {
@@ -327,4 +348,6 @@ describe("resolveRunAdapterType", () => {
       }
     });
   });
+=======
+>>>>>>> origin/master
 });

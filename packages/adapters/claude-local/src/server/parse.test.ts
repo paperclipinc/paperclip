@@ -11,17 +11,25 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+<<<<<<< HEAD
   isClaudeInvalidCredentialError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required and as a credential rejection", () => {
+=======
+} from "./parse.js";
+
+describe("detectClaudeLoginRequired", () => {
+  it("classifies Claude's invalid API key login prompt as auth required", () => {
+>>>>>>> origin/master
     expect(
       detectClaudeLoginRequired({
         parsed: null,
         stdout: "",
         stderr: "Invalid API key · Please run /login",
       }),
+<<<<<<< HEAD
     ).toEqual({ requiresLogin: true, loginUrl: null, credentialRejected: true });
   });
 
@@ -104,6 +112,20 @@ describe("detectClaudeLoginRequired", () => {
     });
     expect(result.credentialRejected).toBe(true);
   });
+=======
+    ).toEqual({ requiresLogin: true, loginUrl: null });
+  });
+
+  it("does not classify a bare invalid API key as the Claude login flow", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "",
+        stderr: "Invalid API key",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+>>>>>>> origin/master
 });
 
 describe("isClaudeModelNotFoundError", () => {
@@ -125,6 +147,7 @@ describe("isClaudeModelNotFoundError", () => {
   });
 });
 
+<<<<<<< HEAD
 describe("isClaudeInvalidCredentialError", () => {
   it("detects the 401 invalid bearer token failure from the CLI result", () => {
     expect(isClaudeInvalidCredentialError({
@@ -174,6 +197,8 @@ describe("isClaudeInvalidCredentialError", () => {
   });
 });
 
+=======
+>>>>>>> origin/master
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as provider quota", () => {
     expect(

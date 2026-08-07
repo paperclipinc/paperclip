@@ -2,8 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
+<<<<<<< HEAD
   CloudUpload,
   Cpu,
+=======
+  Cpu,
+  Download,
+>>>>>>> origin/master
   FlaskConical,
   KeyRound,
   MailPlus,
@@ -12,12 +17,19 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+<<<<<<< HEAD
+=======
+  Upload,
+>>>>>>> origin/master
   UserRoundPen,
   Users,
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
+<<<<<<< HEAD
 import { useBoardCapabilities } from "@/hooks/useFeatures";
+=======
+>>>>>>> origin/master
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { Link, NavLink } from "@/lib/router";
@@ -67,14 +79,20 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
+<<<<<<< HEAD
   const { data: boardAccess } = useBoardCapabilities();
   const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
   const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
+=======
+>>>>>>> origin/master
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
+<<<<<<< HEAD
   const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
+=======
+>>>>>>> origin/master
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -103,6 +121,7 @@ export function CompanySettingsSidebar() {
           Company settings
         </div>
         <div className="flex flex-col gap-0.5">
+<<<<<<< HEAD
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           ) : null}
@@ -123,6 +142,18 @@ export function CompanySettingsSidebar() {
               end
             />
           ) : null}
+=======
+          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          <SidebarNavItem
+            to="/company/settings/members"
+            label="Members"
+            icon={Users}
+            badge={badges?.joinRequests ?? 0}
+            end
+          />
+>>>>>>> origin/master
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
@@ -142,7 +173,11 @@ export function CompanySettingsSidebar() {
           ) : null}
         </div>
         <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
+<<<<<<< HEAD
           My settings
+=======
+          Instance settings
+>>>>>>> origin/master
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem
@@ -151,6 +186,7 @@ export function CompanySettingsSidebar() {
             icon={UserRoundPen}
             end
           />
+<<<<<<< HEAD
         </div>
         {isInstanceAdmin ? (
           <>
@@ -221,6 +257,69 @@ export function CompanySettingsSidebar() {
             </div>
           </>
         ) : null}
+=======
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
+            label="General"
+            icon={SlidersHorizontal}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
+            label="Environments"
+            icon={MonitorCog}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
+            label="Access"
+            icon={Shield}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
+            label="Heartbeats"
+            icon={Clock3}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
+            label="Experimental"
+            icon={FlaskConical}
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
+            label="Plugins"
+            icon={Puzzle}
+          />
+          {sidebarPlugins.length > 0 ? (
+            <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
+              {sidebarPlugins.map((plugin) => (
+                <NavLink
+                  key={plugin.id}
+                  to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins/${plugin.id}`}
+                  state={SIDEBAR_SCROLL_RESET_STATE}
+                  className={({ isActive }) =>
+                    [
+                      "rounded-md px-2 py-1.5 text-xs transition-colors",
+                      isActive
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    ].join(" ")
+                  }
+                >
+                  {plugin.manifestJson.displayName ?? plugin.packageName}
+                </NavLink>
+              ))}
+            </div>
+          ) : null}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
+            label="Adapters"
+            icon={Cpu}
+          />
+        </div>
+>>>>>>> origin/master
       </nav>
     </aside>
   );

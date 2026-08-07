@@ -141,16 +141,28 @@ export const MIGRATION_SAFETY_BASELINE = [
     reason: "Historical migration predates the migration-safety guard.",
   },
   {
+<<<<<<< HEAD
     id: "5d0d1677ac4f982c",
     rule: "large-create-index-not-concurrently",
     migration: "0134_issue_comment_derived_attribution_fast.sql",
+=======
+    id: "567b97176f9f06c3",
+    rule: "large-create-index-not-concurrently",
+    migration: "0132_issue_comment_derived_attribution_fast.sql",
+>>>>>>> origin/master
     table: "issue_comments",
     reason: "Existing issue-attribution backfill branch uses a temporary support index before this guard landed.",
   },
   {
+<<<<<<< HEAD
     id: "6693ab5e1444a183",
     rule: "full-table-mutation-large-table",
     migration: "0134_issue_comment_derived_attribution_fast.sql",
+=======
+    id: "38d8055cc228913d",
+    rule: "full-table-mutation-large-table",
+    migration: "0132_issue_comment_derived_attribution_fast.sql",
+>>>>>>> origin/master
     table: "issue_comments",
     reason: "Batched DO-loop backfill with keyset pagination (LIMIT 5000 per batch); reviewed and approved as part of PAP-1505 fix. Already merged to master before this guard landed.",
   },

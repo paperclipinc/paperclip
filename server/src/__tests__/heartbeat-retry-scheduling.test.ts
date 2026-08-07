@@ -23,10 +23,17 @@ import {
   closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+<<<<<<< HEAD
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD,
+=======
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import {
+  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+>>>>>>> origin/master
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -38,6 +45,7 @@ import { environmentRuntimeService } from "../services/environment-runtime.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+<<<<<<< HEAD
 const AUTH_FAILURE_TEST_ADAPTER = "auth_failure_test";
 const CODEX_AUTH_FAILURE_TEST_ADAPTER = "codex_auth_failure_test";
 const IDENTICAL_FAILURE_TEST_ADAPTER = "identical_failure_test";
@@ -56,6 +64,8 @@ let authFailureGate: Promise<void> | null = null;
 let identicalFailureGate: Promise<void> | null = null;
 let transientStormGate: Promise<void> | null = null;
 let setupFailureGate: Promise<void> | null = null;
+=======
+>>>>>>> origin/master
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -77,6 +87,7 @@ async function waitForRunToFinish(
   return await heartbeat.getRun(runId);
 }
 
+<<<<<<< HEAD
 // Waits until the run has left "queued" (i.e. claimQueuedRun has run and it's
 // at least "running"). Used to seed a queued sibling AFTER the run under test
 // has already claimed the agent's single concurrency slot, so the sibling
@@ -144,6 +155,8 @@ async function expectSiblingCancelledAsPaused(db: ReturnType<typeof createDb>, s
   expect(sibling?.error).toContain("paused");
 }
 
+=======
+>>>>>>> origin/master
 describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -176,6 +189,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+<<<<<<< HEAD
     registerServerAdapter({
       type: IDENTICAL_FAILURE_TEST_ADAPTER,
       execute: async () => {
@@ -288,27 +302,70 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     transientStormGate = null;
     setupFailureGate = null;
     await heartbeat?.drain();
+=======
+  }, 20_000);
+
+  afterEach(async () => {
+    // Await every in-flight background heartbeat run to quiescence before the
+    // cleanup deletes. heartbeat.invoke claims a run and dispatches its
+    // execution fire-and-forget, and that run can schedule a follow-up retry
+    // wakeup, so a run or wakeup can still write heartbeat_runs and issues rows
+    // when teardown starts. The cleanup deletes issues before heartbeat_runs, so
+    // a late write races the deletes and can deadlock or break a foreign key.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+>>>>>>> origin/master
     await cleanupRetryFixture();
   });
 
   afterAll(async () => {
+<<<<<<< HEAD
     await closeDbClient(db);
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
     unregisterServerAdapter(AUTH_FAILURE_TEST_ADAPTER);
     unregisterServerAdapter(CODEX_AUTH_FAILURE_TEST_ADAPTER);
     unregisterServerAdapter(IDENTICAL_FAILURE_TEST_ADAPTER);
     unregisterServerAdapter(SETUP_FAILURE_TEST_ADAPTER);
+=======
+    unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+>>>>>>> origin/master
     await tempDb?.cleanup();
   });
 
   async function cleanupRetryFixture() {
+<<<<<<< HEAD
+=======
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await cleanupRetryFixtureOnce();
+        return;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+  }
+
+  async function cleanupHeartbeatRunDependents() {
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await db.delete(heartbeatRunEvents);
+    await db.delete(activityLog);
+  }
+
+  async function cleanupRetryFixtureOnce() {
+>>>>>>> origin/master
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
+<<<<<<< HEAD
     await db.delete(heartbeatRunEvents);
+=======
+    await cleanupHeartbeatRunDependents();
+>>>>>>> origin/master
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -469,6 +526,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .toEqual({ status: "idle", errorReason: null });
   });
 
+<<<<<<< HEAD
   it("pauses an agent whose run fails with a permanent auth error instead of re-running it", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -957,6 +1015,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(agentStatus).not.toBe("paused");
   });
 
+=======
+>>>>>>> origin/master
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;
@@ -2854,6 +2914,66 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
       await cleanupRetryFixture();
     }
+  });
+
+  it("schedules a recovery continuation for codex harness crashes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-07-24T12:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "codex_harness_crash",
+      errorFamily: "transient_upstream",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    expect(scheduled.run.scheduledRetryAttempt).toBe(1);
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    const contextSnapshot = scheduled.run.contextSnapshot as Record<string, unknown>;
+    expect(contextSnapshot.codexTransientFallbackMode).toBe("same_session");
+    expect(contextSnapshot.retryOfRunId).toBe(runId);
+
+    await cleanupRetryFixture();
+  });
+
+  it("schedules a harness-crash recovery from the error code alone when the result json lost the error family", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-07-24T13:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "codex_harness_crash",
+      errorFamily: null,
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
+    expect((scheduled.run.contextSnapshot as Record<string, unknown>).codexTransientFallbackMode).toBe("same_session");
+
+    await cleanupRetryFixture();
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {

@@ -5,6 +5,11 @@ import {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+<<<<<<< HEAD
+=======
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
+>>>>>>> origin/master
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -142,7 +147,19 @@ type ResolvedDependencyWakeBackstopOptions = {
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
+<<<<<<< HEAD
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+=======
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "contextSnapshot"
+  | "livenessState"
+  | "startedAt"
+  | "createdAt"
+>>>>>>> origin/master
 > & {
   resultJson?: unknown;
 } | null;
@@ -168,6 +185,79 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   maxHandoffAttempts: number;
 };
 
+<<<<<<< HEAD
+=======
+function compactRecoveryPresentation(title: string): IssueCommentPresentation {
+  const normalizedTitle = title.trim();
+  return {
+    kind: "system_notice",
+    tone: "warning",
+    title: normalizedTitle.length > 160 ? `${normalizedTitle.slice(0, 159)}…` : normalizedTitle,
+    detailsDefaultOpen: false,
+    density: "compact",
+  };
+}
+
+function recoveryCauseTitle(cause: StrandedRecoveryCause) {
+  switch (cause) {
+    case "process_lost":
+      return "retries exhausted";
+    case "codex_output_inactivity_monitor":
+      return "output-inactivity retry exhausted";
+    case "workspace_validation_failed":
+      return "workspace validation failed";
+    case "configuration_incomplete":
+      return "configuration incomplete";
+    case "execution_review_participant_recovery":
+      return "reviewer recovery failed";
+    case "provider_quota":
+      return "provider quota unavailable";
+    case SUCCESSFUL_RUN_MISSING_STATE_REASON:
+      return "missing disposition recovery failed";
+    default:
+      return "execution path recovery failed";
+  }
+}
+
+function recoveryNoticeMetadata(input: {
+  cause: string;
+  latestRun: LatestIssueRun;
+  recoveryActionId?: string | null;
+  previousStatus: string;
+  recoveryOwner?: Pick<typeof agents.$inferSelect, "id" | "name"> | null;
+}): IssueCommentMetadata {
+  const rows: IssueCommentMetadata["sections"][number]["rows"] = [
+    ...(input.recoveryActionId
+      ? [{ type: "key_value" as const, label: "Recovery action", value: input.recoveryActionId }]
+      : []),
+    { type: "key_value", label: "Cause", value: input.cause },
+    { type: "key_value", label: "Previous status", value: input.previousStatus },
+    ...(input.recoveryOwner
+      ? [{
+          type: "agent_link" as const,
+          label: "Recovery owner",
+          agentId: input.recoveryOwner.id,
+          name: input.recoveryOwner.name.slice(0, 160),
+        }]
+      : [{ type: "key_value" as const, label: "Recovery owner", value: "board" }]),
+    ...(input.latestRun
+      ? [{
+          type: "run_link" as const,
+          label: "Latest run",
+          runId: input.latestRun.id,
+          title: input.latestRun.status,
+        }]
+      : []),
+  ];
+
+  return {
+    version: 1,
+    sourceRunId: input.latestRun?.id ?? null,
+    sections: [{ title: "Recovery", rows }],
+  };
+}
+
+>>>>>>> origin/master
 function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
   const result = parseObject(latestRun?.resultJson);
   return readNonEmptyString(result.errorFamily);
@@ -278,6 +368,7 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
+  "codex_harness_crash",
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
@@ -299,6 +390,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
+<<<<<<< HEAD
 // Sandbox capacity failures (the cluster cannot schedule or bring up the
 // sandbox pod) are transient infrastructure, but they do NOT resolve on the
 // generic 60s backoff: node provisioning / autoscaler recovery takes minutes.
@@ -313,6 +405,11 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 const CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS = 5 * 60_000;
+=======
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
+const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+>>>>>>> origin/master
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -587,6 +684,21 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
 
+/**
+ * True when the issue's latest run was cancelled by a board operator (the
+ * board cancel route stamps the attribution; interrupt-by-comment uses the
+ * operator_interrupted error code). While such a run is the latest activity
+ * on an issue, recovery stands down entirely: the operator deliberately
+ * stopped the agent, and re-waking it — or escalating "stranding" — would
+ * fight the human. Any newer run or wake supersedes the exemption.
+ */
+function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
+  if (!latestRun || latestRun.status !== "cancelled") return false;
+  if (latestRun.errorCode === "operator_interrupted") return true;
+  const result = parseObject(latestRun.resultJson);
+  return result.cancelledByActorType === "user" || result.cancelledByActorType === "board";
+}
+
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   return Boolean(
     latestRun &&
@@ -734,6 +846,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+<<<<<<< HEAD
+=======
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+>>>>>>> origin/master
       })
       .from(heartbeatRuns)
       .where(
@@ -762,6 +879,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+<<<<<<< HEAD
+=======
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+>>>>>>> origin/master
       })
       .from(heartbeatRuns)
       .where(
@@ -898,6 +1020,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+<<<<<<< HEAD
+=======
+  async function wasTodoHandedBackDuringOrAfterLatestRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
+    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, issue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "handed_back"),
+          gte(issueRecoveryActions.resolvedAt, runBeganAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+>>>>>>> origin/master
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -976,6 +1124,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+<<<<<<< HEAD
+=======
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
+>>>>>>> origin/master
       })
       .from(heartbeatRuns)
       .where(
@@ -2826,7 +2979,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : recoveryCause === "workspace_validation_failed"
           ? readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_branch_incoherence"
             ? "Repair the source issue git worktree branch incoherence, or choose a new execution workspace, before resuming adapter execution."
+<<<<<<< HEAD
             : "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
+=======
+            : readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_base_materialization_failed"
+              ? "Repair the project workspace repository URL or clone access, or configure a local checkout cwd, before resuming adapter execution."
+              : "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
+>>>>>>> origin/master
         : recoveryCause === "configuration_incomplete"
           ? "Bind the missing secret(s) named in the run failure to the agent/project/routine env before resuming adapter execution."
         : recoveryCause === "execution_review_participant_recovery"
@@ -3050,6 +3209,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         prefix,
       }),
       {},
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation("Recovery: recovery attempt failed — remains blocked"),
+        metadata: {
+          version: 1,
+          sourceRunId: input.latestRun?.id ?? null,
+          sections: [{
+            title: "Recovery",
+            rows: [
+              { type: "key_value", label: "Cause", value: "recovery_issue_failed" },
+              { type: "key_value", label: "Previous status", value: input.previousStatus },
+              ...(input.latestRun
+                ? [{
+                    type: "run_link" as const,
+                    label: "Latest run",
+                    runId: input.latestRun.id,
+                    title: input.latestRun.status,
+                  }]
+                : []),
+            ],
+          }],
+        },
+      },
     );
 
     await logActivity(db, {
@@ -3143,7 +3325,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "(It was paused because the latest run reported it was waiting for review/approval; " +
         "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
+<<<<<<< HEAD
       { authorType: "system" },
+=======
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation("Recovery: waiting on dependencies — moved to blocked"),
+        metadata: {
+          version: 1,
+          sections: [{
+            title: "Recovery",
+            rows: [
+              { type: "key_value", label: "Cause", value: "continuation_waiting_on_review" },
+              { type: "key_value", label: "Previous status", value: issue.status },
+              {
+                type: "key_value",
+                label: "Blocking issues",
+                value: blockedByIssueIds.join(", ").slice(0, 2000),
+              },
+            ],
+          }],
+        },
+      },
+>>>>>>> origin/master
     );
     await logActivity(db, {
       companyId: issue.companyId,
@@ -3264,8 +3468,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .orderBy(desc(issueComments.createdAt))
         .limit(50)
         .then((rows) => rows.some((row) =>
-          (row.body ?? "").includes(escalationCommentMarker) ||
-          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id),
+          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id) ||
+          (row.body ?? "").includes(escalationCommentMarker),
         ));
 
       if (!hasEscalationComment) {
@@ -3278,6 +3482,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
+            presentation: compactRecoveryPresentation(
+              `Recovery: ${recoveryCauseTitle(recoveryCause)} — moved to blocked ` +
+              `(owner: ${recoveryOwner?.name ?? "board"})`,
+            ),
+            metadata: recoveryNoticeMetadata({
+              cause: recoveryCause,
+              latestRun: input.latestRun,
+              recoveryActionId: recoveryAction.id,
+              previousStatus: input.previousStatus,
+              recoveryOwner,
+            }),
           });
         }
       }
@@ -3514,6 +3729,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+<<<<<<< HEAD
+=======
+      operatorCancelExempted: 0,
+>>>>>>> origin/master
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -3564,6 +3783,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+<<<<<<< HEAD
+=======
+      if (isOperatorCancelledRun(latestRun)) {
+        result.operatorCancelExempted += 1;
+        continue;
+      }
+>>>>>>> origin/master
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
         continue;
@@ -3899,7 +4125,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (latestRun.status === "succeeded") {
+        if (
+          latestRun.status === "succeeded" &&
+          !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+        ) {
           result.skipped += 1;
           continue;
         }
@@ -5313,22 +5542,192 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+<<<<<<< HEAD
+=======
+  // Backstop reconciler: terminalizes a "running" run that can no longer reach a
+  // terminal status on its own. The run finalizer writes the terminal status in
+  // a step that is separate from the agent status=done PATCH. When the teardown
+  // stops between the two steps, heartbeat_runs.status stays "running" forever.
+  // The UI reads liveness from that row, so the task shows "Live" forever. This
+  // function forces the run to a terminal status and records a run event, so the
+  // state is auditable. It never overwrites a status that another path already
+  // made terminal.
+  //
+  // Two independent authorities terminalize the run. Either one is enough:
+  //
+  // - Issue-terminal authority: the run's issue already reached a terminal
+  //   status (done or cancelled), but the run row is still "running". A healthy
+  //   run always terminalizes its own row before or just after the issue reaches
+  //   a terminal status, so a lasting "running" row under a terminal issue is
+  //   orphaned. This authority does not depend on process death. It is the only
+  //   authority that catches the reuse-lease path: the release stops the sandbox
+  //   but keeps the server process alive, so the in-memory handle and the
+  //   recorded pid can both persist.
+  // - Process-death authority: the run has no in-memory handle and its recorded
+  //   process and process group are both gone. This catches a hard server crash
+  //   that skipped the graceful teardown, even when the issue is not terminal.
+  async function terminalizeOrphanedRunningRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    options?: {
+      // The terminal run status implied by a referencing issue. The caller
+      // passes it when it already knows the issue that holds the run in a lock
+      // column. It maps issue "done" to "succeeded" and issue "cancelled" to
+      // "cancelled". A null value means the referencing issue is not terminal.
+      referencingIssueTerminalStatus?: "succeeded" | "cancelled" | null;
+      // True when an active (non-terminal) issue still holds this run in a lock
+      // column. The run is live for that active issue, so the caller forbids the
+      // issue-terminal authority. This flag also suppresses the context-snapshot
+      // fallback below. Without it, a terminal issue named in the run context
+      // snapshot would still terminalize the shared run and defeat the guard.
+      runReferencedByActiveIssue?: boolean;
+    },
+  ): Promise<{ terminalized: boolean; status: string }> {
+    // Act only on a run in "running" status. A "queued" run has no process yet,
+    // and a "scheduled_retry" run has no process on purpose because it waits to
+    // retry. Neither is orphaned, so this function must not terminalize them.
+    if (run.status !== "running") return { terminalized: false, status: run.status };
+
+    const pid = run.processPid ?? null;
+    const processGroupId = run.processGroupId ?? null;
+
+    // Issue-terminal authority. When the run's issue is terminal, the run row is
+    // orphaned regardless of process or handle state. Prefer the referencing
+    // issue status that the caller passed, because a lock column is the direct
+    // link from the stuck "Live" issue to this run. Fall back to the issue id in
+    // the run context snapshot when the caller passed nothing. Skip the fallback
+    // when an active issue still references the run. The run is live for that
+    // active issue, so a terminal issue named in the context snapshot must not
+    // terminalize it.
+    let issueTerminalStatus: "succeeded" | "cancelled" | null =
+      options?.referencingIssueTerminalStatus ?? null;
+    const issueId = issueIdFromRunContext(run.contextSnapshot);
+    if (!issueTerminalStatus && !options?.runReferencedByActiveIssue && issueId) {
+      const issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status ?? null);
+      if (issueStatus === "done") issueTerminalStatus = "succeeded";
+      else if (issueStatus === "cancelled") issueTerminalStatus = "cancelled";
+    }
+
+    // Process-death authority. The run is live only when a process still backs
+    // it. Check the in-memory handle first, then the recorded pid and process
+    // group. Require recorded process metadata, so this authority never fires on
+    // a run that has not yet stored its pid.
+    let processGone = false;
+    if (!runningProcesses.get(run.id)) {
+      if (typeof pid === "number" || typeof processGroupId === "number") {
+        const processAlive =
+          (typeof pid === "number" && isPidAlive(pid)) ||
+          (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+        processGone = !processAlive;
+      }
+    }
+
+    // Neither authority applies. The run is still live, so leave it alone.
+    if (!issueTerminalStatus && !processGone) {
+      return { terminalized: false, status: run.status };
+    }
+
+    const authority = issueTerminalStatus ? "issue_terminal" : "process_gone";
+    const terminalStatus = issueTerminalStatus ?? "interrupted";
+    const errorCode = issueTerminalStatus
+      ? "orphaned_running_run_issue_terminal"
+      : "orphaned_running_run";
+    const message =
+      authority === "issue_terminal"
+        ? "run terminalized by recovery backstop: issue reached a terminal status while heartbeat_runs.status stayed live"
+        : "run terminalized by recovery backstop: process and sandbox gone while heartbeat_runs.status stayed live";
+
+    const now = new Date();
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        status: terminalStatus,
+        finishedAt: run.finishedAt ?? now,
+        error: run.error ?? (terminalStatus === "interrupted" ? message : null),
+        errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? errorCode : null),
+        updatedAt: now,
+      })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!updated) {
+      // Another path finalized the run between the read and this write. Keep
+      // that terminal outcome authoritative.
+      const [current] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id));
+      return { terminalized: false, status: current?.status ?? run.status };
+    }
+
+    runningProcesses.delete(run.id);
+    // The run update above already committed the terminal status. The audit
+    // event is best-effort: if the insert fails, the caller must still treat
+    // the run as terminalized and clear the lock in the same sweep. So catch
+    // the failure, log it, and continue. A thrown error here would abort the
+    // sweep and leave the stale lock in place.
+    try {
+      await appendRecoveryRunEvent(updated, {
+        level: "warn",
+        message,
+        payload: {
+          source: "recovery.sweep_stale_issue_locks",
+          authority,
+          previousStatus: run.status,
+          terminalStatus,
+          ...(issueId ? { issueId } : {}),
+          pid,
+          processGroupId,
+        },
+      });
+    } catch (error) {
+      logger.error(
+        { err: error, runId: run.id, previousStatus: run.status },
+        "failed to append recovery run event after terminalizing orphaned run; run stays terminal and the sweep clears the lock",
+      );
+    }
+    logger.warn(
+      { runId: run.id, authority, previousStatus: run.status, terminalStatus, issueId, pid, processGroupId },
+      "terminalized orphaned running heartbeat run in stale-lock sweep",
+    );
+    return { terminalized: true, status: updated.status };
+  }
+
+>>>>>>> origin/master
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
   // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
+<<<<<<< HEAD
   // Idempotent and safe: clears at most one row's worth of lock columns per
   // candidate, and only when the referenced run row is unambiguously terminal.
+=======
+  // Before it evaluates cleanability, it terminalizes any referenced run that
+  // still claims to be live but can no longer reach a terminal status on its
+  // own, so a stuck "running" run can no longer block the sweep. Idempotent and
+  // safe: clears at most one row's worth of lock columns per candidate.
+>>>>>>> origin/master
   async function sweepStaleIssueLocks() {
     const result = {
       cleared: 0,
       issueIds: [] as string[],
+<<<<<<< HEAD
+=======
+      terminalizedRunIds: [] as string[],
+>>>>>>> origin/master
     };
 
     const candidates = await db
       .select({
         id: issues.id,
         companyId: issues.companyId,
+<<<<<<< HEAD
+=======
+        status: issues.status,
+>>>>>>> origin/master
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
@@ -5347,13 +5746,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runRows =
       referencedRunIds.length > 0
         ? await db
+<<<<<<< HEAD
             .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+=======
+            .select()
+>>>>>>> origin/master
             .from(heartbeatRuns)
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
     const runStatusById = new Map<string, string>();
     for (const row of runRows) runStatusById.set(row.id, row.status);
 
+<<<<<<< HEAD
+=======
+    // Collect the runs that a non-terminal issue still references. Such a run is
+    // the live run of an active issue. A different, terminal issue can also hold
+    // the same run id in a stale lock column. The terminal reference alone must
+    // not terminalize a run that an active issue still owns, so exclude these
+    // runs from the issue-terminal authority below.
+    const runIdsReferencedByActiveIssue = new Set<string>();
+    for (const issue of candidates) {
+      if (issue.status === "done" || issue.status === "cancelled") continue;
+      for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
+        if (runId) runIdsReferencedByActiveIssue.add(runId);
+      }
+    }
+
+    // Map each referenced run to the terminal run status implied by its
+    // referencing issue. When a terminal issue still holds the run in a lock
+    // column, that run is orphaned: the issue is the stuck "Live" task the UI
+    // shows. A "done" issue implies "succeeded"; a "cancelled" issue implies
+    // "cancelled". Skip a run that an active issue also references, because that
+    // run is still live for the active issue.
+    const issueTerminalStatusByRunId = new Map<string, "succeeded" | "cancelled">();
+    for (const issue of candidates) {
+      const implied =
+        issue.status === "done"
+          ? "succeeded"
+          : issue.status === "cancelled"
+            ? "cancelled"
+            : null;
+      if (!implied) continue;
+      for (const runId of [issue.checkoutRunId, issue.executionRunId]) {
+        if (runId && !runIdsReferencedByActiveIssue.has(runId)) {
+          issueTerminalStatusByRunId.set(runId, implied);
+        }
+      }
+    }
+
+    // Pre-pass: terminalize any referenced run that still claims to be live but
+    // can no longer reach a terminal status on its own. This lets the sweep
+    // clear the lock in the same pass instead of waiting for the run to reach a
+    // terminal status by another route.
+    for (const row of runRows) {
+      const outcome = await terminalizeOrphanedRunningRun(row, {
+        referencingIssueTerminalStatus: issueTerminalStatusByRunId.get(row.id) ?? null,
+        runReferencedByActiveIssue: runIdsReferencedByActiveIssue.has(row.id),
+      });
+      runStatusById.set(row.id, outcome.status);
+      if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
+    }
+
+>>>>>>> origin/master
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
       const status = runStatusById.get(runId);
@@ -5412,9 +5866,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
+<<<<<<< HEAD
     if (result.cleared > 0) {
       logger.warn(
         { cleared: result.cleared, issueIds: result.issueIds },
+=======
+    if (result.cleared > 0 || result.terminalizedRunIds.length > 0) {
+      logger.warn(
+        {
+          cleared: result.cleared,
+          issueIds: result.issueIds,
+          terminalizedRunIds: result.terminalizedRunIds,
+        },
+>>>>>>> origin/master
         "swept stale issue lock columns",
       );
     }

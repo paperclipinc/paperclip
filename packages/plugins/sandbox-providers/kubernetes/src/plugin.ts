@@ -1,7 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
+<<<<<<< HEAD
   PluginContext,
+=======
+>>>>>>> origin/master
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
@@ -13,6 +16,12 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+<<<<<<< HEAD
+=======
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
+>>>>>>> origin/master
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -28,19 +37,35 @@ import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
+<<<<<<< HEAD
 import {
   resolveCompanyInferenceKey,
   applyCompanyInferenceKey,
 } from "./inference-key-resolver.js";
+=======
+>>>>>>> origin/master
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
+<<<<<<< HEAD
   SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
 import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
+=======
+} from "./sandbox-cr-orchestrator.js";
+import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
+import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
+import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import {
+  appendNetworkEgressDenyHint,
+  createScopedNetworkEgressPolicyOrReleaseWorkload,
+  NETWORK_EGRESS_GRANT_PATH,
+  parseScopedNetworkEgressGrant,
+} from "./scoped-network-egress.js";
+>>>>>>> origin/master
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -56,6 +81,7 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
+<<<<<<< HEAD
 // Resource quota + LimitRange defaults applied to every tenant namespace.
 // Defaults match the historical hard-coded values, so when none of the
 // PAPERCLIP_K8S_QUOTA_* / PAPERCLIP_K8S_LIMITRANGE_* env vars are set the
@@ -80,6 +106,17 @@ function envLimitRange() {
     maxMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_MEMORY ?? "8Gi",
   };
 }
+=======
+// Resource quota defaults applied to every tenant namespace (tunable via
+// config in a future iteration).
+const DEFAULT_RESOURCE_QUOTA = {
+  pods: "20",
+  requestsCpu: "10",
+  requestsMemory: "20Gi",
+  limitsCpu: "20",
+  limitsMemory: "40Gi",
+};
+>>>>>>> origin/master
 
 function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: string): string {
   // TODO: future versions could thread companyName through AcquireLeaseParams
@@ -130,6 +167,7 @@ const readySandboxesByLease = new Set<string>();
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
+<<<<<<< HEAD
 // The default realized workspace cwd. The agent pod mounts /workspace as an
 // emptyDir at scheduling time (see pod-spec-builder); onEnvironmentRealizeWorkspace
 // hands this back and the lease metadata carries it from acquisition.
@@ -144,6 +182,92 @@ let pluginContext: PluginContext | null = null;
 const plugin = definePlugin({
   async setup(ctx) {
     pluginContext = ctx;
+=======
+// The workspace remote dir is the confinement root for native file sync. It is
+// recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
+// it so a sync can never run without a concrete root to confine every sandbox
+// path against.
+function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
+  const remoteCwd = lease.metadata?.remoteCwd;
+  if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
+    return remoteCwd.trim();
+  }
+  throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
+}
+
+/**
+ * Resolve the running Sandbox-CR pod for a native file-sync operation and return
+ * a `PodStreamExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
+ * target: parse config, derive the namespace, wait for the Sandbox pod to reach
+ * Ready (cached per lease), and find the pod name. The `job` backend carries no
+ * file path and is out of scope — file sync is only supported on `sandbox-cr`.
+ */
+async function resolveSyncPodExec(
+  params:
+    | PluginEnvironmentSyncInParams
+    | PluginEnvironmentSyncOutParams,
+): Promise<{ exec: PodStreamExec; timeoutMs: number }> {
+  const { lease } = params;
+  if (!lease.providerLeaseId) {
+    throw new Error("Kubernetes file sync requires a provider lease ID.");
+  }
+
+  const config = kubernetesProviderConfigSchema.parse(params.config);
+  const namespace =
+    typeof lease.metadata?.namespace === "string"
+      ? lease.metadata.namespace
+      : deriveTenantNamespace(config, params.companyId);
+
+  const leaseBackend =
+    typeof lease.metadata?.backend === "string"
+      ? (lease.metadata.backend as "sandbox-cr" | "job")
+      : config.backend;
+  if (leaseBackend !== "sandbox-cr") {
+    throw new Error(
+      `Kubernetes file sync is only supported on the sandbox-cr backend (lease backend: ${leaseBackend}).`,
+    );
+  }
+
+  const kc = createKubeConfig({
+    inCluster: config.inCluster,
+    kubeconfig: config.kubeconfig,
+  });
+  const clients = makeKubeClients(kc);
+  const timeoutMs = config.podActivityDeadlineSec * 1000;
+
+  // Ensure the Sandbox pod is Ready (wait only the first time for this lease),
+  // then resolve the pod name — mirrors the onEnvironmentExecute resolution.
+  if (!readySandboxesByLease.has(lease.providerLeaseId)) {
+    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
+      timeoutMs,
+      pollMs: 2000,
+    });
+    readySandboxesByLease.add(lease.providerLeaseId);
+  }
+
+  const podName =
+    typeof lease.metadata?.podName === "string" && lease.metadata.podName
+      ? lease.metadata.podName
+      : await sandboxCrOrchestrator.findPod(clients, namespace, lease.providerLeaseId);
+  if (!podName) {
+    throw new Error("Kubernetes file sync could not resolve the Sandbox pod name.");
+  }
+
+  // Bind the streaming exec: raw tar bytes move over stdin/stdout straight to and
+  // from a host file, so neither side buffers the whole payload. The file-sync
+  // module bounds the untrusted pod's stdout with its own streamed-bytes disk
+  // guard and passes the stderr cap through `io`.
+  const exec: PodStreamExec = (command, io) =>
+    execInPodStreaming(kc, namespace, podName, "agent", command, {
+      ...io,
+      timeoutMs: io.timeoutMs ?? timeoutMs,
+    });
+  return { exec, timeoutMs };
+}
+
+const plugin = definePlugin({
+  async setup(ctx) {
+>>>>>>> origin/master
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
   },
 
@@ -235,7 +359,14 @@ const plugin = definePlugin({
     // SDK lease params grow that field (companion server-integration PR). The
     // plugin works without it: absent means "use the environment's configured
     // default adapter", so it stays compatible with the current SDK.
+<<<<<<< HEAD
     params: PluginEnvironmentAcquireLeaseParams & { adapterType?: string },
+=======
+    params: PluginEnvironmentAcquireLeaseParams & {
+      adapterType?: string;
+      executionWorkspaceSettings?: Record<string, unknown> | null;
+    },
+>>>>>>> origin/master
   ): Promise<PluginEnvironmentLease> {
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
@@ -245,6 +376,7 @@ const plugin = definePlugin({
     // to the environment's configured default adapter. getAdapterDefaults validates
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
+<<<<<<< HEAD
     //
     // Drive the fallback safety off the configured adapter set: the env-default
     // fallback for an absent per-run adapter is permitted ONLY when the `adapters`
@@ -262,6 +394,9 @@ const plugin = definePlugin({
       requireRunAdapter: config.requireRunAdapterType,
       configuredAdapterTypes,
     });
+=======
+    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
+>>>>>>> origin/master
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
@@ -296,11 +431,17 @@ const plugin = definePlugin({
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
+<<<<<<< HEAD
       egressPolicy: config.egressPolicy,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
       resourceQuota: envQuota(),
       limitRange: envLimitRange(),
+=======
+      egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
+      egressAllowCidrs: config.egressAllowCidrs,
+      resourceQuota: DEFAULT_RESOURCE_QUOTA,
+>>>>>>> origin/master
     });
 
     const jobName = `pc-${newRunUlidDns()}`;
@@ -354,6 +495,7 @@ const plugin = definePlugin({
         });
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
+<<<<<<< HEAD
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
@@ -376,6 +518,36 @@ const plugin = definePlugin({
       adapterEnv = applyCompanyInferenceKey(adapterEnv, companyKey);
     }
 
+=======
+    const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
+    const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
+      {
+        clients,
+        namespace,
+        mode: config.egressMode,
+        runId: params.runId,
+        workloadName: jobName,
+        ownerReference: {
+          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+          kind: isSandboxCrBackend ? "Sandbox" : "Job",
+          name: jobName,
+          uid: ownerUid,
+          controller: false,
+          blockOwnerDeletion: false,
+        },
+        grant: scopedNetworkEgress,
+      },
+      () => orchestrator.release(clients, namespace, jobName),
+    );
+
+    // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
+    // the process-env secrets named by envKeys override it.
+    const adapterEnv = buildAdapterEnv(adapterDefaults);
+    adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = "kubernetes-default-deny";
+    adapterEnv.PAPERCLIP_NETWORK_EGRESS_GRANT_PATH = NETWORK_EGRESS_GRANT_PATH;
+    adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_FQDNS = scopedNetworkEgress.allowFqdns.join(",");
+    adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_CIDRS = scopedNetworkEgress.allowCidrs.join(",");
+>>>>>>> origin/master
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
@@ -404,6 +576,7 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+<<<<<<< HEAD
       // Carry the realized workspace cwd on the lease from acquisition, matching
       // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
       // Daytona providers do the same: a lease that knows its own cwd makes the
@@ -421,6 +594,14 @@ const plugin = definePlugin({
       // be matched by any run's reuse lookup.
       adapterType: effectiveAdapterType,
       image,
+=======
+      scopedNetworkPolicyName,
+      scopedNetworkEgress,
+      // Native file sync streams over a pod exec; only the sandbox-cr backend
+      // exposes one. Flag the job backend so the server keeps the base64 fallback
+      // rather than routing its sync to a hook that would reject immediately.
+      nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+>>>>>>> origin/master
     };
 
     return {
@@ -483,6 +664,7 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
+<<<<<<< HEAD
     // A Kubernetes pod's image cannot change in place, so the adapter/image
     // this resumed pod is running is whatever was resolved at its original
     // acquireLease: carry it forward unchanged rather than re-deriving it.
@@ -493,6 +675,8 @@ const plugin = definePlugin({
       typeof params.leaseMetadata?.adapterType === "string" ? params.leaseMetadata.adapterType : undefined;
     const priorImage =
       typeof params.leaseMetadata?.image === "string" ? params.leaseMetadata.image : undefined;
+=======
+>>>>>>> origin/master
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
@@ -500,11 +684,24 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
+<<<<<<< HEAD
       // Pre-baked runtime images (see acquire path); the resumed lease carries
       // the same capability so the server keeps the network-install shim off.
       runtimeImagePrebaked: true,
       adapterType: priorAdapterType,
       image: priorImage,
+=======
+      scopedNetworkPolicyName:
+        typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
+          ? params.leaseMetadata.scopedNetworkPolicyName
+          : null,
+      scopedNetworkEgress: parseScopedNetworkEgressGrant({
+        networkEgress: params.leaseMetadata?.scopedNetworkEgress,
+      }),
+      // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
+      // native sync, so a resumed job lease must keep the base64 fallback.
+      nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+>>>>>>> origin/master
     };
 
     return {
@@ -525,7 +722,11 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
+<<<<<<< HEAD
         : REALIZED_WORKSPACE_CWD;
+=======
+        : "/workspace";
+>>>>>>> origin/master
     return {
       cwd,
       metadata: {
@@ -557,12 +758,15 @@ const plugin = definePlugin({
         : config.backend;
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+<<<<<<< HEAD
     // acquireLease names the per-run Secret `${jobName}-env` and uses jobName as
     // the providerLeaseId, so the suffix fallback reconstructs it exactly.
     const secretName =
       typeof params.leaseMetadata?.secretName === "string"
         ? params.leaseMetadata.secretName
         : `${params.providerLeaseId}-env`;
+=======
+>>>>>>> origin/master
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -578,6 +782,7 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+<<<<<<< HEAD
 
     // Explicitly delete the per-run Secret on release too. Normal release relies
     // on the Sandbox CR / Job ownerRef cascade to remove it, but a wedged
@@ -585,6 +790,8 @@ const plugin = definePlugin({
     // Secrets in tenant namespaces. Best-effort + 404-tolerant so release never
     // fails on a cleanup race. SECURITY-relevant. See deleteLeaseSecretBestEffort.
     await deleteLeaseSecretBestEffort(clients, namespace, secretName);
+=======
+>>>>>>> origin/master
   },
 
   async onEnvironmentDestroyLease(
@@ -637,6 +844,7 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentExecuteResult> {
     const { lease, timeoutMs } = params;
 
+<<<<<<< HEAD
     // Live-output streaming. Two independent sinks, either or both of which may
     // be active for a single exec:
     //
@@ -701,6 +909,8 @@ const plugin = definePlugin({
       }
     };
 
+=======
+>>>>>>> origin/master
     if (!lease.providerLeaseId) {
       return {
         exitCode: 1,
@@ -711,6 +921,12 @@ const plugin = definePlugin({
     }
 
     const config = kubernetesProviderConfigSchema.parse(params.config);
+<<<<<<< HEAD
+=======
+    const scopedNetworkEgress = parseScopedNetworkEgressGrant({
+      networkEgress: lease.metadata?.scopedNetworkEgress,
+    });
+>>>>>>> origin/master
     const namespace =
       typeof lease.metadata?.namespace === "string"
         ? lease.metadata.namespace
@@ -754,6 +970,7 @@ const plugin = definePlugin({
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
+<<<<<<< HEAD
       // The readiness wait has its OWN budget (podReadyTimeoutSec), never
       // more than the caller's whole exec budget. Before this cap the wait
       // shared the full exec budget, so a pod that was never coming up burned
@@ -765,12 +982,15 @@ const plugin = definePlugin({
         effectiveTimeoutMs,
       );
 
+=======
+>>>>>>> origin/master
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
+<<<<<<< HEAD
             {
               timeoutMs: readyTimeoutMs,
               pollMs: 2000,
@@ -805,17 +1025,31 @@ const plugin = definePlugin({
           if (err instanceof SandboxCrTimeoutError) {
             // NOTE: the stderr marker below is classified server-side (see
             // adapter-utils sandbox-infra-failure) — keep them in sync.
+=======
+            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+          );
+          readySandboxesByLease.add(lease.providerLeaseId);
+        } catch (err) {
+          if (err instanceof SandboxCrTimeoutError) {
+>>>>>>> origin/master
             return {
               exitCode: null,
               timedOut: true,
               stdout: "",
+<<<<<<< HEAD
               stderr: `Sandbox pod did not become Ready within ${readyTimeoutMs}ms`,
+=======
+              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+>>>>>>> origin/master
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
                 namespace,
                 sandboxName: lease.providerLeaseId,
+<<<<<<< HEAD
                 errorCode: "sandbox_not_ready",
+=======
+>>>>>>> origin/master
               },
             };
           }
@@ -969,6 +1203,7 @@ const plugin = definePlugin({
         effectiveTimeoutMs - (Date.now() - executeStartedAt),
       );
 
+<<<<<<< HEAD
       // Open the live-output channel just before the exec (chunks only flow
       // from execInPod) and close it in a finally so it is torn down on the
       // success, timeout, and error return paths alike — no leaked channel.
@@ -1038,6 +1273,27 @@ const plugin = definePlugin({
           // ctx.streams bridge); flag it so the caller suppresses the trailing
           // buffered log dump (no double logging).
           ...(onChunk ? { streamed: true } : {}),
+=======
+      let execResult: { exitCode: number; stdout: string; stderr: string };
+      try {
+        execResult = await execInPod(
+          kc,
+          namespace,
+          podName,
+          "agent",
+          execCommand,
+          typeof params.stdin === "string" ? params.stdin : undefined,
+          remainingTimeoutMs,
+        );
+      } catch (err) {
+        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
+        // the caller can retry instead of hanging forever.
+        return {
+          exitCode: null,
+          timedOut: true,
+          stdout: "",
+          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
+>>>>>>> origin/master
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",
@@ -1046,9 +1302,27 @@ const plugin = definePlugin({
             podName,
           },
         };
+<<<<<<< HEAD
       } finally {
         closeOutputChannel();
       }
+=======
+      }
+
+      return {
+        exitCode: execResult.exitCode,
+        timedOut: false,
+        stdout: execResult.stdout,
+        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          namespace,
+          sandboxName: lease.providerLeaseId,
+          podName,
+        },
+      };
+>>>>>>> origin/master
     } else {
       // ── Job backend (legacy / stable fallback) ──────────────────────────────
       // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
@@ -1057,6 +1331,7 @@ const plugin = definePlugin({
       //
       // params.command / params.args / params.stdin are intentionally ignored.
 
+<<<<<<< HEAD
       // Open the live-output channel around the whole wait+log-scrape region so
       // it is closed on the success and timeout paths and if the orchestrator
       // throws — no leaked channel.
@@ -1130,6 +1405,101 @@ const plugin = definePlugin({
       }
     }
   },
+=======
+      let status;
+      let timedOut = false;
+      try {
+        status = await jobOrchestrator.waitForCompletion(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+        );
+      } catch (err) {
+        if (err instanceof JobTimeoutError) {
+          timedOut = true;
+          status = null;
+        } else {
+          throw err;
+        }
+      }
+
+      // Collect logs from the pod.
+      const podName =
+        typeof lease.metadata?.podName === "string"
+          ? lease.metadata.podName
+          : await jobOrchestrator.findPod(
+              clients,
+              namespace,
+              lease.providerLeaseId,
+            );
+
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+
+      if (podName) {
+        await jobOrchestrator.streamLogs(
+          clients,
+          namespace,
+          podName,
+          async (stream, text) => {
+            if (stream === "stdout") stdoutChunks.push(text);
+            else stderrChunks.push(text);
+          },
+        );
+      }
+
+      return {
+        exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+        timedOut,
+        stdout: stdoutChunks.join(""),
+        stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
+        metadata: {
+          provider: "kubernetes",
+          backend: "job",
+          namespace,
+          jobName: lease.providerLeaseId,
+          podName: podName ?? null,
+          phase: status?.phase ?? null,
+        },
+      };
+    }
+  },
+
+  // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
+  // makes the worker advertise `environmentSyncIn`/`environmentSyncOut`, so the
+  // host runner routes workspace/asset transfers through a single pod exec per
+  // operation (host tar streamed over the exec stdin → in-pod `head -c <N> | tar
+  // -x` → stage-then-atomic-`mv -f`) instead of the base64-over-exec chunk loop.
+  // Only the sandbox-cr backend is supported; the job backend carries no file
+  // path. Providers that do not define these keep the byte-identical fallback.
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncIn({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
+  },
+
+  // Opt-in native outbound transfer. See onEnvironmentSyncIn.
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    const remoteDir = resolveSyncRemoteDir(params.lease);
+    const { exec, timeoutMs } = await resolveSyncPodExec(params);
+    return await performSyncOut({
+      exec,
+      operations: params.operations,
+      remoteDir,
+      timeoutMs,
+    });
+  },
+>>>>>>> origin/master
 });
 
 export default plugin;

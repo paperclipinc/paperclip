@@ -36,6 +36,7 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+<<<<<<< HEAD
 
   it("defaults podUnschedulableGraceSec to 120", () => {
     const parsed = parseKubernetesProviderConfig({ inCluster: true });
@@ -71,4 +72,6 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, podReadyTimeoutSec: -5 }),
     ).toThrow();
   });
+=======
+>>>>>>> origin/master
 });

@@ -5,7 +5,10 @@ import {
   getSandboxCrStatus,
   findPodForSandbox,
   SandboxCrTimeoutError,
+<<<<<<< HEAD
   SandboxSchedulingError,
+=======
+>>>>>>> origin/master
   waitForSandboxReady,
 } from "../../src/sandbox-cr-orchestrator.js";
 
@@ -269,6 +272,7 @@ describe("waitForSandboxReady", () => {
     ).rejects.toThrow(/failed.*OOMKilled/i);
   });
 });
+<<<<<<< HEAD
 
 describe("waitForSandboxReady unschedulable detection", () => {
   function unschedulablePod(lastTransitionTime: string | undefined) {
@@ -407,3 +411,5 @@ describe("waitForSandboxReady unschedulable detection", () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+=======
+>>>>>>> origin/master

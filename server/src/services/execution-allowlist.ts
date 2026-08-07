@@ -16,8 +16,11 @@
  * unit-testable.
  */
 
+<<<<<<< HEAD
 import type { InstanceExecutionMode } from "@paperclipai/shared";
 
+=======
+>>>>>>> origin/master
 /** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
 export const KUBERNETES_PROVIDER_KEY = "kubernetes" as const;
 
@@ -58,6 +61,7 @@ export function isExecutionForcedToKubernetes(policy: ExecutionPolicy | null | u
 }
 
 /**
+<<<<<<< HEAD
  * Why a host-local `claude login` is unavailable under the given execution
  * mode, or `null` when it is allowed.
  *
@@ -78,6 +82,8 @@ export function claudeHostLoginUnavailableReason(
 }
 
 /**
+=======
+>>>>>>> origin/master
  * True iff the candidate environment is the Kubernetes sandbox provider, i.e. a
  * core `sandbox` driver whose provider key is "kubernetes".
  */

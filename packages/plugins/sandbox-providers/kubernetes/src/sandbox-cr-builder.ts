@@ -16,11 +16,14 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+<<<<<<< HEAD
 // Where the seed init container mounts the home volume. Deliberately not
 // /home/paperclip: mounting there would shadow the image's baked home in the
 // init container too, leaving nothing to copy.
 const SEED_HOME_STAGING_PATH = "/mnt/seed-home";
 
+=======
+>>>>>>> origin/master
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -86,6 +89,7 @@ export function buildSandboxCrManifest(
             fsGroupChangePolicy: "OnRootMismatch",
             seccompProfile: { type: "RuntimeDefault" },
           },
+<<<<<<< HEAD
           // The `home` emptyDir below mounts over /home/paperclip and so hides
           // anything the runtime image baked there. That is load-bearing for at
           // least one harness: Dockerfile.gemini writes
@@ -124,6 +128,8 @@ export function buildSandboxCrManifest(
               volumeMounts: [{ name: "home", mountPath: SEED_HOME_STAGING_PATH }],
             },
           ],
+=======
+>>>>>>> origin/master
           containers: [
             {
               name: "agent",

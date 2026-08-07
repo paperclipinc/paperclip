@@ -135,6 +135,7 @@ describe("buildSandboxCrManifest", () => {
     expect(cr.spec.podTemplate.spec.imagePullSecrets).toBeUndefined();
   });
 });
+<<<<<<< HEAD
 
 describe("buildSandboxCrManifest: baked home seeding", () => {
   // The image builds a home directory the pod then throws away. Dockerfile
@@ -189,3 +190,5 @@ describe("buildSandboxCrManifest: baked home seeding", () => {
     expect(String(seed.command?.[seed.command.length - 1] ?? "")).toMatch(/\|\|\s*true/);
   });
 });
+=======
+>>>>>>> origin/master

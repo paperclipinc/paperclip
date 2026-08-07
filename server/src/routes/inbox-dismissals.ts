@@ -5,9 +5,15 @@ import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { inboxDismissalService, logActivity } from "../services/index.js";
 
+<<<<<<< HEAD
 const ITEM_KEY_RE = /^(approval|join|run|attention|checklist):.+$/;
 
 export const inboxDismissalSchema = z.object({
+=======
+const ITEM_KEY_RE = /^(approval|join|run|attention):.+$/;
+
+const inboxDismissalSchema = z.object({
+>>>>>>> origin/master
   itemKey: z.string().trim().min(1).regex(ITEM_KEY_RE, "Unsupported inbox item key"),
   kind: z.enum(["dismiss", "snooze"]).default("dismiss"),
   snoozedUntil: z.string().trim().optional(),

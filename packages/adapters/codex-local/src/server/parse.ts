@@ -19,6 +19,7 @@ const CODEX_REFRESH_TOKEN_EXPIRED_RE =
 const CODEX_REFRESH_TOKEN_INVALIDATED_RE =
   /(?:refresh[_\s-]?token[_\s-]?(?:invalidated|revoked|invalid)|refresh token (?:has been )?(?:invalidated|revoked|invalid)|invalid refresh token|missing bearer)/i;
 const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
+<<<<<<< HEAD
 // A presented OpenAI API key the provider rejected outright (401
 // invalid_api_key family), or no key at all. Distinct from the OAuth
 // refresh-token classes above, which cover ChatGPT subscription auth; callers
@@ -41,6 +42,8 @@ const CODEX_CONTEXTUAL_INVALID_API_KEY_RE = new RegExp(
   `(?:${CODEX_INVALID_API_KEY_GENERIC_SRC}[\\s\\S]{0,120}?${OPENAI_MARKER_SRC}|${OPENAI_MARKER_SRC}[\\s\\S]{0,120}?${CODEX_INVALID_API_KEY_GENERIC_SRC}|(?:\\b401\\b|\\bunauthori[sz]ed\\b)[\\s\\S]{0,120}?api\\.openai\\.com|api\\.openai\\.com[\\s\\S]{0,120}?(?:\\b401\\b|\\bunauthori[sz]ed\\b))`,
   "i",
 );
+=======
+>>>>>>> origin/master
 const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
   /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
 
@@ -53,6 +56,8 @@ export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawProtocolEvent = false;
+  let sawProtocolTerminalEvent = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -67,6 +72,10 @@ export function parseCodexJsonl(stdout: string) {
     if (!event) continue;
 
     const type = asString(event.type, "");
+    if (type) sawProtocolEvent = true;
+    if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+      sawProtocolTerminalEvent = true;
+    }
     if (type === "thread.started") {
       sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
       continue;
@@ -108,7 +117,28 @@ export function parseCodexJsonl(stdout: string) {
     usage,
     usageBasis: "per_run" as const,
     errorMessage,
+    sawProtocolEvent,
+    sawProtocolTerminalEvent,
   };
+}
+
+/**
+ * Structural crash detection: the codex CLI can only report an agent-level
+ * failure through the JSONL protocol (an `error` event, `turn.failed`, or a
+ * finished `turn.completed` followed by a nonzero exit). A nonzero exit after
+ * the protocol stream started but before any terminal event means the process
+ * died out from under the agent (MCP transport crash, worker panic, killed
+ * tool server) — retriable infrastructure, not agent behavior. This
+ * deliberately does not match error text: transport failure strings vary, and
+ * stdout/stderr can quote agent output that merely discusses network errors.
+ */
+export function isCodexHarnessCrash(input: {
+  exitCode: number | null;
+  sawProtocolEvent: boolean;
+  sawProtocolTerminalEvent: boolean;
+}): boolean {
+  if ((input.exitCode ?? 0) === 0) return false;
+  return input.sawProtocolEvent && !input.sawProtocolTerminalEvent;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
@@ -154,6 +184,7 @@ export function classifyCodexAuthRefreshFailure(input: {
   return null;
 }
 
+<<<<<<< HEAD
 export function isCodexInvalidApiKeyError(input: {
   stdout?: string | null;
   stderr?: string | null;
@@ -166,6 +197,8 @@ export function isCodexInvalidApiKeyError(input: {
   );
 }
 
+=======
+>>>>>>> origin/master
 function readTimeZoneParts(date: Date, timeZone: string) {
   const values = new Map(
     new Intl.DateTimeFormat("en-US", {

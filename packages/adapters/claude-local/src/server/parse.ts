@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+<<<<<<< HEAD
 // A credential was actually PRESENTED and the provider said it is invalid,
 // as opposed to a plain "you haven't signed in yet" prompt with no
 // credential in play. CLAUDE_AUTH_REQUIRED_RE intentionally also matches
@@ -23,6 +24,8 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 // "invalid api key" or "authentication required" verbatim is not a
 // realistic false-positive surface the way a single common word is.
 const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|\bunauthorized\b|authentication\s+required)/i;
+=======
+>>>>>>> origin/master
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -31,12 +34,15 @@ const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
+<<<<<<< HEAD
 // A connected-but-rejected credential (expired OAuth token, revoked API key).
 // Distinct from CLAUDE_AUTH_REQUIRED_RE, which detects the CLI's interactive
 // "run /login" prompt; both resolve to errorCode "claude_auth_required" so the
 // heartbeat's permanent-auth pause covers them.
 const CLAUDE_INVALID_CREDENTIAL_RE =
   /(?:failed\s+to\s+authenticate[\s\S]{0,200}?\b401\b|\b401\b[\s\S]{0,200}?failed\s+to\s+authenticate|invalid\s+bearer\s+token|oauth\s+(?:access\s+)?token\s+is\s+(?:invalid|expired|revoked)|invalid\s+x-api-key|authentication[\s_]error)/i;
+=======
+>>>>>>> origin/master
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -245,6 +251,7 @@ export function isClaudeModelNotFoundError(input: {
   return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
 }
 
+<<<<<<< HEAD
 export function isClaudeInvalidCredentialError(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;
@@ -290,6 +297,8 @@ export function detectClaudeAuthRetryStorm(stdout: string | null | undefined): b
   return false;
 }
 
+=======
+>>>>>>> origin/master
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {
   if (!parsed) return false;
 

@@ -3,6 +3,7 @@ import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { appDefinitionSlug } from "../app-definition-display";
 import type { AppDetailSectionProps } from "./types";
 import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
 
@@ -26,7 +27,7 @@ export function SetupPanel({
   onStartOAuth: () => void;
   oauthStartDisabled: boolean;
 }) {
-  const description = galleryEntry?.description ?? galleryEntry?.tagline ?? null;
+  const description = galleryEntry?.description ?? null;
   const oauth = connection.config?.oauth;
   const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
   const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
@@ -35,7 +36,7 @@ export function SetupPanel({
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
-      {galleryEntry?.key === "google-sheets" && (
+      {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
           disabled={configUpdateDisabled}
@@ -45,7 +46,7 @@ export function SetupPanel({
       {hasOAuthSignIn && (
         <OAuthConnectionSection
           connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          isSmokeLabFixture={isSmokeLabFixture}
+          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
           disabled={oauthStartDisabled}
           onStart={onStartOAuth}
         />
@@ -57,26 +58,25 @@ export function SetupPanel({
 
 function OAuthConnectionSection({
   connected,
-  isSmokeLabFixture,
+  providerName,
   disabled,
   onStart,
 }: {
   connected: boolean;
-  isSmokeLabFixture: boolean;
+  providerName: string;
   disabled: boolean;
   onStart: () => void;
 }) {
-  const providerName = isSmokeLabFixture ? "Smoke OAuth" : "OAuth";
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold text-foreground">
-            {connected ? `Connected with ${providerName}` : `Connect with ${providerName}`}
+            {connected ? `${providerName} connected` : `Connect with ${providerName}`}
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {connected
-              ? "Sign in again to replace this connection's OAuth session."
+              ? "Your workspace authorization is active. Reconnect any time to replace it."
               : "Open the provider's consent page to finish connecting this app."}
           </p>
         </div>

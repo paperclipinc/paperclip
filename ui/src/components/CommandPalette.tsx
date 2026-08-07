@@ -8,7 +8,11 @@ import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+<<<<<<< HEAD
 import { useFeatures } from "../hooks/useFeatures";
+=======
+import { instanceSettingsApi } from "../api/instanceSettings";
+>>>>>>> origin/master
 import { queryKeys } from "../lib/queryKeys";
 import {
   CommandDialog,
@@ -97,7 +101,15 @@ export function CommandPalette() {
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
   const onIssueDetail = isOnIssueDetail(location.pathname);
+<<<<<<< HEAD
   const { data: experimentalSettings } = useFeatures();
+=======
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+>>>>>>> origin/master
   const fileViewerEnabled = experimentalSettings?.enableExperimentalFileViewer === true;
 
   useEffect(() => {
@@ -128,7 +140,7 @@ export function CommandPalette() {
     enabled: !!selectedCompanyId && open,
   });
   const projects = useMemo(
-    () => allProjects.filter((p) => !p.archivedAt),
+    () => allProjects,
     [allProjects],
   );
 

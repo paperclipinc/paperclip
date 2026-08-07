@@ -34,6 +34,14 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   archive: vi.fn(),
 }));
 
+<<<<<<< HEAD
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
+>>>>>>> origin/master
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -161,9 +169,16 @@ describe("CompanyEnvironments", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
 
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableEnvironments: true, defaultEnvironmentId: null } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+    });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+>>>>>>> origin/master
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),

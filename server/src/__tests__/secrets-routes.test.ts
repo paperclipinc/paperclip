@@ -18,6 +18,7 @@ const mockSecretService = vi.hoisted(() => ({
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
+  getByKey: vi.fn(),
   create: vi.fn(),
   rotate: vi.fn(),
   update: vi.fn(),
@@ -36,6 +37,11 @@ const mockSecretService = vi.hoisted(() => ({
   importRemoteSecrets: vi.fn(),
   listBindingReferences: vi.fn(),
   listAccessEvents: vi.fn(),
+<<<<<<< HEAD
+=======
+  listAgentSecretAccess: vi.fn(),
+  resolveSecretValueForAgentAccess: vi.fn(),
+>>>>>>> origin/master
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({

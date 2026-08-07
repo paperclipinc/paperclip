@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
   CreditCard,
@@ -15,6 +15,7 @@ import { authApi } from "@/api/auth";
 import { cloudBillingApi } from "@/api/cloudBilling";
 import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
+import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -26,12 +27,15 @@ import { Badge } from "@/components/ui/badge";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+<<<<<<< HEAD
 // Cloud-only: feedback from managed tenants goes to the hosting company's
 // support inbox, not the upstream project's feedback form.
 const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
 // Cloud-only: the hosting layer's account page (plan and billing).
 // Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
 const CLOUD_ACCOUNT_PATH = "/account";
+=======
+>>>>>>> origin/master
 const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
 const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
@@ -81,7 +85,11 @@ function sourceVersionSha(version: string): string | null {
   return sourceVersion?.[1] ?? null;
 }
 
+<<<<<<< HEAD
 function MenuAction({ label, description, icon: Icon, onClick, href, external = false, nativeAnchor = false }: MenuActionProps) {
+=======
+function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
+>>>>>>> origin/master
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -136,7 +144,10 @@ export function SidebarAccountMenu({
   version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
+<<<<<<< HEAD
   const queryClient = useQueryClient();
+=======
+>>>>>>> origin/master
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
@@ -172,6 +183,7 @@ export function SidebarAccountMenu({
   });
   const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
+<<<<<<< HEAD
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
     onSuccess: async () => {
@@ -193,6 +205,9 @@ export function SidebarAccountMenu({
       if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
     },
   });
+=======
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
+>>>>>>> origin/master
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
@@ -210,6 +225,10 @@ export function SidebarAccountMenu({
   function closeNavigationChrome() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
+  }
+
+  function handleSignOut() {
+    signOutMutation.mutate();
   }
 
   return (
@@ -306,13 +325,20 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Feedback"
+<<<<<<< HEAD
                 description={cloudBilling ? "Email us. A human reads every message." : "Share feedback or report an issue."}
                 icon={Megaphone}
                 href={cloudBilling ? CLOUD_FEEDBACK_MAILTO : FEEDBACK_URL}
+=======
+                description="Share feedback or report an issue."
+                icon={Megaphone}
+                href={FEEDBACK_URL}
+>>>>>>> origin/master
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+<<<<<<< HEAD
               {cloudBilling ? (
                 <MenuAction
                   label="Plan & billing"
@@ -323,6 +349,8 @@ export function SidebarAccountMenu({
                   onClick={closeNavigationChrome}
                 />
               ) : null}
+=======
+>>>>>>> origin/master
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -330,7 +358,7 @@ export function SidebarAccountMenu({
                     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
                     signOutMutation.isPending && "cursor-not-allowed opacity-60",
                   )}
-                  onClick={() => signOutMutation.mutate()}
+                  onClick={handleSignOut}
                   disabled={signOutMutation.isPending}
                 >
                   <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">

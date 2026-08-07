@@ -47,6 +47,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
+<<<<<<< HEAD
   enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
@@ -64,6 +65,27 @@ export const instanceExperimentalSettingsSchema = z.object({
   cloudTrialBanner: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
+=======
+  enableTaskChatRedesign: z.boolean().default(false),
+  enableTaskWatchdogs: z.boolean().default(false),
+  enableIssuePlanDecompositions: z.boolean().default(false),
+  enableExperimentalFileViewer: z.boolean().default(false),
+  enableExternalObjects: z.boolean().default(false),
+  enableSmokeLab: z.boolean().default(false),
+  enableBuiltInAgents: z.boolean().default(false),
+  enableBetaSkills: z.boolean().default(false),
+  enableSummaries: z.boolean().default(false),
+  enableStatusCards: z.boolean().default(false),
+  enableDecisions: z.boolean().default(false),
+  enableGoalsSidebarLink: z.boolean().default(false),
+  enableServerInfoDebugView: z.boolean().default(false),
+  enableSimplifiedEnglishInteractions: z.boolean().default(false),
+  autoRestartDevServerWhenIdle: z.boolean().default(false),
+  enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
+  enableWorkspaceBranchReconcileForward: z.boolean().default(true),
+  enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
+  enableOwnerInstanceAdmin: z.boolean().default(false),
+>>>>>>> origin/master
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
@@ -83,6 +105,7 @@ export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSetti
   .partial()
   .strip();
 
+<<<<<<< HEAD
 export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().uuid().nullable().optional(),
 }).strict();
@@ -96,6 +119,23 @@ export const instanceVisibilitySettingsSchema = z.object({
 export const patchInstanceVisibilitySettingsSchema = z.object({
   companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
 }).strict();
+=======
+export const managedSettingMetadataSchema = z.object({
+  managed: z.literal(true),
+  managedBy: z.literal("paperclip-cloud"),
+}).strict();
+
+// Response shape of the experimental settings endpoints: on cloud-managed
+// instances every overlaid key is listed in `managedKeys`; self-hosted
+// responses omit the field entirely.
+export const instanceExperimentalSettingsWithManagedSchema = instanceExperimentalSettingsSchema.extend({
+  managedKeys: z.record(managedSettingMetadataSchema).optional(),
+}).strict();
+
+export const patchInstanceSettingsSchema = z.object({
+  defaultEnvironmentId: z.string().uuid().nullable().optional(),
+}).strict();
+>>>>>>> origin/master
 
 export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
   lookbackHours: z
@@ -111,8 +151,11 @@ export type PatchInstanceGeneralSettings = z.infer<typeof patchInstanceGeneralSe
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = z.infer<typeof patchInstanceExperimentalSettingsSchema>;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
+<<<<<<< HEAD
 export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
 export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
+=======
+>>>>>>> origin/master
 export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
   typeof issueGraphLivenessAutoRecoveryRequestSchema
 >;
@@ -121,8 +164,12 @@ export const instanceSettingsSchema = z.object({
   id: z.string().uuid(),
   defaultEnvironmentId: z.string().uuid().nullable(),
   general: instanceGeneralSettingsSchema,
+<<<<<<< HEAD
   experimental: instanceExperimentalSettingsSchema,
   visibility: instanceVisibilitySettingsSchema,
+=======
+  experimental: instanceExperimentalSettingsWithManagedSchema,
+>>>>>>> origin/master
   createdAt: z.union([z.date(), z.string().datetime()]),
   updatedAt: z.union([z.date(), z.string().datetime()]),
 }).strict();

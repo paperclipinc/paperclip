@@ -36,10 +36,16 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
+  isForbiddenConfigEnvKey,
+  isPaperclipRuntimeEnvKey,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
+<<<<<<< HEAD
+=======
+  selectPaperclipTaskMarkdown,
+>>>>>>> origin/master
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -53,11 +59,14 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
+<<<<<<< HEAD
   SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
   detectSandboxExecTimeout,
   extractSandboxExecTimeoutMessage,
 } from "@paperclipai/adapter-utils/sandbox-exec-timeout";
 import {
+=======
+>>>>>>> origin/master
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -70,7 +79,10 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+<<<<<<< HEAD
   isClaudeInvalidCredentialError,
+=======
+>>>>>>> origin/master
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
@@ -94,9 +106,12 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+<<<<<<< HEAD
 
 const CLAUDE_INVALID_CREDENTIAL_MESSAGE =
   "Claude rejected the connected credential. Reconnect a valid Claude credential, then resume.";
+=======
+>>>>>>> origin/master
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -211,8 +226,6 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
@@ -296,10 +309,16 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
   });
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
+    // never accepted from config — the harness-minted run token is the only
+    // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
+    if (isForbiddenConfigEnvKey(key)) continue;
+    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
+    env[key] = value;
   }
 
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
 
@@ -545,6 +564,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
           networkScope,
           networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+<<<<<<< HEAD
+=======
+          networkTrustedUrls: [
+            env.PAPERCLIP_API_URL,
+            ...runtimeMcpServers.map((server) => server.url),
+          ].filter((value): value is string => typeof value === "string" && value.length > 0),
+>>>>>>> origin/master
           command: asString(config.filesystemSandboxCommand, "bwrap"),
         }
       : null;
@@ -801,13 +827,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession: Boolean(sessionId),
+    // The task-context markdown is the authoritative brief on this lane; keep
+    // the wake prompt's description copy out so the prompt carries it once.
+    suppressIssueDescription: taskContextNote.length > 0,
+  });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
@@ -969,6 +1000,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+<<<<<<< HEAD
       const invalidCredential =
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
@@ -981,6 +1013,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const providerQuota =
         !loginMeta.requiresLogin &&
         !invalidCredential &&
+=======
+      const providerQuota =
+        !loginMeta.requiresLogin &&
+>>>>>>> origin/master
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeProviderQuotaError({
           parsed: null,
@@ -990,7 +1026,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         !loginMeta.requiresLogin &&
+<<<<<<< HEAD
         !invalidCredential &&
+=======
+>>>>>>> origin/master
         !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
@@ -1106,14 +1145,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
+<<<<<<< HEAD
     const rawErrorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
     const invalidCredential =
+=======
+    const errorMessage = failed
+      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+      : null;
+    const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
+      isClaudeProviderQuotaError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage,
+      });
+    const transientUpstream =
+>>>>>>> origin/master
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
+      !poisonedPreviousMessageId &&
+<<<<<<< HEAD
       isClaudeInvalidCredentialError({
         parsed,
         stdout: proc.stdout,
@@ -1141,6 +1199,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !invalidCredential &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
+=======
+>>>>>>> origin/master
       !providerQuota &&
       isClaudeTransientUpstreamError({
         parsed,
@@ -1162,7 +1222,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
+<<<<<<< HEAD
         errorMessage: rawErrorMessage,
+=======
+        errorMessage,
+>>>>>>> origin/master
       })
       ? "model_not_found"
       : failed && clearSessionForMaxTurns

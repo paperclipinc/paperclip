@@ -5,7 +5,10 @@ import { activityLog, agents, approvals, companies, companySecrets, costEvents, 
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+<<<<<<< HEAD
 import { BUILT_IN_AGENT_METADATA_KEY } from "./built-in-agent-metadata.js";
+=======
+>>>>>>> origin/master
 
 export interface CostDateRange {
   from?: Date;

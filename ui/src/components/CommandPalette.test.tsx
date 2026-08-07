@@ -7,7 +7,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "./CommandPalette";
 import { queryKeys } from "../lib/queryKeys";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> | undefined;
@@ -44,8 +47,13 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+>>>>>>> origin/master
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -89,8 +97,13 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
+<<<<<<< HEAD
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
+=======
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("../api/auth", () => ({
@@ -203,7 +216,11 @@ describe("CommandPalette", () => {
     mockIssuesApi.listLabels.mockReset();
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockReset();
+=======
+    mockInstanceSettingsApi.getExperimental.mockReset();
+>>>>>>> origin/master
     mockAuthApi.getSession.mockReset();
     navigateState.navigate.mockReset();
     locationState.location.pathname = "/";
@@ -213,9 +230,15 @@ describe("CommandPalette", () => {
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableExperimentalFileViewer: false } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableExperimentalFileViewer: false,
+    });
+>>>>>>> origin/master
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" }, session: { userId: "user-1" } });
   });
 
@@ -270,17 +293,29 @@ describe("CommandPalette", () => {
 
   it("shows the issue file viewer command when the experimental flag is enabled", async () => {
     locationState.location.pathname = "/issues/PAP-1";
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableExperimentalFileViewer: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableExperimentalFileViewer: true,
+    });
+>>>>>>> origin/master
     const { root } = renderWithQueryClient(
       <CommandPalette />,
       container,
       (queryClient) => {
+<<<<<<< HEAD
         queryClient.setQueryData(
           queryKeys.access.currentBoardAccess,
           buildCurrentBoardAccess({ features: { enableExperimentalFileViewer: true } }),
         );
+=======
+        queryClient.setQueryData(queryKeys.instance.experimentalSettings, {
+          enableExperimentalFileViewer: true,
+        });
+>>>>>>> origin/master
       },
     );
 

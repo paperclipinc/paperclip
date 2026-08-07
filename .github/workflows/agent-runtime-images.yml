@@ -2,12 +2,19 @@ name: Agent runtime images
 
 on:
   push:
+<<<<<<< HEAD
     branches: [main]
     paths:
       - "docker/agent-runtime/**"
       - "tools/agent-shim/**"
       - "tools/workspace-init/**"
       - "packages/workspace-strategy/**"
+=======
+    branches: [master]
+    paths:
+      - "docker/agent-runtime/**"
+      - "tools/agent-shim/**"
+>>>>>>> origin/master
       - ".github/workflows/agent-runtime-images.yml"
   workflow_dispatch:
     inputs:
@@ -22,7 +29,11 @@ permissions:
   id-token: write   # cosign keyless OIDC
 
 env:
+<<<<<<< HEAD
   REGISTRY: ghcr.io/paperclipinc
+=======
+  REGISTRY: ghcr.io/paperclipai
+>>>>>>> origin/master
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
@@ -31,9 +42,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+<<<<<<< HEAD
       - name: Set up QEMU (multi-arch builds)
         uses: docker/setup-qemu-action@v3
 
+=======
+>>>>>>> origin/master
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -50,12 +64,19 @@ jobs:
       - name: Build + push all deployed harness images (linux/amd64)
         id: bake
         run: |
+<<<<<<< HEAD
           # Scope: the harness images cloud agent execution ships (opencode + pi
           # proven e2e; codex + gemini in bring-up) + claude (NOT in the hosted
           # cloud's curated registry, but built/tested so the upstream k8s plugin
           # contribution covers self-deployers running claude_local). acpx/hermes
           # stay out (not deployed yet).
           # Platforms come from the bake HCL (linux/amd64; our cluster is amd64).
+=======
+          # Scope: the five harnesses the kubernetes sandbox provider supports
+          # out of the box (opencode, pi, codex, gemini, claude). acpx/hermes
+          # have Dockerfiles in the bake group but are not published by default.
+          # Platforms come from the bake HCL (linux/amd64).
+>>>>>>> origin/master
           # Use --push rather than a "*.push" --set so the wildcard does not hit
           # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
@@ -80,6 +101,7 @@ jobs:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
 
+<<<<<<< HEAD
       - name: Verify codex model catalog against the pinned CLI
         # The adapter's model picker and the CLI in the image are versioned
         # independently. They drifted for 25 days without a single failure:
@@ -91,6 +113,8 @@ jobs:
           docker/agent-runtime/verify-model-catalog.sh \
             "${{ env.REGISTRY }}/agent-runtime-codex@${{ steps.bake.outputs.codex_digest }}"
 
+=======
+>>>>>>> origin/master
       - name: Cosign sign base
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-base@${{ steps.bake.outputs.base_digest }}"

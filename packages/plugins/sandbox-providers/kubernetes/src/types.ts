@@ -19,7 +19,10 @@ export const kubernetesProviderConfigSchema = z
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),
+<<<<<<< HEAD
     egressPolicy: z.enum(["allowlist", "open-internet"]).default("allowlist"),
+=======
+>>>>>>> origin/master
 
     defaultResources: z
       .object({
@@ -35,6 +38,7 @@ export const kubernetesProviderConfigSchema = z
     podActivityDeadlineSec: z.number().int().positive().default(3600),
 
     /**
+<<<<<<< HEAD
      * How long a sandbox pod may sit with PodScheduled=False reason
      * Unschedulable before the readiness wait fails fast with a distinct
      * scheduling error (sandbox-cr backend only). A pod the scheduler cannot
@@ -55,6 +59,8 @@ export const kubernetesProviderConfigSchema = z
     podReadyTimeoutSec: z.number().int().positive().default(300),
 
     /**
+=======
+>>>>>>> origin/master
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
@@ -68,6 +74,7 @@ export const kubernetesProviderConfigSchema = z
       }),
 
     /**
+<<<<<<< HEAD
      * Explicit override to require a per-run adapter type on EVERY lease, even in
      * a single-adapter environment: a run that does not carry its harness is
      * rejected instead of falling back to `adapterType` above.
@@ -83,6 +90,8 @@ export const kubernetesProviderConfigSchema = z
     requireRunAdapterType: z.boolean().default(false),
 
     /**
+=======
+>>>>>>> origin/master
      * Optional declarative adapter registry. When present it is authoritative
      * for runtime image / envKeys / allowFqdns / probe / defaultEnv resolution
      * (replace semantics). Absent = built-in defaults.
@@ -90,6 +99,7 @@ export const kubernetesProviderConfigSchema = z
     adapters: adapterRegistrySchema.optional(),
 
     /**
+<<<<<<< HEAD
      * Optional cloud control-plane URL for resolving a per-company inference
      * key (Bifrost virtual key). When set, the plugin resolves the company's
      * own virtual key from the control-plane immediately before writing the
@@ -112,6 +122,8 @@ export const kubernetesProviderConfigSchema = z
     cloudInferenceKeyResolverUrl: z.string().url().optional(),
 
     /**
+=======
+>>>>>>> origin/master
      * The sandbox backend to use.
      *
      * - `"sandbox-cr"` (default, alpha) — uses the kubernetes-sigs/agent-sandbox
@@ -148,6 +160,7 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+<<<<<<< HEAD
   /**
    * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
    * acquisition. Lets the execution target resolve the correct cwd from the
@@ -183,4 +196,21 @@ export interface KubernetesLeaseMetadata {
    * a Kubernetes pod's image cannot change in place).
    */
   image?: string;
+=======
+  scopedNetworkPolicyName: string | null;
+  scopedNetworkEgress: {
+    allowFqdns: string[];
+    allowCidrs: string[];
+  };
+  /**
+   * True when this lease's backend has NO data channel for the native file-sync
+   * transport. Native sync streams over a pod exec, which only the `sandbox-cr`
+   * backend exposes; the `job` backend carries no exec path, so its sync hook
+   * rejects immediately. The server's per-lease sync-capability gate honors this
+   * opt-out so a job lease keeps the byte-identical base64 fallback instead of
+   * being routed to a native hook that would only error. Absent/false ⇒ native
+   * sync may be used when the worker advertises the verbs.
+   */
+  nativeFileSyncUnsupported?: boolean;
+>>>>>>> origin/master
 }

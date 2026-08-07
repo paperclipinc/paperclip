@@ -16,7 +16,10 @@ import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
 import { queryKeys } from "../lib/queryKeys";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
+=======
+>>>>>>> origin/master
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -34,6 +37,10 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  getDocument: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
+  listAttachments: vi.fn(),
+  listInteractions: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
@@ -47,7 +54,14 @@ const mockAuthApi = vi.hoisted(() => ({
 
 const mockAccessApi = vi.hoisted(() => ({
   listUserDirectory: vi.fn(),
+<<<<<<< HEAD
   getCurrentBoardAccess: vi.fn(),
+=======
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+>>>>>>> origin/master
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -80,6 +94,13 @@ vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
+<<<<<<< HEAD
+=======
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+>>>>>>> origin/master
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
 }));
@@ -130,6 +151,10 @@ vi.mock("./AgentIconPicker", () => ({
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
   useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
+<<<<<<< HEAD
+=======
+  useLocation: () => ({ hash: "", pathname: "/", search: "", state: null, key: "test" }),
+>>>>>>> origin/master
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -198,6 +223,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -286,6 +312,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "PAP-1 workspace",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1",
     repoUrl: null,
     baseRef: "master",
@@ -428,6 +455,10 @@ describe("IssueProperties", () => {
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockIssuesApi.createLabel.mockResolvedValue(createLabel({
       id: "label-new",
@@ -452,15 +483,80 @@ describe("IssueProperties", () => {
         },
       ],
     });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+    });
+>>>>>>> origin/master
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
+<<<<<<< HEAD
+=======
+  it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.listInteractions.mockResolvedValue([
+      {
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { target: { type: "issue_document", key: "plan" } },
+      },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({ workMode: "planning" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(true);
+    });
+
+    const planTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Plan");
+    await act(async () => {
+      // Radix Tabs triggers select on mousedown (button 0), not on click.
+      planTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("This task is in plan mode but no plan document has been written yet.");
+      expect(container.textContent).toContain("A plan confirmation is pending, but the plan document it should confirm is missing.");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("hides the Priority property row while priority UI is off (PAP-411)", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ priority: "high" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      // The Triage section still renders the Status row...
+      expect(container.querySelector('[data-property-label="Status"]')).not.toBeNull();
+      // ...but the Priority row is gated behind SHOW_TASK_PRIORITY_UI (off).
+      expect(container.querySelector('[data-property-label="Priority"]')).toBeNull();
+    });
+
+    act(() => root.unmount());
+  });
+
+>>>>>>> origin/master
   it("shows assignee and originating without responsible wording", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
@@ -743,9 +839,15 @@ describe("IssueProperties", () => {
   });
 
   it("shows watchdog setup controls when the experimental flag is enabled", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -1224,6 +1326,34 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+<<<<<<< HEAD
+=======
+  it("keeps the current archived project visible in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        id: "archived-project",
+        name: "Archived Project",
+        archivedAt: new Date("2026-04-08T00:00:00.000Z"),
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "archived-project" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
+    });
+
+    act(() => root.unmount());
+  });
+
+>>>>>>> origin/master
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
@@ -2146,9 +2276,15 @@ describe("IssueProperties", () => {
   }
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -2213,9 +2349,15 @@ describe("IssueProperties", () => {
   });
 
   it("updates cached issue detail when saving a watchdog", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
       instructions: "Watch the deploy",
@@ -2268,9 +2410,15 @@ describe("IssueProperties", () => {
   });
 
   it("renders an existing watchdog and removes it via the API", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
     const issue = createIssue({ watchdog: createWatchdogSummary() });
@@ -2310,9 +2458,15 @@ describe("IssueProperties", () => {
   });
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
     const root = renderProperties(container, {
@@ -2349,9 +2503,15 @@ describe("IssueProperties", () => {
   });
 
   it("links to the generated watchdog task when one exists", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {
       issue: createIssue({ watchdog: createWatchdogSummary({ watchdogIssueId: "issue-wd" }) }),
@@ -2388,7 +2548,11 @@ describe("IssueProperties", () => {
       inline: true,
       externalObjects: [
         {
+<<<<<<< HEAD
           mentionCount: 1,
+=======
+          mentionCount: 2,
+>>>>>>> origin/master
           sourceLabels: ["Description"],
           pill: {
             providerKey: "github",
@@ -2405,7 +2569,11 @@ describe("IssueProperties", () => {
           group: {
             object: null,
             mentions: [],
+<<<<<<< HEAD
             mentionCount: 1,
+=======
+            mentionCount: 2,
+>>>>>>> origin/master
             sourceLabels: ["Description"],
           },
         },
@@ -2453,11 +2621,42 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+<<<<<<< HEAD
+=======
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "github",
+            objectType: "pull_request",
+            displayKey: "Github PR",
+            iconKey: "github",
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "acme/web#242",
+            url: "https://github.com/acme/web/pull/242",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
+>>>>>>> origin/master
       ],
     });
     await flush();
 
+<<<<<<< HEAD
     expect(container.textContent).toContain("Github Pull Request");
+=======
+    expect(container.textContent).toContain("Github PR");
+    expect(container.textContent).not.toContain("Github Pull Request");
+    expect(container.textContent).not.toContain("×2");
+>>>>>>> origin/master
     expect(container.textContent).toContain("Github Issue");
     expect(container.textContent).toContain("URL");
     expect(container.textContent).not.toContain("URL link");
@@ -2466,17 +2665,32 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Open");
     expect(container.textContent).not.toContain("External objects");
     const label = Array.from(container.querySelectorAll("span"))
+<<<<<<< HEAD
       .find((span) => span.textContent === "Github Pull Request");
+=======
+      .find((span) => span.textContent === "Github PR");
+>>>>>>> origin/master
     expect(label?.querySelector("svg")).toBeTruthy();
     const pullRequestLink = Array.from(container.querySelectorAll("a"))
       .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/241");
     expect(pullRequestLink?.textContent).toContain("PR 241 - Merged");
     expect(pullRequestLink?.textContent).not.toContain("acme/web#241");
+<<<<<<< HEAD
     expect(pullRequestLink?.textContent).not.toContain("Github Pull Request");
+=======
+    expect(pullRequestLink?.textContent).not.toContain("Github PR");
+>>>>>>> origin/master
     expect(pullRequestLink?.querySelectorAll("svg")).toHaveLength(1);
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+<<<<<<< HEAD
+=======
+    const unrefreshedPullRequestLink = Array.from(container.querySelectorAll("a"))
+      .find((anchor) => anchor.getAttribute("href") === "https://github.com/acme/web/pull/242");
+    expect(unrefreshedPullRequestLink?.textContent).toContain("PR 242 - Not yet refreshed");
+    expect(unrefreshedPullRequestLink?.textContent).not.toContain("Not yet resolved");
+>>>>>>> origin/master
 
     act(() => root.unmount());
   });

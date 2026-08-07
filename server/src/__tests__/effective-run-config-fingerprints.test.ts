@@ -199,6 +199,7 @@ describe("effective run config fingerprints", () => {
     expect(versionChanged.sessionFingerprint.fingerprint).not.toBe(v7.sessionFingerprint.fingerprint);
   });
 
+<<<<<<< HEAD
   it("changes the fingerprint when a secret value fingerprint changes under the same version", () => {
     const manifestEntry = (valueFingerprint: string) => ({
       configPath: "env.OPENAI_API_KEY",
@@ -286,6 +287,8 @@ describe("effective run config fingerprints", () => {
     expect(original.leaseFingerprint.canonicalJson).toContain("sha256:aaaa");
   });
 
+=======
+>>>>>>> origin/master
   it("detects plain env value drift without storing raw values", () => {
     const base = createEffectiveRunConfigFingerprints({
       session: {

@@ -74,12 +74,35 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
+<<<<<<< HEAD
 | `podUnschedulableGraceSec` | `120` | sandbox-cr only. How long a pod may sit `PodScheduled=False` reason `Unschedulable` before the readiness wait fails fast with a distinct scheduling error (`sandbox_unschedulable`) instead of burning the exec budget. Sized to absorb normal autoscaler scale-up latency. |
 | `podReadyTimeoutSec` | `300` | sandbox-cr only. Budget for the wait-for-Ready phase on the first exec of a lease, independent of the exec budget (and never more than it). A readiness timeout surfaces as `sandbox_not_ready`; the exec/streaming phase keeps the remaining share of the caller's budget. |
 | `cloudInferenceKeyResolverUrl` | (none) | Cloud-only. URL of a control-plane that resolves a per-company inference key (Bifrost virtual key). When set, the plugin POSTs `{ "companyId": "<id>" }` to `<url>/internal/bifrost-key`, expects `200 { "keyValue": "<vk>" }`, and overrides the secret inference auth env vars (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`) on the per-run Secret with that key, so each company's runs use their own key (separate cache bucket / spend ledger). **Fail-closed:** if configured but the call fails or returns no key, the lease is rejected — the run NEVER falls back to the shared platform key (which would put it in the shared inference cache bucket = a cross-tenant leak). Unset = OSS / local behavior: the inherited env is used unchanged. Resolved keys are cached in-process by companyId for the worker lifetime. |
 
 Full JSON Schema in `src/manifest.ts`.
 
+=======
+
+Full JSON Schema in `src/manifest.ts`.
+
+### Task-scoped egress grants
+
+Keep provider-level egress defaults narrow, then grant only the destinations a task needs through its execution workspace settings:
+
+```json
+{
+  "executionWorkspaceSettings": {
+    "networkEgress": {
+      "allowFqdns": ["github.com", "pypi.org"],
+      "allowCidrs": []
+    }
+  }
+}
+```
+
+The provider creates a workload-owned policy selected by the task run label, so the additional destinations do not become reachable from other concurrent agent pods. Cilium mode enforces FQDNs directly. Standard NetworkPolicy mode cannot express FQDNs, so an FQDN grant permits public IPv4 TCP 80/443 for that run while excluding private, loopback, link-local, CGNAT, and multicast ranges. Network failures that look policy-related include the grant path in stderr, and the sandbox exposes the effective policy through `PAPERCLIP_NETWORK_EGRESS_*` environment variables.
+
+>>>>>>> origin/master
 ## What gets created in your cluster
 
 For each company that runs agents (created lazily on first dispatch):

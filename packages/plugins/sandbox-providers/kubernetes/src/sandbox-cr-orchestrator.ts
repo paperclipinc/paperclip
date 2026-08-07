@@ -37,6 +37,7 @@ export class SandboxCrTimeoutError extends Error {
   }
 }
 
+<<<<<<< HEAD
 /**
  * The Sandbox pod cannot be placed on any node (PodScheduled=False with
  * reason Unschedulable persisting past the configured grace period). This is
@@ -55,6 +56,8 @@ export class SandboxSchedulingError extends Error {
   }
 }
 
+=======
+>>>>>>> origin/master
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -261,6 +264,7 @@ export async function deleteSandboxCr(
  *
  * Throws SandboxCrTimeoutError if Ready is not reached within timeoutMs.
  * Throws if the Sandbox transitions to Failed.
+<<<<<<< HEAD
  * Throws SandboxSchedulingError if `unschedulableGraceMs` is set and the
  * backing pod's PodScheduled condition stays False with reason Unschedulable
  * for at least that long (cluster capacity problem, not a slow start).
@@ -272,18 +276,25 @@ export async function deleteSandboxCr(
  * v0.4.x controller names the pod exactly after the Sandbox, see
  * findPodForSandbox). Pod inspection is best-effort: a missing pod (404) or
  * a transient read error never aborts the wait.
+=======
+>>>>>>> origin/master
  */
 export async function waitForSandboxReady(
   clients: KubeClients,
   namespace: string,
   name: string,
+<<<<<<< HEAD
   opts: { timeoutMs: number; pollMs?: number; unschedulableGraceMs?: number } = {
+=======
+  opts: { timeoutMs: number; pollMs?: number } = {
+>>>>>>> origin/master
     timeoutMs: 120_000,
     pollMs: 2000,
   },
 ): Promise<SandboxStatus> {
   const deadline = Date.now() + opts.timeoutMs;
   const pollMs = opts.pollMs ?? 2000;
+<<<<<<< HEAD
   const unschedulableGraceMs = opts.unschedulableGraceMs ?? 0;
   // Fallback persistence tracking for pods whose PodScheduled condition has
   // no lastTransitionTime: timestamp of our first Unschedulable observation.
@@ -332,6 +343,8 @@ export async function waitForSandboxReady(
       throw new SandboxSchedulingError(namespace, name, scheduled.message ?? scheduled.reason);
     }
   };
+=======
+>>>>>>> origin/master
 
   while (Date.now() < deadline) {
     const cr = await clients.custom.getNamespacedCustomObject({
@@ -369,12 +382,16 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} is Terminating — cannot wait for Ready`,
       );
     }
+<<<<<<< HEAD
     // Pending — a pod stuck Unschedulable past the grace period will never
     // become Ready inside this wait; surface it as a distinct scheduling
     // failure instead of an indistinguishable timeout.
     if (unschedulableGraceMs > 0) {
       await checkPodSchedulable(status);
     }
+=======
+    // Pending — keep polling
+>>>>>>> origin/master
     await sleep(pollMs);
   }
 

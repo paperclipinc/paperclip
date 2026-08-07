@@ -355,9 +355,13 @@ describe("NewIssueDialog", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+>>>>>>> origin/master
     mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
@@ -725,9 +729,13 @@ describe("NewIssueDialog", () => {
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+>>>>>>> origin/master
     dialogState.newIssueDefaults = {
       title: "Follow-up issue",
       projectId: "project-1",
@@ -802,6 +810,29 @@ describe("NewIssueDialog", () => {
         workMode: "standard",
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("shows the create-task loading state only in the submit button", async () => {
+    mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
+    dialogState.newIssueDefaults = { title: "Pending task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(submitButton?.textContent).toContain("Creating...");
+    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.textContent).not.toContain("Creating issue");
 
     act(() => root.unmount());
   });
@@ -1097,24 +1128,49 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps priority under the mobile overflow menu", async () => {
+  it("hides the priority chip and mobile priority option (PAP-411)", async () => {
     const { root } = renderDialog(container);
     await flush();
 
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off). Neither the
+    // desktop priority chip nor the mobile overflow priority option should render.
     const priorityChip = container.querySelector('[data-testid="new-issue-priority-chip"]');
-    expect(priorityChip?.className).toContain("hidden");
-    expect(priorityChip?.className).toContain("sm:inline-flex");
+    expect(priorityChip).toBeNull();
 
     const highPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(highPriorityOption?.textContent).toContain("High");
+    expect(highPriorityOption).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("still submits the default priority when the priority UI is hidden (PAP-411)", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Priority default persists",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
-      highPriorityOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    const selectedHighPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(selectedHighPriorityOption?.className).toContain("bg-accent");
+    // PAP-411: the priority control is hidden, but the data-model default must survive.
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Priority default persists",
+        priority: "medium",
+      }),
+    );
 
     act(() => root.unmount());
   });
@@ -1213,9 +1269,16 @@ describe("NewIssueDialog", () => {
   });
 
   it("reveals the watchdog editor from the overflow menu", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
 
     const { root } = renderDialog(container);
     await flush();
@@ -1239,9 +1302,16 @@ describe("NewIssueDialog", () => {
   });
 
   it("submits the configured watchdog from a restored draft", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableTaskWatchdogs: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+>>>>>>> origin/master
     localStorage.setItem(
       "paperclip:issue-draft",
       JSON.stringify({

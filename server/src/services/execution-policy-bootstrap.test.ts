@@ -56,7 +56,10 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
         PAPERCLIP_K8S_IN_CLUSTER: "true",
         PAPERCLIP_K8S_RUNTIME_CLASS_NAME: "gvisor",
         PAPERCLIP_K8S_EGRESS_MODE: "cilium",
+<<<<<<< HEAD
         PAPERCLIP_K8S_EGRESS_POLICY: "open-internet",
+=======
+>>>>>>> origin/master
         PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS: "api.anthropic.com, api.openai.com",
         PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS: "10.0.0.0/8",
       }),
@@ -68,12 +71,16 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       inCluster: true,
       runtimeClassName: "gvisor",
       egressMode: "cilium",
+<<<<<<< HEAD
       egressPolicy: "open-internet",
+=======
+>>>>>>> origin/master
       egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
       egressAllowCidrs: ["10.0.0.0/8"],
     });
   });
 
+<<<<<<< HEAD
   it("defaults egressPolicy to undefined (plugin schema applies allowlist) when unset", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),
@@ -89,6 +96,8 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     ).toThrow(/PAPERCLIP_K8S_EGRESS_POLICY/);
   });
 
+=======
+>>>>>>> origin/master
   it("defaults inCluster false and omits unset optional fields", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),

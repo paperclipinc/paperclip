@@ -1,6 +1,10 @@
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
+<<<<<<< HEAD
 import { accessApi } from "@/api/access";
+=======
+import { instanceSettingsApi } from "@/api/instanceSettings";
+>>>>>>> origin/master
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -32,10 +36,16 @@ export function useConferenceRoomChatEnabled(): { enabled: boolean; loaded: bool
   const contextClient = useContext(QueryClientContext);
   const { data, isFetched } = useQuery(
     {
+<<<<<<< HEAD
       queryKey: queryKeys.access.currentBoardAccess,
       queryFn: () => accessApi.getCurrentBoardAccess(),
       enabled: contextClient != null,
       select: (access) => access.capabilities.features,
+=======
+      queryKey: queryKeys.instance.experimentalSettings,
+      queryFn: () => instanceSettingsApi.getExperimental(),
+      enabled: contextClient != null,
+>>>>>>> origin/master
     },
     contextClient ?? getDetachedClient(),
   );

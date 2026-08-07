@@ -11,8 +11,14 @@ const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
+<<<<<<< HEAD
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
+=======
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+>>>>>>> origin/master
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -261,9 +267,16 @@ describe("Layout", () => {
       deploymentExposure: "private",
       version: "1.2.3",
     });
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: true } }),
     );
+=======
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      keyboardShortcuts: false,
+    });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+>>>>>>> origin/master
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
@@ -466,7 +479,12 @@ describe("Layout", () => {
     expect(selector?.value).toBe("secrets");
     const selectorText = selector?.textContent?.toLowerCase() ?? "";
     expect(selectorText).toContain("general");
+<<<<<<< HEAD
     expect(selectorText).toContain("cloud upstream");
+=======
+    expect(selectorText).toContain("export");
+    expect(selectorText).toContain("import");
+>>>>>>> origin/master
     expect(selectorText).toContain("members");
     expect(selectorText).toContain("invites");
     expect(selectorText).toContain("secrets");
@@ -536,9 +554,13 @@ describe("Layout", () => {
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
     currentPathname = "/PAP/apps/browse";
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+>>>>>>> origin/master
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

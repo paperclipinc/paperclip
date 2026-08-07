@@ -8,11 +8,16 @@ import {
   patchInstanceVisibilitySettingsSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+<<<<<<< HEAD
 import { getActorInfo } from "./authz.js";
+=======
+import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+>>>>>>> origin/master
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -31,7 +36,11 @@ export function instanceSettingsRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
 
   router.get("/instance/settings", async (req, res) => {
+<<<<<<< HEAD
     assertCanManageInstanceSettings(req);
+=======
+    assertBoardOrgAccess(req);
+>>>>>>> origin/master
     res.json(await svc.get());
   });
 
@@ -85,6 +94,24 @@ export function instanceSettingsRoutes(db: Db) {
     validate(patchInstanceGeneralSettingsSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
+      // Floor: on cloud-managed instances the execution mode is pinned by the
+      // platform (the execution-policy bootstrap writes it at boot). No
+      // instance admin — including a computed owner-admin — may change it: a
+      // forced provider switch would strand runs on a provider the platform
+      // never provisioned. Same-value writes pass so settings forms that echo
+      // the full general-settings object keep working. Absent and "any" both
+      // mean unrestricted, so they compare equal.
+      if (
+        isCloudManagedInstance() &&
+        Object.prototype.hasOwnProperty.call(req.body, "executionMode")
+      ) {
+        const current = await svc.getGeneral();
+        if ((req.body.executionMode ?? "any") !== (current.executionMode ?? "any")) {
+          throw forbidden("executionMode is platform-managed on cloud-managed instances", {
+            code: "execution_mode_platform_managed",
+          });
+        }
+      }
       const updated = await svc.updateGeneral(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
@@ -112,9 +139,16 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
+<<<<<<< HEAD
     // Instance-admin-only read (PR-1). Non-admin UI consumes the allowlisted
     // flag subset via GET /cli-auth/me capabilities.features instead.
     assertCanManageInstanceSettings(req);
+=======
+    // Experimental settings are readable by any authenticated org member
+    // or instance admin. Updating them remains instance-admin only because
+    // this payload includes instance-wide operational controls.
+    assertBoardOrgAccess(req);
+>>>>>>> origin/master
     res.json(await svc.getExperimental());
   });
 

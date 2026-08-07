@@ -341,6 +341,7 @@ describe.sequential("adapter management route authorization", () => {
     },
   );
 
+<<<<<<< HEAD
   it("lists adapters for a signed-in board user who has no company yet", async () => {
     // Onboarding reads the inventory BEFORE the first company exists (the
     // wizard's harness picker), so gating the read on company membership hid
@@ -376,5 +377,32 @@ describe.sequential("adapter management route authorization", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/adapters"));
 
     expect(res.status).toBe(403);
+=======
+  describe("cloud-managed adapter code install floor", () => {
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it.each(["install", "reinstall"] as const)(
+      "floors adapter %s off for instance admins on cloud-managed instances",
+      async (routeName) => {
+        resetInstalledExternalAdapterState();
+        if (routeName !== "install") {
+          seedInstalledExternalAdapter();
+        }
+        const app = createApp(instanceAdmin);
+
+        const res = await sendMutatingRequest(app, routeName);
+
+        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "adapter_install_platform_managed" });
+        expect(mocks.execFile).not.toHaveBeenCalled();
+        expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
+      },
+    );
+>>>>>>> origin/master
   });
 });

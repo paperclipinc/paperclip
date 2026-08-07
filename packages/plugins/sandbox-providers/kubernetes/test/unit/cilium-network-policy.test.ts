@@ -58,6 +58,22 @@ describe("buildCiliumNetworkPolicyManifest", () => {
     expect(cidrRule.toCIDRSet[0].cidr).toBe("10.0.0.0/8");
   });
 
+  it("targets only the granted run when building a scoped policy", () => {
+    const cnp = buildCiliumNetworkPolicyManifest({
+      ...baseInput,
+      name: "pc-run-egress",
+      endpointSelector: { "paperclip.io/run-id": "run-123" },
+      includeBaseRules: false,
+      ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", name: "pc-run", uid: "uid-1" }],
+      egressAllowFqdns: ["github.com", "pypi.org"],
+    });
+
+    expect(cnp.metadata.name).toBe("pc-run-egress");
+    expect(cnp.metadata.ownerReferences).toHaveLength(1);
+    expect(cnp.spec.endpointSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
+    expect(cnp.spec.egress).toHaveLength(1);
+  });
+
   describe("egressPolicy open-internet", () => {
     it("emits a hardened public-internet rule on ports 443 and 80", () => {
       const cnp: any = buildCiliumNetworkPolicyManifest({ ...baseInput, egressPolicy: "open-internet" });

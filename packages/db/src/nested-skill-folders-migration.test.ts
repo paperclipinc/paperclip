@@ -8,7 +8,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
+<<<<<<< HEAD
 const MIGRATION_FILE = "0176_nested_skill_folders.sql";
+=======
+const MIGRATION_FILE = "0175_nested_skill_folders.sql";
+>>>>>>> origin/master
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

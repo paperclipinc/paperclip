@@ -10,6 +10,7 @@ import { initTelemetry } from "@/telemetry";
 import { identifyUser } from "@/analytics";
 import { resolveCloudZeroCompanyState } from "@/lib/cloud-zero-company";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
+<<<<<<< HEAD
 import { WorkspaceSetupPendingPage } from "@/components/WorkspaceSetupPendingPage";
 import { Card } from "@/components/ui/card";
 
@@ -31,6 +32,10 @@ const SESSION_QUERY_MAX_RETRIES = SESSION_QUERY_RETRY_DELAYS_MS.length;
 // sub-retries via the retry/retryDelay options below.
 const SESSION_QUERY_ERROR_REFETCH_INTERVAL_MS =
   SESSION_QUERY_RETRY_DELAYS_MS[SESSION_QUERY_RETRY_DELAYS_MS.length - 1];
+=======
+import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
+import { Card } from "@/components/ui/card";
+>>>>>>> origin/master
 
 function NoBoardAccessPage() {
   return (
@@ -139,7 +144,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   // The session check has been failing for a non-definitive reason
@@ -169,7 +174,7 @@ export function CloudAccessGate() {
   if (isBootstrapPending) {
     const health = healthQuery.data;
     if (!health) {
-      return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+      return <PaperclipLoading />;
     }
     const claimError = claimMutation.error instanceof ApiError
       ? { status: claimMutation.error.status, message: claimMutation.error.message }

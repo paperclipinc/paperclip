@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
 ARG BASE_TAG=dev
+<<<<<<< HEAD
 FROM paperclipinc/agent-runtime-base:${BASE_TAG}
 
 # Pinned, not @latest. @latest resolves at build time, so the tag `v3` silently
@@ -17,15 +18,24 @@ USER root
 # previously-baked CLI. That is how the drift above went unnoticed for 25 days:
 # nothing ever failed loudly.
 RUN npm install -g @openai/codex@${CODEX_VERSION} \
+=======
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @openai/codex@latest \
+>>>>>>> origin/master
     && { chown -R 1000:1000 /usr/lib/node_modules || true; }
 
 USER 1000:1000
 
 # Verify the CLI is on PATH for the shim's exec.LookPath
 RUN command -v codex >/dev/null 2>&1 || (echo "codex not on PATH"; exit 1)
+<<<<<<< HEAD
 
 # ...and that it is the version we pinned. A PATH check alone passes on a stale
 # binary inherited from the base image, which is exactly the failure this file
 # is meant to make impossible.
 RUN codex --version 2>&1 | grep -qF "${CODEX_VERSION}" \
     || (echo "codex version mismatch: wanted ${CODEX_VERSION}, got $(codex --version 2>&1)"; exit 1)
+=======
+>>>>>>> origin/master

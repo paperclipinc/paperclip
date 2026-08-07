@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PipelinesExperimentalGate } from "./PipelinesExperimentalGate";
+<<<<<<< HEAD
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockAccessApi = vi.hoisted(() => ({
@@ -13,6 +14,15 @@ const mockAccessApi = vi.hoisted(() => ({
 
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+=======
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+>>>>>>> origin/master
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -65,9 +75,13 @@ describe("PipelinesExperimentalGate", () => {
   });
 
   it("redirects to the dashboard when pipelines are disabled", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enablePipelines: false } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enablePipelines: false });
+>>>>>>> origin/master
     await renderGate();
 
     const navigate = container.querySelector('[data-testid="navigate"]');
@@ -77,9 +91,13 @@ describe("PipelinesExperimentalGate", () => {
   });
 
   it("renders pipeline routes when pipelines are enabled", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { enablePipelines: true } }),
     );
+=======
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enablePipelines: true });
+>>>>>>> origin/master
     await renderGate();
 
     expect(container.querySelector('[data-testid="pipeline-content"]')).not.toBeNull();
@@ -87,7 +105,11 @@ describe("PipelinesExperimentalGate", () => {
   });
 
   it("renders nothing while the flag is loading", async () => {
+<<<<<<< HEAD
     mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+=======
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+>>>>>>> origin/master
     await renderGate();
 
     expect(container.querySelector('[data-testid="navigate"]')).toBeNull();

@@ -26,7 +26,10 @@ export interface EffectiveRunConfigSecretVersionMetadata {
   version: number | string;
   provider?: string | null;
   providerVersionRef?: string | null;
+<<<<<<< HEAD
   valueFingerprint?: string | null;
+=======
+>>>>>>> origin/master
   outcome?: "success" | "failure" | null;
 }
 
@@ -142,14 +145,20 @@ function normalizeSecretManifestEntry(
   const bindingId = readString(record.bindingId);
   const provider = readString(record.provider);
   const providerVersionRef = readString(record.providerVersionRef);
+<<<<<<< HEAD
   const valueFingerprint = readString(record.valueFingerprint);
+=======
+>>>>>>> origin/master
   const outcome = record.outcome === "success" || record.outcome === "failure"
     ? record.outcome
     : null;
   if (bindingId !== null) normalized.bindingId = bindingId;
   if (provider !== null) normalized.provider = provider;
   if (providerVersionRef !== null) normalized.providerVersionRef = providerVersionRef;
+<<<<<<< HEAD
   if (valueFingerprint !== null) normalized.valueFingerprint = valueFingerprint;
+=======
+>>>>>>> origin/master
   if (outcome !== null) normalized.outcome = outcome;
   return normalized;
 }
@@ -180,7 +189,10 @@ function canonicalSecretMetadata(
     version: metadata.version,
     provider: metadata.provider ?? undefined,
     providerVersionRef: metadata.providerVersionRef ?? undefined,
+<<<<<<< HEAD
     valueFingerprint: metadata.valueFingerprint ?? undefined,
+=======
+>>>>>>> origin/master
     outcome: metadata.outcome ?? undefined,
   });
 }

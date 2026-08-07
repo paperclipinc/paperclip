@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   KUBERNETES_PROVIDER_KEY,
+<<<<<<< HEAD
   claudeHostLoginUnavailableReason,
+=======
+>>>>>>> origin/master
   evaluateExecutionAllowlist,
   type ExecutionEnvironmentCandidate,
 } from "./execution-allowlist.js";
@@ -86,6 +89,7 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
+<<<<<<< HEAD
   describe("claudeHostLoginUnavailableReason", () => {
     it("returns a human-readable reason when execution is forced onto Kubernetes", () => {
       const reason = claudeHostLoginUnavailableReason("kubernetes");
@@ -100,6 +104,8 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
+=======
+>>>>>>> origin/master
   describe("isExecutionForcedToKubernetes helper", () => {
     it("reflects the policy", async () => {
       const { isExecutionForcedToKubernetes } = await import("./execution-allowlist.js");
