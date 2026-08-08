@@ -21,6 +21,10 @@ const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
   NavLink: ({ to, children, className, ...props }: {
     to: string;
@@ -77,6 +81,10 @@ vi.mock("../api/attention", () => ({
 
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -301,6 +309,29 @@ describe("Sidebar", () => {
     const root = await renderSidebar();
 
     expect(mockAttentionApi.list).not.toHaveBeenCalled();
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows Status directly below Decisions in primary navigation", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({
+      features: { enableDecisions: true, enableStatusCards: true },
+    }));
+    const root = await renderSidebar();
+
+    const primaryNavLinks = [...container.querySelectorAll("nav > div:first-child a")];
+    const decisionsLink = primaryNavLinks.find(
+      (anchor) => anchor.textContent?.trim() === "Decisions",
+    );
+    const statusLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/status");
+
+    expect(statusLink?.textContent).toContain("Status");
+    expect(statusLink?.textContent).toContain("beta");
+    expect(statusLink?.textContent).not.toContain("exp");
+    expect(statusLink?.textContent).not.toContain("cards");
+    expect(primaryNavLinks.indexOf(statusLink!)).toBe(primaryNavLinks.indexOf(decisionsLink!) + 1);
 
     flushSync(() => {
       root.unmount();

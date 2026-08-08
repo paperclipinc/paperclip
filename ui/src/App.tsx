@@ -1,16 +1,18 @@
 import { useEffect } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Timeline } from "./pages/Timeline";
@@ -28,6 +30,7 @@ import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
 import { Learnings, PipelineItemDetail, PipelineItemLegacyRedirect, Pipelines, ReviewQueue } from "./pages/Pipelines";
 import { PipelineSettings } from "./pages/PipelineSettings";
+import { StatusCards } from "./pages/StatusCards";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
@@ -221,6 +224,17 @@ function boardRoutes() {
         element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
       />
       <Route
+        path="status"
+        element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
+      />
+      <Route
+        path="status/:cardId"
+        element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
+      />
+      {/* Back-compat: the board lived at /status-cards before PAP-15223. */}
+      <Route path="status-cards" element={<StatusCardsLegacyRedirect />} />
+      <Route path="status-cards/:cardId" element={<StatusCardsLegacyRedirect />} />
+      <Route
         path="review-queue"
         element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
       />
@@ -279,8 +293,10 @@ function boardRoutes() {
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
       <Route path="decisions" element={<WhatNeedsMe />} />
-      <Route path="training" element={<TrainingLibrary />} />
-      <Route path="training/:id" element={<TrainingInspector />} />
+      <Route path="decisions/training" element={<TrainingLibrary />} />
+      <Route path="decisions/training/:id" element={<TrainingInspector />} />
+      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
+      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -306,6 +322,11 @@ function AppsConnectEntryRoute() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacyTrainingRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {
@@ -339,7 +360,7 @@ function LegacySettingsRedirect() {
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany =
@@ -443,7 +464,7 @@ function CompanyRootRedirect() {
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -462,12 +483,19 @@ function CompanyRootRedirect() {
   return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
 }
 
+function StatusCardsLegacyRedirect() {
+  const { cardId } = useParams<{ cardId?: string }>();
+  const prefix = useActiveCompanyPrefix();
+  const base = prefix ? `/${prefix}` : "";
+  return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
+}
+
 function UnprefixedBoardRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -554,6 +582,10 @@ export function App() {
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="status" element={<UnprefixedBoardRedirect />} />
+          <Route path="status/:cardId" element={<UnprefixedBoardRedirect />} />
+          <Route path="status-cards" element={<UnprefixedBoardRedirect />} />
+          <Route path="status-cards/:cardId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
