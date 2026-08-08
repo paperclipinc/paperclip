@@ -37,7 +37,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
+import {
+  adapterConfigHasSecretRef,
+  backfillCompanyCredentialEnv,
+  inheritCompanyCredentialEnv,
+} from "../services/agent-credential-inheritance.js";
 import {
   agentService,
   agentInstructionsService,
@@ -3145,6 +3149,26 @@ export function agentRoutes(
       entityId: agent.id,
       details: summarizeAgentUpdateDetails(patchData),
     });
+
+    // Connecting a credential is an update to ONE agent, but the key is a
+    // company credential and the user reasonably expects their company to be
+    // able to run. Without this, every other agent that predates the connect
+    // (in particular the built-in agents provisioned at signup) stays
+    // credential-less with no way for the user to tell why. Only agents that
+    // have no credential of their own are touched, so this cannot overwrite a
+    // deliberate per-agent key, and it is a no-op on repeat.
+    if (hasOwn(patchData, "adapterConfig") && adapterConfigHasSecretRef(agent.adapterConfig)) {
+      await backfillCompanyCredentialEnv(
+        db,
+        agent.companyId,
+        agent.adapterType,
+        async (agentId, adapterConfig) => {
+          await svc.update(agentId, { adapterConfig }, {
+            recordRevision: { source: "credential-backfill" },
+          });
+        },
+      );
+    }
 
     res.json(agent);
   });

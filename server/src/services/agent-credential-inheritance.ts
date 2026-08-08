@@ -35,6 +35,86 @@ export function mergeInheritedCredentialEnv(
   return merged;
 }
 
+/** True when an agent's adapterConfig already carries a credential binding. */
+export function adapterConfigHasSecretRef(adapterConfig: unknown): boolean {
+  const env = asRecord(asRecord(adapterConfig)?.env);
+  if (!env) return false;
+  return Object.values(env).some((binding) => {
+    const parsed = asRecord(binding);
+    return parsed?.type === "secret_ref" && typeof parsed.secretId === "string";
+  });
+}
+
+/**
+ * Decide which of a company's same-adapter agents should receive the company
+ * credential, given every such agent's current row. Pure, so the rule is
+ * testable without a database.
+ *
+ * The create-time path ({@link inheritCompanyCredentialEnv}) only ever fires
+ * while an agent is being made, which is the wrong moment for the common case:
+ * a company and its built-in agents exist from signup and the user connects a
+ * provider key afterwards. Nothing re-ran inheritance, so those agents stayed
+ * credential-less permanently and a factory-config built-in agent could never
+ * run. This closes that gap by re-running the same donor rule over agents that
+ * already exist.
+ *
+ * Same donor preference as create time (a CEO with a credential, else any agent
+ * with one) and the same merge semantics, so an agent that already has its own
+ * credential is never touched and a second pass is a no-op.
+ */
+export function planCompanyCredentialBackfill(
+  rows: Array<{ id: string; role: string | null; adapterConfig: unknown }>,
+): Array<{ agentId: string; adapterConfig: Record<string, unknown> }> {
+  const donors = rows.filter((row) => adapterConfigHasSecretRef(row.adapterConfig));
+  const donor = donors.find((row) => row.role === "ceo") ?? donors[0];
+  if (!donor) return [];
+  const donorEnv = asRecord(asRecord(donor.adapterConfig)?.env) ?? {};
+  const writes: Array<{ agentId: string; adapterConfig: Record<string, unknown> }> = [];
+  for (const row of rows) {
+    if (adapterConfigHasSecretRef(row.adapterConfig)) continue;
+    const config = asRecord(row.adapterConfig) ?? {};
+    const env = mergeInheritedCredentialEnv(donorEnv, asRecord(config.env) ?? {});
+    if (Object.keys(env).length === 0) continue;
+    writes.push({ agentId: row.id, adapterConfig: { ...config, env } });
+  }
+  return writes;
+}
+
+/**
+ * Apply {@link planCompanyCredentialBackfill} to every agent of one adapter
+ * type in a company. `update` is injected rather than imported so this stays
+ * free of the agent service (which owns secret-binding sync) and free of a
+ * dependency cycle. Returns the ids actually written.
+ */
+export async function backfillCompanyCredentialEnv(
+  db: Db,
+  companyId: string,
+  adapterType: string,
+  update: (agentId: string, adapterConfig: Record<string, unknown>) => Promise<unknown>,
+): Promise<string[]> {
+  let rows: Array<{ id: string; role: string | null; adapterConfig: unknown }>;
+  try {
+    rows = await db
+      .select({ id: agents.id, role: agents.role, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.adapterType, adapterType)));
+  } catch {
+    return [];
+  }
+  const written: string[] = [];
+  for (const write of planCompanyCredentialBackfill(rows)) {
+    // One agent failing to update must not strand the rest: this runs as a
+    // side effect of a request that has already succeeded.
+    try {
+      await update(write.agentId, write.adapterConfig);
+      written.push(write.agentId);
+    } catch {
+      // keep going
+    }
+  }
+  return written;
+}
+
 // Inherit the company's credential env bindings onto a newly created/provisioned
 // agent so it can authenticate without the user re-connecting a key for every
 // agent. Copies each `secret_ref` env binding from an existing same-adapter
