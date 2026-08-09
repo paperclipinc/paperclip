@@ -16,6 +16,8 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+import { TENANT_CONTAINER_MIN_RESOURCES } from "./utils.js";
+
 // Where the seed init container mounts the home volume. Deliberately not
 // /home/paperclip: mounting there would shadow the image's baked home in the
 // init container too, leaving nothing to copy.
@@ -117,8 +119,11 @@ export function buildSandboxCrManifest(
                 allowPrivilegeEscalation: false,
                 capabilities: { drop: ["ALL"] },
               },
+              // The tenant LimitRange rejects any container asking for less
+              // than its floor, and a rejected init container means the pod is
+              // never created at all.
               resources: {
-                requests: { cpu: "50m", memory: "64Mi" },
+                requests: { ...TENANT_CONTAINER_MIN_RESOURCES },
                 limits: { cpu: "500m", memory: "256Mi" },
               },
               volumeMounts: [{ name: "home", mountPath: SEED_HOME_STAGING_PATH }],
