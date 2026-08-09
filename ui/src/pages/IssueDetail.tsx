@@ -41,8 +41,13 @@ import {
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
+  beginLocalInboxArchive,
+  boundLocalInboxArchive,
   cancelInboxIssueQueries,
+  clearLocalInboxArchive,
+  confirmLocalInboxArchive,
   invalidateInboxIssueQueries,
+  getIssuePresenceInActiveInboxCaches,
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
@@ -61,6 +66,7 @@ import {
   createOptimisticIssueComment,
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
+  ISSUE_COMMENT_PAGE_SIZE,
   isQueuedIssueComment,
   loadRemainingIssueCommentPages,
   matchesIssueRef,
@@ -245,7 +251,6 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
@@ -880,6 +885,7 @@ type IssueDetailChatTabProps = {
     title?: string | null;
   } | null;
   comments: IssueDetailComment[];
+  commentsInitialLoading?: boolean;
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
@@ -969,6 +975,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   canFalsePositiveRecoveryAction,
   legacyRecoverySourceIssue,
   comments,
+  commentsInitialLoading = false,
   locallyQueuedCommentRunIds,
   interactions,
   hasOlderComments,
@@ -1168,6 +1175,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           </Button>
         </div>
       ) : null}
+      {commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
+        <IssueChatSkeleton />
+      ) : (
       <ThreadComponent
         composerRef={composerRef}
         composerAccessory={composerAccessory}
@@ -1250,6 +1260,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         externalReferences={externalReferences}
         linkCaseReferences={linkCaseReferences}
       />
+      )}
     </div>
   );
 });
@@ -1697,7 +1708,7 @@ export function IssueDetail() {
     resourceKey: "live-runs",
     queryKey: companyLiveRunsQueryKey,
     enabled: !!resolvedCompanyId,
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -3059,10 +3070,11 @@ export function IssueDetail() {
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
       if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
+      beginLocalInboxArchive(selectedCompanyId, id);
       await cancelInboxIssueQueries(queryClient, selectedCompanyId);
       const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
-      return { previousData };
+      return { companyId: selectedCompanyId, previousData };
     },
     onSuccess: (_data, id) => {
       if (selectedCompanyId) {
@@ -3073,6 +3085,7 @@ export function IssueDetail() {
       pushToast({ title: "Task archived from inbox", tone: "success" });
     },
     onError: (err, id, context) => {
+      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       if (context?.previousData) {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
@@ -3082,8 +3095,14 @@ export function IssueDetail() {
         tone: "error",
       });
     },
-    onSettled: () => {
-      if (selectedCompanyId) invalidateInboxIssueQueries(queryClient, selectedCompanyId);
+    onSettled: async (_data, error, id, context) => {
+      if (!context?.companyId) return;
+      if (!error) boundLocalInboxArchive(context.companyId, id);
+      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
+      }
     },
   });
 
@@ -4747,6 +4766,7 @@ export function IssueDetail() {
               canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
               legacyRecoverySourceIssue={legacyRecoverySourceIssue}
               comments={threadComments}
+              commentsInitialLoading={commentsLoading}
               locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
               interactions={interactions}
               hasOlderComments={hasOlderComments}

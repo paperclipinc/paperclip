@@ -155,7 +155,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       leaseId: "lease-1",
       leaseMetadata: {},
       lease: { providerLeaseId: "pl-1" } as never,
-      environmentRuntime: { execute: executeSpy } as never,
+      environmentRuntime: { execute: executeSpy, supportsSync: () => false } as never,
     });
 
     expect(target?.kind).toBe("remote");
@@ -203,7 +203,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       leaseId: "lease-1",
       leaseMetadata: {},
       lease: { providerLeaseId: "pl-1" } as never,
-      environmentRuntime: { execute: executeSpy } as never,
+      environmentRuntime: { execute: executeSpy, supportsSync: () => false } as never,
     });
 
     const runner = (target as { runner?: { execute: (i: unknown) => Promise<unknown> } }).runner!;
@@ -324,6 +324,106 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
+  it("resolves sandbox targets for every remote-managed adapter, including grok_local", async () => {
+    for (const adapterType of [
+      "claude_local",
+      "codex_local",
+      "cursor",
+      "gemini_local",
+      "grok_local",
+      "opencode_local",
+      "pi_local",
+    ]) {
+      mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+        driver: "sandbox",
+        config: {
+          provider: "fake-plugin",
+          reuseLease: false,
+          timeoutMs: 30_000,
+        },
+      });
+
+      const target = await resolveEnvironmentExecutionTarget({
+        db: {} as never,
+        companyId: "company-1",
+        adapterType,
+        environment: {
+          id: "env-1",
+          driver: "sandbox",
+          config: { provider: "fake-plugin" },
+        },
+        leaseId: "lease-1",
+        leaseMetadata: {},
+        lease: null,
+        environmentRuntime: null,
+      });
+
+      expect(target, `adapter ${adapterType}`).toMatchObject({
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+      });
+    }
+  });
+
+  it("returns null for adapters without remote-managed environment support", async () => {
+    for (const driver of ["sandbox", "ssh"] as const) {
+      const target = await resolveEnvironmentExecutionTarget({
+        db: {} as never,
+        companyId: "company-1",
+        adapterType: "process",
+        environment: {
+          id: "env-1",
+          driver,
+          config: { provider: "fake-plugin" },
+        },
+        leaseId: "lease-1",
+        leaseMetadata: {},
+        lease: null,
+        environmentRuntime: null,
+      });
+
+      expect(target, `driver ${driver}`).toBeNull();
+    }
+    expect(mockResolveEnvironmentDriverConfigForRuntime).not.toHaveBeenCalled();
+  });
+
+  it("resolves SSH execution targets for grok_local", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "ssh",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "paperclip",
+        remoteWorkspacePath: "/srv/paperclip",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "[ssh.example.test]:22 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "grok_local",
+      environment: {
+        id: "env-ssh-1",
+        driver: "ssh",
+        config: {},
+      },
+      leaseId: "lease-ssh-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+
+    expect(target).toMatchObject({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/srv/paperclip",
+    });
+  });
+
   it("resolves SSH execution targets in bridge mode", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "ssh",
@@ -368,5 +468,104 @@ describe("resolveEnvironmentExecutionTarget", () => {
       },
     });
     expect(target).not.toHaveProperty("paperclipApiUrl");
+  });
+
+  it("exposes a sandbox runner that counts round-trips and accumulates provider durations", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    // Each exec reports its provider-boundary durations on the free-form result
+    // metadata (the Daytona plugin does this); the runner accumulates them.
+    const environmentRuntime = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok",
+        stderr: "",
+        metadata: { durationMs: 600, getDurationMs: 15 },
+      }),
+      supportsSync: vi.fn().mockReturnValue(false),
+    };
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: { remoteCwd: "/workspace" },
+      lease: { id: "lease-1" } as never,
+      environmentRuntime: environmentRuntime as never,
+    });
+
+    const runner = (target as { runner?: {
+      supportsSingleStreamStdinProgress?: boolean;
+      execCount(): number;
+      providerExecMs(): number;
+      providerGetMs(): number;
+      execute(input: { command: string; args?: string[] }): Promise<unknown>;
+    } }).runner;
+    expect(runner).toBeTruthy();
+    // Single-stream stdin upload is enabled (research A1 / PAP-3159 #2): a
+    // ≤96 MiB writeFile collapses to one round-trip.
+    expect(runner!.supportsSingleStreamStdinProgress).toBe(false);
+    expect(runner!.execCount()).toBe(0);
+    expect(runner!.providerExecMs()).toBe(0);
+    expect(runner!.providerGetMs()).toBe(0);
+
+    await runner!.execute({ command: "echo", args: ["a"] });
+    await runner!.execute({ command: "echo", args: ["b"] });
+
+    expect(runner!.execCount()).toBe(2);
+    expect(runner!.providerExecMs()).toBe(1200);
+    expect(runner!.providerGetMs()).toBe(30);
+  });
+
+  it("tolerates a provider result with no timing metadata (counts the round-trip, accumulates nothing)", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
+    });
+
+    const environmentRuntime = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+      }),
+      supportsSync: vi.fn().mockReturnValue(false),
+    };
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: { remoteCwd: "/workspace" },
+      lease: { id: "lease-1" } as never,
+      environmentRuntime: environmentRuntime as never,
+    });
+
+    const runner = (target as { runner?: {
+      execCount(): number;
+      providerExecMs(): number;
+      providerGetMs(): number;
+      execute(input: { command: string }): Promise<unknown>;
+    } }).runner;
+    await runner!.execute({ command: "echo" });
+
+    expect(runner!.execCount()).toBe(1);
+    expect(runner!.providerExecMs()).toBe(0);
+    expect(runner!.providerGetMs()).toBe(0);
   });
 });

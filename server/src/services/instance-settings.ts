@@ -4,10 +4,14 @@ import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
+  type InstanceExperimentalSettingsWithManaged,
+  type ManagedExperimentalFeatureKey,
+  type ManagedSettingMetadata,
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceSettings,
@@ -19,6 +23,7 @@ import {
   DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
+import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -325,7 +330,9 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       enableSmokeLab: parsed.data.enableSmokeLab ?? false,
       enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
+      enableBetaSkills: parsed.data.enableBetaSkills ?? false,
       enableSummaries: parsed.data.enableSummaries ?? false,
+      enableStatusCards: parsed.data.enableStatusCards ?? false,
       enableDecisions: parsed.data.enableDecisions ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
@@ -339,6 +346,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
         (parsed.data.cloudTrialBanner ?? false),
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
+      enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
@@ -363,7 +371,9 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableExternalObjects: false,
     enableSmokeLab: false,
     enableBuiltInAgents: false,
+    enableBetaSkills: false,
     enableSummaries: false,
+    enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
@@ -373,6 +383,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     cloudTrialBanner: process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true",
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
+    enableOwnerInstanceAdmin: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -411,6 +422,36 @@ export function resolveVisibilitySettings(
   return normalizeVisibilitySettings({ ...normalizeVisibilitySettings(raw), ...overrides });
 }
 
+export type ManagedExperimentalKeyMetadata = Partial<
+  Record<ManagedExperimentalFeatureKey, ManagedSettingMetadata>
+>;
+
+/**
+ * Overlay the cloud managed-config feature values over normalized settings.
+ *
+ * Read-time precedence: code floor (cloud) > managed overlay > tenant DB
+ * value > schema default. (No code floors are expressed as flags today —
+ * floors are enforced in code at the guarded routes, independent of any
+ * flag value.) The overlay is deliberately never persisted: it re-asserts on
+ * every read, so a DB restore or manual row edit cannot resurrect a
+ * capability the harness has disabled.
+ */
+export function applyManagedExperimentalOverlay(
+  experimental: InstanceExperimentalSettings,
+  managedConfig: ManagedInstanceConfig | null,
+): { experimental: InstanceExperimentalSettings; managedKeys: ManagedExperimentalKeyMetadata } {
+  if (!managedConfig) return { experimental, managedKeys: {} };
+  const next: InstanceExperimentalSettings = { ...experimental };
+  const managedKeys: ManagedExperimentalKeyMetadata = {};
+  for (const [key, value] of Object.entries(managedConfig.features) as Array<
+    [ManagedExperimentalFeatureKey, boolean]
+  >) {
+    next[key] = value;
+    managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
+  }
+  return { experimental: next, managedKeys };
+}
+
 function toInstanceSettings(
   row: typeof instanceSettings.$inferSelect,
   overrides: InstanceSettingsOverrides = emptyOverrides(),
@@ -428,6 +469,28 @@ function toInstanceSettings(
 
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
+  // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
+  // boot in index.ts) rather than silently running without the overlay.
+  const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+
+  function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
+    const { experimental, managedKeys } = applyManagedExperimentalOverlay(
+      normalizeExperimentalSettings(raw),
+      managedConfig,
+    );
+    // Self-hosted responses stay byte-identical: no managedKeys field at all.
+    return managedConfig ? { ...experimental, managedKeys } : experimental;
+  }
+
+  function toManagedInstanceSettings(
+    row: typeof instanceSettings.$inferSelect,
+    ov: InstanceSettingsOverrides,
+  ): InstanceSettings {
+    const base = toInstanceSettings(row, ov);
+    if (!managedConfig) return base;
+    const { experimental, managedKeys } = applyManagedExperimentalOverlay(base.experimental, managedConfig);
+    return { ...base, experimental: { ...experimental, managedKeys } } as InstanceSettings;
+  }
 
   async function getOrCreateRow() {
     const existing = await db
@@ -469,7 +532,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -484,7 +547,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
@@ -492,9 +555,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return resolveGeneralSettings(row.general, overrides.general);
     },
 
-    getExperimental: async (): Promise<InstanceExperimentalSettings> => {
+    getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
       const row = await getOrCreateRow();
-      return resolveExperimentalSettings(row.experimental, overrides.experimental);
+      return toExperimentalView(resolveExperimentalSettings(row.experimental, overrides.experimental));
     },
 
     getVisibility: async (): Promise<InstanceVisibilitySettings> => {
@@ -521,7 +584,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
@@ -540,7 +603,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
@@ -562,7 +625,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current, overrides);
+      return toManagedInstanceSettings(updated ?? current, overrides);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

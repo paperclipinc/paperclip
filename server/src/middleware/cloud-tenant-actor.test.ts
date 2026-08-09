@@ -1,23 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
 import { resolveCloudTenantActor } from "./auth.js";
 
 type SeededMembership = { companyId: string; membershipRole: string; status: string };
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
-// onConflictDo* / returning().then() / delete().where()). The chain is awaitable so
+// onConflictDo* / returning().then() / delete().where()), plus the
+// select().from(instanceSettings).where().then() read the owner-elevation flag
+// resolution performs through instanceSettingsService. The chain is awaitable so
 // directly-awaited statements resolve.
 function createFakeDb(options?: {
   membershipRow?: SeededMembership;
   seededMemberships?: SeededMembership[];
   /** Rows returned by the SELECT over `companies` — [] means the stack company does not exist yet. */
   companyRows?: Array<{ id: string }>;
+  settingsRow?: Record<string, unknown> | null;
+  selectThrows?: boolean;
 }) {
   const membershipRow: SeededMembership =
     options?.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
+  const settingsRow =
+    options?.settingsRow === undefined
+      ? {
+          id: "00000000-0000-0000-0000-000000000001",
+          singletonKey: "default",
+          defaultEnvironmentId: null,
+          general: {},
+          experimental: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }
+      : options?.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectedTables: unknown[] = [];
@@ -40,18 +56,46 @@ function createFakeDb(options?: {
       currentTable = table;
       return chain;
     },
-    select: () => ({
-      from: (table: unknown) => {
-        selectedTables.push(table);
-        return { where: async () => (table === companies ? companyRows : memberships) };
-      },
-    }),
+    select: () => {
+      if (options?.selectThrows) throw new Error("select unavailable");
+      return {
+        from: (table: unknown) => {
+          selectedTables.push(table);
+          return {
+            where: () => ({
+              then: (resolve: (v: unknown) => unknown) => {
+                const result = table === companies
+                  ? companyRows
+                  : table === instanceSettings && settingsRow
+                    ? [settingsRow]
+                    : table === companyMemberships
+                      ? memberships
+                      : [];
+                return Promise.resolve(result).then(resolve);
+              },
+            }),
+          };
+        },
+      };
+    },
     delete: (table: unknown) => {
       deletedTables.push(table);
       return { where: async () => undefined };
     },
   } as unknown as Db;
   return { db, insertedTables, deletedTables, selectedTables, insertedValues };
+}
+
+function settingsRowWith(experimental: Record<string, unknown>) {
+  return {
+    id: "00000000-0000-0000-0000-000000000001",
+    singletonKey: "default",
+    defaultEnvironmentId: null,
+    general: {},
+    experimental,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 }
 
 function fakeReq(headers: Record<string, string>): Request {
@@ -68,15 +112,32 @@ const VALID_HEADERS = {
   "x-paperclip-cloud-stack-role": "owner",
 };
 
+const MANAGED_CONFIG_FLAG_ON = JSON.stringify({
+  v: 1,
+  mode: "cloud",
+  catalogVersion: "test",
+  features: { enableOwnerInstanceAdmin: true },
+  plugins: { autoInstall: [] },
+});
+
+const MANAGED_CONFIG_FLAG_OFF = JSON.stringify({
+  v: 1,
+  mode: "cloud",
+  catalogVersion: "test",
+  features: { enableOwnerInstanceAdmin: false },
+  plugins: { autoInstall: [] },
+});
+
 describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   beforeEach(() => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
   });
   afterEach(() => {
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    delete process.env.PAPERCLIP_MANAGED_CONFIG;
   });
 
-  it("never grants instance admin", async () => {
+  it("does not grant instance admin by default (flag off)", async () => {
     const { db, insertedTables, deletedTables } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).not.toBeNull();
@@ -240,15 +301,68 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor!.source).toBe("cloud_tenant");
   });
 
-  it("is never instance-admin (multi-company actor)", async () => {
-    const stackCompany = { companyId: "company-a", membershipRole: "owner", status: "active" };
-    const invitedCompany = { companyId: "company-b", membershipRole: "member", status: "active" };
-    const { db } = createFakeDb({
-      membershipRow: stackCompany,
-      seededMemberships: [stackCompany, invitedCompany],
-      companyRows: [{ id: "company-a" }],
+  describe("owner instance-admin elevation (enableOwnerInstanceAdmin)", () => {
+    it("elevates the owner while the flag is enabled, still without any role row", async () => {
+      const { db, insertedTables, deletedTables } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(true);
+      expect(actor!.source).toBe("cloud_tenant");
+      // Elevation is computed, never persisted: no instance_user_roles insert,
+      // and the stale-row purge still runs on every authentication.
+      expect(insertedTables).not.toContain(instanceUserRoles);
+      expect(deletedTables).toContain(instanceUserRoles);
     });
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(actor!.isInstanceAdmin).toBe(false);
+
+    it("does not elevate the owner while the flag is disabled", async () => {
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: false }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(false);
+    });
+
+    it.each(["member", "admin", "support"] as const)(
+      "never elevates the %s stack role even with the flag enabled",
+      async (stackRole) => {
+        const { db } = createFakeDb({
+          membershipRow: { companyId: "company-y", membershipRole: "member", status: "active" },
+          settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+        });
+        const actor = await resolveCloudTenantActor(
+          db,
+          fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+        );
+        expect(actor).not.toBeNull();
+        expect(actor!.isInstanceAdmin).toBe(false);
+      },
+    );
+
+    it("resolves the flag through the managed overlay: overlay on elevates over a DB value of off", async () => {
+      process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_FLAG_ON;
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: false }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(true);
+    });
+
+    it("resolves the flag through the managed overlay: overlay off wins over a DB value of on", async () => {
+      process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_FLAG_OFF;
+      const { db } = createFakeDb({
+        settingsRow: settingsRowWith({ enableOwnerInstanceAdmin: true }),
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.isInstanceAdmin).toBe(false);
+    });
+
+    it("fails closed when the settings read errors: actor resolves without elevation", async () => {
+      const { db, deletedTables } = createFakeDb({ selectThrows: true });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor).not.toBeNull();
+      expect(actor!.isInstanceAdmin).toBe(false);
+      expect(deletedTables).toContain(instanceUserRoles);
+    });
   });
 });

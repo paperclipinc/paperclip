@@ -471,7 +471,7 @@ export function ProjectDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
     }
   };
 
@@ -666,7 +666,7 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
     onError: (error) => {
