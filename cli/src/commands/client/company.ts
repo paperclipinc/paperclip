@@ -15,7 +15,7 @@ import type {
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
-import { binaryContentTypeByExtension, readZipArchive } from "./zip.js";
+import { binaryContentTypeByExtension, bytesToPortableFileEntry, isBlobStorePath, readZipArchive } from "./zip.js";
 import {
   addCommonClientOptions,
   apiPath,
@@ -140,16 +140,6 @@ type ImportSelectionState = {
   skills: Set<string>;
 };
 
-function readPortableFileEntry(filePath: string, contents: Buffer): CompanyPortabilityFileEntry {
-  const contentType = binaryContentTypeByExtension[path.extname(filePath).toLowerCase()];
-  if (!contentType) return contents.toString("utf8");
-  return {
-    encoding: "base64",
-    data: contents.toString("base64"),
-    contentType,
-  };
-}
-
 function portableFileEntryToWriteValue(entry: CompanyPortabilityFileEntry): string | Uint8Array {
   if (typeof entry === "string") return entry;
   return Buffer.from(entry.data, "base64");
@@ -213,7 +203,7 @@ function shouldIncludePortableFile(filePath: string): boolean {
   const isMarkdown = baseName.endsWith(".md");
   const isPaperclipYaml = baseName === ".paperclip.yaml" || baseName === ".paperclip.yml";
   const contentType = binaryContentTypeByExtension[path.extname(baseName).toLowerCase()];
-  return isMarkdown || isPaperclipYaml || Boolean(contentType);
+  return isMarkdown || isPaperclipYaml || Boolean(contentType) || isBlobStorePath(filePath);
 }
 
 function findPortableExtensionPath(files: Record<string, CompanyPortabilityFileEntry>): string | null {
@@ -558,6 +548,16 @@ function summarizeImportAgentResults(agents: CompanyPortabilityImportResult["age
   return `${agents.length} ${pluralize(agents.length, "agent")} total (${parts.join(", ")})`;
 }
 
+function summarizeImportSkillResults(skills: CompanyPortabilityImportResult["skills"]): string {
+  if (skills.length === 0) return "0 skills changed";
+  const actions = ["created", "renamed", "replaced", "skipped"] as const;
+  const parts = actions.flatMap((action) => {
+    const count = skills.filter((skill) => skill.action === action).length;
+    return count > 0 ? [`${count} ${action}`] : [];
+  });
+  return `${skills.length} ${pluralize(skills.length, "skill")} total (${parts.join(", ")})`;
+}
+
 function summarizeImportProjectResults(projects: CompanyPortabilityImportResult["projects"]): string {
   if (projects.length === 0) return "0 projects changed";
   const created = projects.filter((project) => project.action === "created").length;
@@ -691,10 +691,12 @@ export function renderCompanyImportResult(
   result: CompanyPortabilityImportResult,
   meta: { targetLabel: string; companyUrl?: string; infoMessages?: string[] },
 ): string {
+  const skills = result.skills ?? [];
   const lines: string[] = [
     `${pc.bold("Target")}  ${meta.targetLabel}`,
     `${pc.bold("Company")} ${result.company.name} (${actionChip(result.company.action)})`,
     `${pc.bold("Agents")}  ${summarizeImportAgentResults(result.agents)}`,
+    `${pc.bold("Skills")}  ${summarizeImportSkillResults(skills)}`,
     `${pc.bold("Projects")} ${summarizeImportProjectResults(result.projects)}`,
   ];
 
@@ -709,6 +711,15 @@ export function renderCompanyImportResult(
       action: agent.action,
       label: `${agent.slug} -> ${agent.name}`,
       reason: agent.reason,
+    })),
+  );
+  appendPreviewExamples(
+    lines,
+    "Skill results",
+    skills.map((skill) => ({
+      action: skill.action,
+      label: `${skill.originalSlug} -> ${skill.slug}`,
+      reason: skill.reason,
     })),
   );
   appendPreviewExamples(
@@ -932,7 +943,7 @@ async function collectPackageFiles(
     if (!entry.isFile()) continue;
     const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
     if (!shouldIncludePortableFile(relativePath)) continue;
-    files[relativePath] = readPortableFileEntry(relativePath, await readFile(absolutePath));
+    files[relativePath] = bytesToPortableFileEntry(relativePath, await readFile(absolutePath));
   }
 }
 
