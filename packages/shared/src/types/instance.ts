@@ -66,6 +66,7 @@ export interface InstanceExperimentalSettings {
   enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
+  enableSimplifiedEnglishInteractions: boolean;
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
