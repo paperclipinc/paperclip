@@ -85,10 +85,13 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
-import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+/** The shared batch tag for the two parallel bridge steps. It is a fixed
+ * low-cardinality literal, so it marks the two spans as one batch without
+ * carrying run or user data. */
+const STARTUP_BRIDGE_BATCH = "bridge";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
 interface ChildStderrState {
@@ -1325,26 +1328,11 @@ async function stageAcpRemoteRuntime(input: {
   });
 }
 
-// Bind a startup-step round-trip/provider-duration reader set to a runner's
-// cumulative counters (Open Q1). Only the sandbox runner instruments the exec
-// seam, so a runner without `execCount` (SSH, or none) yields an empty option
-// set and the affected steps omit the fields entirely. Reader closures are
-// passed — not the runner — so `measureStartupStep` stays runner-agnostic.
-function buildStartupStepMetrics(
-  runner: CommandManagedRuntimeRunner | undefined,
-): StartupStepMeasureOptions {
-  if (!runner) return {};
-  return {
-    ...(runner.execCount ? { roundTrips: () => runner.execCount!() } : {}),
-    ...(runner.providerExecMs ? { providerExecMs: () => runner.providerExecMs!() } : {}),
-    ...(runner.providerGetMs ? { providerGetMs: () => runner.providerGetMs!() } : {}),
-  };
-}
-
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
+  spanParent?: Pick<StartupStepMeasureOptions, "tracer" | "parentContext" | "contextWithSpan">;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1414,23 +1402,20 @@ async function buildRuntime(input: {
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
   const executionTargetIsRemote = remoteExecutionIdentity !== null;
-  // Round-trip / provider-duration readers for per-step attribution (Open Q1),
-  // sourced from the sandbox runner's cumulative counters. `measureStartupStep`
-  // reads each as a `() => number` closure (never the runner itself, Risk R1)
-  // and emits the per-step delta. Empty when there is no runner (local runs,
-  // the runner-less ACP→CLI fallback, or an SSH runner that does not
-  // instrument the seam), so those steps simply omit the fields.
-  const stepMetrics = buildStartupStepMetrics(
-    executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
-      ? executionTarget.runner
-      : undefined,
-  );
-  // The two bridge-start steps intentionally overlap, so their runner counters
-  // would double-count each other if we sampled them here. Keep the shared
-  // counter attribution on the sequential startup phases only; the concurrent
-  // bridge steps still emit duration telemetry, just not misleading per-step
-  // round-trip/provider deltas.
-  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {};
+  // Merge the injected tracer + root parent-context into every step option set,
+  // so each boundary span parents to the root span. With no injected trace
+  // context both fields are no-ops and the span path stays inert.
+  const stepMetrics: StartupStepMeasureOptions = {
+    ...input.spanParent,
+  };
+  // The two bridge-start steps intentionally overlap. A shared `batch` tag marks
+  // the two spans as one parallel batch, and `criticalPath: false` keeps their
+  // inner exec spans off the critical path (their wall time overlaps).
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {
+    ...input.spanParent,
+    batch: STARTUP_BRIDGE_BATCH,
+    criticalPath: false,
+  };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -3001,9 +2986,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             return established;
           }, {
             ...prepared.stepMetrics,
-            extra: () => ({
-              ...(createRuntimeMs !== undefined ? { createRuntimeMs } : {}),
-              ...(ensureSessionMs !== undefined ? { ensureSessionMs } : {}),
+            // The two sub-times ride the span as fixed, closed keys.
+            spanWallTimes: () => ({
+              createRuntime: createRuntimeMs,
+              ensureSession: ensureSessionMs,
             }),
           });
         } catch (err) {
@@ -3031,9 +3017,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             return established;
           }, {
             ...prepared.stepMetrics,
-            extra: () => ({
-              ...(retryEnsureSessionMs !== undefined ? { ensureSessionMs: retryEnsureSessionMs } : {}),
-            }),
+            // The retry reuses the runtime from the first attempt, so it reports
+            // only its own ensure-session sub-time on the span.
+            spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
           });
         }
       }
