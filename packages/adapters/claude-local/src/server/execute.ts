@@ -100,6 +100,17 @@ const executeClaudeAcp = createClaudeAcpExecutor();
 
 const CLAUDE_INVALID_CREDENTIAL_MESSAGE =
   "Claude rejected the connected credential. Reconnect a valid Claude credential, then resume.";
+// The CLI answers "not logged in" with an interactive `/login`, which a
+// Paperclip run can never perform: it is headless, and on a managed sandbox the
+// pod is destroyed with the lease. Surfacing that verbatim points the user at a
+// command they cannot run and hides the actual remedy. Lead with what works
+// here and keep the host-login path as the self-hosted footnote, the same shape
+// codex-local uses for its managed-home credential error.
+const CLAUDE_LOGIN_REQUIRED_MESSAGE =
+  "Claude reported no usable credential. Connect a Claude credential for this agent, "
+  + "then resume. If you already connected one, it was rejected (an OAuth token that "
+  + "has expired or been revoked does this) so mint a fresh one with `claude setup-token` "
+  + "and reconnect it. On a self-hosted install, signing in to Claude on the host also works.";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -1042,7 +1053,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : fallbackErrorMessage,
+        errorMessage: invalidCredential
+          ? CLAUDE_INVALID_CREDENTIAL_MESSAGE
+          : loginMeta.requiresLogin
+          ? CLAUDE_LOGIN_REQUIRED_MESSAGE
+          : fallbackErrorMessage,
         errorCode,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
@@ -1138,7 +1153,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     // The raw CLI text stays in resultJson; the surfaced message must tell the
     // user what to do, not echo the provider's 401.
-    const errorMessage = invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : rawErrorMessage;
+    const errorMessage = invalidCredential
+      ? CLAUDE_INVALID_CREDENTIAL_MESSAGE
+      : failed && loginMeta.requiresLogin
+      ? CLAUDE_LOGIN_REQUIRED_MESSAGE
+      : rawErrorMessage;
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
