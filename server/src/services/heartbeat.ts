@@ -125,6 +125,8 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
+  buildWorkspaceReadyMetadata,
+  buildWorkspaceReadyPresentation,
   cleanupExecutionWorkspaceArtifacts,
   ensureGitWorktreeBranchCoherent,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -136,6 +138,7 @@ import {
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -417,6 +420,74 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
 ]);
+export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
+export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
+export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
+export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
+
+export interface SharedWorkspaceHolder {
+  runId: string;
+  agentId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+}
+
+// Pre-dispatch gate outcome: another running run currently holds the issue's
+// shared project workspace. Not a failure — the run is parked as a bounded
+// scheduled retry and re-attempted once the holder finishes, so two agents
+// never mutate the same working tree concurrently.
+export class WorkspaceBusyDeferral extends Error {
+  code = WORKSPACE_BUSY_ERROR_CODE;
+  holder: SharedWorkspaceHolder;
+  projectWorkspaceId: string;
+  deferralAttempt: number;
+  wasIssueAssignee: boolean;
+
+  constructor(input: {
+    holder: SharedWorkspaceHolder;
+    projectWorkspaceId: string;
+    deferralAttempt: number;
+    wasIssueAssignee: boolean;
+  }) {
+    super(
+      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+        input.holder.issueIdentifier ?? input.holder.issueId
+      }) is still running`,
+    );
+    this.name = "WorkspaceBusyDeferral";
+    this.holder = input.holder;
+    this.projectWorkspaceId = input.projectWorkspaceId;
+    this.deferralAttempt = input.deferralAttempt;
+    this.wasIssueAssignee = input.wasIssueAssignee;
+  }
+}
+
+function isWorkspaceBusyDeferral(error: unknown): error is WorkspaceBusyDeferral {
+  return error instanceof WorkspaceBusyDeferral;
+}
+
+export function computeWorkspaceBusyRetryDelayMs(random: () => number = Math.random) {
+  const jitter = Math.min(Math.max(random(), 0), 1);
+  return WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + Math.floor(jitter * WORKSPACE_BUSY_RETRY_JITTER_MS);
+}
+
+// True for the retry of a workspace-busy deferral whose original run did NOT
+// execute under assignee-ship (a comment or review-participant wake). For such
+// a retry an assignee mismatch is the expected state, so the reassignment
+// protections in the promotion gate and the claim-time staleness check must
+// not cancel it — cancelling would silently drop the wake the deferral
+// promised to replay.
+export function isNonAssigneeWorkspaceBusyRetry(
+  retryReason: string | null | undefined,
+  contextSnapshot: Record<string, unknown>,
+) {
+  return (
+    retryReason === WORKSPACE_BUSY_RETRY_REASON &&
+    contextSnapshot.workspaceBusyDeferredWhileAssignee === false
+  );
+}
+
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;

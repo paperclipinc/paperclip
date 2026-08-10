@@ -259,3 +259,11 @@ export function getRunLogStore() {
   cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
   return cachedStore;
 }
+
+// Graceful-shutdown hook: upload every dirty in-flight run-log tail before
+// the process exits, so an orderly restart (deploy, SIGTERM) loses nothing
+// even for runs that never reach finalize. No-op when the store was never
+// created or in-flight mirroring is off.
+export async function flushInFlightRunLogMirrors(): Promise<void> {
+  await cachedStore?.flushInflightMirrors?.();
+}
