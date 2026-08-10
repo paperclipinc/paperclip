@@ -2616,6 +2616,31 @@ export function isRemoteExecutionEnvironmentDriver(driver: string | null | undef
   return driver === "ssh" || driver === "sandbox" || driver === "plugin";
 }
 
+export const MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV =
+  "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE";
+
+export function isMultiProjectWorkspaceSyncRemoteEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // Default ON: an unset value is not false, so the remote path is live unless an operator sets
+  // an explicit false value as the targeted kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV]);
+}
+
+/**
+ * True when an environment driver stages a multi-source remote workspace through the confined
+ * sandbox/command runtime. Only the `sandbox` driver asserts per-project confinement on the
+ * staging path (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The `ssh` driver
+ * stages without that guard, and the `plugin` driver does not route through the confined command
+ * runtime in the workspace-realization step, so both keep dropping referenced projects. A `local`
+ * (or unknown) driver is not remote and never reaches this check. This gate is intentionally
+ * narrower than {@link isRemoteExecutionEnvironmentDriver}: it names the one transport that
+ * confines each staged referenced tree.
+ */
+export function isConfinedRemoteStagingDriver(driver: string | null | undefined): boolean {
+  return driver === "sandbox";
+}
+
 /**
  * Upper bound on how many additional (mentioned) projects a single run may materialize
  * beyond the anchor. Bounds the fan-out of per-project authorization and workspace prep.
@@ -3572,6 +3597,21 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
+}
+
+export function resolveCacheAdjustedCostUsd(input: {
+  costUsd?: number | null;
+  cacheAdjustedCostUsd?: number | null;
+}) {
+  const explicit = input.cacheAdjustedCostUsd;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) {
+    return explicit;
+  }
+  const reported = input.costUsd;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    return reported;
+  }
+  return null;
 }
 
 export function resolveLedgerCostStatus(input: {
