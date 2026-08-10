@@ -72,6 +72,11 @@ export {
   firstMeaningfulStderrLine,
   isBenignAdapterStderrLine,
 } from "./benign-stderr.js";
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
