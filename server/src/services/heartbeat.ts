@@ -125,6 +125,8 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
+  buildWorkspaceReadyMetadata,
+  buildWorkspaceReadyPresentation,
   cleanupExecutionWorkspaceArtifacts,
   ensureGitWorktreeBranchCoherent,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -136,6 +138,7 @@ import {
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -417,6 +420,74 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
 ]);
+export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
+export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
+export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
+export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
+
+export interface SharedWorkspaceHolder {
+  runId: string;
+  agentId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+}
+
+// Pre-dispatch gate outcome: another running run currently holds the issue's
+// shared project workspace. Not a failure — the run is parked as a bounded
+// scheduled retry and re-attempted once the holder finishes, so two agents
+// never mutate the same working tree concurrently.
+export class WorkspaceBusyDeferral extends Error {
+  code = WORKSPACE_BUSY_ERROR_CODE;
+  holder: SharedWorkspaceHolder;
+  projectWorkspaceId: string;
+  deferralAttempt: number;
+  wasIssueAssignee: boolean;
+
+  constructor(input: {
+    holder: SharedWorkspaceHolder;
+    projectWorkspaceId: string;
+    deferralAttempt: number;
+    wasIssueAssignee: boolean;
+  }) {
+    super(
+      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+        input.holder.issueIdentifier ?? input.holder.issueId
+      }) is still running`,
+    );
+    this.name = "WorkspaceBusyDeferral";
+    this.holder = input.holder;
+    this.projectWorkspaceId = input.projectWorkspaceId;
+    this.deferralAttempt = input.deferralAttempt;
+    this.wasIssueAssignee = input.wasIssueAssignee;
+  }
+}
+
+function isWorkspaceBusyDeferral(error: unknown): error is WorkspaceBusyDeferral {
+  return error instanceof WorkspaceBusyDeferral;
+}
+
+export function computeWorkspaceBusyRetryDelayMs(random: () => number = Math.random) {
+  const jitter = Math.min(Math.max(random(), 0), 1);
+  return WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + Math.floor(jitter * WORKSPACE_BUSY_RETRY_JITTER_MS);
+}
+
+// True for the retry of a workspace-busy deferral whose original run did NOT
+// execute under assignee-ship (a comment or review-participant wake). For such
+// a retry an assignee mismatch is the expected state, so the reassignment
+// protections in the promotion gate and the claim-time staleness check must
+// not cancel it — cancelling would silently drop the wake the deferral
+// promised to replay.
+export function isNonAssigneeWorkspaceBusyRetry(
+  retryReason: string | null | undefined,
+  contextSnapshot: Record<string, unknown>,
+) {
+  return (
+    retryReason === WORKSPACE_BUSY_RETRY_REASON &&
+    contextSnapshot.workspaceBusyDeferredWhileAssignee === false
+  );
+}
+
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -1463,7 +1534,7 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
-async function ensureManagedProjectWorkspace(input: {
+export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
@@ -1855,6 +1926,13 @@ export async function assertPushCapabilityCheckoutValid(input: {
       },
     },
   );
+}
+
+export function reconcileReusedExecutionWorkspaceProjectWorkspaceId(
+  existingProjectWorkspaceId: string | null | undefined,
+  resolvedProjectWorkspaceId: string | null | undefined,
+): string | null {
+  return existingProjectWorkspaceId ?? resolvedProjectWorkspaceId ?? null;
 }
 
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
@@ -2367,6 +2445,12 @@ export type ResolvedAdditionalWorkspace = {
   repoRef: string | null;
 };
 
+export type WorkspaceMaterializationFailure = {
+  projectWorkspaceId: string | null;
+  repoUrl: string | null;
+  error: string;
+};
+
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -2444,6 +2528,47 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 }
 
 /**
+ * Assemble the run warnings for the agent-home fallback when a project has workspaces but none
+ * produced a usable cwd. Materialization failures (for example a failed managed clone) take
+ * priority over the generic "no local cwd configured" note, which previously masked them.
+ */
+export function buildAnchorFallbackWorkspaceNotes(input: {
+  fallbackCwd: string;
+  preferredWorkspaceWarning: string | null;
+  materializationFailures: WorkspaceMaterializationFailure[];
+  missingProjectCwds: string[];
+  hasConfiguredProjectCwd: boolean;
+}): string[] {
+  const warnings: string[] = [];
+  if (input.preferredWorkspaceWarning) {
+    warnings.push(input.preferredWorkspaceWarning);
+  }
+  if (input.materializationFailures.length > 0) {
+    const first = input.materializationFailures[0];
+    const extraFailureCount = input.materializationFailures.length - 1;
+    warnings.push(
+      extraFailureCount > 0
+        ? `Failed to prepare the project workspace checkout (${first.error}), and ${extraFailureCount} other candidate workspace(s) also failed. Using fallback workspace "${input.fallbackCwd}" for this run.`
+        : `Failed to prepare the project workspace checkout: ${first.error}. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  }
+  if (input.missingProjectCwds.length > 0) {
+    const firstMissing = input.missingProjectCwds[0];
+    const extraMissingCount = Math.max(0, input.missingProjectCwds.length - 1);
+    warnings.push(
+      extraMissingCount > 0
+        ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${input.fallbackCwd}" for this run.`
+        : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  } else if (input.materializationFailures.length === 0 && !input.hasConfiguredProjectCwd) {
+    warnings.push(
+      `Project workspace has no local cwd configured. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  }
+  return warnings;
+}
+
+/**
  * Environment flag (kill-switch, default ON) that gates whether run preparation
  * consumes the multi-project referenced-project set produced by
  * {@link resolveRunReferencedProjects}. The feature is live by default: an unset
@@ -2489,6 +2614,31 @@ export function isMultiProjectWorkspaceSyncEnabled(
  */
 export function isRemoteExecutionEnvironmentDriver(driver: string | null | undefined): boolean {
   return driver === "ssh" || driver === "sandbox" || driver === "plugin";
+}
+
+export const MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV =
+  "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE";
+
+export function isMultiProjectWorkspaceSyncRemoteEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // Default ON: an unset value is not false, so the remote path is live unless an operator sets
+  // an explicit false value as the targeted kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV]);
+}
+
+/**
+ * True when an environment driver stages a multi-source remote workspace through the confined
+ * sandbox/command runtime. Only the `sandbox` driver asserts per-project confinement on the
+ * staging path (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The `ssh` driver
+ * stages without that guard, and the `plugin` driver does not route through the confined command
+ * runtime in the workspace-realization step, so both keep dropping referenced projects. A `local`
+ * (or unknown) driver is not remote and never reaches this check. This gate is intentionally
+ * narrower than {@link isRemoteExecutionEnvironmentDriver}: it names the one transport that
+ * confines each staged referenced tree.
+ */
+export function isConfinedRemoteStagingDriver(driver: string | null | undefined): boolean {
+  return driver === "sandbox";
 }
 
 /**
@@ -3449,6 +3599,21 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+export function resolveCacheAdjustedCostUsd(input: {
+  costUsd?: number | null;
+  cacheAdjustedCostUsd?: number | null;
+}) {
+  const explicit = input.cacheAdjustedCostUsd;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) {
+    return explicit;
+  }
+  const reported = input.costUsd;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    return reported;
+  }
+  return null;
+}
+
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
   inputTokens: number;
@@ -3903,6 +4068,26 @@ export function describeSessionResetReason(
     return "wake reason is heartbeat_timer (unscoped timer wake starts fresh)";
   }
   return null;
+}
+
+/**
+ * Workspace sync conflict failure signatures — git-level merge conflicts that
+ * the workspace sync layer propagates as adapter failures. These are transient
+ * at the run level (a retry after the conflicting run finishes resolves them),
+ * so putting the agent into a sticky `error` state over them removes a healthy
+ * agent from rotation while leaving the actual problem (the workspace)
+ * untouched. The run still fails and carries the full message.
+ */
+const WORKSPACE_SYNC_CONFLICT_SIGNATURES = [
+  "Failed to merge concurrent remote git histories",
+  "Failed to integrate concurrent remote git history",
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+];
+
+export function isWorkspaceSyncConflictFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return WORKSPACE_SYNC_CONFLICT_SIGNATURES.some((signature) => message.includes(signature));
 }
 
 export function shouldDeferFollowupWakeForSameIssue(input: {
@@ -6223,6 +6408,41 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+}
+
+type WorkspaceReadyCommentWriter = {
+  addComment: (
+    issueId: string,
+    body: string,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+    options?: {
+      presentation?: ReturnType<typeof buildWorkspaceReadyPresentation>;
+      metadata?: ReturnType<typeof buildWorkspaceReadyMetadata>;
+    },
+  ) => Promise<unknown>;
+};
+
+export function postWorkspaceReadyComment(input: {
+  issuesSvc: WorkspaceReadyCommentWriter;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  workspace: RealizedExecutionWorkspace;
+  runtimeServices: RuntimeServiceRef[];
+}) {
+  const workspaceReadyInput = {
+    workspace: input.workspace,
+    runtimeServices: input.runtimeServices,
+  };
+  return input.issuesSvc.addComment(
+    input.issueId,
+    buildWorkspaceReadyComment(workspaceReadyInput),
+    { agentId: input.agentId, runId: input.runId },
+    {
+      presentation: buildWorkspaceReadyPresentation(workspaceReadyInput),
+      metadata: buildWorkspaceReadyMetadata(workspaceReadyInput),
+    },
+  );
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {

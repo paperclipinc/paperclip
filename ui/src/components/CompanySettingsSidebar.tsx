@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
-  CloudUpload,
   Cpu,
   FlaskConical,
   KeyRound,
@@ -74,7 +73,6 @@ export function CompanySettingsSidebar() {
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
-  const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -105,14 +103,6 @@ export function CompanySettingsSidebar() {
         <div className="flex flex-col gap-0.5">
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          ) : null}
-          {showCloudUpstream ? (
-            <SidebarNavItem
-              to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
-              icon={CloudUpload}
-              end
-            />
           ) : null}
           {exposedSurfaces.has("company.members") ? (
             <SidebarNavItem

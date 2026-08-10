@@ -37,6 +37,10 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  // Optional so existing fakes/fixtures keep compiling: uploads every dirty
+  // in-flight mirror immediately (graceful-shutdown path). No-op when the
+  // in-flight mirror is not enabled.
+  flushInflightMirrors?(): Promise<void>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -258,4 +262,12 @@ export function getRunLogStore() {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
   return cachedStore;
+}
+
+// Graceful-shutdown hook: upload every dirty in-flight run-log tail before
+// the process exits, so an orderly restart (deploy, SIGTERM) loses nothing
+// even for runs that never reach finalize. No-op when the store was never
+// created or in-flight mirroring is off.
+export async function flushInFlightRunLogMirrors(): Promise<void> {
+  await cachedStore?.flushInflightMirrors?.();
 }

@@ -7,7 +7,6 @@ import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
-  { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
@@ -60,10 +59,6 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "instance-environments";
   }
 
-  if (pathname.includes("/company/settings/cloud-upstream")) {
-    return "cloud-upstream";
-  }
-
   if (pathname.includes("/company/settings/members") || pathname.includes("/company/settings/access")) {
     return "members";
   }
@@ -86,20 +81,17 @@ export function CompanySettingsNav() {
   const { data: boardAccess } = useBoardCapabilities();
   const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
   const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
-  const cloudSyncEnabled = boardAccess?.capabilities.features.enableCloudSync === true;
-
   const visibleItems = useMemo(
     () =>
       items.filter((item) => {
         if (item.value === "general") return exposedSurfaces.has("company.general");
-        if (item.value === "cloud-upstream") return cloudSyncEnabled;
         if (item.value === "members") return exposedSurfaces.has("company.members");
         if (item.value === "invites") return exposedSurfaces.has("company.invites");
         if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
         if (item.value === "instance-profile") return true; // per-user, always visible
         return isInstanceAdmin; // all remaining instance-* tabs
       }),
-    [boardAccess, cloudSyncEnabled, isInstanceAdmin], // exposedSurfaces derives from boardAccess
+    [boardAccess, isInstanceAdmin], // exposedSurfaces derives from boardAccess
   );
 
   function handleTabChange(value: string) {

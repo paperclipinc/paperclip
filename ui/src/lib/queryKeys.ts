@@ -345,7 +345,6 @@ export const queryKeys = {
     status: (companyId: string) =>
       ["activation", "status", companyId] as const,
   },
-  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,

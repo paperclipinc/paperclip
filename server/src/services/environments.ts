@@ -29,6 +29,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
+import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -93,6 +94,22 @@ export interface ManagedSandboxEnvironmentInput {
    * `findKubernetesEnvironment` keys on).
    */
   extraMetadata?: Record<string, unknown>;
+}
+
+export type ManagedSandboxEnvironmentReconcileAction =
+  | "added"
+  | "updated"
+  | "unchanged"
+  | "skipped";
+
+export interface ManagedSandboxEnvironmentReconcileResult {
+  environment: Environment;
+  action: ManagedSandboxEnvironmentReconcileAction;
+  /** Classification observed before this reconciliation wrote anything. */
+  stockStatus: ManagedResourceStockStatus;
+  /** True only when operator drift prevented the available stock update. */
+  updateAvailable: boolean;
+  stockHash: string;
 }
 
 function cloneRecord(value: unknown, fallback: Record<string, unknown> | null = null): Record<string, unknown> | null {
