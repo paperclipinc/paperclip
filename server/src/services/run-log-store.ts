@@ -37,6 +37,10 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  // Optional so existing fakes/fixtures keep compiling: uploads every dirty
+  // in-flight mirror immediately (graceful-shutdown path). No-op when the
+  // in-flight mirror is not enabled.
+  flushInflightMirrors?(): Promise<void>;
 }
 
 function safeSegments(...segments: string[]) {
