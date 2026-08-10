@@ -2445,6 +2445,12 @@ export type ResolvedAdditionalWorkspace = {
   repoRef: string | null;
 };
 
+export type WorkspaceMaterializationFailure = {
+  projectWorkspaceId: string | null;
+  repoUrl: string | null;
+  error: string;
+};
+
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -2519,6 +2525,47 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
+
+/**
+ * Assemble the run warnings for the agent-home fallback when a project has workspaces but none
+ * produced a usable cwd. Materialization failures (for example a failed managed clone) take
+ * priority over the generic "no local cwd configured" note, which previously masked them.
+ */
+export function buildAnchorFallbackWorkspaceNotes(input: {
+  fallbackCwd: string;
+  preferredWorkspaceWarning: string | null;
+  materializationFailures: WorkspaceMaterializationFailure[];
+  missingProjectCwds: string[];
+  hasConfiguredProjectCwd: boolean;
+}): string[] {
+  const warnings: string[] = [];
+  if (input.preferredWorkspaceWarning) {
+    warnings.push(input.preferredWorkspaceWarning);
+  }
+  if (input.materializationFailures.length > 0) {
+    const first = input.materializationFailures[0];
+    const extraFailureCount = input.materializationFailures.length - 1;
+    warnings.push(
+      extraFailureCount > 0
+        ? `Failed to prepare the project workspace checkout (${first.error}), and ${extraFailureCount} other candidate workspace(s) also failed. Using fallback workspace "${input.fallbackCwd}" for this run.`
+        : `Failed to prepare the project workspace checkout: ${first.error}. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  }
+  if (input.missingProjectCwds.length > 0) {
+    const firstMissing = input.missingProjectCwds[0];
+    const extraMissingCount = Math.max(0, input.missingProjectCwds.length - 1);
+    warnings.push(
+      extraMissingCount > 0
+        ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${input.fallbackCwd}" for this run.`
+        : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  } else if (input.materializationFailures.length === 0 && !input.hasConfiguredProjectCwd) {
+    warnings.push(
+      `Project workspace has no local cwd configured. Using fallback workspace "${input.fallbackCwd}" for this run.`,
+    );
+  }
+  return warnings;
 }
 
 /**
