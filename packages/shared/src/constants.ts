@@ -213,6 +213,8 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
+export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
@@ -234,6 +236,9 @@ export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KI
 
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_DENSITIES = ["compact"] as const;
+export type IssueCommentPresentationDensity = (typeof ISSUE_COMMENT_PRESENTATION_DENSITIES)[number];
 
 export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
   "text",
@@ -258,6 +263,13 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_item_verdicts",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  "board_only",
+  "board_or_agents",
+] as const;
+export type IssueThreadInteractionResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
@@ -952,6 +964,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_connections",
   "tools:manage_profiles",
   "tools:view_audit",
+  "audit:view_agent_actions",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",

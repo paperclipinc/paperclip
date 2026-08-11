@@ -11,6 +11,7 @@ import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
 import { healthRoutes } from "./routes/health.js";
+import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
@@ -41,6 +42,9 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
+import { decisionRoutes } from "./routes/decisions.js";
+import { decisionQueueRoutes } from "./routes/decision-queues.js";
+import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -273,6 +277,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
     /**
@@ -378,6 +383,7 @@ export async function createApp(
     }),
   );
   api.use(openApiRoutes());
+  api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
@@ -419,6 +425,8 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
   api.use(decisionTrainingRoutes(db));
+  api.use(decisionRoutes(db, opts.decisionServiceOptions));
+  api.use(decisionQueueRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
