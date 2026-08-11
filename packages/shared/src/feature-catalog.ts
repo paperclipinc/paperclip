@@ -237,6 +237,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableCloudSync: {
+    title: "Cloud Sync",
+    description:
+      "Enable cloud sync features on cloud-managed instances.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableWorkspaceBranchReconcileForward: {
     title: "Workspace Branch Reconcile Forward",
     description:
