@@ -1,4 +1,19 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export type {
+  CloudUpstreamConnectStartResponse,
+  CloudUpstreamActivationDecision,
+  CloudUpstreamActivationEntityType,
+  CloudUpstreamConnection,
+  CloudUpstreamConflict,
+  CloudUpstreamPreview,
+  CloudUpstreamRun,
+  CloudUpstreamRunEvent,
+  CloudUpstreamsState,
+  CloudUpstreamStep,
+  CloudUpstreamSummaryCount,
+  CloudUpstreamTarget,
+  CloudUpstreamWarning,
+} from "./types/cloud-upstream.js";
 export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
