@@ -32,6 +32,7 @@ export interface PublicFeatureFlags {
   enableServerInfoDebugView: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  enableTaskChatRedesign: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   // Derived from instance general settings / instance defaults. These ride
@@ -88,6 +89,7 @@ export function derivePublicFeatureFlags(input: {
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
     enableSummaries: experimental.enableSummaries === true,
     enableStatusCards: experimental.enableStatusCards === true,
+    enableTaskChatRedesign: experimental.enableTaskChatRedesign === true,
     cloudBilling: experimental.cloudBilling === true,
     cloudTrialBanner: experimental.cloudTrialBanner === true,
     keyboardShortcuts: general.keyboardShortcuts === true,

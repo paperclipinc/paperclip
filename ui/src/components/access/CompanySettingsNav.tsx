@@ -20,6 +20,7 @@ const items = [
   { value: "instance-experimental", label: "Instance experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
   { value: "instance-plugins", label: "Instance plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
   { value: "instance-adapters", label: "Instance adapters", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters` },
+  { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
 ] as const;
 
 type CompanySettingsTab = (typeof items)[number]["value"];
