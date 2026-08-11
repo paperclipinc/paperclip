@@ -3282,7 +3282,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let runtime!: AcpRuntime;
     let clearSession = false;
     let rootSpan!: ReturnType<typeof openStartupRootSpan>;
-    let handle: Awaited<ReturnType<typeof ensureSession>> | null = null;
+    let handle: any = null;
     let resumedSession = false;
     let processIdentitySink: { current: typeof ctx.onSpawn; latest: { pid: number; startedAt: string } | null } = { current: ctx.onSpawn, latest: null };
     try {
