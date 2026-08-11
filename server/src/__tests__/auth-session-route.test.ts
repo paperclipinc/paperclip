@@ -166,7 +166,8 @@ describe("actorMiddleware authenticated session profile", () => {
       emailVerified: true,
     });
     expect(inserts[1]?.values).toMatchObject({
-      name: "Purple Rain",
+      membershipRole: "owner",
+      status: "active",
     });
   });
 
