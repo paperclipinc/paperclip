@@ -125,6 +125,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   capabilities: vi.fn(),
+  secretRefs: vi.fn(),
   probe: vi.fn(),
   probeConfig: vi.fn(),
   create: vi.fn(),
@@ -395,6 +396,7 @@ describe("CompanyEnvironments — test provider button", () => {
       buildCurrentBoardAccess({ features: { defaultEnvironmentId: null, enableEnvironments: true } }),
     );
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
+    mockEnvironmentsApi.secretRefs.mockResolvedValue({ refs: [] });
     mockSecretsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: null,

@@ -96,6 +96,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableTaskChatRedesign: {
+    title: "Chat-Style Tasks",
+    description:
+      "Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableTaskWatchdogs: {
     title: "Task Watchdogs",
     description:
@@ -123,14 +131,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Status Cards",
     description:
       "Enable the experimental shared status-card board, update engine, and gated API.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
-  enableCloudSync: {
-    title: "Cloud Sync",
-    description:
-      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -185,6 +185,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableGoalsSidebarLink: {
     title: "Goals Sidebar Link",
     description: "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableSimplifiedEnglishInteractions: {
+    title: "Simplified English Interactions",
+    description:
+      "Instruct agents to write user interactions (confirmations, questions, suggested tasks) in ASD-STE100 Simplified Technical English with brief decision context.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,

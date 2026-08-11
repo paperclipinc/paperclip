@@ -23,7 +23,16 @@ import {
   resolveAdapterExecutionTargetCwd,
   adapterExecutionTargetUsesManagedHome,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
+import {
+  describeClaudeFailure,
+  detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
+  isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
+} from "./parse.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import { isBedrockModelId } from "./models.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
 import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";

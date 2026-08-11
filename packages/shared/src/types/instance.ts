@@ -53,10 +53,10 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableTaskChatRedesign: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -66,6 +66,13 @@ export interface InstanceExperimentalSettings {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /**
+   * Instructs agents to write user-interaction content (confirmations,
+   * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
+   * Technical English with brief decision context. Prompt-side only; no
+   * behavior change outside interaction wording.
+   */
+  enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   cloudBilling: boolean;

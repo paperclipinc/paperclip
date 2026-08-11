@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
 import { resolveCloudTenantActor } from "./auth.js";
@@ -9,14 +10,17 @@ type SeededMembership = { companyId: string; membershipRole: string; status: str
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
-// select().from(instanceSettings).where().then() read the owner-elevation flag
-// resolution performs through instanceSettingsService. The chain is awaitable so
+// select().from(table).where() reads: instanceSettings for the owner-elevation
+// flag resolution through instanceSettingsService, and companyMemberships for
+// the user's own membership rows (rows configurable via membershipQueryRows,
+// where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
 function createFakeDb(options?: {
   membershipRow?: SeededMembership;
   seededMemberships?: SeededMembership[];
   /** Rows returned by the SELECT over `companies` — [] means the stack company does not exist yet. */
   companyRows?: Array<{ id: string }>;
+  membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
 }) {
@@ -41,6 +45,7 @@ function createFakeDb(options?: {
   let currentTable: unknown = null;
   const memberships = options?.seededMemberships ?? [membershipRow];
   const companyRows = options?.companyRows ?? [];
+  const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
   const chain: Record<string, unknown> = {};
   chain.values = (values: Record<string, unknown>) => {
     if (currentTable !== null) insertedValues.set(currentTable, values);
@@ -62,18 +67,20 @@ function createFakeDb(options?: {
         from: (table: unknown) => {
           selectedTables.push(table);
           return {
-            where: () => ({
-              then: (resolve: (v: unknown) => unknown) => {
-                const result = table === companies
-                  ? companyRows
-                  : table === instanceSettings && settingsRow
-                    ? [settingsRow]
-                    : table === companyMemberships
-                      ? memberships
-                      : [];
-                return Promise.resolve(result).then(resolve);
-              },
-            }),
+            where: (condition: unknown) => {
+              selectWheres.push({ table, condition });
+              const result = table === companies
+                ? companyRows
+                : table === instanceSettings && settingsRow
+                  ? [settingsRow]
+                  : table === companyMemberships
+                    ? memberships
+                    : [];
+              return {
+                then: (resolve: (v: unknown) => unknown) =>
+                  Promise.resolve(result).then(resolve),
+              };
+            },
           };
         },
       };
@@ -83,7 +90,7 @@ function createFakeDb(options?: {
       return { where: async () => undefined };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectedTables, insertedValues };
+  return { db, insertedTables, deletedTables, selectedTables, insertedValues, selectWheres };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {
