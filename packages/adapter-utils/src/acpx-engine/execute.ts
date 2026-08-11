@@ -3276,11 +3276,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
     let runFailed = true;
-    let prepared: AcpxPreparedRuntime;
+    let prepared!: AcpxPreparedRuntime;
     let referencedProjectStagingFailuresField: Record<string, unknown> = {};
     let childStderrState: { logPath: string | null; pendingLiveLine: string } = { logPath: null, pendingLiveLine: "" };
-    let runtime: AcpRuntime;
+    let runtime!: AcpRuntime;
     let clearSession = false;
+    let rootSpan!: ReturnType<typeof openStartupRootSpan>;
+    let handle: Awaited<ReturnType<typeof ensureSession>> | null = null;
+    let resumedSession = false;
+    let processIdentitySink: { current: typeof ctx.onSpawn; latest: { pid: number; startedAt: string } | null } = { current: ctx.onSpawn, latest: null };
     try {
       // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
       // consults the staged cache to decide whether a compatible resume may reuse
@@ -3300,7 +3304,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // handle lookup runs below; it stays undefined on an early build failure, so
       // the root span omits the attribute (fail open).
       let coldStart: boolean | undefined;
-      const rootSpan = openStartupRootSpan(tracing, now, runRootSpan.parentContext, () => ({
+      rootSpan = openStartupRootSpan(tracing, now, runRootSpan.parentContext, () => ({
         workMs: stepWallSumMs,
         context: {
           coldStart,
@@ -3367,7 +3371,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
       const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
       childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
-      const processIdentitySink = cached?.processIdentitySink ?? {
+      processIdentitySink = cached?.processIdentitySink ?? {
         current: ctx.onSpawn,
         latest: null,
       };
@@ -3436,8 +3440,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         );
       }
 
-      let handle = cached?.handle ?? null;
-      let resumedSession = Boolean(handle ?? resumeSessionId);
+      handle = cached?.handle ?? null;
+      resumedSession = Boolean(handle ?? resumeSessionId);
       clearSession = false;
 
       try {
