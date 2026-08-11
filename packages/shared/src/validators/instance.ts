@@ -65,6 +65,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   cloudBilling: z.boolean().default(false),
   cloudTrialBanner: z.boolean().default(false),
+  enableCloudSync: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableOwnerInstanceAdmin: z.boolean().default(false),

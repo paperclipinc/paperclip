@@ -77,6 +77,7 @@ export interface InstanceExperimentalSettings {
   enableIssueGraphLivenessAutoRecovery: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
+  enableCloudSync: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
