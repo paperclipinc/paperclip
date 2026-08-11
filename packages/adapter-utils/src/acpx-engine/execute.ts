@@ -3276,6 +3276,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
     let runFailed = true;
+    let prepared: AcpxPreparedRuntime;
+    let referencedProjectStagingFailuresField: Record<string, unknown> = {};
+    let childStderrState: { logPath: string | null; pendingLiveLine: string } = { logPath: null, pendingLiveLine: "" };
+    let runtime: AcpRuntime;
+    let clearSession = false;
     try {
       // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
       // consults the staged cache to decide whether a compatible resume may reuse
@@ -3321,7 +3326,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stepWallSumMs += wallMs;
         },
       };
-      let prepared: AcpxPreparedRuntime;
       try {
         // Publish the `sandbox.startup` context to the runtime-parent store for
         // the whole bring-up. A startup-body exec that runs outside a measured
@@ -3346,7 +3350,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const referencedProjectStagingFailures = (
         prepared.stagedRuntime?.additionalSourceFailures ?? []
       ).map((failure) => ({ projectId: failure.projectId }));
-      const referencedProjectStagingFailuresField =
+      referencedProjectStagingFailuresField =
         referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
       // State the effective wall-clock timeout and its source up front so a
       // later timeout is diagnosable from the run log alone. Goes to stderr:
@@ -3362,7 +3366,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const canResume = isCompatibleSession(previousParams, prepared);
       const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
       const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
-      const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+      childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
       const processIdentitySink = cached?.processIdentitySink ?? {
         current: ctx.onSpawn,
         latest: null,
@@ -3413,7 +3417,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
       // split reports nothing for it.
       let createRuntimeMs: number | undefined;
-      let runtime: AcpRuntime;
+      // runtime is declared in the outer scope for cross-try visibility
       // A warm handle reuses the running ACP runtime; a miss constructs one. The
       // root span records this as `cold_start`.
       coldStart = !cached?.runtime;
@@ -3434,7 +3438,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
       let handle = cached?.handle ?? null;
       let resumedSession = Boolean(handle ?? resumeSessionId);
-      let clearSession = false;
+      clearSession = false;
 
       try {
         if (!handle) {
