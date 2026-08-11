@@ -10772,8 +10772,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    runIds: readonly string[] | null = null,
+    options: {
+      runIds?: readonly string[] | null;
+      drainTimeoutMs?: number;
+      pollIntervalMs?: number;
+      sleep?: (ms: number) => Promise<void>;
+      nowMs?: () => number;
+      hasInflightRuns?: () => boolean;
+    } = {},
   ) {
+    const runIds = options.runIds ?? null;
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
@@ -10787,11 +10795,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // 2. Soft-drain: give in-flight runs a bounded window to finish on their
     //    own. Only runs still running at the deadline get interrupted below, so
     //    a normal rollout no longer interrupts every in-flight run.
-    const drainTimeoutMs = resolveShutdownDrainTimeoutMs(runtimeEnv);
-    const pollIntervalMs = Math.max(1, SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    const clock = () => Date.now();
-    const hasInflightRuns = () => activeRunExecutions.size > 0;
+    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
+    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const clock = options.nowMs ?? (() => Date.now());
+    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
 
     if (drainTimeoutMs > 0 && hasInflightRuns()) {
       const deadline = clock() + drainTimeoutMs;
