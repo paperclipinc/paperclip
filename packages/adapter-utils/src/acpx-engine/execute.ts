@@ -3660,6 +3660,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: message,
         };
       }
+      try {
       const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
       const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
       await emitAcpxLog(ctx, {
