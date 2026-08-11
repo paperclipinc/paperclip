@@ -3615,52 +3615,52 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       rootSpan.end(false);
       const sessionHandle = handle;
       try {
-        await applySessionConfigOptions({
-          runtime,
-          handle: sessionHandle,
-          prepared,
-          onLog: ctx.onLog,
-        });
-      } catch (err) {
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "configure_session",
-        });
-        await runtime.close({
-          handle: sessionHandle,
-          reason: "paperclip config cleanup",
-          discardPersistentState: false,
-        }).catch(() => {});
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-          clearWarmHandleTimer(existing);
-          warmHandles.delete(prepared.sessionKey);
-        }
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        await cleanupRemoteBridges(prepared);
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-          ...classified,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession,
-          resultJson: {
+        try {
+          await applySessionConfigOptions({
+            runtime,
+            handle: sessionHandle,
+            prepared,
+            onLog: ctx.onLog,
+          });
+        } catch (err) {
+          const { classified, message } = await emitAcpxFailure({
+            ctx,
+            prepared,
+            err,
             phase: "configure_session",
-            agent: prepared.acpxAgent,
-            requestedModel: prepared.requestedModel || null,
-            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-            fastMode: prepared.fastMode,
-          },
-          summary: message,
-        };
-      }
-      try {
+          });
+          await runtime.close({
+            handle: sessionHandle,
+            reason: "paperclip config cleanup",
+            discardPersistentState: false,
+          }).catch(() => {});
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+            clearWarmHandleTimer(existing);
+            warmHandles.delete(prepared.sessionKey);
+          }
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+          await cleanupRemoteBridges(prepared);
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+            ...classified,
+            ...billingFields,
+            ...referencedProjectStagingFailuresField,
+            model: prepared.requestedModel || null,
+            clearSession,
+            resultJson: {
+              phase: "configure_session",
+              agent: prepared.acpxAgent,
+              requestedModel: prepared.requestedModel || null,
+              requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+              fastMode: prepared.fastMode,
+            },
+            summary: message,
+          };
+        }
       const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
       const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
       await emitAcpxLog(ctx, {
