@@ -3596,6 +3596,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         rootSpan.end(true);
         await discardStagedRuntime({ handles: stagedRuntimes, prepared });
         await cleanupRemoteBridges(prepared);
+        runRootSpan.end(runFailed);
         return {
           exitCode: 1,
           signal: null,
@@ -3615,52 +3616,52 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       rootSpan.end(false);
       const sessionHandle = handle;
       try {
-        try {
-          await applySessionConfigOptions({
-            runtime,
-            handle: sessionHandle,
-            prepared,
-            onLog: ctx.onLog,
-          });
-        } catch (err) {
-          const { classified, message } = await emitAcpxFailure({
-            ctx,
-            prepared,
-            err,
-            phase: "configure_session",
-          });
-          await runtime.close({
-            handle: sessionHandle,
-            reason: "paperclip config cleanup",
-            discardPersistentState: false,
-          }).catch(() => {});
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-            clearWarmHandleTimer(existing);
-            warmHandles.delete(prepared.sessionKey);
-          }
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-          await cleanupRemoteBridges(prepared);
-          return {
-            exitCode: 1,
-            signal: null,
-            timedOut: false,
-            errorMessage: message,
-            ...classified,
-            ...billingFields,
-            ...referencedProjectStagingFailuresField,
-            model: prepared.requestedModel || null,
-            clearSession,
-            resultJson: {
-              phase: "configure_session",
-              agent: prepared.acpxAgent,
-              requestedModel: prepared.requestedModel || null,
-              requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-              fastMode: prepared.fastMode,
-            },
-            summary: message,
-          };
+        await applySessionConfigOptions({
+          runtime,
+          handle: sessionHandle,
+          prepared,
+          onLog: ctx.onLog,
+        });
+      } catch (err) {
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "configure_session",
+        });
+        await runtime.close({
+          handle: sessionHandle,
+          reason: "paperclip config cleanup",
+          discardPersistentState: false,
+        }).catch(() => {});
+        const existing = warmHandles.get(prepared.sessionKey);
+        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+          clearWarmHandleTimer(existing);
+          warmHandles.delete(prepared.sessionKey);
         }
+        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        await cleanupRemoteBridges(prepared);
+        runRootSpan.end(runFailed);
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+          ...classified,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession,
+          resultJson: {
+            phase: "configure_session",
+            agent: prepared.acpxAgent,
+            requestedModel: prepared.requestedModel || null,
+            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+            fastMode: prepared.fastMode,
+          },
+          summary: message,
+        };
+      }
       const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
       const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
       await emitAcpxLog(ctx, {
@@ -3935,11 +3936,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // The run stays live here, so the holder is never `undefined`. A detached
         // exec after the turn parents to `task.run`.
         currentRunParentContext = runRootSpan.parentContext;
+        // End the run root span exactly once, on every return and on a throw.
+        runRootSpan.end(runFailed);
       }
-    } finally {
-      // End the run root span exactly once, on every return and on a throw.
-      runRootSpan.end(runFailed);
-    }
   };
 }
 
