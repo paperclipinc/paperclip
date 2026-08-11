@@ -35,6 +35,7 @@ describe("derivePublicFeatureFlags", () => {
       enableServerInfoDebugView: false,
       enableSummaries: false,
       enableStatusCards: false,
+      enableTaskChatRedesign: false,
       cloudBilling: defaultExperimental.cloudBilling,
       cloudTrialBanner: defaultExperimental.cloudTrialBanner,
       keyboardShortcuts: false,
