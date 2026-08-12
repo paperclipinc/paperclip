@@ -17,10 +17,39 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
+const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
+
+function cloudTenantWriteDebounceFor(db: Db) {
+  let debounce = cloudTenantWriteDebounces.get(db);
+  if (!debounce) {
+    debounce = new Map();
+    cloudTenantWriteDebounces.set(db, debounce);
+  }
+  return debounce;
+}
+
+function pruneCloudTenantWriteDebounce(
+  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
+  nowMs: number,
+) {
+  for (const [subject, entry] of debounce) {
+    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
+  }
+  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
+    const oldestSubject = debounce.keys().next().value;
+    if (!oldestSubject) break;
+    debounce.delete(oldestSubject);
+  }
+}
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
 import { forbidden, unprocessable } from "../errors.js";
+
+export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -77,6 +106,28 @@ async function loadResponsibleUserMemberships(
       ),
   ]);
   return user ? memberships : [];
+}
+
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -186,20 +237,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
-            db
-              .select({
-                companyId: companyMemberships.companyId,
-                membershipRole: companyMemberships.membershipRole,
-                status: companyMemberships.status,
-              })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
+            loadActiveUserCompanyMemberships(db, userId),
           ]);
           req.actor = {
             type: "board",
@@ -378,22 +416,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 }
 
 /**
- * Whether this instance is managed by a Paperclip Cloud control plane.
- * When the tenant server token is configured, the control plane owns the
- * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted the
- * `instance_admin` DB role. The only elevation a cloud tenant can carry is
- * computed per request at the trusted-header boundary (owner stack role +
- * the `enableOwnerInstanceAdmin` flag) and floored by code on
- * platform-owned surfaces. Surfaces that assume a self-hosted operator
- * will claim the instance (e.g. the first-admin bootstrap gate) should
- * treat a cloud-managed instance as already set up.
- */
-export function isCloudManagedInstance(): boolean {
-  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
-}
-
-/**
  * Whether the trusted-header actor being resolved should carry computed
  * instance-admin elevation: only the stack `owner` role elevates, and only
  * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
@@ -434,6 +456,12 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // gateway proxies verbatim (post-checkout and account-page links use it).
   const stackSlug = req.header("x-paperclip-cloud-stack-slug")?.trim() || undefined;
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
+  // Trusted metadata forwarded by the gateway for legacy machine-name repair
+  // (see repairCloudTenantCompanyName below) — optional: older gateways omit it.
+  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
+  const paperclipCompanyName = req
+    .header("x-paperclip-cloud-paperclip-company-name")
+    ?.trim();
   const companyId = cloudTenantCompanyId(stackId);
   const now = new Date();
 
@@ -484,6 +512,15 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   }
 
   if (stackCompanyExists) {
+    if (paperclipCompanyName) {
+      await repairCloudTenantCompanyName(db, {
+        companyId,
+        paperclipCompanyId,
+        paperclipCompanyName,
+        now,
+      });
+    }
+
     const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
     const membership = await db
       .insert(companyMemberships)
@@ -600,6 +637,101 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+// cloudTenantCompanyId lives in ../services/cloud-tenant-company.js (imported
+// above) so the onboarding wizard (routes/companies.ts) can derive the same
+// deterministic id without duplicating the hash here.
+
+export function humanizeCloudStackSlug(stackId: string): string {
+  const slug = stackId
+    .trim()
+    .replace(/^paperclip-stack-/i, "")
+    .replace(/^stack-/i, "");
+  const displayName = slug
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+  return displayName || "Workspace";
+}
+
+export function isKnownBadCloudCompanyName(
+  name: string,
+  ids: { companyId: string; paperclipCompanyId?: string },
+): boolean {
+  const normalized = name.trim();
+  return (
+    /^paperclip-stack-.+/i.test(normalized) ||
+    /^stack-.+\s+paperclip$/i.test(normalized) ||
+    normalized === ids.companyId ||
+    (ids.paperclipCompanyId !== undefined &&
+      normalized === ids.paperclipCompanyId)
+  );
+}
+
+async function repairCloudTenantCompanyName(
+  db: Db,
+  input: {
+    companyId: string;
+    paperclipCompanyId?: string;
+    paperclipCompanyName: string;
+    now: Date;
+  },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (
+      !existing ||
+      !existing.name ||
+      !isKnownBadCloudCompanyName(existing.name, {
+        companyId: input.companyId,
+        paperclipCompanyId: input.paperclipCompanyId,
+      })
+    ) {
+      return;
+    }
+    await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(companies)
+        .set({ name: input.paperclipCompanyName, updatedAt: input.now })
+        .where(
+          and(
+            eq(companies.id, input.companyId),
+            // A user may rename the company between the read above and this
+            // repair. Match the exact observed machine name so that concurrent
+            // genuine renames always win.
+            eq(companies.name, existing.name),
+          ),
+        )
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_machine_name_repair",
+          previousName: existing.name,
+          name: input.paperclipCompanyName,
+        },
+      });
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy Cloud tenant company name",
+    );
+  }
 }
 
 export function requireBoard(req: Express.Request) {

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 
@@ -29,6 +30,7 @@ const mockAccessApi = vi.hoisted(() => ({
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  listProposals: vi.fn(),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -222,16 +224,18 @@ async function renderForm(
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <AgentConfigForm
-            mode="edit"
-            agent={makeAgent(agentOverrides)}
-            onSave={vi.fn()}
-            hidePromptTemplate
-            showAdapterTypeField={false}
-            showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-          />
-        </TooltipProvider>
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="edit"
+              agent={makeAgent(agentOverrides)}
+              onSave={vi.fn()}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+            />
+          </TooltipProvider>
+        </ToastProvider>
       </QueryClientProvider>,
     );
   });
@@ -267,16 +271,18 @@ async function renderCreateForm(
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <AgentConfigForm
-            mode="create"
-            values={values}
-            onChange={onChange}
-            hidePromptTemplate
-            showAdapterTypeField={false}
-            showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-          />
-        </TooltipProvider>
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="create"
+              values={values}
+              onChange={onChange}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+            />
+          </TooltipProvider>
+        </ToastProvider>
       </QueryClientProvider>,
     );
   });
@@ -305,6 +311,7 @@ describe("AgentConfigForm environment selector", () => {
       }),
     );
     mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
   });
 
   afterEach(async () => {

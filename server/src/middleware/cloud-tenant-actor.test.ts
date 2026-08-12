@@ -9,8 +9,10 @@ type SeededMembership = { companyId: string; membershipRole: string; status: str
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
-// select().from(instanceSettings).where().then() read the owner-elevation flag
-// resolution performs through instanceSettingsService. The chain is awaitable so
+// select().from(table).where() reads: instanceSettings for the owner-elevation
+// flag resolution through instanceSettingsService, and companyMemberships for
+// the user's own membership rows (rows configurable via membershipQueryRows,
+// where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
 function createFakeDb(options?: {
   membershipRow?: SeededMembership;
