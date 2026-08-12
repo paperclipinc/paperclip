@@ -10769,32 +10769,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  type DrainRunningRunsOptions = {
+    /** Max time to wait for in-flight runs to finish before interrupting. */
+    drainTimeoutMs?: number;
+    /** How often to re-check for in-flight completion while waiting. */
+    pollIntervalMs?: number;
+    /** Injectable sleep (tests). Defaults to a real setTimeout. */
+    sleep?: (ms: number) => Promise<void>;
+    /** Injectable clock (tests) for the wall-clock drain bound. */
+    nowMs?: () => number;
+    /**
+     * Predicate for whether any run is still executing in THIS process.
+     * Defaults to the local in-process execution set; DB-only "running" rows
+     * with no local execution (orphans) are NOT waited for; they can never
+     * finish on their own and are interrupted immediately as before.
+     */
+    hasInflightRuns?: () => boolean;
+  };
+
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
     // Either the explicit set of run ids to drain (hot-restart's selective ACP
     // drain, which must leave non-selected runs alone), or the soft-drain
     // options below. `null`/omitted drains every currently-running run.
-    runIdsOrOptions: readonly string[] | {
-      /** Max time to wait for in-flight runs to finish before interrupting. */
-      drainTimeoutMs?: number;
-      /** How often to re-check for in-flight completion while waiting. */
-      pollIntervalMs?: number;
-      /** Injectable sleep (tests). Defaults to a real setTimeout. */
-      sleep?: (ms: number) => Promise<void>;
-      /** Injectable clock (tests) for the wall-clock drain bound. */
-      nowMs?: () => number;
-      /**
-       * Predicate for whether any run is still executing in THIS process.
-       * Defaults to the local in-process execution set; DB-only "running" rows
-       * with no local execution (orphans) are NOT waited for; they can never
-       * finish on their own and are interrupted immediately as before.
-       */
-      hasInflightRuns?: () => boolean;
-    } | null = null,
+    runIdsOrOptions: readonly string[] | DrainRunningRunsOptions | null = null,
   ) {
+    // Narrow the union via Array.isArray rather than the type itself, since
+    // TS cannot narrow property access across a union of an array type and an
+    // object type based on control flow alone once destructured separately.
     const runIds = Array.isArray(runIdsOrOptions) ? runIdsOrOptions : null;
-    const options = Array.isArray(runIdsOrOptions) ? {} : runIdsOrOptions ?? {};
+    const options: DrainRunningRunsOptions = Array.isArray(runIdsOrOptions)
+      ? {}
+      : runIdsOrOptions ?? {};
 
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
