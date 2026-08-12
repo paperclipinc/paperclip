@@ -1751,7 +1751,7 @@ describe("IssueDetail", () => {
       buildCurrentBoardAccess({
         companyIds: ["company-1"],
         isInstanceAdmin: true,
-        features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false },
+        features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false, enableClassicTaskInterface: true },
       }),
     );
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
@@ -2430,12 +2430,18 @@ describe("IssueDetail", () => {
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: {
+          enableIssuePlanDecompositions: false,
+          enableExperimentalFileViewer: false,
+          enableExternalObjects: false,
+          enableClassicTaskInterface: true,
+        },
+      }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {

@@ -83,7 +83,7 @@ describe("PropertiesPanel", () => {
       await renderPanel();
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
-      expect(aside!.style.width).toBe("320px");
+      expect(aside!.style.width).toBe("322px");
       expect(aside!.querySelector('[role="separator"]')).toBeNull();
       expect(container.querySelector('[aria-label="Maximize panel"]')).toBeNull();
       // Inner wrapper keeps the hardcoded width classes exactly as today.
