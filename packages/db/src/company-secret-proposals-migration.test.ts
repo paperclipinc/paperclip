@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { applyPendingMigrations } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0207_moaning_amazoness.sql";
+const MIGRATION_FILE = "0210_moaning_amazoness.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
