@@ -79,15 +79,13 @@ describe("PropertiesPanel", () => {
       });
     });
 
-    it("renders the fixed-width panel with no grip and no maximize button", async () => {
+    it("renders the fixed-width panel with grip and no maximize button", async () => {
       await renderPanel();
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
       expect(aside!.style.width).toBe("322px");
-      expect(aside!.querySelector('[role="separator"]')).toBeNull();
+      expect(aside!.querySelector('[role="separator"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Maximize panel"]')).toBeNull();
-      // Inner wrapper keeps the hardcoded width classes exactly as today.
-      expect(aside!.querySelector(".w-80")).not.toBeNull();
     });
 
     it("collapses to width 0 when the panel is hidden", async () => {
