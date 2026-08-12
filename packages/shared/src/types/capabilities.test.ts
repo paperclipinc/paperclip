@@ -18,11 +18,13 @@ describe("derivePublicFeatureFlags", () => {
       }),
     ).toEqual({
       enableEnvironments: false,
+      enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: false,
       enableApps: false,
       enablePipelines: false,
       enableCases: false,
       enableConferenceRoomChat: false,
+      enableClassicTaskInterface: false,
       enableTaskWatchdogs: false,
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,

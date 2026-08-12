@@ -15,11 +15,13 @@ import type {
 export interface PublicFeatureFlags {
   // Derived from instance experimental settings.
   enableEnvironments: boolean;
+  enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableClassicTaskInterface: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
@@ -71,11 +73,13 @@ export function derivePublicFeatureFlags(input: {
   const { general, experimental, defaultEnvironmentId } = input;
   return {
     enableEnvironments: experimental.enableEnvironments === true,
+    enableManagedSandboxOnly: experimental.enableManagedSandboxOnly === true,
     enableIsolatedWorkspaces: experimental.enableIsolatedWorkspaces === true,
     enableApps: experimental.enableApps === true,
     enablePipelines: experimental.enablePipelines === true,
     enableCases: experimental.enableCases === true,
     enableConferenceRoomChat: experimental.enableConferenceRoomChat === true,
+    enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     enableTaskWatchdogs: experimental.enableTaskWatchdogs === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,

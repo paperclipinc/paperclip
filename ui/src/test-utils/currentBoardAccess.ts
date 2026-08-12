@@ -4,11 +4,13 @@ import type { CurrentBoardAccess } from "@/api/access";
 
 export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableEnvironments: false,
+  enableManagedSandboxOnly: false,
   enableIsolatedWorkspaces: false,
   enableApps: false,
   enablePipelines: false,
   enableCases: false,
   enableConferenceRoomChat: false,
+  enableClassicTaskInterface: false,
   enableTaskWatchdogs: false,
   enableIssuePlanDecompositions: false,
   enableExperimentalFileViewer: false,
