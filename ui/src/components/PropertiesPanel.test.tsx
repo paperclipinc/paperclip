@@ -79,13 +79,13 @@ describe("PropertiesPanel", () => {
       });
     });
 
-    it("renders the fixed-width panel with grip and no maximize button", async () => {
+    it("renders the fixed-width panel with grip and maximize button", async () => {
       await renderPanel();
       const aside = container.querySelector("aside");
       expect(aside).not.toBeNull();
       expect(aside!.style.width).toBe("322px");
       expect(aside!.querySelector('[role="separator"]')).not.toBeNull();
-      expect(container.querySelector('[aria-label="Maximize panel"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Maximize panel"]')).not.toBeNull();
     });
 
     it("collapses to width 0 when the panel is hidden", async () => {
