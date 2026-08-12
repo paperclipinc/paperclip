@@ -1,6 +1,6 @@
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -29,9 +29,10 @@ export function useClassicTaskInterfaceEnabled(): { enabled: boolean; loaded: bo
   const contextClient = useContext(QueryClientContext);
   const { data, isFetched } = useQuery(
     {
-      queryKey: queryKeys.instance.experimentalSettings,
-      queryFn: () => instanceSettingsApi.getExperimental(),
+      queryKey: queryKeys.access.currentBoardAccess,
+      queryFn: () => accessApi.getCurrentBoardAccess(),
       enabled: contextClient != null,
+      select: (access) => access.capabilities.features,
     },
     contextClient ?? getDetachedClient(),
   );
