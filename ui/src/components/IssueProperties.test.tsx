@@ -473,10 +473,11 @@ describe("IssueProperties", () => {
   });
 
   it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: { enableTaskWatchdogs: false, enableClassicTaskInterface: false },
+      }),
+    );
     mockIssuesApi.listInteractions.mockResolvedValue([
       {
         kind: "request_confirmation",

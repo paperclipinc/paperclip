@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
+import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
 import { useFeatures } from "../hooks/useFeatures";
@@ -729,13 +730,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // honest diagnostic — silently probing the host instead would report
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
-      let settings = instanceSettings;
+      let settings = generalSettings;
       if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
         try {
-          settings = await queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
+          const access = await queryClient.ensureQueryData({
+            queryKey: queryKeys.access.currentBoardAccess,
+            queryFn: () => accessApi.getCurrentBoardAccess(),
           });
+          settings = access.capabilities.features;
         } catch {
           throw new Error(
             "Could not load instance settings to determine which environment to test in. Retry the test.",
