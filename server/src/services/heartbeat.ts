@@ -10795,13 +10795,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // options below. `null`/omitted drains every currently-running run.
     runIdsOrOptions: readonly string[] | DrainRunningRunsOptions | null = null,
   ) {
-    // Narrow the union via Array.isArray rather than the type itself, since
-    // TS cannot narrow property access across a union of an array type and an
-    // object type based on control flow alone once destructured separately.
     const runIds = Array.isArray(runIdsOrOptions) ? runIdsOrOptions : null;
-    const options: DrainRunningRunsOptions = Array.isArray(runIdsOrOptions)
-      ? {}
-      : runIdsOrOptions ?? {};
+    const options: DrainRunningRunsOptions =
+      runIdsOrOptions !== null && !Array.isArray(runIdsOrOptions)
+        ? runIdsOrOptions
+        : {};
 
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
