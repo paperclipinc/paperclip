@@ -912,7 +912,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertCompanySecretWrite(req, companyId);
     await assertSurfaceExposed(req, "company.secrets", getExposedCompanySurfaces);
 
     const created = await svc.create(
