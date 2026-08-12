@@ -687,6 +687,7 @@ async function repairCloudTenantCompanyName(
       .then((rows) => rows[0]);
     if (
       !existing ||
+      !existing.name ||
       !isKnownBadCloudCompanyName(existing.name, {
         companyId: input.companyId,
         paperclipCompanyId: input.paperclipCompanyId,

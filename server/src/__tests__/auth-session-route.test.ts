@@ -165,9 +165,6 @@ describe("actorMiddleware authenticated session profile", () => {
       email: "owner@example.com",
       emailVerified: true,
     });
-    expect(inserts[1]?.values).toMatchObject({
-      name: "Purple Rain",
-    });
   });
 
   it("lets the cloud tenant actor through assertCompanyAccess for a company it holds a membership row in", async () => {
