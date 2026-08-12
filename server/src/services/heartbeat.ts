@@ -10795,11 +10795,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // options below. `null`/omitted drains every currently-running run.
     runIdsOrOptions: readonly string[] | DrainRunningRunsOptions | null = null,
   ) {
-    const runIds = Array.isArray(runIdsOrOptions) ? runIdsOrOptions : null;
-    const options: DrainRunningRunsOptions =
-      runIdsOrOptions !== null && !Array.isArray(runIdsOrOptions)
-        ? runIdsOrOptions
-        : {};
+    let runIds: readonly string[] | null = null;
+    let options: DrainRunningRunsOptions = {};
+    if (Array.isArray(runIdsOrOptions)) {
+      runIds = runIdsOrOptions;
+    } else if (runIdsOrOptions !== null) {
+      options = runIdsOrOptions;
+    }
 
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
