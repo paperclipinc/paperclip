@@ -125,6 +125,7 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   capabilities: vi.fn(),
+  secretRefs: vi.fn(),
   probe: vi.fn(),
   probeConfig: vi.fn(),
   create: vi.fn(),
@@ -395,6 +396,7 @@ describe("CompanyEnvironments — test provider button", () => {
       buildCurrentBoardAccess({ features: { defaultEnvironmentId: null, enableEnvironments: true } }),
     );
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
+    mockEnvironmentsApi.secretRefs.mockResolvedValue({ refs: [] });
     mockSecretsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: null,
@@ -1385,5 +1387,37 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });
+  });
+
+  it("offers the implicit Local option in the default picker by default", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(true);
+  });
+
+  it("hides the implicit Local option in the default picker under managed-sandbox-only", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(false);
+    // Saved non-local environments remain selectable defaults.
+    expect(options.some((option) => option.textContent?.includes("Alpha"))).toBe(true);
   });
 });

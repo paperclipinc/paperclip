@@ -250,29 +250,38 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else {
-    const authAdvice = resolveClaudeAuthAdvice(env);
-    if (authAdvice) {
-      checks.push(authAdvice);
-    } else if (!callerControlsHost) {
-      // Hosted multi-tenant: "if Claude is logged in" refers to a host login
-      // the user cannot perform. Unlike Codex, there IS a real subscription
-      // route here, so name it rather than pushing them to an API key: the
-      // token is minted on their own machine and pasted in, which is exactly
-      // the thing they were looking for when they picked this adapter.
-      checks.push({
-        code: "claude_subscription_mode_possible",
-        level: "info",
-        message: "No Claude credentials are configured for this agent yet.",
-        hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
-      });
-    } else if (!targetIsRemote) {
-      checks.push({
-        code: "claude_subscription_mode_possible",
-        level: "info",
-        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
-      });
-    }
+  } else if (
+    isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
+    (considerHostEnv && isNonEmpty(process.env.CLAUDE_CODE_OAUTH_TOKEN))
+  ) {
+    const source = isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)
+      ? "configured environment variables"
+      : "server environment";
+    checks.push({
+      code: "claude_oauth_token_configured",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
+      detail: `Detected in ${source}.`,
+    });
+  } else if (!callerControlsHost) {
+    // Hosted multi-tenant: "if Claude is logged in" refers to a host login
+    // the user cannot perform. Unlike Codex, there IS a real subscription
+    // route here, so name it rather than pushing them to an API key: the
+    // token is minted on their own machine and pasted in, which is exactly
+    // the thing they were looking for when they picked this adapter.
+    checks.push({
+      code: "claude_subscription_mode_possible",
+      level: "info",
+      message: "No Claude credentials are configured for this agent yet.",
+      hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
+    });
+  } else if (!targetIsRemote) {
+    checks.push({
+      code: "claude_subscription_mode_possible",
+      level: "info",
+      message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
+    });
   }
 
   const canRunProbe =

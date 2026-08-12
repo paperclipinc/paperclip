@@ -4,6 +4,7 @@ import {
   Clock3,
   CloudUpload,
   Cpu,
+  Download,
   FlaskConical,
   KeyRound,
   MailPlus,
@@ -12,6 +13,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Upload,
   UserRoundPen,
   Users,
 } from "lucide-react";
@@ -106,6 +108,8 @@ export function CompanySettingsSidebar() {
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           ) : null}
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
           {showCloudUpstream ? (
             <SidebarNavItem
               to="/company/settings/cloud-upstream"

@@ -7,6 +7,7 @@ import {
   detectClaudeAuthRetryStorm,
   detectClaudeLoginRequired,
   isClaudeInvalidCredentialError,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -255,17 +256,29 @@ export async function runClaudeCredentialHelloProbe(
     (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
     detail ||
     "";
-  const transient = isClaudeTransientUpstreamError({
+  // Provider-quota exhaustion (usage/session limit) is classified separately
+  // from generic transient upstream errors: auth works, the subscription's
+  // usage window is just spent. Surface it as its own warning instead of a
+  // hard probe failure.
+  const usageLimited = isClaudeProviderQuotaError({
     parsed,
     stdout: probe.stdout,
     stderr: probe.stderr,
   });
+  const transient =
+    !usageLimited &&
+    isClaudeTransientUpstreamError({
+      parsed,
+      stdout: probe.stdout,
+      stderr: probe.stderr,
+    });
   // Some invalid-credential payloads (raw 401 / "invalid x-api-key" /
   // authentication_error) never match the login-prompt wording above, so
   // loginMeta.requiresLogin is false and execution falls straight here.
   // Still flag authFailure so the client can distinguish a rejected
   // credential from any other hard failure (bad command, crashed CLI, etc.).
   const invalidCredential =
+    !usageLimited &&
     !transient &&
     isClaudeInvalidCredentialError({
       parsed,
@@ -274,24 +287,32 @@ export async function runClaudeCredentialHelloProbe(
       errorMessage: failureDetail || null,
     });
   checks.push(
-    transient
+    usageLimited
       ? {
-          code: "claude_hello_probe_transient_upstream",
+          code: "claude_hello_probe_usage_limited",
           level: "warn",
-          message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+          message: "Claude hello probe hit the subscription usage limit.",
           ...(failureDetail ? { detail: failureDetail } : {}),
-          hint: "This is usually temporary. Wait a moment and re-run Test.",
+          hint: "Authentication works; the account's usage window is exhausted. Wait for the limit to reset and re-run Test.",
         }
-      : {
-          code: "claude_hello_probe_failed",
-          level: "error",
-          message: "Claude hello probe failed.",
-          ...(failureDetail ? { detail: failureDetail } : {}),
-          ...(invalidCredential ? { authFailure: true } : {}),
-          hint: invalidCredential
-            ? "Paste a fresh, valid Claude API key or subscription token, then retry."
-            : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
-        },
+      : transient
+        ? {
+            code: "claude_hello_probe_transient_upstream",
+            level: "warn",
+            message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+            ...(failureDetail ? { detail: failureDetail } : {}),
+            hint: "This is usually temporary. Wait a moment and re-run Test.",
+          }
+        : {
+            code: "claude_hello_probe_failed",
+            level: "error",
+            message: "Claude hello probe failed.",
+            ...(failureDetail ? { detail: failureDetail } : {}),
+            ...(invalidCredential ? { authFailure: true } : {}),
+            hint: invalidCredential
+              ? "Paste a fresh, valid Claude API key or subscription token, then retry."
+              : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+          },
   );
   return checks;
 }

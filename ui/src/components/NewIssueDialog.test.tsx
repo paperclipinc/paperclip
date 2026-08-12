@@ -806,6 +806,29 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("shows the create-task loading state only in the submit button", async () => {
+    mockIssuesApi.create.mockReturnValue(new Promise(() => undefined));
+    dialogState.newIssueDefaults = { title: "Pending task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(submitButton?.textContent).toContain("Creating...");
+    expect(submitButton?.getAttribute("aria-busy")).toBe("true");
+    expect(container.textContent).not.toContain("Creating issue");
+
+    act(() => root.unmount());
+  });
+
   it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
     const title = "验证中文任务";
     const description = [
@@ -1097,24 +1120,49 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  it("keeps priority under the mobile overflow menu", async () => {
+  it("hides the priority chip and mobile priority option (PAP-411)", async () => {
     const { root } = renderDialog(container);
     await flush();
 
+    // PAP-411: priority UI is hidden behind SHOW_TASK_PRIORITY_UI (off). Neither the
+    // desktop priority chip nor the mobile overflow priority option should render.
     const priorityChip = container.querySelector('[data-testid="new-issue-priority-chip"]');
-    expect(priorityChip?.className).toContain("hidden");
-    expect(priorityChip?.className).toContain("sm:inline-flex");
+    expect(priorityChip).toBeNull();
 
     const highPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(highPriorityOption?.textContent).toContain("High");
+    expect(highPriorityOption).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("still submits the default priority when the priority UI is hidden (PAP-411)", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Priority default persists",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
 
     await act(async () => {
-      highPriorityOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    const selectedHighPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
-    expect(selectedHighPriorityOption?.className).toContain("bg-accent");
+    // PAP-411: the priority control is hidden, but the data-model default must survive.
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Priority default persists",
+        priority: "medium",
+      }),
+    );
 
     act(() => root.unmount());
   });
@@ -1319,6 +1367,37 @@ describe("NewIssueDialog", () => {
 
       expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
+  });
+
+  describe("PAP-8501: company badge shows issuePrefix", () => {
+    it("displays issuePrefix instead of name-derived prefix", async () => {
+      // Override company data to have mismatched name/prefix
+      companyState.companies = [
+        {
+          id: "company-1",
+          name: "Acme Labs",
+          status: "active",
+          brandColor: "#123456",
+          issuePrefix: "OPS",
+        },
+      ];
+      companyState.selectedCompany = {
+        id: "company-1",
+        name: "Acme Labs",
+        status: "active",
+        brandColor: "#123456",
+        issuePrefix: "OPS",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        const text = container.textContent ?? "";
+        // Should show OPS (issuePrefix), not ACM (name.slice(0,3))
+        expect(text).toContain("OPS");
+      });
 
       act(() => root.unmount());
     });
