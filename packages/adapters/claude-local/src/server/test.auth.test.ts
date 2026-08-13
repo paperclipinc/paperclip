@@ -7,10 +7,11 @@ describe("resolveClaudeAuthAdvice (CLI lane)", () => {
     expect(
       resolveClaudeAuthAdvice({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value" }),
     ).toEqual({
-      code: "claude_subscription_token_detected",
+      code: "claude_oauth_token_configured",
       level: "info",
       message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
+      detail: "Detected in configured environment variables.",
     });
   });
 

@@ -9,11 +9,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
 import { queryKeys } from "../lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+}));
+
+const mockBuiltInAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -91,6 +100,14 @@ vi.mock("../context/ToastContext", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/builtInAgents", () => ({
+  builtInAgentsApi: mockBuiltInAgentsApi,
+}));
+
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -222,6 +239,8 @@ describe("SidebarAgents", () => {
     mockAgentsApi.list.mockResolvedValue([makeAgent({})]);
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({}));
+    mockBuiltInAgentsApi.list.mockResolvedValue([]);
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableBuiltInAgents: false } }));
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
@@ -339,6 +358,34 @@ describe("SidebarAgents", () => {
     });
     await flushReact();
   }
+
+  it("does not query built-in agents when the experimental feature is disabled", async () => {
+    queryClient.setQueryData(queryKeys.builtInAgents.list("company-1"), [
+      { agentId: "agent-1", status: "needs_setup" },
+    ]);
+
+    await renderSidebarAgents();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Needs setup");
+  });
+
+  it("does not query built-in agents while the experimental setting is unresolved", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockReturnValue(new Promise(() => {}));
+
+    await renderSidebarAgents();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("queries built-in agents when the experimental feature is enabled", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableBuiltInAgents: true } }));
+
+    await renderSidebarAgents();
+    await flushReact();
+
+    expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
+  });
 
   it("renders icon-only agent rows with tooltips and no row actions in the rail", async () => {
     mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);

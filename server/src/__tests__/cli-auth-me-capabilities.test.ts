@@ -82,7 +82,6 @@ describeEmbeddedPostgres("GET /cli-auth/me capabilities", () => {
     expect(res.body.capabilities.companyStandings).toEqual({});
     expect(res.body.capabilities.features).toMatchObject({
       enableEnvironments: false,
-      enableCloudSync: false,
       keyboardShortcuts: false,
       executionMode: "any",
       defaultEnvironmentId: seededSettings.defaultEnvironmentId,
@@ -93,13 +92,13 @@ describeEmbeddedPostgres("GET /cli-auth/me capabilities", () => {
   it("reflects the visibility policy for non-admin members and flag toggles in features", async () => {
     const svc = instanceSettingsService(db);
     await svc.updateVisibility({ companySurfaces: ["company.general", "company.members"] });
-    await svc.updateExperimental({ enableCloudSync: true });
+    await svc.updateExperimental({ enableEnvironments: true });
 
     const app = await createApp(db, memberActor);
     const res = await request(app).get("/api/cli-auth/me");
     expect(res.status).toBe(200);
     expect(res.body.capabilities.exposedSurfaces).toEqual(["company.general", "company.members"]);
-    expect(res.body.capabilities.features.enableCloudSync).toBe(true);
+    expect(res.body.capabilities.features.enableEnvironments).toBe(true);
     expect(res.body.isInstanceAdmin).toBe(false);
   });
 

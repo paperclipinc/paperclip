@@ -7,9 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BuiltInAgentGate } from "./BuiltInAgentGate";
 import type { BuiltInAgentState, BuiltInAgentStatus } from "@/api/builtInAgents";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const listMock = vi.hoisted(() => vi.fn());
 const resumeMock = vi.hoisted(() => vi.fn());
+const getCurrentBoardAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/builtInAgents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/builtInAgents")>();
@@ -21,6 +23,10 @@ vi.mock("@/api/builtInAgents", async (importOriginal) => {
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { resume: resumeMock },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: getCurrentBoardAccessMock },
 }));
 
 // The configure modal pulls in the full AgentConfigForm; stub it so the gate
@@ -90,6 +96,10 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
     document.body.appendChild(container);
     listMock.mockReset();
     resumeMock.mockReset();
+    getCurrentBoardAccessMock.mockReset();
+    getCurrentBoardAccessMock.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableBuiltInAgents: true } }),
+    );
   });
 
   afterEach(() => {
@@ -151,6 +161,18 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
     await renderGate();
     expect(container.querySelector('[data-testid="feature"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Set up the Briefs Agent");
+  });
+
+  it("does not query built-in agents when the feature flag is off", async () => {
+    getCurrentBoardAccessMock.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableBuiltInAgents: false } }),
+    );
+    listMock.mockResolvedValue([makeState("ready")]);
+
+    await renderGate();
+
+    expect(listMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="feature"]')).not.toBeNull();
   });
 
   it("fails open to the feature when the key is unknown", async () => {

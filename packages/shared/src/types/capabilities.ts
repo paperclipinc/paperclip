@@ -23,7 +23,6 @@ export interface PublicFeatureFlags {
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -32,6 +31,8 @@ export interface PublicFeatureFlags {
   enableServerInfoDebugView: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  enableManagedSandboxOnly: boolean;
+  enableClassicTaskInterface: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   // Derived from instance general settings / instance defaults. These ride
@@ -79,7 +80,6 @@ export function derivePublicFeatureFlags(input: {
     enableTaskWatchdogs: experimental.enableTaskWatchdogs === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
-    enableCloudSync: experimental.enableCloudSync === true,
     enableExternalObjects: experimental.enableExternalObjects === true,
     enableSmokeLab: experimental.enableSmokeLab === true,
     enableBuiltInAgents: experimental.enableBuiltInAgents === true,
@@ -88,6 +88,8 @@ export function derivePublicFeatureFlags(input: {
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
     enableSummaries: experimental.enableSummaries === true,
     enableStatusCards: experimental.enableStatusCards === true,
+    enableManagedSandboxOnly: experimental.enableManagedSandboxOnly === true,
+    enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     cloudBilling: experimental.cloudBilling === true,
     cloudTrialBanner: experimental.cloudTrialBanner === true,
     keyboardShortcuts: general.keyboardShortcuts === true,
