@@ -101,9 +101,9 @@ describe("PropertiesPanel", () => {
 
   describe("classic task interface off (default resizable pane)", () => {
     beforeEach(() => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-        enableClassicTaskInterface: false,
-      });
+      mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+        buildCurrentBoardAccess({ features: { enableClassicTaskInterface: false } }),
+      );
     });
 
     it("renders the default 322px width with a drag grip and a maximize button", async () => {
