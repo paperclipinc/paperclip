@@ -77,6 +77,10 @@ const mockDecisionsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn().mockResolvedValue({}),
+}));
+
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/issues/PAP-1",
@@ -139,6 +143,10 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/decisions", () => ({
   decisionsApi: mockDecisionsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -2514,6 +2522,7 @@ describe("IssueDetail", () => {
         enableClassicTaskInterface: true,
       } }),
     );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: true });
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
