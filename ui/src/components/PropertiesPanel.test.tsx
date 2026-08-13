@@ -5,13 +5,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PropertiesPanel } from "./PropertiesPanel";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 const mockPanelState = vi.hoisted(() => ({
@@ -74,9 +75,9 @@ describe("PropertiesPanel", () => {
 
   describe("classic task interface on (legacy panel)", () => {
     beforeEach(() => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-        enableClassicTaskInterface: true,
-      });
+      mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+        buildCurrentBoardAccess({ features: { enableClassicTaskInterface: true } }),
+      );
     });
 
     it("renders the fixed-width panel with no grip and no maximize button", async () => {
