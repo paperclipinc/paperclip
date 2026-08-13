@@ -270,6 +270,8 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
    * stream ignores it and returns only the final result.
    */
   onLog?: ExecuteLogSink;
+  onOutput?: (channel: "stdout" | "stderr", chunk: string) => void;
+  runId?: string;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {

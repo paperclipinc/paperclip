@@ -331,6 +331,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    onOutput: commandInput.onOutput,
+                    runId: commandInput.runId,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and
@@ -414,6 +416,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                   timedOut: result.timedOut,
                   stdout: result.stdout,
                   stderr: result.stderr,
+                  streamed: result.streamed,
                   pid: null,
                   startedAt,
                   finishedAt,
