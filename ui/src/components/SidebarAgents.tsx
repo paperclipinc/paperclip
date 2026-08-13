@@ -22,11 +22,11 @@ import { builtInAgentsApi, type BuiltInAgentStatus } from "../api/builtInAgents"
 import { BuiltInLifecycleChip } from "./BuiltInAgentBadges";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
+import { useFeatures } from "../hooks/useFeatures";
 import {
   isStarred,
   resourceMembershipState,
@@ -322,12 +322,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: !!selectedCompanyId,
-  });
-  const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
+  const { data: features } = useFeatures();
+  const builtInAgentsEnabled = features?.enableBuiltInAgents === true;
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),

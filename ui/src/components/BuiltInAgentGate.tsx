@@ -10,8 +10,8 @@ import { Button } from "@/components/ui/button";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
 import { agentsApi } from "@/api/agents";
-import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
+import { useFeatures } from "@/hooks/useFeatures";
 import { agentUrl } from "@/lib/utils";
 import { relativeTime } from "@/lib/utils";
 
@@ -37,11 +37,8 @@ export function BuiltInAgentGate({ agentKey, companyId, featureLabel, children }
   const queryClient = useQueryClient();
   const [configureOpen, setConfigureOpen] = useState(false);
 
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const builtInAgentsEnabled = experimentalQuery.data?.enableBuiltInAgents === true;
+  const { data: features } = useFeatures();
+  const builtInAgentsEnabled = features?.enableBuiltInAgents === true;
   const { data: states, isLoading: statesLoading } = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),
     queryFn: () => builtInAgentsApi.list(companyId!),
