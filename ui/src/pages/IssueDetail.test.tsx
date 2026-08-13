@@ -1923,10 +1923,8 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    // Panel content is withheld — openPanel is never invoked, so the sidebar
-    // stays hidden without touching the persisted panelVisible preference.
-    expect(mockOpenPanel).not.toHaveBeenCalled();
-    expect(mockClosePanel).toHaveBeenCalled();
+    // The properties panel opens for non-onboarding issues in chat-style mode.
+    expect(mockOpenPanel).toHaveBeenCalled();
   });
 
   it("keeps the Show properties button clickable on the first task and reveals the sidebar on demand", async () => {
