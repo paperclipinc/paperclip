@@ -717,7 +717,8 @@ export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
 // describes a terminal condition that must not be retried.
 function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
-  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
+  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value)
+    || /sandbox provider .* is installed, but sandbox plugin workers are unavailable/i.test(value);
 }
 
 function isRetryableInteractionContinuationInfrastructureFailure(
