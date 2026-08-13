@@ -7,10 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BuiltInAgentGate } from "./BuiltInAgentGate";
 import type { BuiltInAgentState, BuiltInAgentStatus } from "@/api/builtInAgents";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const listMock = vi.hoisted(() => vi.fn());
 const resumeMock = vi.hoisted(() => vi.fn());
-const getExperimentalMock = vi.hoisted(() => vi.fn());
+const getCurrentBoardAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/builtInAgents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/builtInAgents")>();
@@ -24,8 +25,8 @@ vi.mock("@/api/agents", () => ({
   agentsApi: { resume: resumeMock },
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: { getExperimental: getExperimentalMock },
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: getCurrentBoardAccessMock },
 }));
 
 // The configure modal pulls in the full AgentConfigForm; stub it so the gate
@@ -95,8 +96,10 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
     document.body.appendChild(container);
     listMock.mockReset();
     resumeMock.mockReset();
-    getExperimentalMock.mockReset();
-    getExperimentalMock.mockResolvedValue({ enableBuiltInAgents: true });
+    getCurrentBoardAccessMock.mockReset();
+    getCurrentBoardAccessMock.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableBuiltInAgents: true } }),
+    );
   });
 
   afterEach(() => {
@@ -161,7 +164,9 @@ describe("BuiltInAgentGate (PAP-12978)", () => {
   });
 
   it("does not query built-in agents when the feature flag is off", async () => {
-    getExperimentalMock.mockResolvedValue({ enableBuiltInAgents: false });
+    getCurrentBoardAccessMock.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableBuiltInAgents: false } }),
+    );
     listMock.mockResolvedValue([makeState("ready")]);
 
     await renderGate();
