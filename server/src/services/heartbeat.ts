@@ -10764,12 +10764,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    runIds: readonly string[] | null = null,
+    options: {
+      /** Max time to wait for in-flight runs to finish before interrupting. */
+      drainTimeoutMs?: number;
+      /** How often to re-check for in-flight completion while waiting. */
+      pollIntervalMs?: number;
+      /** Injectable sleep (tests). Defaults to a real setTimeout. */
+      sleep?: (ms: number) => Promise<void>;
+      /** Injectable clock (tests) for the wall-clock drain bound. */
+      nowMs?: () => number;
+      /**
+       * Predicate for whether any run is still executing in THIS process.
+       * Defaults to the local in-process execution set; DB-only "running" rows
+       * with no local execution (orphans) are NOT waited for; they can never
+       * finish on their own and are interrupted immediately as before.
+       */
+      hasInflightRuns?: () => boolean;
+      /** Optional list of run IDs to interrupt. When null/omitted, all running runs are interrupted. */
+      runIds?: readonly string[] | null;
+    } = {},
   ) {
+    const runIds = options.runIds ?? null;
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
     }
+
+    // 1. Quiesce: stop the scheduler from dispatching NEW runs. Every dispatch/
+    //    execution entrypoint gates on getSchedulingSuppression(), so flipping
+    //    this makes them all no-op for the remainder of the process lifetime.
+    shutdownDraining = true;
+
+    // 2. Soft-drain: give in-flight runs a bounded window to finish on their
+    //    own. Only runs still running at the deadline get interrupted below, so
+    //    a normal rollout no longer interrupts every in-flight run.
+    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
+    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const clock = options.nowMs ?? (() => Date.now());
+    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
+
+    if (drainTimeoutMs > 0 && hasInflightRuns()) {
+      const deadline = clock() + drainTimeoutMs;
+      logger.info(
+        { signal, drainTimeoutMs, pollIntervalMs },
+        "soft-draining in-flight heartbeat runs before shutdown",
+      );
+      while (hasInflightRuns() && clock() < deadline) {
+        // Cap each wait to the remaining budget so a sub-interval remainder can
+        // never sleep a full poll interval past the deadline. Overrunning would
+        // push the drain (plus the interrupt+retry cleanup that follows) beyond
+        // the timeout and risk a SIGKILL mid-cleanup.
+        const remainingMs = deadline - clock();
+        if (remainingMs <= 0) break;
+        await sleep(Math.min(pollIntervalMs, remainingMs));
+      }
+      if (hasInflightRuns()) {
+        logger.warn(
+          { signal, drainTimeoutMs },
+          "soft-drain deadline reached with in-flight runs remaining; interrupting for restart recovery",
+        );
+      } else {
+        logger.info({ signal }, "in-flight heartbeat runs drained gracefully before shutdown");
+      }
+    }
+
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
