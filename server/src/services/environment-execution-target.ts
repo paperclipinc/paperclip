@@ -406,10 +406,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // still propagates to the caller (control flow is unchanged),
                 // but the span already carries the successful outcome, so a log
                 // failure never marks the execution failed.
-                const stdoutSuffix = undeliveredSuffix(deliveredStdout, result.stdout ?? "");
-                if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
-                const stderrSuffix = undeliveredSuffix(deliveredStderr, result.stderr ?? "");
-                if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
+                if (!result.streamed) {
+                  const stdoutSuffix = undeliveredSuffix(deliveredStdout, result.stdout ?? "");
+                  if (stdoutSuffix) await commandInput.onLog?.("stdout", stdoutSuffix);
+                  const stderrSuffix = undeliveredSuffix(deliveredStderr, result.stderr ?? "");
+                  if (stderrSuffix) await commandInput.onLog?.("stderr", stderrSuffix);
+                }
                 return {
                   exitCode: result.exitCode,
                   signal: result.signal ?? null,
