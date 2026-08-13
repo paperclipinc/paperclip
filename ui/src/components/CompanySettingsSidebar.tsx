@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
-  CloudUpload,
   Cpu,
+  Download,
   FlaskConical,
   KeyRound,
   MailPlus,
@@ -12,6 +12,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Upload,
   UserRoundPen,
   Users,
 } from "lucide-react";
@@ -74,7 +75,6 @@ export function CompanySettingsSidebar() {
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
-  const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -106,14 +106,8 @@ export function CompanySettingsSidebar() {
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           ) : null}
-          {showCloudUpstream ? (
-            <SidebarNavItem
-              to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
-              icon={CloudUpload}
-              end
-            />
-          ) : null}
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
           {exposedSurfaces.has("company.members") ? (
             <SidebarNavItem
               to="/company/settings/members"
