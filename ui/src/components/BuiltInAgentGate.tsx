@@ -57,7 +57,7 @@ export function BuiltInAgentGate({ agentKey, companyId, featureLabel, children }
 
   // Unknown key or still resolving the company — fail open to the feature.
   if (!companyId) return <>{children}</>;
-  if ((experimentalQuery.isLoading || statesLoading) && !states) return <PageSkeleton variant="detail" />;
+  if (statesLoading && !states) return <PageSkeleton variant="detail" />;
   if (!state) return <>{children}</>;
 
   const label = featureLabel ?? state.definition.displayName;

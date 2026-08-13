@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarAgents } from "./SidebarAgents";
 import { queryKeys } from "../lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -20,8 +21,8 @@ const mockBuiltInAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -105,8 +106,8 @@ vi.mock("../api/builtInAgents", () => ({
   builtInAgentsApi: mockBuiltInAgentsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -239,7 +240,7 @@ describe("SidebarAgents", () => {
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({}));
     mockBuiltInAgentsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: false });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableBuiltInAgents: false } }));
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
@@ -370,7 +371,7 @@ describe("SidebarAgents", () => {
   });
 
   it("does not query built-in agents while the experimental setting is unresolved", async () => {
-    mockInstanceSettingsApi.getExperimental.mockReturnValue(new Promise(() => {}));
+    mockAccessApi.getCurrentBoardAccess.mockReturnValue(new Promise(() => {}));
 
     await renderSidebarAgents();
 
@@ -378,7 +379,7 @@ describe("SidebarAgents", () => {
   });
 
   it("queries built-in agents when the experimental feature is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableBuiltInAgents: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableBuiltInAgents: true } }));
 
     await renderSidebarAgents();
     await flushReact();
