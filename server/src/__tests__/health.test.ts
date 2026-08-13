@@ -29,6 +29,12 @@ const testServerInfo = {
   },
 } as const;
 
+function createHealthyDb(): Db {
+  return {
+    execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+  } as unknown as Db;
+}
+
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
