@@ -579,7 +579,27 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  if (!targetIsRemote) {
+  if (!targetIsRemote && !callerControlsHost) {
+    // Hosted multi-tenant: the host's `~/.codex` is not this user's, and they
+    // have no shell to run `codex login` on, so neither the native-auth check
+    // nor the login hint below can mean anything to them. Only the adapter
+    // config env key is the tenant's own credential.
+    if (isNonEmpty(envConfig.OPENAI_API_KEY)) {
+      checks.push({
+        code: "codex_acp_openai_api_key_detected",
+        level: "info",
+        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+        detail: "Detected in adapter config env.",
+      });
+    } else {
+      checks.push({
+        code: "codex_acp_credentials_missing",
+        level: "warn",
+        message: "No Codex credentials are configured for this agent.",
+        hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
+      });
+    }
+  } else if (!targetIsRemote) {
     const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
     const hostApiKey =
       Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
