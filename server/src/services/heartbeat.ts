@@ -10765,27 +10765,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    options: {
-      /** Max time to wait for in-flight runs to finish before interrupting. */
+    optionsOrRunIds: {
       drainTimeoutMs?: number;
-      /** How often to re-check for in-flight completion while waiting. */
       pollIntervalMs?: number;
-      /** Injectable sleep (tests). Defaults to a real setTimeout. */
       sleep?: (ms: number) => Promise<void>;
-      /** Injectable clock (tests) for the wall-clock drain bound. */
       nowMs?: () => number;
-      /**
-       * Predicate for whether any run is still executing in THIS process.
-       * Defaults to the local in-process execution set; DB-only "running" rows
-       * with no local execution (orphans) are NOT waited for; they can never
-       * finish on their own and are interrupted immediately as before.
-       */
       hasInflightRuns?: () => boolean;
-      /** Optional list of run IDs to interrupt. When null/omitted, all running runs are interrupted. */
       runIds?: readonly string[] | null;
-    } = {},
+    } | readonly string[] | null = {},
   ) {
-    const runIds = options.runIds ?? null;
+    type DrainOptions = { drainTimeoutMs?: number; pollIntervalMs?: number; sleep?: (ms: number) => Promise<void>; nowMs?: () => number; hasInflightRuns?: () => boolean; runIds?: readonly string[] | null };
+    const rawArg = optionsOrRunIds;
+    const options: DrainOptions = rawArg === null || Array.isArray(rawArg) ? {} : rawArg as DrainOptions;
+    const runIds: readonly string[] | null = rawArg === null || Array.isArray(rawArg) ? rawArg : ((rawArg as DrainOptions).runIds ?? null);
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
