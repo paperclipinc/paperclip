@@ -15,6 +15,7 @@ import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
 import { useFeatures } from "../hooks/useFeatures";
+import { accessApi } from "../api/access";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
@@ -502,9 +503,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () =>
       resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId: generalSettings?.defaultEnvironmentId ?? null,
       }),
-    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
+    [rawCurrentDefaultEnvironmentId, generalSettings?.defaultEnvironmentId],
   );
   const effectiveLoginEnvironment = useMemo(
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
@@ -756,13 +757,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // honest diagnostic — silently probing the host instead would report
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
-      let settings = instanceSettings;
-      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+      let features = generalSettings;
+      if (!rawCurrentDefaultEnvironmentId && features === undefined) {
         try {
-          settings = await queryClient.ensureQueryData({
-            queryKey: queryKeys.instance.settings,
-            queryFn: () => instanceSettingsApi.get(),
+          const access = await queryClient.ensureQueryData({
+            queryKey: queryKeys.access.currentBoardAccess,
+            queryFn: () => accessApi.getCurrentBoardAccess(),
           });
+          features = access.capabilities.features;
         } catch {
           throw new Error(
             "Could not load instance settings to determine which environment to test in. Retry the test.",
@@ -771,7 +773,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId: features?.defaultEnvironmentId ?? null,
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {

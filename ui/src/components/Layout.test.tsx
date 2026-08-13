@@ -446,7 +446,7 @@ describe("Layout", () => {
   it("renders a mobile company settings selector on company settings routes", async () => {
     currentPathname = "/PAP/company/settings/secrets";
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
     );
     mockSidebarState.isMobile = true;
     mockSidebarState.sidebarOpen = false;

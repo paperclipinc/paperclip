@@ -134,7 +134,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("does not grant instance admin by default (flag off)", async () => {
-    const { db, insertedTables, deletedTables } = createFakeDb();
+    const { db, insertedTables, deletedTables } = createFakeDb({});
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).not.toBeNull();
     expect(actor!.isInstanceAdmin).toBe(false);
@@ -144,7 +144,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("stays scoped to exactly the stack's company when the user has no other membership rows", async () => {
-    const { db } = createFakeDb();
+    const { db } = createFakeDb({});
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor!.companyIds).toHaveLength(1);
     expect(actor!.memberships).toHaveLength(1);
@@ -154,14 +154,14 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("purges stale instance_admin rows left by pre-hardening deployments", async () => {
-    const { db, deletedTables } = createFakeDb();
+    const { db, deletedTables } = createFakeDb({});
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).not.toBeNull();
     expect(deletedTables).toContain(instanceUserRoles);
   });
 
   it("still upserts the user, company, and membership", async () => {
-    const { db, insertedTables } = createFakeDb();
+    const { db, insertedTables } = createFakeDb({});
     await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(insertedTables).toContain(authUsers);
     expect(insertedTables).toContain(companies);
@@ -169,7 +169,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("resyncs an A to B to A context transition inside the debounce window", async () => {
-    const { db, insertedTables } = createFakeDb();
+    const { db, insertedTables } = createFakeDb({});
     const contextA = VALID_HEADERS;
     const contextB = { ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" };
 
@@ -183,7 +183,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
 
   it("returns null when the server token is unset", async () => {
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
-    const { db } = createFakeDb();
+    const { db } = createFakeDb({});
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).toBeNull();
   });
@@ -192,7 +192,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     // Websocket upgrades hand us IncomingMessage.headers (lowercased keys,
     // possibly string[] values), not an Express Request. The shim must feed
     // resolveCloudTenantActor the same way Express header() does.
-    const { db } = createFakeDb();
+    const { db } = createFakeDb({});
     const rawHeaders: Record<string, string | string[] | undefined> = {};
     for (const [k, v] of Object.entries(VALID_HEADERS)) rawHeaders[k.toLowerCase()] = v;
     rawHeaders["x-paperclip-cloud-user-name"] = ["Cloud Owner", "ignored-duplicate"];
@@ -219,7 +219,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     // The primary company id is derived from the stack id; resolve it once
     // through the same code path instead of duplicating the hash here.
     async function resolvePrimaryCompanyId() {
-      const { db } = createFakeDb();
+      const { db } = createFakeDb({});
       const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       return actor!.companyIds![0]!;
     }
@@ -243,7 +243,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     });
 
     it("loads memberships with the session path's exact own-user active-status filter", async () => {
-      const { db, selectWheres } = createFakeDb();
+      const { db, selectWheres } = createFakeDb({});
       await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
       expect(membershipSelects).toHaveLength(1);
