@@ -57,10 +57,11 @@ export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEn
   if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
   if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
     return {
-      code: "claude_subscription_token_detected",
+      code: "claude_oauth_token_configured",
       level: "info",
       message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
+      detail: "Detected in configured environment variables.",
     };
   }
   return null;
