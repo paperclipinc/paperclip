@@ -717,10 +717,10 @@ describe("OnboardingWizard cloud first-run", () => {
     await renderTree();
     await flushReact();
 
-    // The draft is restored once companies settle: step 3 (Create your team
-    // lead) with the saved agent name in the input, not the defaults
+    // The draft is restored once companies settle: step 3 (Create your first
+    // agent) with the saved agent name in the input, not the defaults
     // (step 0, "Chief of staff").
-    expect(document.body.textContent).toContain("Create your team lead");
+    expect(document.body.textContent).toContain("Create your first agent");
     const nameInput = document.body.querySelector(
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
@@ -814,7 +814,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     );
     expect(saved).not.toHaveProperty("credentialBindings");
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     await act(async () => {
       heartbeatButton.click();
     });
@@ -845,7 +845,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
 
     const { root } = await mount();
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(false);
     await act(async () => {
       heartbeatButton.click();
@@ -868,7 +868,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // activation must stay gated until the user connects a credential.
     const { root } = await mount();
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(true);
 
     const bindButton = findButtonByText(document.body, "bound:");
@@ -877,7 +877,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
-    const enabledButton = findButtonByText(document.body, "Give it a heartbeat");
+    const enabledButton = findButtonByText(document.body, "Connect");
     expect(enabledButton.disabled).toBe(false);
 
     await act(async () => {
@@ -933,7 +933,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     expect(errorEl?.textContent).not.toContain("authentication_error");
 
     // The heartbeat gate must not open on the strength of the rejected binding.
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(true);
 
     // The rejected secret is disabled server-side too, so a page reload
@@ -989,7 +989,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     await flushReact();
 
     // claude_local's own gate is closed by the rejection.
-    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+    expect(findButtonByText(document.body, "Connect").disabled).toBe(
       true,
     );
 
@@ -1026,7 +1026,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
-    expect(findButtonByText(document.body, "Give it a heartbeat").disabled).toBe(
+    expect(findButtonByText(document.body, "Connect").disabled).toBe(
       false,
     );
 
@@ -1064,7 +1064,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
 
     // The gate reads as open on mount purely from the orphaned secret —
     // nothing was bound this session.
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(false);
 
     await act(async () => {
@@ -1103,7 +1103,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // The gate closes for the rest of this session so retrying without a
     // fresh bind can't loop the same way.
     expect(
-      findButtonByText(document.body, "Give it a heartbeat").disabled,
+      findButtonByText(document.body, "Connect").disabled,
     ).toBe(true);
 
     await act(async () => {
@@ -1134,7 +1134,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     await flushReact();
 
     // The gate reads as open purely from the company secret.
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(false);
 
     await act(async () => {
@@ -1200,7 +1200,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       document.body.querySelector('[data-testid="mock-credential-error"]'),
     ).toBeNull();
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(false);
 
     await act(async () => {
@@ -1226,7 +1226,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       document.body.querySelector('[data-testid="mock-credential-bind"]')
         ?.textContent,
     ).toBe("bound:ANTHROPIC_API_KEY");
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(false);
 
     // The raw internal server message never renders; a plain sentence does.
@@ -1325,7 +1325,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // With nothing bound and no matching company secret, the gate stays
     // closed and hiring is blocked rather than silently sending the stale
     // secret id.
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(true);
 
     await act(async () => {
@@ -1382,7 +1382,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       document.body.querySelector('[data-testid="mock-credential-bind"]')
         ?.textContent,
     ).toBe("bound:");
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     expect(heartbeatButton.disabled).toBe(true);
 
     await act(async () => {
@@ -1445,7 +1445,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     });
     await flushReact();
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     // The gate is satisfied by the real company secret for GEMINI_API_KEY,
     // not by the stale ANTHROPIC_API_KEY session binding.
     expect(heartbeatButton.disabled).toBe(false);
@@ -1538,7 +1538,7 @@ describe("mergeCredentialBindings", () => {
     });
     await flushReact();
 
-    const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
+    const heartbeatButton = findButtonByText(document.body, "Connect");
     await act(async () => {
       heartbeatButton.click();
     });

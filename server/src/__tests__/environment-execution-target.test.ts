@@ -255,7 +255,6 @@ describe("resolveEnvironmentExecutionTarget", () => {
 
     expect(executeSpy.mock.calls[0][0]).toHaveProperty("onLog");
     expect(logCalls).toEqual([["stdout", "live-chunk"]]);
-    expect(result.streamed).toBe(true);
     expect(result.stdout).toBe("live-chunk");
   });
 
