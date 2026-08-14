@@ -1889,11 +1889,9 @@ describe("IssueDetail", () => {
   });
 
   it("keeps the Show properties button clickable on the first task and reveals the sidebar on demand", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: false, enableExternalObjects: false } }),
+    );
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
@@ -1932,11 +1930,9 @@ describe("IssueDetail", () => {
   });
 
   it("reveals the properties sidebar on the first onboarding task once a plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: false, enableExternalObjects: false } }),
+    );
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
@@ -1956,11 +1952,9 @@ describe("IssueDetail", () => {
   });
 
   it("shows the properties sidebar immediately on a non-first task", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: false, enableExternalObjects: false } }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue({ originKind: "manual" }));
 
     await act(async () => {
@@ -2485,12 +2479,9 @@ describe("IssueDetail", () => {
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: false, enableExternalObjects: false, enableClassicTaskInterface: true } }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {

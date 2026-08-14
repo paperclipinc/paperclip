@@ -100,28 +100,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      // The stack's company already exists (onboarding already ran), so the
-      // membership upsert and role-default grants below still fire. The
-      // cloud_tenant actor then resolves the user's REAL active company
-      // memberships (db.select(...).from(companyMemberships)) — mock it to
-      // echo back the membership rows just seeded via insert() so the actor
-      // returns a populated memberships/companyIds set.
-      select: vi.fn(() => ({
-        from: (table: unknown) => ({
-          where: () =>
-            Promise.resolve(
-              table === companies
-                ? [{ id: "stack-alpha-company" }]
-                : inserts
-                    .filter((i) => i.values.principalType === "user")
-                    .map((i) => ({
-                      companyId: i.values.companyId,
-                      membershipRole: i.values.membershipRole,
-                      status: i.values.status,
-                    })),
-            ),
-        }),
-      })),
+      select: vi.fn(() => createSelectChain([])),
     } as any;
     const app = express();
     app.use(
