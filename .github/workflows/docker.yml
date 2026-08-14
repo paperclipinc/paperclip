@@ -11,6 +11,13 @@ on:
       - "staging"
     tags:
       - "v*"
+      - "nightly/v*"
+      - "beta/v*"
+  # Release workflows push lane tags with GITHUB_TOKEN, and GitHub suppresses
+  # push-triggered runs for those, so release.yml dispatches this workflow at
+  # the new tag ref instead. The tag mapping below keys off github.ref either
+  # way.
+  #
   # Fallback: pushes made with the default GITHUB_TOKEN (e.g. a bot's
   # `gh pr merge --auto`) never fire `on: push` workflow runs -- GitHub
   # suppresses it to prevent recursive workflow chains. workflow_dispatch is
@@ -54,9 +61,28 @@ jobs:
         id: build-version
         run: |
           set -euo pipefail
-          version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+          case "${GITHUB_REF}" in
+            refs/tags/nightly/v*)
+              # Lane tags carry the exact published version; stamp it verbatim
+              # instead of describing drift from the nearest stable tag.
+              version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
+              ;;
+            *)
+              version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+              ;;
+          esac
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
+
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -138,17 +164,22 @@ jobs:
           echo "last=${last}" >> "$GITHUB_OUTPUT"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
 
+      # Lane tag mapping: master pushes publish `:canary`, nightly/v* tags
+      # publish `:nightly`, and only stable v* tags move `:latest` and the
+      # versioned tags. `:sha-<short>` is published on every build.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=main-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+            type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=staging-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/staging' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
@@ -164,10 +195,17 @@ jobs:
           target: production
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           platforms: linux/amd64,linux/arm64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed BuildKit cache instead of type=gha: the Actions
+          # cache is capped at 10GB per repo, and two multi-arch mode=max jobs
+          # evict each other, so most builds ran effectively cold. The cache
+          # ref lives in ghcr next to the image and is written only by this
+          # workflow (docker.yml runs on master/tag pushes, never on PRs).
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -199,9 +237,28 @@ jobs:
         id: build-version
         run: |
           set -euo pipefail
-          version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+          case "${GITHUB_REF}" in
+            refs/tags/nightly/v*)
+              # Lane tags carry the exact published version; stamp it verbatim
+              # instead of describing drift from the nearest stable tag.
+              version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
+              ;;
+            *)
+              version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+              ;;
+          esac
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
+
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -283,8 +340,9 @@ jobs:
           echo "last=${last}" >> "$GITHUB_OUTPUT"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
 
-      # Published under the same tag set with a `-cloud` suffix
-      # (sha-<short>-cloud, latest-cloud, <version>-cloud).
+      # Published under the same lane tag set as the self-hosted image, with a
+      # `-cloud` suffix (canary-cloud, nightly-cloud, latest-cloud,
+      # <version>-cloud, sha-<short>-cloud).
       - name: Docker meta (cloud)
         id: meta-cloud
         uses: docker/metadata-action@v6
@@ -293,9 +351,12 @@ jobs:
           flavor: |
             suffix=-cloud,onlatest=true
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
@@ -311,9 +372,18 @@ jobs:
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
-          platforms: linux/amd64,linux/arm64
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
+          # amd64 only, unlike the self-hosted image above: the cloud variant
+          # is consumed exclusively by managed-deployment hosts, which run
+          # amd64. The QEMU-emulated arm64 half dominated this job's wall
+          # clock, and dropping it roughly halves time-to-deployable-image.
+          platforms: linux/amd64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed BuildKit cache, separate ref from the self-hosted
+          # job so the two parallel builds never clobber each other's cache
+          # manifest (see the rationale on the job above).
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud,mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}
