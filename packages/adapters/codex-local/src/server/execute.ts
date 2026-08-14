@@ -910,7 +910,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     resolveCacheEntryPath: (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  })),
+                  }));
+                },
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
