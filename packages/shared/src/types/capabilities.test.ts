@@ -40,6 +40,8 @@ describe("derivePublicFeatureFlags", () => {
       censorUsernameInLogs: false,
       feedbackDataSharingPreference: defaultGeneral.feedbackDataSharingPreference,
       executionMode: "any",
+      enableManagedSandboxOnly: false,
+      enableClassicTaskInterface: false,
       defaultEnvironmentId: null,
     });
   });
