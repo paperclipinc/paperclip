@@ -581,49 +581,72 @@ export async function testCodexAcpEnvironment(
   const envConfig = parseObject(config.env);
   if (!targetIsRemote) {
     const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
-    const hostApiKey =
-      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
-        ? null
-        : isNonEmpty(process.env.OPENAI_API_KEY)
-        ? process.env.OPENAI_API_KEY
-        : null;
-    const configuredApiKey = configApiKey ?? hostApiKey;
-    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
-    const credentialReadiness = await evaluateCodexCredentialReadiness({
-      env: process.env,
-      companyId: ctx.companyId,
-      configuredCodexHome,
-      configuredApiKey,
-    });
 
-    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
-      checks.push({
-        code: "codex_acp_openai_api_key_detected",
-        level: "info",
-        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
-      });
-    } else if (credentialReadiness.ready && !credentialReadiness.managed) {
-      checks.push({
-        code: "codex_acp_external_home_configured",
-        level: "info",
-        message: "Codex ACP will use an externally managed CODEX_HOME.",
-        detail: credentialReadiness.effectiveHome,
-      });
-    } else if (credentialReadiness.ready) {
-      checks.push({
-        code: "codex_acp_native_auth_detected",
-        level: "info",
-        message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
-      });
+    if (!callerControlsHost) {
+      // Hosted multi-tenant install: the caller is a tenant, not the operator.
+      // Only the tenant's own API key (from adapter config env) counts here.
+      // Host-derived signals (process.env keys, native Codex auth) belong to the
+      // operator or another tenant and must never be surfaced.
+      if (configApiKey) {
+        checks.push({
+          code: "codex_acp_openai_api_key_detected",
+          level: "info",
+          message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+          detail: "Detected in adapter config env.",
+        });
+      } else {
+        checks.push({
+          code: "codex_acp_credentials_missing",
+          level: "warn",
+          message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+          hint: "Add an OpenAI API key to the agent configuration. If you have a ChatGPT Plus or Pro plan you can run `codex login` on your own computer and then copy the credential to the adapter env.",
+        });
+      }
     } else {
-      checks.push({
-        code: "codex_acp_credentials_missing",
-        level: "warn",
-        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
-        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+      const hostApiKey =
+        Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+          ? null
+          : isNonEmpty(process.env.OPENAI_API_KEY)
+          ? process.env.OPENAI_API_KEY
+          : null;
+      const configuredApiKey = configApiKey ?? hostApiKey;
+      const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+      const credentialReadiness = await evaluateCodexCredentialReadiness({
+        env: process.env,
+        companyId: ctx.companyId,
+        configuredCodexHome,
+        configuredApiKey,
       });
+
+      if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+        checks.push({
+          code: "codex_acp_openai_api_key_detected",
+          level: "info",
+          message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+          detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+        });
+      } else if (credentialReadiness.ready && !credentialReadiness.managed) {
+        checks.push({
+          code: "codex_acp_external_home_configured",
+          level: "info",
+          message: "Codex ACP will use an externally managed CODEX_HOME.",
+          detail: credentialReadiness.effectiveHome,
+        });
+      } else if (credentialReadiness.ready) {
+        checks.push({
+          code: "codex_acp_native_auth_detected",
+          level: "info",
+          message: "Codex ACP can use Codex native authentication.",
+          detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
+        });
+      } else {
+        checks.push({
+          code: "codex_acp_credentials_missing",
+          level: "warn",
+          message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+          hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+        });
+      }
     }
   } else if (targetIsSandbox) {
     // The ACP Test does not probe the sandbox, so it predicts readiness from the
