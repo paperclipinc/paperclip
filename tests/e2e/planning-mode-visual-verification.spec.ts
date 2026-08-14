@@ -68,7 +68,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await expect(page.locator('input[placeholder="Chief of staff"]')).toHaveValue(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
-  await page.getByRole("button", { name: /^Connect$/ }).click();
+  await page.getByRole("button", { name: /^Connect$/ }).first().click();
 
   await expect(page.getByRole("heading", { name: "Review" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Get started/ }).click();
