@@ -24,6 +24,11 @@ function registerModuleMocks() {
       assertCurrentBoardKey: vi.fn(),
       revokeBoardApiKey: vi.fn(),
     }),
+    instanceSettingsService: () => ({
+      get: vi.fn().mockResolvedValue({}),
+      getVisibility: vi.fn().mockResolvedValue({ companySurfaces: "private" }),
+      getExperimental: vi.fn().mockResolvedValue({}),
+    }),
     deduplicateAgentName: vi.fn(),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),

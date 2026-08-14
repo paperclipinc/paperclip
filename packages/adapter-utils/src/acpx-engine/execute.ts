@@ -3518,7 +3518,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       } catch (err) {
         // Bring-up failed at the handshake — close the root span with error status.
         rootSpan.end(true);
-        const { classified, message } = await emitAcpxFailure({
+        const { classified, message, childStderrTail } = await emitAcpxFailure({
           ctx,
           prepared,
           err,
@@ -3526,18 +3526,37 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         });
         await discardStagedRuntime({ handles: stagedRuntimes, prepared });
         await cleanupRemoteBridges(prepared);
+        // Fold the child stderr tail (and any distinct cause message) into the
+        // tenant-facing failure text, then redact secrets so credentials never
+        // leak into persisted run results or thrown errors.
+        const { causeMessage } = describeErrorDiagnostics(err);
+        const composedMessage = redactSensitiveText(
+          composeSessionInitFailureMessage({ message, causeMessage, childStderrTail }),
+        );
+        // When the adapter allows lane fallback (auto-selected, non-explicit
+        // runs), throw AcpxSessionInitError so the calling adapter's execute()
+        // wrapper can fall back to its proven CLI lane.
+        if (allowSessionInitLaneFallback(ctx)) {
+          throw new AcpxSessionInitError({
+            message: composedMessage,
+            errorCode: classified.errorCode ?? "acpx_session_init_failed",
+            errorMeta: classified.errorMeta,
+            childStderrTail: childStderrTail ? redactSensitiveText(childStderrTail) : null,
+            cause: err,
+          });
+        }
         return {
           exitCode: 1,
           signal: null,
           timedOut: false,
-          errorMessage: message,
+          errorMessage: composedMessage,
           ...classified,
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession,
           resultJson: { phase: "ensure_session" },
-          summary: message,
+          summary: composedMessage,
         };
       }
 
