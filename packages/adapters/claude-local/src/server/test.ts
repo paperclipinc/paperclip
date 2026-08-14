@@ -23,7 +23,16 @@ import {
   resolveAdapterExecutionTargetCwd,
   adapterExecutionTargetUsesManagedHome,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
+import {
+  describeClaudeFailure,
+  detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
+  isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
+} from "./parse.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
+import { isBedrockModelId } from "./models.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
 import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -250,16 +259,25 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
+  } else if (
+    isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
+    (considerHostEnv && isNonEmpty(process.env.CLAUDE_CODE_OAUTH_TOKEN))
+  ) {
+    const source = isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)
+      ? "configured environment variables"
+      : "server environment";
+    checks.push({
+      code: "claude_oauth_token_configured",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
+      detail: `Detected in ${source}.`,
+    });
   } else {
     const authAdvice = resolveClaudeAuthAdvice(env);
     if (authAdvice) {
       checks.push(authAdvice);
     } else if (!callerControlsHost) {
-      // Hosted multi-tenant: "if Claude is logged in" refers to a host login
-      // the user cannot perform. Unlike Codex, there IS a real subscription
-      // route here, so name it rather than pushing them to an API key: the
-      // token is minted on their own machine and pasted in, which is exactly
-      // the thing they were looking for when they picked this adapter.
       checks.push({
         code: "claude_subscription_mode_possible",
         level: "info",
@@ -302,6 +320,44 @@ export async function testEnvironment(
         if (fromExtraArgs.length > 0) return fromExtraArgs;
         return asStringArray(config.args);
       })();
+
+      let effectiveEffort = effort;
+      if (targetIsSandbox && effort) {
+        const supportsEffort = await claudeCommandSupportsEffortFlag({
+          runId,
+          command,
+          target,
+          cwd,
+          env,
+          timeoutSec: 45,
+          graceSec: 5,
+        });
+        if (supportsEffort === false) {
+          effectiveEffort = "";
+          checks.push({
+            code: "claude_effort_flag_unsupported",
+            level: "warn",
+            message:
+              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+          });
+        }
+      }
+
+      const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      args.push(...buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions,
+        targetIsRemote,
+        localProcessUid: process.getuid?.() ?? null,
+      }));
+      if (chrome) args.push("--chrome");
+      // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
+      if (model && (!hasBedrock || isBedrockModelId(model))) {
+        args.push("--model", model);
+      }
+      if (effectiveEffort) args.push("--effort", effectiveEffort);
+      if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+      if (extraArgs.length > 0) args.push(...extraArgs);
 
       // Sandbox bridges still add lease warmup and transport overhead, but
       // the standard-2 Cloudflare tier now probes fast enough that a 90s

@@ -26,7 +26,6 @@ describe("derivePublicFeatureFlags", () => {
       enableTaskWatchdogs: false,
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableBuiltInAgents: false,
@@ -41,6 +40,8 @@ describe("derivePublicFeatureFlags", () => {
       censorUsernameInLogs: false,
       feedbackDataSharingPreference: defaultGeneral.feedbackDataSharingPreference,
       executionMode: "any",
+      enableManagedSandboxOnly: false,
+      enableClassicTaskInterface: false,
       defaultEnvironmentId: null,
     });
   });
