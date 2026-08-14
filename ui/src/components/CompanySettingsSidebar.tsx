@@ -75,7 +75,6 @@ export function CompanySettingsSidebar() {
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
-  const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -109,14 +108,6 @@ export function CompanySettingsSidebar() {
           ) : null}
           <SidebarNavItem to="/company/export" label="Export" icon={Download} />
           <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
-          {showCloudUpstream ? (
-            <SidebarNavItem
-              to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
-              icon={CloudUpload}
-              end
-            />
-          ) : null}
           {exposedSurfaces.has("company.members") ? (
             <SidebarNavItem
               to="/company/settings/members"

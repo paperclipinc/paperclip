@@ -12,7 +12,6 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableTaskWatchdogs: false,
   enableIssuePlanDecompositions: false,
   enableExperimentalFileViewer: false,
-  enableCloudSync: false,
   enableExternalObjects: false,
   enableSmokeLab: false,
   enableBuiltInAgents: false,
