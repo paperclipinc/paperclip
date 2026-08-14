@@ -136,6 +136,15 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
+
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
 // because this adapter passes the approvals-bypass flag itself, and
