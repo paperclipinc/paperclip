@@ -2432,3 +2432,19 @@ export {
   type FeatureTier,
   type InstanceFeatureKey,
 } from "./feature-catalog.js";
+
+export type {
+  CloudUpstreamConnectStartResponse,
+  CloudUpstreamActivationDecision,
+  CloudUpstreamActivationEntityType,
+  CloudUpstreamConnection,
+  CloudUpstreamConflict,
+  CloudUpstreamPreview,
+  CloudUpstreamRun,
+  CloudUpstreamRunEvent,
+  CloudUpstreamsState,
+  CloudUpstreamStep,
+  CloudUpstreamSummaryCount,
+  CloudUpstreamTarget,
+  CloudUpstreamWarning,
+} from "./types/cloud-upstream.js";

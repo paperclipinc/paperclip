@@ -15,10 +15,6 @@ const mockAdapterPluginStore = vi.hoisted(() => ({
   getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
 }));
 
-const mockAdapterPluginStore = vi.hoisted(() => ({
-  getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
-}));
-
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
