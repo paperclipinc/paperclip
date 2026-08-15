@@ -3437,6 +3437,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let clearSession = false;
 
       try {
+        try {
         if (!handle) {
           try {
             // Step 7 — acp.handshake: ACP session establishment (session/new or
