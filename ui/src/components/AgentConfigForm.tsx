@@ -241,6 +241,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // User-secret definitions power the "User secret" env binding source. Requires
   // secret-admin; non-admins simply get the free-text key fallback in the editor.
   const { data: userSecretDefinitions = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
+      : ["user-secret-definitions", "none"],
+    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
+  });
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
   const editAgentId = !isCreate ? props.agent.id : null;
