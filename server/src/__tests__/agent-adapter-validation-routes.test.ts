@@ -15,6 +15,15 @@ const mockAdapterPluginStore = vi.hoisted(() => ({
   getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
 }));
 
+vi.mock("../services/adapter-plugin-store.js", () => ({
+  getDisabledAdapterTypes: mockAdapterPluginStore.getDisabledAdapterTypes,
+  isAdapterDisabled: (type: string) =>
+    mockAdapterPluginStore.getDisabledAdapterTypes().includes(type),
+  listAdapterPlugins: () => [],
+  getAdapterPluginByType: () => undefined,
+  setAdapterDisabled: vi.fn(),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
@@ -119,17 +128,6 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
   }));
 
-  // The adapter registry reads the disabled set from this store. Mock it so a
-  // test can declare an adapter disabled without writing to the real
-  // ~/.paperclip/adapter-settings.json.
-  vi.doMock("../services/adapter-plugin-store.js", () => ({
-    getDisabledAdapterTypes: mockAdapterPluginStore.getDisabledAdapterTypes,
-    isAdapterDisabled: (type: string) =>
-      mockAdapterPluginStore.getDisabledAdapterTypes().includes(type),
-    listAdapterPlugins: () => [],
-    getAdapterPluginByType: () => undefined,
-    setAdapterDisabled: vi.fn(),
-  }));
 }
 
 const externalAdapter: ServerAdapterModule = {
@@ -622,4 +620,5 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
+
 });
