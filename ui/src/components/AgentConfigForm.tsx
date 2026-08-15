@@ -267,13 +267,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [pendingProposals, editAgentId],
   );
   const proposalReview = useProposalReview(selectedCompanyId, []);
-    queryKey: selectedCompanyId
-      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
-      : ["user-secret-definitions", "none"],
-    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-    retry: false,
-  });
   const { data: experimentalSettings } = useFeatures();
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
