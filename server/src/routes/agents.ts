@@ -75,7 +75,6 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
   AdapterModelProfileDefinition,
-  listServerAdapters,
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";

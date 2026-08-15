@@ -54,18 +54,6 @@ function setFiniteNumberAttr(span: ExecSpan, key: string, value: unknown): void 
     span.setAttribute(key, value);
   }
 }
-    // Disable the in-sandbox network-install shim ONLY for providers that
-    // explicitly declare their runtime images are pre-baked / contractually
-    // complete (adapter CLI already on PATH, run behind a locked egress) — the
-    // per-lease `runtimeImagePrebaked` capability signal. We must NOT key off the
-    // generic "plugin-backed" marker (`sandboxProviderPlugin`): a provider plugin
-    // that ships a GENERIC sandbox and legitimately relies on runtime
-    // installation would otherwise be wrongly marked pre-baked, dropping its
-    // install (Layer 3) and turning a provisionable run into a spurious
-    // `adapter_runtime_image_mismatch`. Such a plugin omits the flag and keeps
-    // the install path; built-in sandbox providers (e.g. e2b) never set it.
-    const prebakedRuntime = input.leaseMetadata?.runtimeImagePrebaked === true;
-
 
 /** Read a free-form metadata value as a finite number, or `undefined`. The
  * provider durations ride the exec result's untyped `metadata`, so a provider
@@ -148,7 +136,6 @@ function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInpu
   setFiniteNumberAttr(span, A.execWaitBeforeMs, input.waitBeforeMs);
   setFiniteNumberAttr(span, A.execSandboxMs, input.sandboxMs);
   // The transport time the host adds around the provider work: wall minus the
-                streamed: result.streamed,
   // handle-fetch wait minus the in-sandbox run. Set it only when both parts are
   // present, so a provider that reports no durations yields no derived value.
   if (input.waitBeforeMs !== undefined && input.sandboxMs !== undefined) {
@@ -255,6 +242,18 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // The endpoint-gated startup tracer (no-op when tracing is off). Tests inject
     // a recording tracer.
     const tracer = input.tracer ?? getStartupTracer();
+
+    // Disable the in-sandbox network-install shim ONLY for providers that
+    // explicitly declare their runtime images are pre-baked / contractually
+    // complete (adapter CLI already on PATH, run behind a locked egress) — the
+    // per-lease `runtimeImagePrebaked` capability signal. We must NOT key off the
+    // generic "plugin-backed" marker (`sandboxProviderPlugin`): a provider plugin
+    // that ships a GENERIC sandbox and legitimately relies on runtime
+    // installation would otherwise be wrongly marked pre-baked, dropping its
+    // install (Layer 3) and turning a provisionable run into a spurious
+    // `adapter_runtime_image_mismatch`. Such a plugin omits the flag and keeps
+    // the install path; built-in sandbox providers (e.g. e2b) never set it.
+    const prebakedRuntime = input.leaseMetadata?.runtimeImagePrebaked === true;
 
     return {
       kind: "remote",

@@ -134,7 +134,6 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
-  ensureDecisionSigningSecret();
 }
 
 export async function startServer(): Promise<StartedServer> {

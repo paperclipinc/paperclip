@@ -22,7 +22,6 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   adapterExecutionTargetUsesManagedHome,
-  isClaudeProviderQuotaError,
 } from "@paperclipai/adapter-utils/execution-target";
 import { claudeCommandLooksLike } from "./cli-capabilities.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";

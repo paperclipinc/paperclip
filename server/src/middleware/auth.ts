@@ -578,9 +578,7 @@ export async function resolveCloudTenantActor(
       },
     })
     .returning()
-    .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-
-    await ensureHumanRoleDefaultGrants(db, {
+    .then((rows) => rows[0] ?? {
       companyId,
       membershipRole,
       status: "active",
