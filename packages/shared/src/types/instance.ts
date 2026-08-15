@@ -66,6 +66,7 @@ export interface InstanceExperimentalSettings {
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
   enableBetaSkills: boolean;
+  enableCloudSync: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;

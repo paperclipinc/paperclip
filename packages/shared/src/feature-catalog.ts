@@ -174,6 +174,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCloudSync: {
+    title: "Cloud sync",
+    description: "Enable upstream cloud synchronisation for this instance.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSummaries: {
     title: "Summaries",
     description:
