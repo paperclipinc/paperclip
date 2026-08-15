@@ -130,18 +130,6 @@ function registerModuleMocks() {
     getAdapterPluginByType: () => undefined,
     setAdapterDisabled: vi.fn(),
   }));
-
-  // The adapter registry reads the disabled set from this store. Mock it so a
-  // test can declare an adapter disabled without writing to the real
-  // ~/.paperclip/adapter-settings.json.
-  vi.doMock("../services/adapter-plugin-store.js", () => ({
-    getDisabledAdapterTypes: mockAdapterPluginStore.getDisabledAdapterTypes,
-    isAdapterDisabled: (type: string) =>
-      mockAdapterPluginStore.getDisabledAdapterTypes().includes(type),
-    listAdapterPlugins: () => [],
-    getAdapterPluginByType: () => undefined,
-    setAdapterDisabled: vi.fn(),
-  }));
 }
 
 const externalAdapter: ServerAdapterModule = {
