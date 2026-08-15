@@ -16,6 +16,7 @@ import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
 import { useFeatures } from "../hooks/useFeatures";
 import { secretsApi } from "../api/secrets";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -504,9 +505,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () =>
       resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId: generalSettings?.defaultEnvironmentId ?? null,
       }),
-    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
+    [rawCurrentDefaultEnvironmentId, generalSettings?.defaultEnvironmentId],
   );
   const effectiveLoginEnvironment = useMemo(
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
@@ -758,13 +759,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // honest diagnostic — silently probing the host instead would report
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
-      let settings = instanceSettings;
-      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
+      let instanceDefaultEnvId = generalSettings?.defaultEnvironmentId ?? null;
+      if (!rawCurrentDefaultEnvironmentId && instanceDefaultEnvId === null) {
         try {
-          settings = await queryClient.ensureQueryData({
+          const fetched = await queryClient.ensureQueryData({
             queryKey: queryKeys.instance.settings,
             queryFn: () => instanceSettingsApi.get(),
           });
+          instanceDefaultEnvId = fetched.defaultEnvironmentId;
         } catch {
           throw new Error(
             "Could not load instance settings to determine which environment to test in. Retry the test.",
@@ -773,7 +775,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId: instanceDefaultEnvId,
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {

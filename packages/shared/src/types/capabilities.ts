@@ -24,6 +24,8 @@ export interface PublicFeatureFlags {
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
+  enableManagedSandboxOnly: boolean;
+  enableClassicTaskInterface: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -80,6 +82,8 @@ export function derivePublicFeatureFlags(input: {
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
     enableCloudSync: experimental.enableCloudSync === true,
+    enableManagedSandboxOnly: experimental.enableManagedSandboxOnly === true,
+    enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     enableExternalObjects: experimental.enableExternalObjects === true,
     enableSmokeLab: experimental.enableSmokeLab === true,
     enableBuiltInAgents: experimental.enableBuiltInAgents === true,

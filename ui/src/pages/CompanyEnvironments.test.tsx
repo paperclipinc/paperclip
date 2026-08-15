@@ -1406,10 +1406,9 @@ describe("CompanyEnvironments — test provider button", () => {
   });
 
   it("hides the implicit Local option in the default picker under managed-sandbox-only", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableEnvironments: true,
-      enableManagedSandboxOnly: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableEnvironments: true, enableManagedSandboxOnly: true } }),
+    );
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
