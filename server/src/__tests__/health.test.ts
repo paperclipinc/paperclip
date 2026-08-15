@@ -38,6 +38,7 @@ function createApp(db?: Db, serverInfo = testServerInfo) {
     healthRoutes(db, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
+  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
       authReady: true,
       companyDeletionEnabled: true,
       serverInfo,
@@ -49,6 +50,7 @@ function createApp(db?: Db, serverInfo = testServerInfo) {
 describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+      runtimeEnv,
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
   });
 
@@ -60,8 +62,45 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
+
+  it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {});
+
+    const res = await request(app).get("/health");
+
+    const baseline = {
+      status: "ok",
+      version: serverVersion,
+      serverVersion,
+      commit: testServerInfo.git.fullSha,
+      serverInfo: testServerInfo,
+    };
+    expect(res.text).toBe(JSON.stringify(baseline));
+    expect(Object.prototype.hasOwnProperty.call(res.body, "cloud")).toBe(false);
+  });
+
+  it("exposes public stack metadata on cloud-simulated health", async () => {
+    const app = createApp(undefined, testServerInfo, undefined, {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_CLOUD_STACK_ID: "stack-1",
+      PAPERCLIP_STACK_SLUG: "acme",
+      PAPERCLIP_CLOUD_ACCOUNT_GROUP_ID: "account-group-1",
+      PAPERCLIP_PRIMARY_HOST: "acme.paperclip.app",
+      PAPERCLIP_CLOUD_API_ORIGIN: "https://app.paperclip.app",
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.cloud).toEqual({
+      managed: true,
+      managedBy: "paperclip-cloud",
+      stackSlug: "acme",
+      cloudBaseUrl: "https://app.paperclip.app",
+    });
+  });
 
   it("returns 200 when the database probe succeeds", async () => {
     const db = {
@@ -93,6 +132,7 @@ describe("GET /health", () => {
       status: "unhealthy",
       version: serverVersion,
       serverVersion,
+      commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
       serverInfo: testServerInfo,
     });
@@ -117,6 +157,8 @@ describe("GET /health", () => {
         unavailableReason: "git_unavailable",
       },
     });
+    // With no git metadata baked in, the exposed commit is null (not omitted).
+    expect(res.body.commit).toBeNull();
   });
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
@@ -154,6 +196,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -191,6 +234,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -317,3 +361,4 @@ describe("GET /health", () => {
     });
   });
 });
+      commit: testServerInfo.git.fullSha,

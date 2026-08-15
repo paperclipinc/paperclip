@@ -7,7 +7,8 @@ import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
-  { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
+  { value: "export", label: "Export", href: "/company/export" },
+  { value: "import", label: "Import", href: "/company/import" },
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
@@ -60,8 +61,12 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "instance-environments";
   }
 
-  if (pathname.includes("/company/settings/cloud-upstream")) {
-    return "cloud-upstream";
+  if (pathname.includes("/company/export")) {
+    return "export";
+  }
+
+  if (pathname.includes("/company/import")) {
+    return "import";
   }
 
   if (pathname.includes("/company/settings/members") || pathname.includes("/company/settings/access")) {
