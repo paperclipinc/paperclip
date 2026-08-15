@@ -31,17 +31,23 @@ vi.mock("../dev-server-status.js", () => ({
   toDevServerHealthStatus: vi.fn(),
 }));
 
-function createApp(db?: Db, serverInfo = testServerInfo) {
+function createApp(
+  db?: Db,
+  serverInfo = testServerInfo,
+  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
+  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
+) {
   const app = express();
   app.use(
     "/health",
     healthRoutes(db, {
       deploymentMode: "local_trusted",
       deploymentExposure: "private",
-  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
       authReady: true,
       companyDeletionEnabled: true,
       serverInfo,
+      databaseBackupHealth,
+      runtimeEnv,
     }),
   );
   return app;
@@ -50,7 +56,6 @@ function createApp(db?: Db, serverInfo = testServerInfo) {
 describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-      runtimeEnv,
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
   });
 
