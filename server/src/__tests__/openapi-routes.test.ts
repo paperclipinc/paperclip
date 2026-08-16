@@ -72,6 +72,7 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  "cloud-upstreams.ts",
 ]);
 
 function createApp() {

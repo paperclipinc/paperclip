@@ -27,6 +27,7 @@ const mockCompany = vi.hoisted(() => ({
 const mockCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
+  list: vi.fn(async (): Promise<Array<{ id: string; name: string; issuePrefix: string }>> => []),
 }));
 const mockGoalsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -245,6 +246,11 @@ async function mount() {
     );
   });
   await flushReact();
+  // The outer gate's companiesListQuery may have just resolved, mounting the
+  // inner wizard whose own queries (health, secrets, ...) need another tick
+  // to settle.  A second flush ensures those inner queries have updated
+  // component state before the test interacts with the wizard.
+  await flushReact();
   return { container, root };
 }
 
@@ -292,6 +298,10 @@ describe("OnboardingWizard cloud first-run", () => {
       name: "Acme Rockets",
       issuePrefix: "PAP",
     });
+    // The OnboardingWizard gate queries companiesApi.list() to verify draft
+    // ownership before mounting the inner wizard. Without this, a saved draft
+    // in localStorage is never restored.
+    mockCompaniesApi.list.mockReset().mockImplementation(async () => mockCompany.companies);
     mockGoalsApi.create.mockResolvedValue({ id: "goal-1" });
     mockGoalsApi.list.mockResolvedValue([]);
     mockSecretsApi.list.mockReset().mockResolvedValue([]);
@@ -312,9 +322,9 @@ describe("OnboardingWizard cloud first-run", () => {
       'input[placeholder="Name your company"]',
     ) as HTMLInputElement | null;
     expect(input).not.toBeNull();
-    // The auto-generated company name must NOT be pre-filled — the user names
-    // it fresh.
-    expect(input!.value).toBe("");
+    // An existing company's name is backfilled so the user does not face a
+    // dead-end when the mission step requires companyName.trim().
+    expect(input!.value).toBe("Auto Co");
 
     await act(async () => {
       root.unmount();
@@ -674,12 +684,11 @@ describe("OnboardingWizard cloud first-run", () => {
   it("re-syncs a restored draft once companies resolve asynchronously (companies start empty/loading)", async () => {
     // Regression for the initializer-only restore bug: the inner wizard's
     // ~20 useState(saved?.x ?? default) initializers only read `saved` on
-    // their very first render. useCompany() starts with companies=[] and
-    // loading=true and resolves later; if the inner component mounted before
-    // that resolution, restoreOnboardingState would see an empty companies
-    // list and the whole draft would lock to defaults forever, even after
-    // companies arrive. The fix defers mounting the inner wizard until
-    // companies settle.
+    // their very first render. The outer gate now defers mounting the inner
+    // wizard until the companiesListQueryOptions query resolves, so a saved
+    // draft with a createdCompanyId is only restored after the ownership
+    // check succeeds. Simulate this by keeping the companiesApi.list()
+    // promise pending, then resolving it.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -690,38 +699,40 @@ describe("OnboardingWizard cloud first-run", () => {
       }),
     );
     mockDialog.onboardingOptions = {};
-    mockCompany.companies = [];
-    mockCompany.loading = true;
+
+    // Keep the companies query in flight until we resolve it manually.
+    let resolveCompanies!: (value: Array<{ id: string; name: string; issuePrefix: string }>) => void;
+    mockCompaniesApi.list.mockImplementation(
+      () => new Promise((resolve) => { resolveCompanies = resolve; }),
+    );
 
     const { container, root, queryClient } = render();
-    const renderTree = () =>
-      act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <OnboardingWizard />
-          </QueryClientProvider>,
-        );
-      });
-
-    await renderTree();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
     await flushReact();
 
-    // Nothing mounts yet — no premature guess, and the draft is not touched.
+    // Nothing mounts yet — the company ownership query is still in flight,
+    // and the draft is not touched.
     expect(container.textContent).toBe("");
     expect(document.body.textContent).toBe("");
     expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
 
     // Companies resolve asynchronously, owning the saved company.
     mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
-    mockCompany.loading = false;
-
-    await renderTree();
+    await act(async () => {
+      resolveCompanies([{ id: "c1", name: "Saved Co", issuePrefix: "SC" }]);
+    });
     await flushReact();
 
-    // The draft is restored once companies settle: step 3 (Create your team
-    // lead) with the saved agent name in the input, not the defaults
+    // The draft is restored once companies settle: step 3 (Create your first
+    // agent) with the saved agent name in the input, not the defaults
     // (step 0, "Chief of staff").
-    expect(document.body.textContent).toContain("Create your team lead");
+    expect(document.body.textContent).toContain("Create your first agent");
     const nameInput = document.body.querySelector(
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
@@ -771,6 +782,7 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockCompaniesApi.list.mockReset().mockImplementation(async () => mockCompany.companies);
     mockSecretsApi.list.mockReset().mockResolvedValue([]);
     mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
@@ -1499,6 +1511,7 @@ describe("mergeCredentialBindings", () => {
     mockAgentsApi.hire.mockClear();
     mockAgentsApi.instructionsBundle.mockClear();
     mockAgentsApi.saveInstructionsFile.mockClear();
+    mockCompaniesApi.list.mockReset().mockImplementation(async () => mockCompany.companies);
     mockSecretsApi.list.mockReset().mockResolvedValue([]);
     mockSecretsApi.disable.mockReset().mockResolvedValue({ id: "sec-1" } as CompanySecret);
   });
