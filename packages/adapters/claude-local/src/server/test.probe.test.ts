@@ -348,10 +348,10 @@ describe("claude auth mode hints", () => {
       environmentName: "Daytona",
     });
 
-    const hint = result.checks.find((check) => check.code === "claude_oauth_token_configured");
+    const hint = result.checks.find((check) => check.code === "claude_subscription_token_detected");
     expect(hint).toBeTruthy();
     expect(hint?.level).toBe("info");
-    expect(hint?.detail).toContain("configured environment variables");
+    expect(hint?.message).toContain("subscription token");
     expect(
       result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
     ).toBe(false);
@@ -378,7 +378,7 @@ describe("claude auth mode hints", () => {
     expect(
       result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
     ).toBe(true);
-    expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_subscription_token_detected")).toBe(false);
   });
 });
 

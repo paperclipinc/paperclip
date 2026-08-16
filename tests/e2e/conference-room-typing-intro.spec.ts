@@ -100,7 +100,12 @@ async function runOnboardingWizard(page: Page, companyName: string) {
     .getByRole("button", { name: "Connect" })
     .click();
   // After a successful bind the credential card collapses to a "Connected"
-  // summary, leaving only the footer's "Connect" button visible.
+  // summary, leaving only the footer's "Connect" button visible. Wait for
+  // the card to collapse before interacting with the footer button so the
+  // locator is unambiguous (both the card and the footer render "Connect").
+  await expect(
+    page.locator('[data-surface="credential_connect"]').getByText("Connected"),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByRole("button", { name: /^Connect$/ }),
   ).toBeEnabled({ timeout: 15_000 });

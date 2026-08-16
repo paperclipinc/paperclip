@@ -7,6 +7,7 @@ import {
   detectClaudeAuthRetryStorm,
   detectClaudeLoginRequired,
   isClaudeInvalidCredentialError,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -260,6 +261,14 @@ export async function runClaudeCredentialHelloProbe(
     stdout: probe.stdout,
     stderr: probe.stderr,
   });
+  const providerQuota =
+    !transient &&
+    isClaudeProviderQuotaError({
+      parsed,
+      stdout: probe.stdout,
+      stderr: probe.stderr,
+      errorMessage: failureDetail || null,
+    });
   // Some invalid-credential payloads (raw 401 / "invalid x-api-key" /
   // authentication_error) never match the login-prompt wording above, so
   // loginMeta.requiresLogin is false and execution falls straight here.
@@ -267,6 +276,7 @@ export async function runClaudeCredentialHelloProbe(
   // credential from any other hard failure (bad command, crashed CLI, etc.).
   const invalidCredential =
     !transient &&
+    !providerQuota &&
     isClaudeInvalidCredentialError({
       parsed,
       stdout: probe.stdout,
@@ -282,16 +292,24 @@ export async function runClaudeCredentialHelloProbe(
           ...(failureDetail ? { detail: failureDetail } : {}),
           hint: "This is usually temporary. Wait a moment and re-run Test.",
         }
-      : {
-          code: "claude_hello_probe_failed",
-          level: "error",
-          message: "Claude hello probe failed.",
-          ...(failureDetail ? { detail: failureDetail } : {}),
-          ...(invalidCredential ? { authFailure: true } : {}),
-          hint: invalidCredential
-            ? "Paste a fresh, valid Claude API key or subscription token, then retry."
-            : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
-        },
+      : providerQuota
+        ? {
+            code: "claude_hello_probe_usage_limited",
+            level: "warn",
+            message: "Claude hello probe hit a subscription usage limit.",
+            ...(failureDetail ? { detail: failureDetail } : {}),
+            hint: "Your Claude subscription usage limit has been reached. Wait for the limit to reset, or upgrade your plan.",
+          }
+        : {
+            code: "claude_hello_probe_failed",
+            level: "error",
+            message: "Claude hello probe failed.",
+            ...(failureDetail ? { detail: failureDetail } : {}),
+            ...(invalidCredential ? { authFailure: true } : {}),
+            hint: invalidCredential
+              ? "Paste a fresh, valid Claude API key or subscription token, then retry."
+              : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+          },
   );
   return checks;
 }
