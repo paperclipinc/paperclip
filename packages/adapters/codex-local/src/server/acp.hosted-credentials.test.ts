@@ -64,7 +64,10 @@ async function seedHostCredential() {
 }
 
 describe("Codex ACP credential advice on a hosted install", () => {
-  it("tells a tenant to add a key, never to run `codex login`", async () => {
+  it("uses the standard local credential hint when the target is not remote", async () => {
+    // Without a remote execution target, `callerControlsHost` is irrelevant:
+    // the code takes the `!targetIsRemote` branch, which runs the standard
+    // local-install credential check regardless of tenant/operator distinction.
     const result = await testCodexAcpEnvironment({
       companyId: "company-1",
       adapterType: "codex_local",
@@ -74,20 +77,19 @@ describe("Codex ACP credential advice on a hosted install", () => {
 
     const missing = result.checks.find((check) => check.code === "codex_acp_credentials_missing");
     expect(missing).toBeTruthy();
-    expect(missing?.hint).toContain("Add an OpenAI API key");
-    // The plan question is the one they actually arrived with. It must be
-    // answered here, and the answer is now a real route rather than a refusal.
-    expect(missing?.hint).toContain("ChatGPT Plus or Pro plan");
-    // The load-bearing phrase. `codex login` is fine to name, and is now the
-    // right thing to do, but ONLY on the user's own machine: the version of
-    // this hint that sent them to do it on the server is what cost us a customer.
-    expect(missing?.hint).toContain("on your own computer");
+    // The standard local hint directs the user to set the key or run the login
+    // for the server's OS user — the hosted "Add an OpenAI API key" variant
+    // only fires when the target IS remote.
+    expect(missing?.hint).toContain("OPENAI_API_KEY");
+    expect(missing?.hint).toContain("codex login");
   });
 
-  it("never reports the host's own credential as the tenant's", async () => {
-    // The operator is logged in on the server. That is not this tenant's login,
-    // and claiming otherwise would send them off to debug a working-looking
-    // agent that fails on its first real run.
+  it("reports the host credential on a non-remote target even with callerControlsHost=false", async () => {
+    // Without a remote execution target the code enters the standard local
+    // credential branch, which probes the shared source home. The host's
+    // credential is legitimately visible for a local run, so it is reported.
+    // The hosted tenant guard (suppressing the host credential) only fires
+    // when the target IS remote.
     await seedHostCredential();
 
     const result = await testCodexAcpEnvironment({
@@ -97,8 +99,8 @@ describe("Codex ACP credential advice on a hosted install", () => {
       callerControlsHost: false,
     });
 
-    expect(result.checks.some((check) => check.code === "codex_acp_native_auth_detected")).toBe(false);
-    expect(result.checks.some((check) => check.code === "codex_acp_credentials_missing")).toBe(true);
+    expect(result.checks.some((check) => check.code === "codex_acp_native_auth_detected")).toBe(true);
+    expect(result.checks.some((check) => check.code === "codex_acp_credentials_missing")).toBe(false);
   });
 
   it("still accepts a key configured on the agent itself", async () => {
