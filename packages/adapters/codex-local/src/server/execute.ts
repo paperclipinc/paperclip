@@ -15,6 +15,12 @@ import {
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
+  ensureCodexAuthCacheEntryDir,
+  isCodexAuthCacheEnabled,
+  resolveCodexAuthCacheEntryPath,
+  selectVendCredential,
+} from "./codex-auth-cache.js";
+import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -300,13 +306,21 @@ function managedMcpGatewaysFromContext(context: Record<string, unknown>): Manage
 type ResolvedExecutionTarget = ReturnType<typeof readAdapterExecutionTarget>;
 type MaybeResolvedExecutionTarget = ResolvedExecutionTarget | undefined;
 
-async function sandboxCodexAuthJsonExists(input: {
+type SandboxCodexAuthProbeResult = "present" | "absent" | "unknown";
+
+/**
+ * Probe the sandbox for its own `~/.codex/auth.json`. "unknown" means the
+ * probe itself failed (timeout, transport error, or a shell failure other
+ * than `test`'s clean false) — callers that gate on the result must not
+ * report that as a missing credential.
+ */
+async function probeSandboxCodexAuthJson(input: {
   runId: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
-}): Promise<boolean> {
+}): Promise<SandboxCodexAuthProbeResult> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
-    return false;
+    return "absent";
   }
 
   try {
@@ -320,10 +334,92 @@ async function sandboxCodexAuthJsonExists(input: {
         timeoutSec: 5,
       },
     );
-    return !result.timedOut && result.exitCode === 0;
+    if (result.timedOut) return "unknown";
+    if (result.exitCode === 0) return "present";
+    return result.exitCode === 1 ? "absent" : "unknown";
   } catch {
-    return false;
+    return "unknown";
   }
+}
+
+async function sandboxCodexAuthJsonExists(input: {
+  runId: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+}): Promise<boolean> {
+  return (await probeSandboxCodexAuthJson(input)) === "present";
+}
+
+/**
+ * Execute-time credential gate. A managed home with no host-side credentials
+ * is still launchable when the run targets a sandbox whose image carries its
+ * own Codex login (`~/.codex/auth.json` baked in during image setup): the
+ * inbound auth merge ships the credential-less host home and keeps the
+ * sandbox's credential, so the host is not a required credential source —
+ * on managed cloud hosts a local Codex login never exists at all. The
+ * sandbox is probed before the run is declared unlaunchable; non-sandbox
+ * targets keep the strict host-side requirement.
+ */
+export async function assertCodexCredentialsLaunchable(input: {
+  runId: string;
+  companyId: string;
+  configuredCodexHome: string | null;
+  configuredApiKey: string | null;
+  effectiveCodexHome: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const credentialReadiness = await evaluateCodexCredentialReadiness({
+    env: input.env ?? process.env,
+    companyId: input.companyId,
+    configuredCodexHome: input.configuredCodexHome,
+    configuredApiKey: input.configuredApiKey,
+  });
+  if (!credentialReadiness.managed || credentialReadiness.ready) return;
+
+  const targetIsSandbox =
+    input.target?.kind === "remote" && input.target.transport === "sandbox";
+  if (targetIsSandbox) {
+    const sandboxAuthJson = await probeSandboxCodexAuthJson({
+      runId: input.runId,
+      target: input.target,
+      cwd: input.cwd,
+    });
+    if (sandboxAuthJson === "present") {
+      await input.onLog(
+        "stdout",
+        `Using the sandbox's own Codex login; managed home "${input.effectiveCodexHome}" has no host credentials.\n`,
+      );
+      return;
+    }
+    if (sandboxAuthJson === "unknown") {
+      // The probe failing is an operational problem, not evidence that the
+      // sandbox lacks a login — proceeding lets a genuinely credentialed
+      // sandbox run, and a credential-less one still fails at Codex's first
+      // request with the provider's own error.
+      await input.onLog(
+        "stderr",
+        `Could not verify the sandbox's Codex login (probe failed); proceeding. ` +
+          `If the sandbox has no credentials, Codex will fail at its first request.\n`,
+      );
+      return;
+    }
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+        `(no usable auth.json, OPENAI_API_KEY is empty, and the sandbox has no Codex login). ` +
+        `Use a sandbox image that is signed in to Codex, configure a per-agent OPENAI_API_KEY, ` +
+        `or sign in to Codex on the host with a ChatGPT subscription.`,
+    );
+  }
+
+  throw new Error(
+    `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+      `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+      `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+      `OPENAI_API_KEY.`,
+  );
 }
 
 async function emitSandboxAuthPrecedenceWarningIfNeeded(input: {
@@ -547,6 +643,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredHomeIsManaged =
     configuredCodexHome != null &&
     isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome);
+  // Identity-anchored cache vend (host to sandbox). Before the managed home is
+  // seeded from the shared source `auth.json`, refresh the shared credential with
+  // a strictly-newer cached copy of the SAME identity. The vend reads the host
+  // identity first and resolves only that identity's cache slot; when the host
+  // holds no credential it does nothing (no random pick). This keeps the change
+  // additive: the managed home still symlinks the shared `auth.json`, now at its
+  // freshest same-identity copy. The off-switch (default on) skips the vend.
+  if (isCodexAuthCacheEnabled(process.env)) {
+    const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    await selectVendCredential(
+      sharedHomeAuthPath,
+      (accountId) => resolveCodexAuthCacheEntryPath(process.env, accountId, agent.companyId),
+      (line) => onLog("stdout", `${line}\n`),
+    ).catch(async (error) => {
+      // The vend is best-effort and additive. A vend failure must never block a
+      // run: log and fall through to seed from the unrefreshed shared credential.
+      await onLog(
+        "stderr",
+        `[paperclip] Codex auth cache: vend skipped after an error; using the shared credential as-is.\n`,
+      );
+      void error;
+    });
+  }
   if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
@@ -562,30 +681,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
-  // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
-  // with OPENAI_API_KEY="" the provider rejects every request with
+  // Never launch a managed CODEX_HOME with no credentials. Without auth.json
+  // and with OPENAI_API_KEY="" the provider rejects every request with
   // "401 Missing bearer"; fail fast with a clear adapter error instead of
   // emitting unauthenticated calls. External overrides manage their own auth.
   // This is the execute-time backstop for the control plane's pre-dispatch
-  // configuration-incomplete gate (see server heartbeat) — both decide
-  // readiness through the same `evaluateCodexCredentialReadiness` predicate, so
-  // they cannot drift.
-  const credentialReadiness = await evaluateCodexCredentialReadiness({
-    env: process.env,
+  // configuration-incomplete gate (see server heartbeat); both decide host
+  // readiness through the same `evaluateCodexCredentialReadiness` predicate,
+  // and sandbox targets are additionally allowed to supply their own login
+  // (the pre-dispatch gate defers sandbox-destined runs here for exactly that
+  // probe).
+  await assertCodexCredentialsLaunchable({
+    runId,
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
-    configuredAuthJson: configuredCodexAuthJson,
+    effectiveCodexHome,
+    target: executionTarget,
+    cwd,
+    onLog,
   });
-  if (credentialReadiness.managed && !credentialReadiness.ready) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
-        `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
-        `self-hosted install, signing in to Codex on the host also works.`,
-    );
-  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
@@ -707,65 +822,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) => {
-                  // Hosted path first. When the run authenticated with a
-                  // credential the USER supplied, the refreshed copy has to go
-                  // back to where that credential came from — the credential
-                  // store — not to any host file. This is not an optimisation:
-                  // OpenAI rotates the refresh token on every refresh and the
-                  // old one dies immediately, so skipping this would leave the
-                  // stored credential invalid from the next run onward. The
-                  // feature would look fine for about an hour and then break
-                  // permanently, which is worse than not shipping it.
-                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
-                    try {
-                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
-                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
-                        await ctx.onCredentialRotated({
-                          envKey: "CODEX_AUTH_JSON",
-                          value: rotated,
-                        });
-                        await onLog(
-                          "stdout",
-                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
-                        );
-                      }
-                    } catch (err) {
-                      // A failed copy-back must never fail a run that already
-                      // did the user's work. The cost is a stale stored
-                      // credential, which surfaces as a normal auth error on a
-                      // later run, not as a lost result here.
-                      await onLog(
-                        "stdout",
-                        `[paperclip] Codex plan credential copy-back skipped: ${
-                          err instanceof Error ? err.message : String(err)
-                        }\n`,
-                      );
-                    }
-                    return;
-                  }
-                  // The copy-back exists to persist refreshed ChatGPT-subscription
-                  // tokens back to the credential the managed homes symlink to.
-                  // When no shared host credential store exists (cloud/multi-tenant
-                  // servers whose auth lives only in managed per-company homes, or
-                  // a host that never ran `codex login`) there is nothing to merge
-                  // into, and creating a shared `~/.codex` on a multi-tenant server
-                  // would leak one tenant's credential into the store every other
-                  // tenant's managed home is seeded from. Skip instead of letting
-                  // the ENOENT fail the teardown and mark a completed run failed.
-                  if (!sharedHostHasUsableAuth) {
-                    await onLog(
-                      "stdout",
-                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
-                    );
-                    return;
-                  }
+                restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
+                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                  }));
-                },
+                    // Additive cache write (sandbox to host): also cache the
+                    // sandbox subscription credential in its per-identity slot,
+                    // keyed by the real `account_id`. Company-scoped root; the
+                    // helper ensures the slot directory private and containment-
+                    // guarded. The off-switch (default on) is read inside.
+                    resolveCacheEntryPath: (accountId) =>
+                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
+                    env: process.env,
+                  })),
+                // No `exclude` denylist: `stagedCodexHomeDir` already contains
+                // ONLY the allowlisted files (auth/config/skills), so there is
+                // nothing to filter out.
               },
             ],
           });
@@ -1477,11 +1550,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await paperclipBridge.stop();
       }
       if (restoreRemoteWorkspace) {
-        await onLog(
-          "stdout",
-          `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        await restoreRemoteWorkspace();
+        // This teardown runs in a `finally`, so a throw here replaces the
+        // already-computed run result (`return toResult(...)`) and turns a
+        // successful Codex run into a failure. The workspace restore — and the
+        // host credential copy-back inside it — is a best-effort teardown step.
+        // Keep it rejection-safe: log a fault loudly and keep the pending
+        // result. The host copy-back installs the credential on disk before any
+        // diagnostic log runs, so it is already durable when this block returns.
+        try {
+          await onLog(
+            "stdout",
+            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          );
+          await restoreRemoteWorkspace();
+        } catch (error) {
+          await Promise.resolve(
+            onLog(
+              "stderr",
+              `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                executionTarget,
+              )}: ${error instanceof Error ? error.message : String(error)}\n`,
+            ),
+          ).catch(() => undefined);
+        }
       }
     }
   } finally {

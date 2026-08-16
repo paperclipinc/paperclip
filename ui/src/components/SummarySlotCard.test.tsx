@@ -27,6 +27,9 @@ if (!HTMLElement.prototype.hasPointerCapture) {
 }
 
 const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
   revisions: vi.fn(),
@@ -36,6 +39,7 @@ const mockBuiltInAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ resume: vi.fn() }));
 
 vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("@/api/summarySlots", () => ({ summarySlotsApi: mockSummarySlotsApi }));
 vi.mock("@/api/builtInAgents", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/builtInAgents")>()),
@@ -232,7 +236,7 @@ describe("SummarySlotCard", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: true } }),
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: true } }),
     );
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({ slot: null, document: null, generatingIssue: null } satisfies GetSummarySlotResponse);
@@ -253,7 +257,7 @@ describe("SummarySlotCard", () => {
 
   it("renders nothing and does not fetch slots when the summaries flag is off", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: false } }),
+      buildCurrentBoardAccess({ features: { enableSummaries: false, enableBuiltInAgents: true } }),
     );
 
     root = renderCard(container);
@@ -261,6 +265,17 @@ describe("SummarySlotCard", () => {
 
     expect(container.textContent).toBe("");
     expect(mockSummarySlotsApi.get).not.toHaveBeenCalled();
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+  });
+
+  it("does not query built-in agents when their feature flag is off", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: false } }),
+    );
+
+    root = renderCard(container);
+    await flushQueries();
+
     expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
   });
 

@@ -79,6 +79,7 @@ vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
+
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -153,9 +154,9 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Instance settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
-    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(container.textContent).toContain("Export");
+    expect(container.textContent).toContain("Import");
     expect(container.textContent).toContain("Members");
-    expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
     expect(container.textContent).not.toContain("Tools & Access");
@@ -163,6 +164,19 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings",
         label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/export",
+        label: "Export",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/import",
+        label: "Import",
         end: true,
       }),
     );
@@ -232,7 +246,7 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("shows cloud upstream nav item when cloud sync is enabled for an instance admin", async () => {
+  it("does not render cloud upstream nav item even when cloud sync is enabled (sidebar entry removed)", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
     );
@@ -250,12 +264,10 @@ describe("CompanySettingsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Cloud upstream");
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
-        end: true,
       }),
     );
 
@@ -263,6 +275,7 @@ describe("CompanySettingsSidebar", () => {
       root.unmount();
     });
   });
+
 
   it("renders company settings pages contributed by ready plugins", async () => {
     mockUsePluginSlots.mockReturnValue({
@@ -310,7 +323,7 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  it("registers the cloud upstream nav item with the expected route and label when cloud sync is enabled", async () => {
+  it("does not register the cloud upstream nav item when cloud sync is enabled (sidebar entry removed)", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
     );
@@ -328,12 +341,10 @@ describe("CompanySettingsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Cloud upstream");
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/cloud-upstream",
-        label: "Cloud upstream",
-        end: true,
       }),
     );
 
@@ -341,6 +352,7 @@ describe("CompanySettingsSidebar", () => {
       root.unmount();
     });
   });
+
 
   it("renders instance plugin links while filtering sandbox-provider-only plugins", async () => {
     mockPluginsApi.list.mockResolvedValue([

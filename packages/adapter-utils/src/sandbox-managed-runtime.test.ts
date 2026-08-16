@@ -19,6 +19,15 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import {
+  createRuntimeSpanRunner,
+  getActiveStepContext,
+  measureStartupStep,
+  type RuntimeSpanRunner,
+  type StartupSpan,
+  type StartupTraceContext,
+  type StartupTracer,
+} from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {
@@ -93,6 +102,41 @@ function attachNativeRecordingSyncIn(
   };
 }
 
+// A capturing `syncIn` that records every operation for assertion and
+// materializes file AND directory mappings. A directory mapping (a referenced
+// project) uses `mirrorDirectory`, so a test can assert the advisory `access`
+// intent on directory mappings as well as file mappings.
+function attachCapturingSyncIn(
+  client: SandboxManagedRuntimeClient,
+  captured: SandboxSyncOperation[],
+): void {
+  client.syncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
+    const resultOperations: SandboxSyncResult["operations"] = [];
+    for (const operation of operations) {
+      captured.push(operation);
+      let filesTransferred = 0;
+      let bytesTransferred = 0;
+      for (const mapping of operation.files) {
+        await mkdir(path.posix.dirname(mapping.targetPath), { recursive: true });
+        if (mapping.kind === "directory") {
+          await mirrorDirectory(mapping.sourcePath, mapping.targetPath);
+        } else {
+          const bytes = await readFile(mapping.sourcePath);
+          await writeFile(mapping.targetPath, bytes);
+          if (mapping.mode != null) await fsPromises.chmod(mapping.targetPath, mapping.mode);
+          bytesTransferred += bytes.byteLength;
+        }
+        filesTransferred += 1;
+      }
+      for (const command of operation.postUploadCommands ?? []) {
+        await execFile("sh", ["-c", command.command], { maxBuffer: 32 * 1024 * 1024 });
+      }
+      resultOperations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
+    }
+    return { operations: resultOperations };
+  };
+}
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -119,6 +163,87 @@ async function listTarMembers(rootDir: string, name: string, bytes: Buffer): Pro
   await writeFile(tarPath, bytes);
   const { stdout } = await execFile("tar", ["-tf", tarPath], { maxBuffer: 32 * 1024 * 1024 });
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+// Build a filesystem-backed managed-runtime client. The host tarball path runs
+// unchanged; the client just materializes the mappings on the local disk, so a
+// pack-span test needs no provider.
+function makeFilesystemClient(): SandboxManagedRuntimeClient {
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async (remotePath) => {
+      const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      return entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+    },
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+  };
+  attachFallbackSyncIn(client);
+  return client;
+}
+
+// One recorded span from the fake tracer. `parentName` is the name of the span
+// that the start context carried, so a test can assert the parent relationship.
+interface RecordedSpan {
+  name: string;
+  parentName: string | null;
+  ended: boolean;
+  attributes: Record<string, string | number | boolean>;
+}
+
+// A fake trace context that records every span and its parent by name. It
+// satisfies the structural `StartupTraceContext` contract, so the real
+// `createRuntimeSpanRunner` and `measureStartupStep` drive it unchanged. The
+// opaque parent token is the parent's `RecordedSpan`, so a child span reads its
+// parent name from the start context.
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = {
+        name,
+        parentName: parent?.name ?? null,
+        ended: false,
+        attributes: { ...(options?.attributes ?? {}) },
+      };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute(key, value) {
+          record.attributes[key] = value;
+        },
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
 }
 
 describe("sandbox managed runtime", () => {
@@ -1282,6 +1407,18 @@ describe("sandbox managed runtime", () => {
       `rm -rf ${q(path.posix.join(prepared.runtimeRootDir, "widget"))} && mkdir -p ${q(path.posix.join(prepared.runtimeRootDir, "widget"))}`,
     );
 
+    // The asset tar carries the asset directory as its read-write destination,
+    // because the extract command fills that directory, not the staging archive.
+    const assetTarMapping = assetOp!.files.find((mapping) => mapping.targetPath.endsWith("widget-upload.tar"));
+    expect(assetTarMapping?.access).toBe("rw");
+    expect(assetTarMapping?.writablePath).toBe(prepared.assetDirs.widget);
+
+    // The staged helper file is a read-only input that the command consumes, so
+    // it is `access: "ro"` and never joins the writable set.
+    const stageMapping = assetOp!.files.find((mapping) => mapping.targetPath.endsWith("widget-helper.sh"));
+    expect(stageMapping?.access).toBe("ro");
+    expect(stageMapping?.writablePath).toBeUndefined();
+
     // The asset actually materialized through the native seam.
     await expect(readFile(path.join(prepared.assetDirs.widget, "seed.txt"), "utf8")).resolves.toBe("seed\n");
   });
@@ -1643,6 +1780,137 @@ describe("sandbox managed runtime", () => {
       .resolves.toBe("{\"OPENAI_API_KEY\":\"sk-test\"}\n");
   });
 
+  it("authors the advisory access intent rw on workspace, git, and asset inbound mappings", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-access-rw-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const assetDir = path.join(rootDir, "asset-home");
+
+    // A git-backed workspace produces both a git-history tar and an overlay tar.
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await mkdir(assetDir, { recursive: true });
+    await writeFile(path.join(assetDir, "config.toml"), "model = \"gpt\"\n", "utf8");
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => { await mkdir(remotePath, { recursive: true }); },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => { await rm(remotePath, { recursive: true, force: true }); },
+      run: async (command) => { await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 }); },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachCapturingSyncIn(client, captured);
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: assetDir }],
+    });
+
+    const findMapping = (base: string) =>
+      captured
+        .flatMap((op) => op.files)
+        .find((mapping) => path.posix.basename(mapping.targetPath) === base);
+
+    // The workspace, git-history, and asset destinations receive read-write bytes,
+    // so the author marks each mapping `access: "rw"`.
+    expect(findMapping("workspace-upload.tar")?.access).toBe("rw");
+    expect(findMapping("git-workspace-upload.tar")?.access).toBe("rw");
+    expect(findMapping("home-upload.tar")?.access).toBe("rw");
+
+    // Each tar mapping uploads a staging archive under the runtime root, so its
+    // `targetPath` is not the read-write destination. `writablePath` names the
+    // directory that the post-upload extract command fills: the workspace
+    // directory for the workspace and git tars, and the asset directory for the
+    // asset tar.
+    const remoteAssetDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "test-adapter", "home");
+    expect(findMapping("workspace-upload.tar")?.writablePath).toBe(remoteWorkspaceDir);
+    expect(findMapping("git-workspace-upload.tar")?.writablePath).toBe(remoteWorkspaceDir);
+    expect(findMapping("home-upload.tar")?.writablePath).toBe(remoteAssetDir);
+  });
+
+  it("authors the advisory access intent ro on referenced-project inbound mappings", async () => {
+    const flagKey = "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC";
+    const priorFlag = process.env[flagKey];
+    process.env[flagKey] = "1";
+    try {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-access-ro-"));
+      cleanupDirs.push(rootDir);
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      const referencedDir = path.join(rootDir, "referenced-project");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(referencedDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+      await writeFile(path.join(referencedDir, "notes.md"), "reference\n", "utf8");
+
+      const client: SandboxManagedRuntimeClient = {
+        makeDir: async (remotePath) => { await mkdir(remotePath, { recursive: true }); },
+        writeFile: async (remotePath, bytes) => {
+          await mkdir(path.dirname(remotePath), { recursive: true });
+          await writeFile(remotePath, Buffer.from(bytes));
+        },
+        readFile: async (remotePath) => await readFile(remotePath),
+        listFiles: async () => [],
+        remove: async (remotePath) => { await rm(remotePath, { recursive: true, force: true }); },
+        run: async (command) => { await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 }); },
+      };
+      const captured: SandboxSyncOperation[] = [];
+      attachCapturingSyncIn(client, captured);
+
+      await prepareSandboxManagedRuntime({
+        spec: {
+          transport: "sandbox",
+          provider: "test",
+          sandboxId: "sandbox-1",
+          remoteCwd: remoteWorkspaceDir,
+          timeoutMs: 30_000,
+          apiKey: null,
+        },
+        adapterKey: "test-adapter",
+        client,
+        workspaceLocalDir: localWorkspaceDir,
+        additionalSources: [{ localPath: referencedDir, projectId: "proj-first" }],
+      });
+
+      const referencedMapping = captured
+        .flatMap((op) => op.files)
+        .find((mapping) => path.posix.basename(mapping.targetPath) === "project-proj-first");
+
+      // A referenced project is a read-only tree, so the author marks it `access: "ro"`.
+      expect(referencedMapping).toBeDefined();
+      expect(referencedMapping?.kind).toBe("directory");
+      expect(referencedMapping?.access).toBe("ro");
+    } finally {
+      if (priorFlag === undefined) delete process.env[flagKey];
+      else process.env[flagKey] = priorFlag;
+    }
+  });
+
   it("keeps the sandbox runtime core free of Codex-specific string literals", async () => {
     const coreSource = await readFile(new URL("./sandbox-managed-runtime.ts", import.meta.url), "utf8");
     // The seam must be generic: no adapter (Codex) knowledge may live in the core.
@@ -1726,6 +1994,14 @@ describe("sandbox managed runtime", () => {
       expect(prepared.additionalSourceDirs["proj-second"]).toBe(path.posix.join(runtimeRootDir, "project-proj-second"));
       expect(prepared.additionalSourceDirs["proj-missing"]).toBeUndefined();
 
+      // The skipped project is a first-class per-project failure outcome, not only a warning, so the
+      // run can count it in the requested-vs-synced accounting. The two healthy projects do not
+      // appear as failures.
+      expect(prepared.additionalSourceFailures.map((failure) => failure.projectId)).toEqual([
+        "proj-missing",
+      ]);
+      expect(prepared.additionalSourceFailures[0]!.error.length).toBeGreaterThan(0);
+
       await expect(readFile(path.join(prepared.additionalSourceDirs["proj-first"], "docs", "guide.md"), "utf8"))
         .resolves.toBe("first guide\n");
       await expect(readFile(path.join(prepared.additionalSourceDirs["proj-second"], "notes.md"), "utf8"))
@@ -1741,6 +2017,118 @@ describe("sandbox managed runtime", () => {
     } finally {
       if (priorFlag === undefined) delete process.env[flagKey];
       else process.env[flagKey] = priorFlag;
+    }
+  });
+
+  it("builds the workspace tarball inside one host pack span for a usual workspace sync", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-span-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace body\n", "utf8");
+
+    // Record every span name the runner opens and run the wrapped work, so the
+    // test proves the host opens a span around each host-side staging sub-step
+    // for the usual (plain) workspace sync: the git enumeration, the baseline
+    // content-hash walk, and the tarball build, in that order.
+    const openedSpans: string[] = [];
+    const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
+      openedSpans.push(name);
+      return await work();
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-pack",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      runtimeSpan,
+    });
+
+    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "pack"]);
+    // The tarball build still lands the workspace inside the span, so the wrap
+    // changes no staging behavior.
+    await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
+    expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+  });
+
+  it("nests the host pack span under the stage.sync step span", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-nest-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace body\n", "utf8");
+
+    const { traceContext, spans } = createRecordingTraceContext();
+    // The root span stands in for `sandbox.startup`. Its child context is the
+    // step span's parent, exactly as the executor wires it.
+    const rootHandle = traceContext.tracer.startSpan("sandbox.startup", undefined, undefined);
+    const rootContext = traceContext.contextWithSpan(rootHandle);
+
+    // The stage runner parents each span to the ACTIVE startup step, so the
+    // `pack` span nests under `stage.sync`. This is the exact runner the
+    // executor threads into the staging seam.
+    const stageRuntimeSpan = createRuntimeSpanRunner(
+      traceContext,
+      () => getActiveStepContext()?.parentContext,
+    );
+
+    // A deterministic monotonic clock, so the step timing stays test-stable.
+    let clock = 0;
+    const now = () => (clock += 1000);
+
+    await measureStartupStep(
+      {},
+      now,
+      "stage.sync",
+      async () => {
+        await prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-nest",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client: makeFilesystemClient(),
+          workspaceLocalDir: localWorkspaceDir,
+          runtimeSpan: stageRuntimeSpan,
+        });
+      },
+      {
+        tracer: traceContext.tracer,
+        parentContext: rootContext,
+        contextWithSpan: (span) => traceContext.contextWithSpan(span),
+      },
+    );
+
+    const stageSpan = spans.find((span) => span.name === "stage.sync");
+    const packSpan = spans.find((span) => span.name === "pack");
+    expect(stageSpan).toBeDefined();
+    expect(packSpan).toBeDefined();
+    expect(packSpan!.ended).toBe(true);
+    // The `pack` span parents to `stage.sync`, not to the root span, so it nests
+    // under the step in a real trace.
+    expect(packSpan!.parentName).toBe("stage.sync");
+
+    // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
+    // so the previously hidden gap at the head of the step is now attributed.
+    for (const name of ["snapshot.git", "snapshot.baseline"]) {
+      const span = spans.find((candidate) => candidate.name === name);
+      expect(span, name).toBeDefined();
+      expect(span!.ended).toBe(true);
+      expect(span!.parentName).toBe("stage.sync");
     }
   });
 });

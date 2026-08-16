@@ -13,6 +13,8 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableIssuePlanDecompositions: false,
   enableExperimentalFileViewer: false,
   enableCloudSync: false,
+  enableManagedSandboxOnly: false,
+  enableClassicTaskInterface: false,
   enableExternalObjects: false,
   enableSmokeLab: false,
   enableBuiltInAgents: false,

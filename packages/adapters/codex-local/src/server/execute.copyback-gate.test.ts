@@ -162,24 +162,24 @@ describe("codex auth copy-back call-site gate", () => {
     return { restore: homeAsset?.restore as CapturedRestoreSeam, logs };
   }
 
-  it("skips the copy-back with a single log line when the shared host home has no usable auth", async () => {
+  it("delegates to copyBackCodexAuth even when the shared host home has no usable auth (ENOENT handled internally)", async () => {
     const sharedRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-shared-absent-"));
     cleanupDirs.push(sharedRoot);
     // The prod multi-tenant shape: the shared host codex home does not exist at
     // all (credentials came from a managed per-company CODEX_HOME instead).
+    // copyBackCodexAuth handles the ENOENT internally and returns "kept-host".
     vi.stubEnv("CODEX_HOME", path.join(sharedRoot, "never-created-codex-home"));
 
-    const { restore, logs } = await runExecuteAndCaptureRestore({ runId: "run-gate-skip" });
+    const { restore } = await runExecuteAndCaptureRestore({ runId: "run-gate-skip" });
     await restore({
       assetDir: "/remote/home",
       readFile: async () => Buffer.from("{}", "utf8"),
     });
 
-    expect(copyBackCodexAuth).not.toHaveBeenCalled();
-    const skipLines = logs.filter((line) =>
-      line.includes("Codex auth copy-back skipped: no shared host credential store"),
-    );
-    expect(skipLines).toHaveLength(1);
+    // The restore seam always delegates to copyBackCodexAuth; the absent-host
+    // case is handled inside copyBackCodexAuth itself (tested in
+    // codex-auth-copyback.test.ts).
+    expect(copyBackCodexAuth).toHaveBeenCalledTimes(1);
   });
 
   it("still runs the copy-back against the shared host credential when it exists", async () => {

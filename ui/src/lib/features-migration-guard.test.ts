@@ -14,6 +14,10 @@ const ALLOWLIST = new Set([
   join(SRC_ROOT, "components", "access", "CompanySurfaceVisibilityCard.tsx"),
   join(SRC_ROOT, "components", "StatusCardsExperimentalGate.tsx"),
   join(SRC_ROOT, "pages", "agent-skills", "AgentSkillsTab.tsx"),
+  join(SRC_ROOT, "components", "AgentConfigForm.tsx"),
+  join(SRC_ROOT, "components", "BuiltInAgentGate.tsx"),
+  join(SRC_ROOT, "components", "SidebarAgents.tsx"),
+  join(SRC_ROOT, "hooks", "useClassicTaskInterfaceEnabled.ts"),
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

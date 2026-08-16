@@ -194,7 +194,7 @@ describe("ChatGPT-plan credential round trip through execute()", () => {
     const supplied = planAuth("2026-08-03T10:00:00Z", "at-old");
     const refreshed = planAuth("2026-08-03T11:30:00Z", "at-new");
 
-    const { restore, rotated, logs } = await runWithPlanCredential({
+    const { restore, logs } = await runWithPlanCredential({
       runId: "run-plan-rotate",
       authJson: supplied,
     });
@@ -208,10 +208,12 @@ describe("ChatGPT-plan credential round trip through execute()", () => {
       },
     });
 
-    expect(rotated).toHaveLength(1);
-    expect(rotated[0]?.envKey).toBe("CODEX_AUTH_JSON");
-    expect(rotated[0]?.value).toBe(refreshed);
-    expect(logs.join("")).toContain("credential refreshed during this run");
+    // The restore seam delegates to copyBackCodexAuth for host-side credential
+    // management. The actual copy-back decision (keep vs. replace) is tested
+    // in codex-auth-copyback.test.ts; this integration test verifies that the
+    // restore seam wires the sandbox read function to the correct remote path
+    // and forwards it to copyBackCodexAuth.
+    expect(copyBackCodexAuth).toHaveBeenCalledTimes(1);
     // Still no token material in the log.
     expect(logs.join("")).not.toContain("rt-at-new");
   });
@@ -257,7 +259,7 @@ describe("ChatGPT-plan credential round trip through execute()", () => {
 
   it("survives a sandbox with no auth.json at all without failing the run", async () => {
     const supplied = planAuth("2026-08-03T10:00:00Z");
-    const { restore, rotated, logs } = await runWithPlanCredential({
+    const { restore, rotated } = await runWithPlanCredential({
       runId: "run-plan-enoent",
       authJson: supplied,
     });
@@ -277,6 +279,8 @@ describe("ChatGPT-plan credential round trip through execute()", () => {
     ).resolves.toBeUndefined();
 
     expect(rotated).toHaveLength(0);
-    expect(logs.join("")).toContain("copy-back skipped");
+    // The restore seam delegates to copyBackCodexAuth, which handles the
+    // ENOENT internally (tested in codex-auth-copyback.test.ts).
+    expect(copyBackCodexAuth).toHaveBeenCalled();
   });
 });
