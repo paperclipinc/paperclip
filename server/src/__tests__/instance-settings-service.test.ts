@@ -48,6 +48,7 @@ describe("instance settings service", () => {
       enableTaskWatchdogs: true,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
+      enableCloudSync: false,
       enableSummaries: false,
       enableStatusCards: false,
       enableDecisions: false,

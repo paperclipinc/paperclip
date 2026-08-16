@@ -137,6 +137,7 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {

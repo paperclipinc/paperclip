@@ -74,7 +74,7 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   if (await frontDoor.count()) await frontDoor.first().click();
 
   // Step 1: company name.
-  await page.getByPlaceholder("Acme Corp").fill(companyName);
+  await page.getByPlaceholder("Name your company").fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 2: mission (direct path default).
@@ -88,6 +88,22 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   await page.getByRole("button", { name: /^Next/ }).click();
 
   // Step 4: adapter (claude_local default); heartbeat is intercepted.
+  // #261 gates the step-4 footer button on a connected credential for the
+  // chosen adapter, so bind a throwaway Anthropic API key before clicking.
+  // The credential card and the footer both render a "Connect" button, so
+  // scope the credential bind to the card's data-surface.
+  await page
+    .getByLabel("Anthropic API key value")
+    .fill("sk-ant-api03-e2efakecredential1234567890");
+  await page
+    .locator('[data-surface="credential_connect"]')
+    .getByRole("button", { name: "Connect" })
+    .click();
+  // After a successful bind the credential card collapses to a "Connected"
+  // summary, leaving only the footer's "Connect" button visible.
+  await expect(
+    page.getByRole("button", { name: /^Connect$/ }),
+  ).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
   // Step 5: review → Get started creates the first task and opens its

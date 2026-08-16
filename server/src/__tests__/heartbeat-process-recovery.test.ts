@@ -413,7 +413,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           processGroupId: heartbeatRuns.processGroupId,
         })
         .from(heartbeatRuns);
-    await db.delete(plugins);
       const managedExecutionStillActive = runs.some(
         (run) =>
           (run.status === "queued" || run.status === "running") &&
@@ -2363,6 +2362,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
@@ -2407,6 +2407,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
@@ -2426,6 +2427,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 100, pollIntervalMs: 25 },
     );
 
@@ -2462,6 +2464,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, nowMs, drainTimeoutMs: 100, pollIntervalMs: 25 },
     );
 
@@ -2500,6 +2503,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, nowMs, drainTimeoutMs, pollIntervalMs },
     );
 
@@ -2545,6 +2549,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await drainingInstance.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
@@ -3292,7 +3297,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .set({ status: "in_review" })
       .where(eq(issues.id, issueId));
 
-    const heartbeat = heartbeatService(db);
+    // Simulate the worker mid-restart: the manager IS wired into this process,
+    // it just reports the worker as not running yet. That is the transient,
+    // self-healing condition this test is about. A process with no worker
+    // manager at all is a permanent wiring bug and reports a different error.
+    const restartingWorkerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: environmentRuntimeService(db, {
+        pluginWorkerManager: restartingWorkerManager,
+        pluginWorkerReadyTimeoutMs: 0,
+      }),
+    });
     await heartbeat.resumeQueuedRuns();
 
     const runs = await waitForValue(async () => {

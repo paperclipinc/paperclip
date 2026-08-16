@@ -52,6 +52,17 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
   };
 }
 
+const REDACTED_BACKUP_WARNING_MESSAGES: Record<string, string> = {
+  database_backup_check_failed: "Database backup health check failed.",
+  database_backup_last_failure: "Database backup failure marker is present.",
+  database_backup_missing: "No database backups found.",
+  database_backup_stale: "Latest database backup is stale.",
+};
+
+function redactBackupWarningMessage(warning: DatabaseBackupHealthWarning): string {
+  return REDACTED_BACKUP_WARNING_MESSAGES[warning.code] ?? warning.message;
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -215,7 +226,32 @@ export function healthRoutes(
       });
     }
 
+    // Database backup health inspection (when configured)
+    let databaseBackup: DatabaseBackupHealthStatus | undefined;
+    let backupWarnings: DatabaseBackupHealthWarning[] = [];
+    if (opts.databaseBackupHealth?.enabled) {
+      databaseBackup = inspectDatabaseBackupHealth(opts.databaseBackupHealth);
+      backupWarnings = databaseBackup.warnings;
+    }
+
     if (!exposeFullDetails) {
+      // Redacted response: strip internal paths and detailed metadata, keep
+      // only enabled/status/warnings with generic messages.
+      const redactedBackup = databaseBackup
+        ? {
+            enabled: databaseBackup.enabled,
+            status: databaseBackup.status,
+            ...(databaseBackup.warnings.length > 0
+              ? {
+                  warnings: databaseBackup.warnings.map((w) => ({
+                    code: w.code,
+                    message: redactBackupWarningMessage(w),
+                  })),
+                }
+              : {}),
+          }
+        : undefined;
+      const redactedWarnings = redactedBackup?.warnings;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
@@ -223,8 +259,10 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(redactedBackup ? { databaseBackup: redactedBackup } : {}),
         ...(devServer ? { devServer } : {}),
         ...(cloud ? { cloud } : {}),
+        ...(redactedWarnings && redactedWarnings.length > 0 ? { warnings: redactedWarnings } : {}),
       });
       return;
     }
@@ -243,8 +281,10 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      ...(databaseBackup ? { databaseBackup } : {}),
       ...(devServer ? { devServer } : {}),
       ...(cloud ? { cloud } : {}),
+      ...(backupWarnings.length > 0 ? { warnings: backupWarnings } : {}),
     });
   });
 

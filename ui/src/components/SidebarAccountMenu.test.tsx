@@ -192,11 +192,10 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
-    // gateway's marketing sign-in page rather than invalidating in-app
-    // queries (there's no app left to refetch into).
-    expect(assignSpy).toHaveBeenCalledOnce();
-    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
+    // Self-hosted sign-out stays in the SPA: useSignOut invalidates the
+    // auth-dependent query caches (causing React to re-render with no
+    // session) rather than doing a full-page redirect.
+    expect(assignSpy).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

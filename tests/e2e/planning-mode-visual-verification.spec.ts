@@ -69,14 +69,21 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.getByRole("button", { name: /^Next/ }).click();
 
-  // #261 gates "Give it a heartbeat" on a connected credential for the
+  // #261 gates the step-4 footer button on a connected credential for the
   // chosen adapter, so bind a throwaway Anthropic API key before clicking.
+  // The credential card and the footer both render a "Connect" button, so
+  // scope the credential bind to the card's data-surface.
   await page
     .getByLabel("Anthropic API key value")
     .fill("sk-ant-api03-e2efakecredential1234567890");
-  await page.getByRole("button", { name: "Connect" }).click();
+  await page
+    .locator('[data-surface="credential_connect"]')
+    .getByRole("button", { name: "Connect" })
+    .click();
+  // After a successful bind the credential card collapses to a "Connected"
+  // summary, leaving only the footer's "Connect" button visible.
   await expect(
-    page.getByRole("button", { name: /Give it a heartbeat/ }),
+    page.getByRole("button", { name: /^Connect$/ }),
   ).toBeEnabled({ timeout: 15_000 });
   await page.getByRole("button", { name: /^Connect$/ }).click();
 

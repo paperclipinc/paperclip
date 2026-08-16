@@ -10783,7 +10783,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
     runIds: readonly string[] | null = null,
+    drainOpts?: {
+      hasInflightRuns?: () => boolean;
+      sleep?: (ms: number) => Promise<void>;
+      nowMs?: () => number;
+      drainTimeoutMs?: number;
+      pollIntervalMs?: number;
+    },
   ) {
+    // Mark the process as draining so all heartbeat service instances
+    // suppress new-run dispatch from this point on.
+    shutdownDraining = true;
+
+    // Soft-drain: give in-flight run executions time to finish on their own
+    // before hard-interrupting. The caller can override the timeout, poll
+    // interval, sleep function and clock for deterministic testing.
+    if (drainOpts) {
+      const hasInflightRuns = drainOpts.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
+      const sleep = drainOpts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      const nowMs = drainOpts.nowMs ?? (() => Date.now());
+      const drainTimeoutMs = drainOpts.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+      const pollIntervalMs = drainOpts.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS;
+      const deadline = nowMs() + drainTimeoutMs;
+
+      while (hasInflightRuns()) {
+        const remaining = deadline - nowMs();
+        if (remaining <= 0) break;
+        await sleep(Math.min(pollIntervalMs, remaining));
+      }
+    }
+
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };

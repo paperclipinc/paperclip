@@ -3517,29 +3517,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           });
         }
       } catch (err) {
-        // Bring-up failed at the handshake — close the root span with error status.
+        // Bring-up failed at the handshake — close the root span with error
+        // status and re-throw so the outer catch composes the tenant-facing
+        // message (folding in child stderr), redacts secrets, and handles the
+        // lane-fallback decision.
         rootSpan.end(true);
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "ensure_session",
-        });
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        await cleanupRemoteBridges(prepared);
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-          ...classified,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession,
-          resultJson: { phase: "ensure_session" },
-          summary: message,
-        };
+        throw err;
       }
     } catch (err) {
       const { classified, message, childStderrTail } = await emitAcpxFailure({
@@ -3585,6 +3568,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: composedMessage,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },

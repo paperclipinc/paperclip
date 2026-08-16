@@ -57,6 +57,14 @@ vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
 }));
 
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: {
+    get: vi.fn().mockResolvedValue({ defaultEnvironmentId: null }),
+    getGeneral: vi.fn().mockResolvedValue({ defaultEnvironmentId: null }),
+    getExperimental: vi.fn().mockResolvedValue({}),
+  },
+}));
+
 vi.mock("../lib/clipboard", () => ({
   copyTextToClipboard: mockClipboard.copyTextToClipboard,
 }));
@@ -127,6 +135,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => [],
+  useAdapterRegistryLoaded: () => true,
 }));
 
 vi.mock("./MarkdownEditor", () => ({

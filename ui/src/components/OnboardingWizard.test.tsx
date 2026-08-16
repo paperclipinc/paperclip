@@ -143,6 +143,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
+  useAdapterRegistryLoaded: () => true,
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({

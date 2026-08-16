@@ -69,6 +69,7 @@ vi.mock("../adapters/metadata", () => ({
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => new Set<string>(),
+  useAdapterRegistryLoaded: () => true,
 }));
 
 vi.mock("@/components/ui/dialog", () => ({

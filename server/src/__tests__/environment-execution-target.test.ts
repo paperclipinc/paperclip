@@ -215,18 +215,18 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
-  it("suppresses the buffered onLog dump when the runner reports streamed output, and forwards onOutput", async () => {
+  it("suppresses the buffered onLog suffix when the provider streams output incrementally", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
     });
 
     const executeSpy = vi.fn(async (input: Record<string, unknown>) => {
-      const onOutput = input.onOutput as
-        | ((stream: "stdout" | "stderr", text: string) => void)
+      const onLog = input.onLog as
+        | ((stream: "stdout" | "stderr", text: string) => Promise<void>)
         | undefined;
-      onOutput?.("stdout", "live-chunk");
-      return { exitCode: 0, timedOut: false, stdout: "live-chunk", stderr: "", streamed: true };
+      await onLog?.("stdout", "live-chunk");
+      return { exitCode: 0, timedOut: false, stdout: "live-chunk", stderr: "" };
     });
 
     const target = await resolveEnvironmentExecutionTarget({
@@ -245,22 +245,17 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(runner).toBeTruthy();
 
     const logCalls: Array<[string, string]> = [];
-    const outputCalls: Array<[string, string]> = [];
     const result = (await runner.execute({
       command: "echo",
       args: ["hi"],
       onLog: async (stream: "stdout" | "stderr", chunk: string) => {
         logCalls.push([stream, chunk]);
       },
-      onOutput: (stream: "stdout" | "stderr", text: string) => {
-        outputCalls.push([stream, text]);
-      },
-    })) as { streamed?: boolean; stdout: string };
+    })) as { stdout: string };
 
-    expect(executeSpy.mock.calls[0][0]).toHaveProperty("onOutput");
-    expect(outputCalls).toEqual([["stdout", "live-chunk"]]);
-    expect(logCalls).toEqual([]);
-    expect(result.streamed).toBe(true);
+    // The incremental onLog delivery streams the output exactly once — the
+    // suffix delivery sees the already-delivered prefix and emits nothing.
+    expect(logCalls).toEqual([["stdout", "live-chunk"]]);
     expect(result.stdout).toBe("live-chunk");
   });
 
