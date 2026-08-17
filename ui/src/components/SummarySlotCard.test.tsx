@@ -264,6 +264,18 @@ describe("SummarySlotCard", () => {
     expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
   });
 
+  it("does not query built-in agents when their feature flag is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableSummaries: true,
+      enableBuiltInAgents: false,
+    });
+
+    root = renderCard(container);
+    await flushQueries();
+
+    expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
+  });
+
   it("shows setup CTA when the Summarizer built-in agent needs setup", async () => {
     mockBuiltInAgentsApi.list.mockResolvedValue([needsSetupSummarizer()]);
 
@@ -396,22 +408,28 @@ describe("SummarySlotCard", () => {
   });
 
   it("switches to a historical revision from a dated dropdown", async () => {
+    // Local, not UTC: the dropdown renders these dates in the machine's
+    // timezone, so `2026-07-14T17:10:00.000Z` is the 15th at UTC+9 and the
+    // "Jul 14" assertions below fail. Midday local keeps each revision on its
+    // intended calendar day everywhere.
+    const localAt = (day: number, hour: number) =>
+      new Date(2026, 6, day, hour, 0, 0, 0).toISOString();
     mockSummarySlotsApi.get.mockResolvedValue({
       slot: slot({ documentId: "doc-1" }),
       document: summaryDocument({
         body: "## Latest\nCurrent body",
         latestRevisionId: "rev-3",
         latestRevisionNumber: 3,
-        updatedAt: "2026-07-14T17:10:00.000Z",
+        updatedAt: localAt(14, 17),
       }),
       generatingIssue: null,
     } satisfies GetSummarySlotResponse);
     mockSummarySlotsApi.revisions.mockResolvedValue({
       slot: slot({ documentId: "doc-1" }),
       revisions: [
-        revision({ id: "rev-1", revisionNumber: 1, body: "## Old\nOld body", createdAt: "2026-07-13T17:10:00.000Z" }),
-        revision({ id: "rev-2", revisionNumber: 2, body: "## Middle\nMiddle body", createdAt: "2026-07-14T09:15:00.000Z" }),
-        revision({ id: "rev-3", revisionNumber: 3, body: "## Latest\nCurrent body", createdAt: "2026-07-14T17:10:00.000Z" }),
+        revision({ id: "rev-1", revisionNumber: 1, body: "## Old\nOld body", createdAt: localAt(13, 17) }),
+        revision({ id: "rev-2", revisionNumber: 2, body: "## Middle\nMiddle body", createdAt: localAt(14, 9) }),
+        revision({ id: "rev-3", revisionNumber: 3, body: "## Latest\nCurrent body", createdAt: localAt(14, 17) }),
       ],
     });
 

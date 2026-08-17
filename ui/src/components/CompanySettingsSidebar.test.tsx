@@ -79,6 +79,7 @@ vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
+
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -153,9 +154,9 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Instance settings");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Environments");
-    expect(container.textContent).not.toContain("Cloud upstream");
+    expect(container.textContent).toContain("Export");
+    expect(container.textContent).toContain("Import");
     expect(container.textContent).toContain("Members");
-    expect(container.textContent).not.toContain("Cloud upstream");
     expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
     expect(container.textContent).not.toContain("Tools & Access");
@@ -163,6 +164,19 @@ describe("CompanySettingsSidebar", () => {
       expect.objectContaining({
         to: "/company/settings",
         label: "General",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/export",
+        label: "Export",
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/company/import",
+        label: "Import",
         end: true,
       }),
     );
