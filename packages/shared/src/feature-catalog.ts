@@ -135,6 +135,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCloudSync: {
+    title: "Cloud Sync",
+    description:
+      "Enable the cloud upstream sync feature for pull-based run replication.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableStatusCards: {
     title: "Status Cards",
     description:
