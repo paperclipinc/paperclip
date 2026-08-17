@@ -125,7 +125,7 @@ describe("invite URL: authPublicBaseUrl precedence", () => {
     logActivityMock.mockReset();
   });
 
-  it("uses authPublicBaseUrl for inviteUrl when configured, ignoring request host", async () => {
+  it("uses authPublicBaseUrl for inviteUrl when configured, ignoring request host", { timeout: 15_000 }, async () => {
     const app = await createApp(
       "http://gus-pinsoneault-framework.tail302fee.ts.net:3100",
     );

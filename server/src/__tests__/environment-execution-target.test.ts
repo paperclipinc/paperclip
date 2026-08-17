@@ -259,7 +259,9 @@ describe("resolveEnvironmentExecutionTarget", () => {
 
     expect(executeSpy.mock.calls[0][0]).toHaveProperty("onOutput");
     expect(outputCalls).toEqual([["stdout", "live-chunk"]]);
-    expect(logCalls).toEqual([]);
+    // The undelivered-suffix path still calls onLog for the durable log
+    // because the provider did not call onLog (onIncrementalLog) itself.
+    expect(logCalls).toEqual([["stdout", "live-chunk"]]);
     expect(result.streamed).toBe(true);
     expect(result.stdout).toBe("live-chunk");
   });

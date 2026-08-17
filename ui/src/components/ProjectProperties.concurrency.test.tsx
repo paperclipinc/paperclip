@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { queryKeys } from "../lib/queryKeys";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,6 +26,11 @@ vi.mock("../api/goals", () => ({ goalsApi: { list: vi.fn().mockResolvedValue([])
 vi.mock("../api/secrets", () => ({ secretsApi: { list: vi.fn().mockResolvedValue([]), listUserSecretDefinitions: vi.fn().mockResolvedValue([]), create: vi.fn() } }));
 vi.mock("../api/environments", () => ({ environmentsApi: { list: vi.fn().mockResolvedValue([]) } }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }) } }));
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    getCurrentBoardAccess: vi.fn().mockResolvedValue({}),
+  },
+}));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ companies: [{ id: "company-1", issuePrefix: "PAP" }], selectedCompanyId: "company-1", setSelectedCompanyId: vi.fn() }),
@@ -56,6 +62,10 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 function primedClient() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queryKeys.instance.experimentalSettings, { enableIsolatedWorkspaces: true });
+  client.setQueryData(
+    queryKeys.access.currentBoardAccess,
+    buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+  );
   return client;
 }
 

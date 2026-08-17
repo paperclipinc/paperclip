@@ -35,6 +35,10 @@ const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+}));
+
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
@@ -51,6 +55,10 @@ vi.mock("../api/environments", () => ({
 
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/secrets", () => ({
@@ -389,6 +397,7 @@ describe("AgentConfigForm environment selector", () => {
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
@@ -1110,6 +1119,7 @@ describe("AgentConfigForm guided credential connect", () => {
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
   });
