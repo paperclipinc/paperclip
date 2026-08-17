@@ -4,11 +4,14 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Agent } from "@paperclipai/shared";
+import { ApiError } from "../api/client";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  pendingAskUserQuestionsWithFreeTextOption,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
   declinedToolActionInteraction,
@@ -28,6 +31,14 @@ import {
   supersededRequestItemVerdictsInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
+  agentAddressedRequestConfirmationInteraction,
+  agentResolvedRequestConfirmationInteraction,
+  withdrawnRequestConfirmationInteraction,
+  issueClosedRequestConfirmationInteraction,
+  notCreatorRequestConfirmationInteraction,
+  humanOnlyRequestConfirmationInteraction,
+  companyCappedRequestConfirmationInteraction,
+  legacyRestrictedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -181,6 +192,104 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("reveals an inline field when a free-text option is selected and hides the standalone Other link", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsWithFreeTextOption,
+      onSubmitInteractionAnswers,
+    });
+
+    // A first-class free-text option suppresses the built-in "Other" link.
+    const otherLink = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "Other",
+    );
+    expect(otherLink).toBeUndefined();
+
+    // No text field until the free-text option is selected.
+    expect(host.querySelector("textarea")).toBeNull();
+
+    const describeOption = Array.from(host.querySelectorAll('[role="radio"]')).find(
+      (button) => button.textContent?.includes("I'll describe it"),
+    ) as HTMLButtonElement | undefined;
+    expect(describeOption).toBeTruthy();
+
+    await act(async () => {
+      describeOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(describeOption?.getAttribute("aria-checked")).toBe("true");
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Call it Threads");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "ask_user_questions" }),
+      [
+        {
+          questionId: "surface-name",
+          optionIds: [],
+          otherText: "Call it Threads",
+        },
+      ],
+    );
+  });
+
+  it("renders nothing for a degenerate ask_user_questions card", () => {
+    // A truly unanswerable question: a prompt with no options and no free-text
+    // field, so there is nothing for the user to select or type. Hiding it
+    // strands nothing.
+    const degenerate = {
+      ...pendingAskUserQuestionsInteraction,
+      id: "interaction-questions-degenerate",
+      payload: {
+        version: 1 as const,
+        title: "Placeholder",
+        questions: [
+          {
+            id: "q1",
+            prompt: "Anything?",
+            selectionMode: "single" as const,
+            options: [],
+          },
+        ],
+      },
+    };
+
+    const host = renderCard({
+      interaction: degenerate,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    // No card wrapper, no title, no controls — the component returns null.
+    expect(host.childElementCount).toBe(0);
+    expect(host.textContent).toBe("");
+  });
+
+  it("still renders a legitimate ask_user_questions card", () => {
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    expect(host.childElementCount).toBeGreaterThan(0);
+    expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
+  });
+
   it("only shows question cancellation when a cancel handler is wired", () => {
     const withoutHandler = renderCard({
       interaction: pendingAskUserQuestionsInteraction,
@@ -261,8 +370,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before this confirmation was resolved.");
+    expect(host.textContent).toContain("Expired · issue closed");
+    expect(host.textContent).toContain("This confirmation expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("Expired by target change");
   });
 
@@ -301,8 +410,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Questions expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before these questions were answered.");
+    expect(host.textContent).toContain("Questions expired when the issue closed");
+    expect(host.textContent).toContain("This question request expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("expired by comment");
   });
 
@@ -325,32 +434,37 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("No reason provided.");
   });
 
-  it("requires a decline reason when the request confirmation payload asks for one", async () => {
+  it("requires a revision note when the request confirmation payload asks for one", async () => {
     const onRejectInteraction = vi.fn(async () => undefined);
     const host = renderCard({
       interaction: pendingRequestConfirmationInteraction,
       onRejectInteraction,
     });
 
-    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Request revisions"),
+    // rejectRequiresReason drops the bare Reject: the only send-back path is Revise…
+    expect(Array.from(host.querySelectorAll("button")).some((button) =>
+      button.textContent?.trim() === "Reject",
+    )).toBe(false);
+    const reviseButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Revise"),
     );
-    expect(declineButton).toBeTruthy();
+    expect(reviseButton).toBeTruthy();
 
     await act(async () => {
-      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      reviseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
-    expect(saveButton?.hasAttribute("disabled")).toBe(false);
+    const sendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
+    expect(sendButton?.hasAttribute("disabled")).toBe(false);
 
     await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(host.textContent).toContain("A decline reason is required.");
+    expect(host.textContent).toContain("Add a note describing the changes you want.");
+    expect(onRejectInteraction).not.toHaveBeenCalled();
 
     const textarea = host.querySelector("textarea") as HTMLTextAreaElement | null;
     expect(textarea).toBeTruthy();
@@ -364,12 +478,12 @@ describe("IssueThreadInteractionCard", () => {
       valueSetter?.call(textarea, "Needs a smaller phase split");
       textarea!.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const enabledSaveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
-    expect(enabledSaveButton?.hasAttribute("disabled")).toBe(false);
+    const enabledSendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
+    expect(enabledSendButton?.hasAttribute("disabled")).toBe(false);
     await act(async () => {
-      enabledSaveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      enabledSendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onRejectInteraction).toHaveBeenCalledWith(
@@ -397,6 +511,143 @@ describe("IssueThreadInteractionCard", () => {
     expect(onAcceptInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
     );
+  });
+
+  // PAP-17287: a denial is persistent, so the inline error keeps the server's
+  // reason and names who can respond instead of offering a doomed retry.
+  it("keeps the server denial reason in an aria-live region when a confirmation is refused", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: humanOnlyRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve"),
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("This issue-thread interaction is human-only.");
+    expect(error?.textContent).toContain("Only the board can respond.");
+    expect(error?.textContent).not.toMatch(/try again/i);
+    // PAP-17289: one live region, not two. `role="alert"` is itself an
+    // assertive live region, so nesting it inside this wrapper can announce the
+    // same denial twice.
+    expect(error?.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelectorAll('[aria-live], [role="alert"]').length).toBe(1);
+  });
+
+  it("still offers a retry when a resolution fails for a transient reason", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Request failed: 503", 503, null);
+    });
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Approve plan"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toBe("Request failed: 503. Try again.");
+  });
+
+  it("surfaces a denied suggested-task acceptance instead of failing silently", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Only the addressed agent or an authorized human may resolve this issue-thread interaction", 403, {
+        error: "Only the addressed agent or an authorized human may resolve this issue-thread interaction",
+        code: "interaction_addressee_mismatch",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingSuggestedTasksInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Accept"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("may resolve this issue-thread interaction.");
+  });
+
+  it("surfaces a denied answer submission on a questions card", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    // Answer every question so Submit is enabled, then submit.
+    for (const group of ['[role="radio"]', '[role="checkbox"]']) {
+      const option = host.querySelector(group);
+      await act(async () => {
+        (option as HTMLElement | null)?.click();
+      });
+    }
+    const submit = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    expect(submit?.hasAttribute("disabled")).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toContain("This issue-thread interaction is human-only.");
+  });
+
+  it("standardizes the bare-reject button to Reject even when the payload carries a legacy rejectLabel", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          // Onboarding/plan-approval interactions are still seeded with the
+          // legacy "Request changes" reject label; it must not leak into the CTA.
+          rejectLabel: "Request changes",
+          rejectRequiresReason: false,
+        },
+      },
+      onAcceptInteraction: vi.fn(async () => undefined),
+      onRejectInteraction: vi.fn(async () => undefined),
+    });
+
+    const labels = Array.from(host.querySelectorAll("button")).map((button) =>
+      button.textContent?.trim(),
+    );
+
+    // Canonical plan-approval grammar, right→left: Approve · Revise… · Reject.
+    // "Revise…" already carries the send-back-with-notes path, so a distinct
+    // "Request changes" word is redundant and must not render.
+    expect(labels).toContain("Reject");
+    expect(labels).toContain("Revise…");
+    expect(labels.some((label) => label?.includes("Approve"))).toBe(true);
+    expect(host.textContent).not.toContain("Request changes");
   });
 
   it("does not expose continuation wake policy labels in the card header", () => {
@@ -446,8 +697,10 @@ describe("IssueThreadInteractionCard", () => {
       onRejectInteraction,
     });
 
+    // The bare-reject button always renders the canonical "Reject", not the
+    // payload's "Keep it" — ConfirmationActionRow no longer honors the override.
     const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Keep it"),
+      button.textContent?.trim() === "Reject",
     );
     expect(declineButton).toBeTruthy();
 
@@ -539,11 +792,11 @@ describe("IssueThreadInteractionCard", () => {
       onUploadImage,
     });
 
-    const declineButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Request revisions"),
+    const reviseButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Revise"),
     );
     await act(async () => {
-      declineButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      reviseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     const attachButton = Array.from(host.querySelectorAll("button")).find((button) =>
@@ -566,11 +819,11 @@ describe("IssueThreadInteractionCard", () => {
     });
     expect(onUploadImage).toHaveBeenCalledTimes(1);
 
-    const saveButton = Array.from(host.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Request revisions"),
-    ).at(-1);
+    const sendButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send revision"),
+    );
     await act(async () => {
-      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onRejectInteraction).toHaveBeenCalledWith(
@@ -784,5 +1037,171 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Approve the plan and let the responsible start implementation?");
     expect(host.textContent).not.toContain("Approve & run");
     expect(host.textContent).not.toContain("Technical details");
+  });
+
+  it("renders the addressee chip without the removed policy badge", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+    });
+
+    // PAP-440: the "Agents may resolve" policy badge was pure noise — never rendered.
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
+
+    const addresseeBadge = host.querySelector('[data-testid="interaction-addressee-badge"]');
+    expect(addresseeBadge?.textContent).toContain("For ");
+  });
+
+  it("omits the addressee badge for a board-only interaction", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+    });
+
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
+    expect(host.querySelector('[data-testid="interaction-addressee-badge"]')).toBeNull();
+  });
+
+  it("marks agent resolution with an audit chip in the resolved footer", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+    });
+
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(
+      host.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders a withdrawn footer with the withdrawer, reason, and agent chip", () => {
+    const host = renderCard({
+      interaction: withdrawnRequestConfirmationInteraction,
+    });
+
+    // Header status reads "Withdrawn", not the raw "Cancelled" status.
+    expect(host.textContent).toContain("Withdrawn");
+    // Withdrawn is a neutral administrative retraction — it must NOT wear the
+    // cancelled/rejected costume (rose/red border + XCircle). The shell is muted
+    // (border-border), never a rose/red alarm colour (design review R2).
+    const cardRoot = host.querySelector("div.rounded-lg.p-5.shadow-none");
+    expect(cardRoot?.className).toContain("border-border");
+    expect(cardRoot?.className).not.toMatch(/border-(rose|red)/);
+    // The header status icon is MinusCircle ("retracted"), never XCircle ("denied").
+    const statusIcon = cardRoot?.querySelector("svg");
+    expect(statusIcon?.getAttribute("class")).toContain("lucide-circle-minus");
+    expect(statusIcon?.getAttribute("class")).not.toContain("lucide-circle-x");
+    const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
+    expect(footer?.textContent).toContain("Withdrawn by");
+    expect(footer?.textContent).toContain("Plan superseded by a newer revision");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+    // The generic "Resolved by" footer must not double-render.
+    expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+
+  it("renders an issue-closed expiry footer for terminal auto-expiry", () => {
+    const host = renderCard({
+      interaction: issueClosedRequestConfirmationInteraction,
+    });
+
+    // Footer is trimmed to just the audit timestamp — the header status badge
+    // already carries the "Expired · issue closed" label, so the footer must
+    // not restate it.
+    const footer = host.querySelector('[data-testid="interaction-issue-closed-footer"]');
+    expect(footer?.textContent).toContain("Apr 20");
+    expect(footer?.textContent).not.toContain("Expired when the issue closed");
+    // The "Expired · issue closed" label survives exactly once (the header
+    // status badge); the duplicate body eyebrow was dropped.
+    const label = "Expired · issue closed";
+    const occurrences = (host.textContent ?? "").split(label).length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+});
+
+/**
+ * The effective audience is shown *before* anyone responds, so a reader never
+ * has to guess whether an open card is waiting on them (PAP-17280).
+ */
+describe("IssueThreadInteractionCard resolver audience", () => {
+  it("shows an open audience on a pending card created without a restriction", () => {
+    const host = renderCard({ interaction: pendingRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("anyone");
+    expect(audience?.getAttribute("data-audience-open")).toBe("true");
+    expect(audience?.textContent).toContain("Anyone");
+    expect(audience?.textContent).toContain("the board or any agent, including the one that asked");
+    // An open card must never read as board-required.
+    expect(audience?.textContent).not.toMatch(/only a person on the board/i);
+    expect(host.querySelector('[data-testid="interaction-audience-note"]')).toBeNull();
+  });
+
+  it("names the excluded creator for an explicit not_creator card", () => {
+    const host = renderCard({
+      interaction: notCreatorRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("not_creator");
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Anyone except creator");
+    expect(audience?.textContent).toContain("except CodexCoder can respond");
+  });
+
+  it("keeps human-only ownership copy on a human-only card", () => {
+    const host = renderCard({ interaction: humanOnlyRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(audience?.textContent).toContain("Human only");
+    expect(audience?.textContent).toContain("Only a person on the board can respond");
+  });
+
+  it("keeps addressee ownership copy on an agent-addressed card", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Addressed");
+    expect(audience?.textContent).toContain("Only CodexCoder or a person on the board can respond");
+    expect(audience?.textContent).not.toContain("Anyone");
+  });
+
+  it("explains a company cap that narrowed the requested audience", () => {
+    const host = renderCard({ interaction: companyCappedRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toBe("Company interaction governance narrowed this from Anyone to Human only.");
+  });
+
+  it("explains a legacy card that predates the open default", () => {
+    const host = renderCard({ interaction: legacyRestrictedRequestConfirmationInteraction });
+
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toContain("Created before Anyone became the default");
+  });
+
+  it("omits the audience row once a card is resolved and shows who resolved it", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    expect(host.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(footer?.textContent).toContain("CodexCoder");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
   });
 });

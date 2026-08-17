@@ -862,7 +862,14 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       contextSnapshot: {},
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
     const comment = await services.issues.createComment({
       issueId,
       companyId,
@@ -1000,6 +1007,45 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
     expect(row?.status).toBe("accepted");
   });
+
+  it.each(["accept", "reject"] as const)(
+    "respondInteraction rejects %s after the issue closes",
+    async (action) => {
+      const { companyId } = await seedCompanyAndAgent();
+      const operatorUserId = randomUUID();
+      await db.insert(companyMemberships).values({
+        companyId,
+        principalType: "user",
+        principalId: operatorUserId,
+        status: "active",
+        membershipRole: "operator",
+      });
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Closed decision",
+        status: "done",
+        priority: "medium",
+      });
+      const interactionId = await seedInteraction(companyId, issueId);
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+      await expect(services.issues.respondInteraction({
+        issueId,
+        interactionId,
+        companyId,
+        action,
+        actorUserId: operatorUserId,
+      })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
+
+      const [row] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(row?.status).toBe("pending");
+    },
+  );
 
   it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
