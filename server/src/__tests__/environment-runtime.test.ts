@@ -2000,15 +2000,16 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
-    expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
+    // The fork inserts an extra context-bearing call before the resume, so indices shift +1.
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
     }), 31234);
-    expect(workerManager.call).toHaveBeenNthCalledWith(2, pluginId, "environmentDestroyLease", expect.objectContaining({
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({
       driverKey: "fake-plugin",
       providerLeaseId: "stale-plugin-lease",
     }), 31234);
-    expect(workerManager.call).toHaveBeenNthCalledWith(3, pluginId, "environmentAcquireLease", expect.objectContaining({
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
       driverKey: "fake-plugin",
       config: {
         image: "fake:test",

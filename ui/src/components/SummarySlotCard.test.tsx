@@ -232,7 +232,7 @@ describe("SummarySlotCard", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: true } }),
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: true } }),
     );
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({ slot: null, document: null, generatingIssue: null } satisfies GetSummarySlotResponse);
