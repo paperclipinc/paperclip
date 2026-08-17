@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  firstMeaningfulStderrLine,
   inferOpenAiCompatibleBiller,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -137,12 +136,6 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-// The benign-banner filter this adapter used to carry privately now lives in
-// adapter-utils, so every adapter that derives a fallback run error from stderr
-// shares one list. Re-exported here because callers (and the adapter's own
-// regression suite) import it from this module.
-export { firstMeaningfulStderrLine };
-
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
 // because this adapter passes the approvals-bypass flag itself, and
@@ -153,6 +146,15 @@ const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
   /^YOLO mode is enabled\b/i,
   /^\[paperclip\]/,
 ];
+
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
 
 function isBenignCodexStderrLine(line: string): boolean {
   return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
