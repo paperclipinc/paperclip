@@ -962,7 +962,7 @@ export async function startServer(): Promise<StartedServer> {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
     drainHeartbeatRunsForShutdown = (signal, runIds) => (
-      heartbeat.drainRunningRunsForShutdown(signal, new Date(), runIds)
+      heartbeat.drainRunningRunsForShutdown(signal, new Date(), {}, runIds)
     );
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
