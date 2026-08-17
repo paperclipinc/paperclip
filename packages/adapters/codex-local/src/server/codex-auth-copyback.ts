@@ -103,69 +103,43 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
 
   const hostDir = path.dirname(hostAuthPath);
   await mkdir(hostDir, { recursive: true });
-  try {
-    const hostOutcome: CopyBackCodexAuthOutcome = await withDirectoryMergeLock(hostDir, async () => {
-      // Stage on the same filesystem as the host target so both the predicate read
-      // and the final rename stay device-local (rename across devices is not
-      // atomic and would fail with EXDEV).
-      const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
-      // `wx` + explicit mode create the temp private (0600) and fail if it somehow
-      // already exists, so we never write through a pre-existing symlink.
-      const handle = await open(stagedTempPath, "wx", 0o600);
-      try {
-        await handle.writeFile(sandboxAuthBytes);
-        await handle.close();
+  const hostOutcome = await withDirectoryMergeLock(hostDir, async () => {
+    // Stage on the same filesystem as the host target so both the predicate read
+    // and the final rename stay device-local (rename across devices is not
+    // atomic and would fail with EXDEV).
+    const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
+    // `wx` + explicit mode create the temp private (0600) and fail if it somehow
+    // already exists, so we never write through a pre-existing symlink.
+    const handle = await open(stagedTempPath, "wx", 0o600);
+    try {
+      await handle.writeFile(sandboxAuthBytes);
+      await handle.close();
 
-        const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
-          errorLabel: "codex auth copy-back",
-        });
-        if (decision === USE_SOURCE_EXIT) {
-          // Atomic same-directory swap; rename preserves the temp's 0600 mode.
-          await rename(stagedTempPath, hostAuthPath);
-          await log(
-            "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
-          );
-          return "copied";
-        }
-
+      const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
+        errorLabel: "codex auth copy-back",
+      });
+      if (decision === USE_SOURCE_EXIT) {
+        // Atomic same-directory swap; rename preserves the temp's 0600 mode.
+        await rename(stagedTempPath, hostAuthPath);
         await log(
-          "[paperclip] Codex auth copy-back: host credential kept (sandbox copy is not a strictly-newer same-identity subscription credential).",
+          "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
         );
-        return "kept-host";
-      } finally {
-        // Close is idempotent-safe to skip after an explicit close; the temp is the
-        // thing that must never linger. On the copy path rename already consumed it
-        // (force makes the removal a no-op); on every other path this deletes the
-        // staged credential bytes.
-        await handle.close().catch(() => undefined);
-        await rm(stagedTempPath, { force: true }).catch(() => undefined);
+        return "copied";
       }
-    });
-  } catch (error) {
-    // ENOENT anywhere in the locked host-side sequence means some part of the
-    // shared host store's path is missing: the lock `mkdir` when an ANCESTOR of
-    // the host directory is absent (the lock lives in a sibling of `hostDir`,
-    // so a missing ancestor fails lock acquisition before staging even runs),
-    // the staging `open` when the host directory itself is the missing leaf, or
-    // the writeFile/rename if the directory vanishes mid-sequence. All shapes
-    // mean the same thing: a shared codex home that never existed (e.g. a
-    // multi-tenant cloud server whose credentials live only in managed
-    // per-company homes) or one deleted between the caller's launch-time check
-    // and teardown. There is nothing to merge into, so treat it exactly like
-    // the absent-sandbox-auth branch above and keep the host. Deliberately NOT
-    // `mkdir`: creating the shared directory here would leak this run's
-    // credential into the store every other tenant's managed home is seeded
-    // from. The decision predicate never surfaces a coded ENOENT (it rewraps
-    // spawn failures into plain Errors), so every non-ENOENT failure stays
-    // fail-loud.
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+
       await log(
-        "[paperclip] Codex auth copy-back: no shared host credential store (host codex home path is absent); nothing to merge into, host left untouched.",
+        "[paperclip] Codex auth copy-back: host credential kept (sandbox copy is not a strictly-newer same-identity subscription credential).",
       );
       return "kept-host";
+    } finally {
+      // Close is idempotent-safe to skip after an explicit close; the temp is the
+      // thing that must never linger. On the copy path rename already consumed it
+      // (force makes the removal a no-op); on every other path this deletes the
+      // staged credential bytes.
+      await handle.close().catch(() => undefined);
+      await rm(stagedTempPath, { force: true }).catch(() => undefined);
     }
-    throw error;
-  }
+  });
 
   // Additive cache write. Independent of the host default overwrite above: it
   // runs on its own directory lock, keys the slot by the real sandbox
