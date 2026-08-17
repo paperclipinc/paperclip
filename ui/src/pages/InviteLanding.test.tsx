@@ -637,13 +637,14 @@ describe("InviteLandingPage", () => {
     // lagging membership write rather than navigating on the first stale list.
     expect(listCompaniesMock.mock.calls.length).toBeGreaterThan(2);
 
-    // The joined company must be present in the shared companies cache by the
-    // time navigation happens, so CompanyRootRedirect can resolve the inviter
-    // company rather than falling back to companies[0] (the user's own).
-    const cached = queryClient.getQueryData(queryKeys.companies.all) as
-      | { companies: Array<{ id: string }> }
-      | undefined;
-    expect(cached?.companies.map((company) => company.id)).toContain("company-1");
+    // The joined company must be present in the account-scoped companies cache
+    // by the time navigation happens, so CompanyRootRedirect can resolve the
+    // inviter company rather than falling back to companies[0] (the user's own).
+    const entries = queryClient.getQueriesData<{ companies: Array<{ id: string }> }>({
+      queryKey: queryKeys.companies.all,
+    });
+    const allCompanyIds = entries.flatMap(([, data]) => data?.companies?.map((c) => c.id) ?? []);
+    expect(allCompanyIds).toContain("company-1");
 
     await act(async () => {
       root.unmount();
