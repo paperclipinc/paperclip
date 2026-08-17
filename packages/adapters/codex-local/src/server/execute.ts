@@ -920,7 +920,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     resolveCacheEntryPath: (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  })),
+                  }));
                 },
               },
             ],
