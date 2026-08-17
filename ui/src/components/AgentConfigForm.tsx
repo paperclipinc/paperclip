@@ -14,6 +14,7 @@ import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapte
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { useFeatures } from "../hooks/useFeatures";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
@@ -275,6 +276,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
   // Reuses the same general-settings query the rest of the UI uses.
   const { data: generalSettings } = useFeatures();
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
 
   const { data: environments = [] } = useQuery<Environment[]>({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],

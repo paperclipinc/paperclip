@@ -7,7 +7,6 @@ import type {
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { ApiError } from "@/api/client";
-import { restoreOnboardingState } from "@/lib/onboarding-state";
 import { trackStep } from "@/telemetry";
 import {
   credentialFailureKey,

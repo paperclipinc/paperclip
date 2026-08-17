@@ -72,7 +72,7 @@ const AUTO_RECOVERY_TOGGLE_SELECTOR =
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
-  enableManagedSandboxOnly: false,
+    enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enableApps: false,
@@ -82,6 +82,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableCloudSync: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableBetaSkills: false,

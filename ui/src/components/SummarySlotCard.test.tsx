@@ -265,10 +265,9 @@ describe("SummarySlotCard", () => {
   });
 
   it("does not query built-in agents when their feature flag is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableSummaries: true,
-      enableBuiltInAgents: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: false } }),
+    );
 
     root = renderCard(container);
     await flushQueries();
