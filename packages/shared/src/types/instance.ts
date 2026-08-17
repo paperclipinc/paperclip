@@ -67,6 +67,7 @@ export interface InstanceExperimentalSettings {
   enableBuiltInAgents: boolean;
   enableBetaSkills: boolean;
   enableSummaries: boolean;
+  enableCloudSync: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
