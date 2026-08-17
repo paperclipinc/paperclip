@@ -3589,57 +3589,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
           );
         }
-      }
-    } catch (err) {
-      const { classified, message, childStderrTail } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "ensure_session",
-      });
-      const causeMessage =
-        typeof classified.errorMeta?.causeMessage === "string"
-          ? classified.errorMeta.causeMessage
-          : null;
-      // The composed message becomes the tenant-facing, persisted
-      // errorMessage/summary. The raw child stderr (and cause) can carry
-      // secrets (tokens, Authorization headers, api-key values), so redact
-      // before surfacing. The full unredacted tail still reached the internal
-      // run log and the acpx.error event above.
-      const composedMessage = redactSensitiveText(
-        composeSessionInitFailureMessage({
-          message,
-          causeMessage,
-          childStderrTail,
-        }),
-      );
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      await cleanupRemoteBridges(prepared);
-      // Auto-selected (non-explicit) runs throw so the adapter's execute()
-      // wrapper catches it and falls back to the proven CLI lane. Explicit
-      // engine=acp runs keep the terminal failed result (no silent lane switch).
-      if (allowSessionInitLaneFallback(ctx)) {
-        throw new AcpxSessionInitError({
-          message: composedMessage,
-          errorCode: classified.errorCode ?? "acpx_session_init_failed",
-          errorMeta: classified.errorMeta,
-          childStderrTail,
-          cause: err,
-        });
-      }
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: composedMessage,
-        ...classified,
-        ...billingFields,
-        model: prepared.requestedModel || null,
-        clearSession,
-        resultJson: { phase: "ensure_session" },
-        summary: composedMessage,
-      };
-    }
 
         let handle = cached?.handle ?? null;
         resumedSession = Boolean(handle ?? resumeSessionId);
