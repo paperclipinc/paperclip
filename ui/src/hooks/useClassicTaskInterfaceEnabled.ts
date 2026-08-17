@@ -1,6 +1,7 @@
 import { useContext } from "react";
 import { QueryClient, QueryClientContext, useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import type { CurrentBoardAccess } from "@/api/access";
+import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 
 /**
@@ -18,9 +19,9 @@ function getDetachedClient(): QueryClient {
 /**
  * Classic Task Interface experimental flag (`enableClassicTaskInterface`).
  *
- * Wraps the shared experimental-settings query so gated call sites don't
- * repeat the boilerplate. Fail-closed to chat-style: `enabled` stays false
- * while the query is in flight, on fetch errors, and in renders without a
+ * Wraps the shared board-access query so gated call sites don't repeat the
+ * boilerplate. Fail-closed to chat-style: `enabled` stays false while the
+ * query is in flight, on fetch errors, and in renders without a
  * QueryClientProvider (isolated unit-test mounts), so the default chat-style
  * view is what renders unless the classic opt-in is provably on. `loaded`
  * lets hosts that care distinguish "flag is off" from "flag not yet known".
@@ -29,14 +30,18 @@ export function useClassicTaskInterfaceEnabled(): { enabled: boolean; loaded: bo
   const contextClient = useContext(QueryClientContext);
   const { data, isFetched } = useQuery(
     {
-      queryKey: queryKeys.instance.experimentalSettings,
-      queryFn: () => instanceSettingsApi.getExperimental(),
+      queryKey: queryKeys.access.currentBoardAccess,
+      queryFn: () => accessApi.getCurrentBoardAccess(),
+      staleTime: 30_000,
+      retry: false,
       enabled: contextClient != null,
+      select: (access: CurrentBoardAccess) =>
+        access.capabilities.features.enableClassicTaskInterface === true,
     },
     contextClient ?? getDetachedClient(),
   );
   if (!contextClient) {
     return { enabled: false, loaded: true };
   }
-  return { enabled: data?.enableClassicTaskInterface === true, loaded: isFetched };
+  return { enabled: data === true, loaded: isFetched };
 }

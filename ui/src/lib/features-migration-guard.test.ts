@@ -17,7 +17,6 @@ const ALLOWLIST = new Set([
   join(SRC_ROOT, "components", "AgentConfigForm.tsx"),
   join(SRC_ROOT, "components", "BuiltInAgentGate.tsx"),
   join(SRC_ROOT, "components", "SidebarAgents.tsx"),
-  join(SRC_ROOT, "hooks", "useClassicTaskInterfaceEnabled.ts"),
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

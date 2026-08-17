@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, or, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -105,6 +105,7 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
+  resetShutdownDrainingForTests,
 } from "../services/heartbeat.ts";
 import {
   readHotRestartIntent,
@@ -322,6 +323,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: now,
     });
   }, 20_000);
+
+  beforeEach(() => {
+    // shutdownDraining is shared across all heartbeatService instances (module
+    // scope), so a drain test would otherwise leave dispatch suppressed for
+    // every following case. Reset it so each test starts un-quiesced.
+    resetShutdownDrainingForTests();
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();
