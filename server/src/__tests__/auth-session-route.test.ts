@@ -156,9 +156,10 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    // authUsers, companies, companyMemberships, the role-default
-    // principalPermissionGrants, and the lazily initialized instance setting.
-    expect(inserts).toHaveLength(5);
+    // authUsers, companies, companyMemberships, and the lazily initialized
+    // instance setting. The upsert-based membership flow doesn't insert
+    // role-default grants inline (ensureHumanRoleDefaultGrants handles that).
+    expect(inserts).toHaveLength(4);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
