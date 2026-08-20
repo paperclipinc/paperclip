@@ -569,76 +569,6 @@ export async function stageCodexHomeForSync(
 }
 
 /**
- * Writes a user-supplied Codex `auth.json` verbatim into `home`.
- *
- * This is the hosted counterpart to a `codex login` on the box: the user runs
- * that login on their OWN machine and hands us the resulting credential, which
- * is the only way a ChatGPT plan can reach a multi-tenant server (there is no
- * shared host login for a tenant to inherit, and inheriting one would be
- * another tenant's).
- *
- * The bytes are written verbatim rather than re-serialized from a parsed
- * object: the file carries fields Codex owns and may extend, and a lossy
- * round-trip through our own shape would silently drop whatever we did not
- * model. `rm` first because the managed home normally SYMLINKS auth.json at the
- * shared host credential, and writing through that link would scribble on it.
- */
-export async function writeSubscriptionAuthJson(home: string, authJson: string): Promise<void> {
-  await fs.mkdir(home, { recursive: true });
-  const target = path.join(home, "auth.json");
-  await fs.rm(target, { force: true });
-  await fs.writeFile(target, authJson, { mode: 0o600 });
-}
-
-/**
- * Parsed view of a Codex `auth.json` refresh clock, used to decide whether a
- * credential read back out of a sandbox is NEWER than the one we sent in.
- *
- * Mirrors `codex-auth-merge-decision.cjs`, which answers the same question for
- * the self-hosted host-file path. Kept as a separate in-process function
- * because the hosted path compares a sandbox file against a database row, not
- * two files on disk, so there is nothing to hand that script.
- */
-export function readCodexAuthRefreshedAt(authJson: string): number | null {
-  try {
-    const parsed = JSON.parse(authJson);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const lastRefresh = (parsed as Record<string, unknown>).last_refresh;
-    if (typeof lastRefresh !== "string") return null;
-    const parsedAt = Date.parse(lastRefresh);
-    return Number.isFinite(parsedAt) ? parsedAt : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * True when `candidate` should replace `current` in the credential store.
- *
- * Conservative by construction: it replaces ONLY on a strictly newer
- * `last_refresh` from a still-usable payload. Anything else (unparseable,
- * unusable, same clock, older clock, missing clock) keeps what we already have.
- * Getting this wrong in the permissive direction would overwrite a live
- * credential with a dead one and lock the user out of their own agents, and
- * OpenAI's refresh tokens are single-use, so there is no undo.
- */
-export function shouldReplaceStoredCodexAuth(current: string, candidate: string): boolean {
-  if (!candidate.trim()) return false;
-  let parsedCandidate: unknown;
-  try {
-    parsedCandidate = JSON.parse(candidate);
-  } catch {
-    return false;
-  }
-  if (!hasUsableAuthPayload(parsedCandidate)) return false;
-  const candidateAt = readCodexAuthRefreshedAt(candidate);
-  if (candidateAt == null) return false;
-  const currentAt = readCodexAuthRefreshedAt(current);
-  if (currentAt == null) return true;
-  return candidateAt > currentAt;
-}
-
-/**
  * Seeds auth/config into an explicit Paperclip-managed `targetHome`. Symlinks
  * `auth.json` from the shared source home (so ChatGPT-subscription credentials
  * stay live and single-use refresh tokens are not copied), copies the static
@@ -653,21 +583,34 @@ export async function seedManagedCodexHome(
   targetHome: string,
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
-  options: { apiKey?: string | null; authJson?: string | null } = {},
+  options: { apiKey?: string | null } = {},
 ): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
-  const authJson = nonEmpty(options.authJson ?? undefined);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
-  if (!apiKey && !authJson && seedFromShared) {
+  // A regular-file auth.json in the target home is one of two very different
+  // things. The device-login promotion writes the company credential as a
+  // regular file, and that file is the durable outcome of an interactive login,
+  // so it must survive re-seeding. Everything else — an apikey-mode file left by
+  // a previous run, a stale pre-symlink copy of the shared credential (#5028),
+  // or an unreadable payload — is residue, and removing it lets the chatgpt-mode
+  // symlink be restored (ensureSymlink would otherwise replace it and Codex
+  // would keep authenticating with the stale key).
+  //
+  // The discriminator is identity-anchored, like the promotion and the cache
+  // vend: keep the file only when it holds a usable subscription identity that
+  // the shared source does not also hold. A same-identity regular file is the
+  // #5028 stale copy — the symlink serves the same account with live, rotating
+  // tokens, so it is strictly better. A different-identity (or source-less)
+  // subscription file is the promoted company credential; on a server with no
+  // shared login there is nothing to symlink at all, and deleting it would
+  // silently sign the company out right after a successful device login.
+  let keepPromotedAuth = false;
+  if (!apiKey && seedFromShared) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
@@ -720,17 +663,13 @@ export async function seedManagedCodexHome(
   }
 
   if (seedFromShared) {
-    // A user-supplied credential is the whole point of the hosted path, so the
-    // shared host auth.json must NOT be symlinked in on top of it: on a hosted
-    // install that file is the operator's, and on any install the symlink would
-    // make the user's own credential unreachable. Static config is still
-    // shared either way; only auth is theirs.
-    if (!authJson) {
-      for (const name of SYMLINKED_SHARED_FILES) {
-        const source = path.join(sourceHome, name);
-        if (!(await pathExists(source))) continue;
-        await ensureSymlink(path.join(targetHome, name), source);
-      }
+    for (const name of SYMLINKED_SHARED_FILES) {
+      // The kept promoted credential is authoritative for this home; the shared
+      // symlink would silently swap the account back to the host login.
+      if (name === "auth.json" && keepPromotedAuth) continue;
+      const source = path.join(sourceHome, name);
+      if (!(await pathExists(source))) continue;
+      await ensureSymlink(path.join(targetHome, name), source);
     }
 
     for (const name of COPIED_SHARED_FILES) {
@@ -751,13 +690,6 @@ export async function seedManagedCodexHome(
       "stdout",
       `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
-  } else if (authJson) {
-    await writeSubscriptionAuthJson(targetHome, authJson);
-    // Never log the payload or any part of it: it carries a live refresh token.
-    await onLog(
-      "stdout",
-      `[paperclip] Wrote subscription auth.json into Codex home "${targetHome}" from the configured Codex plan credential.\n`,
-    );
   }
 }
 
@@ -765,7 +697,7 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
-  options: { apiKey?: string | null; authJson?: string | null } = {},
+  options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
   await seedManagedCodexHome(targetHome, env, onLog, options);
@@ -864,13 +796,6 @@ export interface CodexCredentialReadinessInput {
   configuredCodexHome: string | null | undefined;
   /** Resolved `config.env.OPENAI_API_KEY` value (after secret resolution). */
   configuredApiKey: string | null | undefined;
-  /**
-   * Resolved `config.env.CODEX_AUTH_JSON` value (after secret resolution): a
-   * Codex `auth.json` the user produced with `codex login` on their own machine
-   * and handed to Paperclip. The hosted route for a ChatGPT plan, since a
-   * tenant has no shared host login to inherit.
-   */
-  configuredAuthJson?: string | null | undefined;
 }
 
 export interface CodexCredentialReadiness {
@@ -906,7 +831,6 @@ export async function evaluateCodexCredentialReadiness(
   const configuredRaw = nonEmpty(input.configuredCodexHome ?? undefined);
   const configuredCodexHome = configuredRaw ? path.resolve(configuredRaw) : null;
   const configuredApiKey = nonEmpty(input.configuredApiKey ?? undefined);
-  const configuredAuthJson = nonEmpty(input.configuredAuthJson ?? undefined);
   const sharedSourceHome = resolveSharedCodexHomeDir(env);
 
   const configuredHomeIsManaged =
@@ -927,15 +851,6 @@ export async function evaluateCodexCredentialReadiness(
 
   if (configuredApiKey) {
     return { managed: true, authMode: "api", ready: true, effectiveHome, sharedSourceHome };
-  }
-
-  // A plan credential the user supplied through Paperclip is theirs and is
-  // written into the managed home at execute time, so readiness must not fall
-  // through to the shared-host probe below. On a hosted install that probe
-  // reads the operator's home and would answer for the wrong person in both
-  // directions: ready when this user has nothing, not-ready when they do.
-  if (configuredAuthJson) {
-    return { managed: true, authMode: "subscription", ready: true, effectiveHome, sharedSourceHome };
   }
 
   const ready =

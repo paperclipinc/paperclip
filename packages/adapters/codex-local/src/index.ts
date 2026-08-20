@@ -78,15 +78,8 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
-    adapterConfig: {
-      model: "gpt-5.4-mini",
-      // gpt-5.4-mini is the cheap lane that works on both auth modes. gpt-5.3-codex-spark is
-      // cheaper but only available with ChatGPT subscription auth; on OPENAI_API_KEY runs the
-      // platform API rejects it with model_not_found. High effort keeps Codex coding behavior
-      // usable for delegated work.
-      modelReasoningEffort: "high",
-    },
+    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
+    adapterConfig: {},
     source: "adapter_default",
   },
 ];

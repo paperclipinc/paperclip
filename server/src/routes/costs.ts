@@ -318,66 +318,6 @@ export function costRoutes(
     },
   );
 
-  // Cloud-internal: the control-plane credits the company's recurring carry-over
-  // budget wallet here on each Paddle budget charge (and the trial/included-budget
-  // seeds). This is a server-to-server call gated on the trusted
-  // `x-paperclip-cloud-credit` header — the app is only reachable via the cloud
-  // gateway/control-plane network boundary, so a normal user actor is never
-  // present and we deliberately do NOT run assertBoard/assertCompanyAccess here.
-  // Self-hosters never set this header, so this path is inert for OSS.
-  router.post("/companies/:companyId/budgets/increment", async (req, res) => {
-    if (req.header("x-paperclip-cloud-credit") !== "1") {
-      res.status(403).json({ error: "Budget increment is a cloud-internal operation" });
-      return;
-    }
-
-    const companyId = req.params.companyId as string;
-    const deltaCents = req.body?.deltaCents;
-    if (typeof deltaCents !== "number" || !Number.isInteger(deltaCents) || deltaCents <= 0) {
-      res.status(400).json({ error: "deltaCents must be a positive integer" });
-      return;
-    }
-
-    const result = await budgets.incrementCompanyBudget(companyId, deltaCents);
-    res.json({ companyId, amount: result.amount });
-  });
-
-  // Cloud-internal: the control-plane's lifecycle sweep polls this to find
-  // companies paused by the budget hard-stop (it emails a trial that hit the
-  // wall and did not subscribe). Read-only and gated on the same trusted
-  // `x-paperclip-cloud-credit` header as /budgets/increment above (the app is
-  // only reachable via the cloud gateway/control-plane network boundary, so no
-  // user actor is present and we deliberately skip assertBoard/
-  // assertCompanyAccess). Self-hosters never set the header, so this path is
-  // inert for OSS. Returns [{ companyId, pausedAt }].
-  router.get("/cloud/budget-paused", async (req, res) => {
-    if (req.header("x-paperclip-cloud-credit") !== "1") {
-      res.status(403).json({ error: "Budget-paused listing is a cloud-internal operation" });
-      return;
-    }
-    const rows = await budgets.listBudgetPausedCompanies();
-    res.json(rows);
-  });
-
-  // Cloud-internal: the control-plane's lifecycle-email sweep polls this once
-  // per cycle to score every company's activation progress (agent hired,
-  // first successful run, credential connected, recent usage) so it can gate
-  // nurture/upsell emails without re-deriving these facts itself. Read-only
-  // and gated on the same trusted `x-paperclip-cloud-credit` header as the
-  // other /cloud/* routes above (no user actor is present, so we deliberately
-  // skip assertBoard/assertCompanyAccess). Self-hosters never set the header,
-  // so this path is inert for OSS. Companies whose signals are entirely
-  // false/zero are omitted by costService.listActivationSignals (the
-  // control-plane treats absence as all-false/zero).
-  router.get("/cloud/activation-signals", async (req, res) => {
-    if (req.header("x-paperclip-cloud-credit") !== "1") {
-      res.status(403).json({ error: "Activation-signals listing is a cloud-internal operation" });
-      return;
-    }
-    const companiesRows = await costs.listActivationSignals();
-    res.json({ companies: companiesRows });
-  });
-
   router.get("/companies/:companyId/costs/by-project", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);

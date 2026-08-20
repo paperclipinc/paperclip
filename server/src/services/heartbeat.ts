@@ -97,11 +97,6 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
-import {
-  createDrizzleActivationStore,
-  recordActivationEvent,
-  resolveActivationSink,
-} from "./activation.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -119,7 +114,6 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
-  resolveHeartbeatRunErrorCode,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -254,7 +248,6 @@ import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
-import { resolveCompanyConcurrencyCap, clampToCompanyConcurrency } from "./company-concurrency.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -274,7 +267,6 @@ import {
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
-  classifySandboxInfraFailure,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -286,22 +278,13 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  extractSkillMentionIds,
-  HEARTBEAT_RUN_TERMINAL_STATUSES,
-  isUuidLike,
-} from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import { loadConfig } from "../config.js";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
-import {
-  isAdapterRuntimeImageMismatchError,
-  isAdapterSandboxProbeUnansweredError,
-} from "@paperclipai/adapter-utils/execution-target";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -336,29 +319,6 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
-import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
-import { computeCostUsdForRun } from "./kubecost-client.js";
-import { billedCostCents, parseMargin, parseComputeRatePerHour, resolveComputeUsd } from "./run-cost.js";
-import { agentInstructionsService } from "./agent-instructions.js";
-import {
-  adapterConsumesInstructionsBundle,
-  loadDefaultAgentInstructionsBundle,
-  resolveDefaultAgentInstructionsBundleRole,
-} from "./default-agent-instructions.js";
-
-// Cloud cost-plus billing inputs. All degrade safely to today's behaviour
-// when unset: an empty price table -> priceCloudTokens returns null ->
-// billedCostCents returns 0; an empty KUBECOST_URL -> compute cost 0; a
-// missing margin -> 1.0 (wholesale only).
-const cloudPriceTable = parsePriceTable(process.env.PAPERCLIP_CLOUD_PRICE_TABLE);
-const cloudMargin = parseMargin(process.env.PAPERCLIP_CLOUD_MARGIN_MULTIPLIER);
-const kubecostCfg = { baseUrl: process.env.KUBECOST_URL ?? "" };
-// Deterministic compute floor (wholesale pod-USD/hour). Kubecost-by-run-id is
-// preferred when it reports a positive cost, but it is fragile in cloud_tenant
-// mode (kube-state-metrics must expose the paperclip.io/run-id label, and short
-// runs round to 0 against the Prometheus scrape interval), so without this floor
-// every managed run metered 0 compute. Unset -> 0 -> safe degrade.
-const cloudComputeRatePerHour = parseComputeRatePerHour(process.env.PAPERCLIP_CLOUD_COMPUTE_USD_PER_HOUR);
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -460,7 +420,6 @@ function pendingCleanupCapWarnedSql() {
 }
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
-const DEFAULT_MAX_QUEUED_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -469,6 +428,7 @@ const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
@@ -687,14 +647,6 @@ function readTransientRetryNotBeforeFromRun(run: Pick<typeof heartbeatRuns.$infe
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function readTransientRetryMaxAttemptsFromRun(run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">) {
-  const resultJson = parseObject(run.resultJson);
-  const value = resultJson.transientRetryMaxAttempts;
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const attempts = Math.floor(value);
-  return attempts > 0 ? attempts : null;
-}
-
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -703,7 +655,6 @@ function readTransientRecoveryContractFromRun(
     ? {
         errorFamily,
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
-        maxAttempts: readTransientRetryMaxAttemptsFromRun(run),
       }
     : null;
 }
@@ -729,37 +680,6 @@ function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
-
-// A permanent, non-retryable setup failure: the agent's adapter is not runnable in
-// this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
-// which fails to acquire the k8s lease with "Adapter ... is not in the configured
-// adapter registry"). Re-invoking such an agent every heartbeat produces a
-// setup_failed retry storm, so it must pause the agent instead of looping.
-export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return /is not in the configured adapter registry/i.test(message);
-}
-
-// A permanent authentication failure: the agent has no valid provider credential
-// (e.g. a keyless agent activated without connecting a model key), so every
-// heartbeat run completes with `outcome:"failed"` + this errorCode and will keep
-// failing until a human wires up a credential. Pause the agent instead of looping.
-const PERMANENT_AUTH_FAILURE_CODES = new Set([
-  "claude_auth_required",
-  "codex_auth_required",
-  "inference_auth_invalid",
-]);
-function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
-  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
-}
-
-// Generic failure-storm breaker: when this many consecutive terminal runs of an
-// agent all failed with the same errorCode (no success in between), the agent is
-// not making progress and every further automated re-invocation burns the same
-// failure again. Pause it and route the reason to a human. This is the fallback
-// for failure shapes that no dedicated branch (transient retry contracts, the
-// permanent-auth pause, the non-retryable setup pause) already handles.
-export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
 
 // A sandbox provider plugin's worker can be briefly down during its own
 // restart window (e.g. a rolling deploy of the plugin worker process). Lease
@@ -1273,17 +1193,9 @@ export async function resolveExecutionRunAdapterConfig(input: {
       configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
     });
     if (readiness.managed && !readiness.ready) {
-      // "Sign in on the host" is only actionable when the person reading this
-      // IS the operator of the machine. On a multi-user deployment the runner
-      // is a sandbox nobody can log into, so that half of the sentence sends
-      // the user somewhere that does not exist; leave them with the one action
-      // they can actually take.
-      const hostLoginActionable = loadConfig().deploymentMode === "local_trusted";
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
-          (hostLoginActionable
-            ? `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`
-            : `Add an OPENAI_API_KEY for this agent (Agent settings -> credentials) and run it again.`),
+          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
         {
           configurationIncomplete: {
             reason: "codex_credentials_missing",
@@ -2500,10 +2412,6 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
-  // The log route needs the status to tell "no log YET" (an active run whose
-  // runner has not opened the file) from "no log EVER" (a terminal run that
-  // never wrote one). Same row, so this costs nothing on the poll path.
-  status: heartbeatRuns.status,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -4843,7 +4751,6 @@ function sanitizeSecretManifestForConfigFingerprint(
         : readNonEmptyString(record.version),
       provider: readNonEmptyString(record.provider),
       providerVersionRef: readNonEmptyString(record.providerVersionRef),
-      valueFingerprint: readNonEmptyString(record.valueFingerprint),
       outcome: record.outcome === "success" || record.outcome === "failure" ? record.outcome : null,
     };
   });
@@ -6041,7 +5948,7 @@ export function buildHeartbeatRunStatusLiveEventPayload(
   };
 }
 
-export function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
+function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
   return status === "queued" || status === "running";
 }
 
@@ -6751,39 +6658,6 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
   return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
-// On SIGTERM (every k8s rollout of the single-replica server) we first quiesce
-// new-run dispatch and then WAIT for in-flight runs to finish on their own,
-// bounded by this timeout, before interrupting anything. Keep the default well
-// under the pod terminationGracePeriod so the wait can never be SIGKILL'd
-// mid-drain (the operator is given a matching, longer grace period).
-export const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS = 3 * 60 * 1000;
-export const SHUTDOWN_DRAIN_POLL_INTERVAL_MS = 500;
-
-// Shared across ALL heartbeatService instances (routes and the scheduler each
-// construct their own) so that once graceful shutdown begins EVERY instance's
-// dispatch-suppression check observes the quiesce. If this lived in a single
-// service closure, a dispatch path on a different instance would keep starting
-// new runs mid-drain (only to be interrupted immediately or outlive cleanup).
-// Mirrors activeRunExecutions above, which is module-scoped for the same
-// cross-instance reason. It never resets in production (the process is exiting);
-// resetShutdownDrainingForTests() clears it between test cases.
-let shutdownDraining = false;
-
-/** Test-only: clears the shared graceful-shutdown quiesce flag between cases. */
-export function resetShutdownDrainingForTests(): void {
-  shutdownDraining = false;
-}
-
-export function resolveShutdownDrainTimeoutMs(
-  env: Record<string, string | undefined> = process.env,
-): number {
-  const raw = env.PAPERCLIP_SHUTDOWN_DRAIN_TIMEOUT_MS;
-  if (raw == null || raw.trim() === "") return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
-  return parsed;
-}
-
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
@@ -6842,13 +6716,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     return cachedWorktreeRunExecutionOverride;
   };
-  // shutdownDraining is module-scoped (declared above) so that once graceful
-  // shutdown begins, every heartbeatService instance's suppression check below
-  // observes the quiesce, not just the instance that ran the drain.
   const getSchedulingSuppression = async () => {
-    if (shutdownDraining) {
-      return { suppressed: true, reason: "server_shutdown" as const };
-    }
     const override = await resolveWorktreeRunExecutionOverride();
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
@@ -6874,13 +6742,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const pendingExecutions = new Set<Promise<unknown>>();
-  function trackPendingExecution(promise: Promise<unknown>) {
-    pendingExecutions.add(promise);
-    promise.finally(() => {
-      pendingExecutions.delete(promise);
-    }).catch(() => undefined);
-  }
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -9119,55 +8980,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
-  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
-  // itself carries the precondition (status = 'queued') so a concurrent claim
-  // of the same row (another scheduler pass, or a manual resume flipping it to
-  // "running") between the SELECT and this UPDATE cannot be clobbered back to
-  // "cancelled". `updated: false` tells the caller the row had already moved
-  // on, so it must not touch the run's wakeup or append a lifecycle event.
-  async function setRunStatusIfQueued(
-    runId: string,
-    status: string,
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
-  ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+  // Invariant: when a run releases its environment lease, the run row must be
+  // terminal. The finalizer writes the terminal status in a step that is
+  // separate from the agent status=done PATCH. If the sandbox or the run
+  // process stops between the two steps, heartbeat_runs.status stays "running".
+  // The UI reads liveness from that row, so a finished task shows "Live"
+  // forever. This function closes the gap in the run teardown: when the run is
+  // still running or queued, it forces a terminal status before the lease is
+  // released. It never overwrites a status that another path already made
+  // terminal.
+  async function terminalizeRunOnLeaseRelease(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<typeof heartbeatRuns.$inferSelect> {
+    if (isHeartbeatRunTerminalStatus(run.status)) return run;
+    if (run.status !== "running" && run.status !== "queued") return run;
 
-    if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(updated);
-      return { run: updated, updated: true as const };
+    // Choose the terminal status that reflects the true outcome. When the issue
+    // already reached a terminal status, the run reached its goal, so use the
+    // matching terminal run status. Otherwise the teardown cut the run short,
+    // so use "interrupted".
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    let terminalStatus: "succeeded" | "cancelled" | "interrupted" = "interrupted";
+    if (issueId) {
+      const issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status ?? null);
+      if (issueStatus === "done") terminalStatus = "succeeded";
+      else if (issueStatus === "cancelled") terminalStatus = "cancelled";
     }
 
-    const current = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    const message =
+      `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
+    // Match both "running" and "queued". A queued run has released its lease but
+    // never reached "running", so a running-only update would miss it and leave
+    // a phantom live run behind.
+    const write = await setRunStatusFromLive(run.id, terminalStatus, ["running", "queued"], {
+      finishedAt: run.finishedAt ?? new Date(),
+      error: run.error ?? (terminalStatus === "interrupted" ? message : null),
+      errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? "lease_released_before_terminal" : null),
+    });
+    if (!write.updated) {
+      // Another path already finalized the run. Keep that terminal outcome.
+      return write.run ?? run;
+    }
 
-    return { run: current, updated: false as const };
+    const terminalRun = write.run;
+    if (terminalRun) {
+      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: terminalStatus === "interrupted" ? "warn" : "info",
+        message,
+        payload: {
+          previousStatus: run.status,
+          terminalStatus,
+          reason: "environment_lease_release",
+          ...(issueId ? { issueId } : {}),
+        },
+      }).catch((eventErr) => {
+        logger.warn(
+          { err: eventErr, runId: run.id },
+          "failed to append run event for lease-release terminalization",
+        );
+      });
+    }
+    return terminalRun ?? run;
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
@@ -10789,63 +10668,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    options: {
-      /** Max time to wait for in-flight runs to finish before interrupting. */
-      drainTimeoutMs?: number;
-      /** How often to re-check for in-flight completion while waiting. */
-      pollIntervalMs?: number;
-      /** Injectable sleep (tests). Defaults to a real setTimeout. */
-      sleep?: (ms: number) => Promise<void>;
-      /** Injectable clock (tests) for the wall-clock drain bound. */
-      nowMs?: () => number;
-      /**
-       * Predicate for whether any run is still executing in THIS process.
-       * Defaults to the local in-process execution set; DB-only "running" rows
-       * with no local execution (orphans) are NOT waited for; they can never
-       * finish on their own and are interrupted immediately as before.
-       */
-      hasInflightRuns?: () => boolean;
-    } = {},
+    runIds: readonly string[] | null = null,
   ) {
-    // 1. Quiesce: stop the scheduler from dispatching NEW runs. Every dispatch/
-    //    execution entrypoint gates on getSchedulingSuppression(), so flipping
-    //    this makes them all no-op for the remainder of the process lifetime.
-    shutdownDraining = true;
-
-    // 2. Soft-drain: give in-flight runs a bounded window to finish on their
-    //    own. Only runs still running at the deadline get interrupted below, so
-    //    a normal rollout no longer interrupts every in-flight run.
-    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
-    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
-    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-    const clock = options.nowMs ?? (() => Date.now());
-    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
-
-    if (drainTimeoutMs > 0 && hasInflightRuns()) {
-      const deadline = clock() + drainTimeoutMs;
-      logger.info(
-        { signal, drainTimeoutMs, pollIntervalMs },
-        "soft-draining in-flight heartbeat runs before shutdown",
-      );
-      while (hasInflightRuns() && clock() < deadline) {
-        // Cap each wait to the remaining budget so a sub-interval remainder can
-        // never sleep a full poll interval past the deadline. Overrunning would
-        // push the drain (plus the interrupt+retry cleanup that follows) beyond
-        // the timeout and risk a SIGKILL mid-cleanup.
-        const remainingMs = deadline - clock();
-        if (remainingMs <= 0) break;
-        await sleep(Math.min(pollIntervalMs, remainingMs));
-      }
-      if (hasInflightRuns()) {
-        logger.warn(
-          { signal, drainTimeoutMs },
-          "soft-drain deadline reached with in-flight runs remaining; interrupting for restart recovery",
-        );
-      } else {
-        logger.info({ signal }, "in-flight heartbeat runs drained gracefully before shutdown");
-      }
+    const selectedRunIds = runIds ? [...new Set(runIds)] : null;
+    if (selectedRunIds?.length === 0) {
+      return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
     }
-
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -10904,14 +10732,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
 
-      // TODO(keep-lease-resume): ideally we would KEEP the sandbox lease here so
-      // restart recovery could reattach to the existing sandbox instead of
-      // provisioning a fresh one and losing partial work. The current retry path
-      // (enqueueProcessLossRetry) starts a brand-new run that provisions its own
-      // environment, so keeping the lease without a reattach-on-retry path would
-      // leak/double-lease the sandbox. Until the resume/reattach path exists we
-      // release the lease and retry from scratch (the safe, correct subset). The
-      // soft-drain above already makes this the rare exception, not the default.
       await releaseEnvironmentLeasesForRun({
         runId: interrupted.id,
         companyId: interrupted.companyId,
@@ -11352,17 +11172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
-    // Allow the adapter to request a tighter attempt cap than the default
-    // bounded backoff (e.g. a cold/unavailable model should not retry as many
-    // times as a rate limit). An explicit opts.maxAttempts still wins.
-    const maxAttempts = Math.max(
-      0,
-      Math.floor(opts?.maxAttempts ?? transientRecovery?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
-    );
+    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttempts
@@ -11378,6 +11188,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
         : null;
     const baseSchedule = computedBaseSchedule ? { ...computedBaseSchedule, maxAttempts } : null;
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" && transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
@@ -12669,14 +12483,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function countRunningRunsForCompany(companyId: string) {
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
-    return Number(count ?? 0);
-  }
-
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -13117,74 +12923,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
   }
 
-  // Failure-storm breaker (see CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD):
-  // pause the agent when its most recent terminal runs, including the run that
-  // just finalized, all failed with the same errorCode. Dedicated branches
-  // (transient retry contracts, permanent-auth, non-retryable setup) run before
-  // this and take precedence.
-  async function maybePauseAgentForRepeatedIdenticalFailure(
-    agent: Pick<typeof agents.$inferSelect, "id" | "status">,
-    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "errorCode">,
-  ) {
-    const errorCode = readNonEmptyString(run.errorCode);
-    if (!errorCode) return;
-    if (agent.status === "paused" || agent.status === "terminated") return;
-
-    const recentTerminalRuns = await db
-      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agent.id),
-          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD)
-      .catch((queryErr) => {
-        logger.warn(
-          { err: queryErr, agentId: agent.id, runId: run.id },
-          "failed to evaluate repeated identical failure streak",
-        );
-        return null;
-      });
-    if (!recentTerminalRuns || recentTerminalRuns.length < CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD) {
-      return;
-    }
-    if (!recentTerminalRuns.every((recent) => recent.status === "failed" && recent.errorCode === errorCode)) {
-      return;
-    }
-
-    const identicalFailurePauseReason =
-      `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`;
-    const identicalFailurePauseWrite = await db
-      .update(agents)
-      .set({
-        status: "paused",
-        pauseReason: truncateAgentErrorReason(identicalFailurePauseReason),
-        pausedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(agents.id, agent.id))
-      .catch((pauseErr) => {
-        logger.warn(
-          { err: pauseErr, agentId: agent.id, runId: run.id },
-          "failed to pause agent after repeated identical failures",
-        );
-        return null;
-      });
-    if (identicalFailurePauseWrite !== null) {
-      // Mirror manual pause: a paused agent must have no live runs, or a
-      // just-enqueued retry can sit in "queued" forever since dequeue skips
-      // paused agents. run is already terminal by the time this runs.
-      await cancelActiveForAgentInternal(
-        agent.id,
-        `Cancelled because the agent was paused: ${identicalFailurePauseReason}`,
-        "agent_paused",
-      );
-    }
-  }
-
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
@@ -13461,12 +13199,284 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
+  // Clamp the stored attempt count to the range [0, cap]. The SQL reader
+  // `pendingCleanupAttemptsSql` clamps to the same range, so both readers yield
+  // the same value for every input. The claim predicate compares the two values,
+  // so this alignment lets the claim match for a malformed lease.
+  function readPendingCleanupRetryAttempts(metadata: Record<string, unknown>): number {
+    const value = metadata[PENDING_CLEANUP_ATTEMPTS_METADATA_KEY];
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
+  }
+
+  // Atomically claim one retry attempt on a pending_cleanup lease. The update
+  // only matches when the lease is still pending_cleanup and its stored attempt
+  // count still equals `expectedAttempts`. Two concurrent sweeps read the same
+  // count, but Postgres serializes the two updates on the row and only the first
+  // matches the guard. The loser gets zero rows and skips the lease. This bounds
+  // the retries to the cap and stops a second destroy of the same lease.
+  // Returns true only for the sweep that won the claim.
+  //
+  // The update writes only the attempts key with `jsonb_set`. It never writes a
+  // copied metadata object, so a concurrent write to an unrelated metadata key
+  // survives. The guard reads the stored count through the safe SQL reader, so a
+  // malformed value never throws.
+  async function claimPendingCleanupRetryAttempt(
+    leaseId: string,
+    expectedAttempts: number,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
+  // Atomically claim the one-time cap warning for a lease. The update only
+  // matches when the lease is still pending_cleanup, its stored attempt count is
+  // at or above the cap, and it has not yet carried the warned flag. Two
+  // concurrent sweeps that both reach the cap race here, but only one update
+  // sets the flag and returns a row. The loser skips the warning. This keeps the
+  // warning to one log line per lease.
+  //
+  // The status and cap predicates are the last line of defense. They stop a warn
+  // flag write to a lease that left pending_cleanup or dropped below the cap
+  // between the read and this claim. The update writes only the warned key with
+  // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
+  async function claimPendingCleanupCapWarning(leaseId: string): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
+          sql`${pendingCleanupCapWarnedSql()} = false`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
+  // Defer a pending_cleanup lease whose provider plugin is not ready this tick.
+  // The sweep reads one page of the oldest rows, ordered by `updatedAt`. A lease
+  // that the sweep only skips keeps its old `updatedAt`, so it stays the oldest
+  // and refills the page on every tick. That starves a newer lease whose
+  // provider is ready. The defer bumps `updatedAt` to now, so the unavailable
+  // lease moves to the back of the queue and a ready lease takes its page slot.
+  // The defer never writes the attempt count, so a long provider outage never
+  // consumes a finite retry. The status guard keeps the write on a lease that is
+  // still pending_cleanup.
+  async function deferPendingCleanupLease(leaseId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .update(environmentLeases)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+        ),
+      );
+  }
+
+  // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
+  // lease in that state forever without this sweep. The reaper tick runs the
+  // sweep. The backoff equals the reaper staleness threshold, so a lease waits
+  // for that period between attempts. The sweep reads and writes the attempt
+  // count in the lease metadata. It warns once when a lease reaches the attempt
+  // cap and then stops the retries for that lease.
+  async function sweepPendingCleanupLeases(opts?: { backoffMs?: number }): Promise<{
+    swept: number;
+    destroyed: number;
+    capped: number;
+  }> {
+    const backoffMs = opts?.backoffMs ?? 0;
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - backoffMs);
+
+    // Flush the in-process orphan-cleanup buffer first. A failed acquire buffers
+    // an orphan there when every synchronous pending-cleanup write failed after a
+    // failed teardown. The flush re-inserts each buffered record, so a durable
+    // `pending_cleanup` row lands once the database recovers. The flush runs
+    // before the read below, so this same tick tears down a freshly-landed row.
+    try {
+      const flushed = await environmentRuntime.flushDeferredOrphanCleanups?.();
+      if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
+        logger.info(
+          { recovered: flushed.recovered, pending: flushed.pending },
+          "flushed the in-process orphan sandbox cleanup buffer to the database",
+        );
+      }
+    } catch {
+      // A flush failure never stops the sweep. The buffer keeps the orphan for a
+      // later tick, and the database rows below still need this sweep. The caught
+      // exception never enters the log, because a write error can carry a
+      // credential in its message, code, cause, or stack.
+      logger.warn("orphan sandbox cleanup buffer flush failed; the sweep continues");
+    }
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(
+        and(
+          eq(environmentLeases.status, "pending_cleanup"),
+          backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
+        ),
+      )
+      .orderBy(asc(environmentLeases.updatedAt))
+      .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+
+    let destroyed = 0;
+    let capped = 0;
+    for (const row of rows) {
+      const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+      const attempts = readPendingCleanupRetryAttempts(metadata);
+
+      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+        capped += 1;
+        // Warn once, then leave the lease for manual cleanup. The atomic claim
+        // keeps the warning to one log line even when two sweeps overlap.
+        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
+          const warned = await claimPendingCleanupCapWarning(row.id);
+          if (warned) {
+            logger.warn(
+              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+            );
+          }
+        }
+        continue;
+      }
+
+      const environment = row.environmentId
+        ? await environmentsSvc.getById(row.environmentId)
+        : null;
+      const lease = await environmentsSvc.getLeaseById(row.id);
+      if (!lease) continue;
+
+      // An orphan ephemeral lease keeps its provider, its provider lease id, and
+      // its sandbox config in the lease row. A failed acquire records it, and its
+      // environment row may be gone or foreign-bound. A reuse_by_environment lease
+      // whose environment a delete removed keeps the same recorded data, because
+      // the schema sets the environment reference to null on delete and preserves
+      // the row. Both leases tear down from the recorded lease data through
+      // `retryPendingSandboxTeardown`, which never reads the environment row. So
+      // the sweep uses that path whenever the lease is an orphan ephemeral lease
+      // or its environment row is gone. A reuse_by_environment lease whose
+      // environment still exists tears down through `destroyRunLease`. That
+      // path uses the provider and configuration recorded on the lease first;
+      // the environment is lifecycle context and only a legacy fallback.
+      const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
+
+      // Do not consume a finite cleanup attempt while the provider plugin is
+      // briefly unavailable. A plugin worker restart, a plugin reload, or a
+      // plugin reinstall makes the provider unavailable for a short window. The
+      // plugin can be missing or not ready in that window. A teardown then throws,
+      // and the atomic claim below would count that throw against the cap, so a
+      // long restart or reload could exhaust the retries and strand a live
+      // sandbox. So probe the provider first, and defer the lease this tick when
+      // the provider is not ready. The sweep preserves the pending_cleanup row,
+      // and a later sweep retries after the provider recovers. The probe reports
+      // ready only for a permanent condition (a missing provider string, a
+      // built-in provider, or no worker manager), so a genuine teardown failure
+      // still runs, throws, and counts toward the cap. A runtime with no probe
+      // method treats the lease as ready, so the sweep keeps its earlier
+      // behavior.
+      const workerReady = environmentRuntime.isPendingCleanupWorkerReady
+        ? await environmentRuntime.isPendingCleanupWorkerReady({ environment, lease })
+        : true;
+      if (!workerReady) {
+        // Move the unavailable lease to the back of the sweep queue. Otherwise
+        // the oldest unavailable rows refill the page on every tick and starve a
+        // newer lease that has a ready provider. The defer bumps `updatedAt`
+        // only, so it consumes no finite retry attempt.
+        await deferPendingCleanupLease(row.id);
+        continue;
+      }
+
+      // Atomically claim the attempt before the retry. Only the winning sweep
+      // increments the count and tears the sandbox down, so an overlapping sweep
+      // never tears the same sandbox down twice or exceeds the attempt cap. The
+      // claim records the attempt before the retry, so a thrown driver error
+      // still counts against the cap.
+      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
+      if (!claimed) continue;
+
+      try {
+        if (useRecordedTeardown) {
+          // Tear the sandbox down from the recorded provider config and the
+          // cleanup-authorized secret versions. The teardown returns no value
+          // and throws on failure, so the sweep releases the lease itself.
+          await environmentRuntime.retryPendingSandboxTeardown({ environment, lease });
+          await environmentsSvc.releaseLease(lease.id, "expired", {
+            cleanupStatus: "success",
+            failureReason: "pending_cleanup_retry",
+          });
+          destroyed += 1;
+        } else if (environment) {
+          const result = await environmentRuntime.destroyRunLease({
+            environment,
+            lease,
+            failureReason: "pending_cleanup_retry",
+          });
+          if (result && result.status !== "pending_cleanup") {
+            destroyed += 1;
+          }
+        }
+      } catch {
+        // The recorded-data teardown throws on failure, so revert the lease to
+        // pending_cleanup for a later sweep. The claimed attempt still counts
+        // against the cap, so the retries stay bounded. The `destroyRunLease`
+        // path reverts the lease itself, so this revert only runs for the
+        // recorded-data teardown path.
+        if (useRecordedTeardown) {
+          await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
+            cleanupStatus: "failed",
+            failureReason: "pending_cleanup_retry",
+          });
+        }
+        // Log a constant errorKind only. The exception can carry a credential in
+        // its name, code, message, cause, or stack, so the sweep never reads it.
+        logger.warn(
+          {
+            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
+            leaseId: row.id,
+            environmentId: row.environmentId,
+            attempts: attempts + 1,
+          },
+          "pending_cleanup lease retry failed",
+        );
+      }
+    }
+
+    return { swept: rows.length, destroyed, capped };
+  }
+
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
-    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
-    // Find all runs stuck in "running" state (queued runs get a bounded wait below; resumeQueuedRuns handles normal dequeue)
+    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -13652,58 +13662,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       reaped.push(run.id);
     }
 
-    // Backstop for any cause of queue stranding (pause races, concurrency starvation,
-    // invokability edge cases): a run should never wait in "queued" forever.
-    // This loop only cancels the run and its wakeup; for issue-linked runs it
-    // deliberately does not touch the issue's checkoutRunId/executionRunId
-    // lock columns. Releasing that lock is left to the same-sweep
-    // reconcileStrandedAssignedIssues() (and the enqueueWakeup self-heal it
-    // triggers), mirroring how sweepStaleIssueLocks documents its own
-    // reliance on that same reconciliation pass.
-    const expiredQueuedRuns = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.status, "queued"),
-          lt(heartbeatRuns.createdAt, new Date(now.getTime() - maxQueuedAgeMs)),
-        ),
-      );
-
-    const maxQueuedAgeHours = maxQueuedAgeMs / (60 * 60 * 1000);
-    const maxQueuedAgeHoursLabel = Number.isInteger(maxQueuedAgeHours)
-      ? String(maxQueuedAgeHours)
-      : maxQueuedAgeHours.toFixed(2);
-    const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
-
-    for (const run of expiredQueuedRuns) {
-      // Guard the cancellation on the row still being "queued": another
-      // scheduler pass or a manual resume can claim this exact run (queued ->
-      // running) between the SELECT above and this UPDATE. Without the guard
-      // we would blindly stamp a now-running/finished run back to
-      // "cancelled" and cancel its wakeup out from under it. Only touch the
-      // wakeup and append the lifecycle event when the guarded update
-      // actually transitioned the row.
-      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
-        finishedAt: now,
-        error: queueExpiredMessage,
-        errorCode: "queue_expired",
-      });
-      if (!cancelResult.updated || !cancelResult.run) continue;
-      const cancelledRun = cancelResult.run;
-      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
-        finishedAt: now,
-        error: queueExpiredMessage,
-      });
-      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: queueExpiredMessage,
-      });
-      reaped.push(cancelledRun.id);
-    }
-
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
@@ -13821,45 +13779,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    // Cost-plus fold: cost_cents = ceil((wholesale model tokens + wholesale
-    // Kubecost compute) * margin * 100). modelUsd === null means "skip
-    // metering" (BYOK / subscription_included / model not in the price table)
-    // and yields 0 cents, preserving today's behaviour when env is unset.
-    const modelUsd = priceCloudTokens(cloudPriceTable, {
-      model: result.model ?? "unknown",
-      billingType,
-      costUsd: result.costUsd,
-      inputTokens,
-      cachedInputTokens,
-      outputTokens,
-    });
-    // Compute cost is only attributed for a metered run (modelUsd !== null;
-    // BYOK/subscription_included/unpriced runs skip it). No k8s namespace is
-    // resolvable server-side in cloud_tenant mode (the tenant->namespace mapping
-    // lives in the gateway/operator, not the product DB), so pass ""; the
-    // Kubecost client then filters by the globally-unique paperclip.io/run-id
-    // label alone. Kubecost is the PREFERRED source when it returns a positive
-    // cost, but it is fragile here (KSM must expose the run-id label; short runs
-    // round to 0 vs the scrape interval), so resolveComputeUsd falls through to
-    // a deterministic duration x pod-hour floor -- a managed run is NEVER metered
-    // with 0 compute (which is what every run did before this floor).
-    let computeUsd = 0;
-    if (modelUsd !== null) {
-      const runStart = run.startedAt ?? run.createdAt ?? new Date();
-      const runEnd = run.finishedAt ?? new Date();
-      const kubecostUsd = await computeCostUsdForRun(kubecostCfg, {
-        runId: run.id,
-        namespace: "",
-        start: runStart,
-        end: runEnd,
-      });
-      computeUsd = resolveComputeUsd({
-        kubecostUsd,
-        durationSec: (runEnd.getTime() - runStart.getTime()) / 1000,
-        ratePerHour: cloudComputeRatePerHour,
-      });
-    }
-    const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
@@ -13906,24 +13827,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
-
-      // Activation instrumentation: a successful run that produced a cost
-      // event is the activation point (first successful agent run). No-op
-      // unless PAPERCLIP_ACTIVATION_SINK is set; swallows its own errors so it
-      // can never affect run completion.
-      //
-      // The run status has to be passed explicitly because this block is on the
-      // cost-event path, which fires for ANY run carrying token usage -- and
-      // `run` here is whatever the finalize chain produced, including a run
-      // that setRunStatus() marked "failed". Without the status, a BYOK run
-      // that burned tokens and then failed on auth counted as activation.
-      await recordActivationEvent(createDrizzleActivationStore(db), {
-        companyId: agent.companyId,
-        agentId: agent.id,
-        heartbeatRunId: run.id,
-        sink: resolveActivationSink(),
-        runStatus: run.status,
-      });
     }
   }
 
@@ -13943,10 +13846,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const perAgentSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      const companyCap = resolveCompanyConcurrencyCap();
-      const companyRunningCount = companyCap === null ? 0 : await countRunningRunsForCompany(agent.companyId);
-      const availableSlots = clampToCompanyConcurrency({ perAgentSlots, companyRunningCount, companyCap });
+      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -14010,7 +13910,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
         });
-        trackPendingExecution(execution);
         // Register the in-flight execution so drainActiveRunExecutions() can await
         // it. executeRun resolves only after its finally block finishes flushing
         // run rows/events, so awaiting this promise guarantees the run's writes
@@ -14079,12 +13978,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
-    // Self-heal guard for AdapterRuntimeImageMismatchError (a run landed on a
-    // sandbox pod whose runtime image does not carry the harness CLI). Flip
-    // to true the first time recovery is attempted so a second mismatch on
-    // the SAME run surfaces the original typed error terminally instead of
-    // looping.
-    let imageMismatchRecoveryAttempted = false;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -15255,12 +15148,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspace,
       executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
     });
-    // `let`, not `const`: the AdapterRuntimeImageMismatchError self-heal
-    // (recoverEnvironmentLeaseAfterImageMismatch below) re-acquires the
-    // environment and must update this reference too, so the re-realization
-    // call uses the fresh environment rather than the one from before
-    // recovery.
-    let selectedEnvironment = acquiredEnvironment.environment;
+    const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
     // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
     // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -15306,40 +15194,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       lease: realizationResult.lease,
     };
     persistedExecutionWorkspace = realizationResult.persistedExecutionWorkspace;
-    // `let`, not `const`: a first-attempt AdapterRuntimeImageMismatchError
-    // re-acquires and re-realizes the environment (see
-    // recoverEnvironmentLeaseAfterImageMismatch below), which replaces these
-    // with the values from the fresh lease.
-    let workspaceRealization = realizationResult.workspaceRealization;
-    let executionTarget = realizationResult.executionTarget;
-    let remoteExecution = realizationResult.remoteExecution;
-    // Shared with the AdapterRuntimeImageMismatchError self-heal below: both
-    // the initial setup and the post-recovery re-realization publish the
-    // same contextSnapshot shape, so the field list only lives in one place.
-    const buildPaperclipEnvironmentContext = () => ({
-      id: selectedEnvironment.id,
-      name: selectedEnvironment.name,
-      driver: selectedEnvironment.driver,
-      leaseId: activeEnvironmentLease.lease.id,
-      workspaceRealization,
-      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
-        ? {
-            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
-            host:
-              typeof activeEnvironmentLease.lease.metadata?.host === "string"
-                ? activeEnvironmentLease.lease.metadata.host
-                : undefined,
-            port:
-              typeof activeEnvironmentLease.lease.metadata?.port === "number"
-                ? activeEnvironmentLease.lease.metadata.port
-                : undefined,
-            username:
-              typeof activeEnvironmentLease.lease.metadata?.username === "string"
-                ? activeEnvironmentLease.lease.metadata.username
-                : undefined,
-          }
-        : {}),
-    });
+    const workspaceRealization = realizationResult.workspaceRealization;
+    const executionTarget = realizationResult.executionTarget;
+    const remoteExecution = realizationResult.remoteExecution;
     if (!executionTarget || executionTarget.kind === "local") {
       try {
         runScratch = await prepareHeartbeatRunScratch({
@@ -15381,7 +15238,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipScratch;
     }
-    context.paperclipEnvironment = buildPaperclipEnvironmentContext();
+    context.paperclipEnvironment = {
+      id: selectedEnvironment.id,
+      name: selectedEnvironment.name,
+      driver: selectedEnvironment.driver,
+      leaseId: activeEnvironmentLease.lease.id,
+      workspaceRealization,
+      ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
+        ? {
+            remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
+            host:
+              typeof activeEnvironmentLease.lease.metadata?.host === "string"
+                ? activeEnvironmentLease.lease.metadata.host
+                : undefined,
+            port:
+              typeof activeEnvironmentLease.lease.metadata?.port === "number"
+                ? activeEnvironmentLease.lease.metadata.port
+                : undefined,
+            username:
+              typeof activeEnvironmentLease.lease.metadata?.username === "string"
+                ? activeEnvironmentLease.lease.metadata.username
+                : undefined,
+          }
+        : {}),
+    };
     await db
       .update(heartbeatRuns)
       .set({
@@ -15883,50 +15763,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const adapter = getServerAdapter(agent.adapterType);
-      if (adapterConsumesInstructionsBundle(agent.adapterType)) {
-        try {
-          const ensured = await agentInstructionsService().ensureManagedInstructionsMaterialized(agent, {
-            durableSnapshot: agent.managedInstructionsSnapshot ?? null,
-            loadDefaults: (role) =>
-              loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(role)),
-          });
-          if (ensured.snapshotToPersist) {
-            await db
-              .update(agents)
-              .set({ managedInstructionsSnapshot: ensured.snapshotToPersist, updatedAt: new Date() })
-              .where(eq(agents.id, agent.id));
-          }
-          if (ensured.status === "restored") {
-            logger.warn(
-              {
-                companyId: agent.companyId,
-                agentId: agent.id,
-                runId: run.id,
-                adapterType: agent.adapterType,
-                source: ensured.source,
-              },
-              "re-materialized missing managed instructions bundle before run",
-            );
-            await appendRunEvent(currentRun, seq++, {
-              eventType: "instructions.rematerialized",
-              stream: "system",
-              level: "warn",
-              message: "Re-materialized missing managed instructions bundle before run",
-              payload: { source: ensured.source, entryPath: ensured.entryPath },
-            });
-          }
-        } catch (err) {
-          logger.warn(
-            {
-              companyId: agent.companyId,
-              agentId: agent.id,
-              runId: run.id,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "failed to ensure managed instructions bundle; continuing without self-heal",
-          );
-        }
-      }
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }
@@ -16130,13 +15966,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterFinalizeOutcome = status;
       };
 
-      // Runs the adapter once against the CURRENT (possibly re-acquired)
-      // lease/executionTarget. Extracted so the AdapterRuntimeImageMismatchError
-      // self-heal below can call it a second time, after
-      // recoverEnvironmentLeaseAfterImageMismatch has refreshed the closed-over
-      // executionTarget/remoteExecution, without duplicating the MCP/context
-      // setup.
-      const runAdapterExecuteAttempt = async (): Promise<Awaited<ReturnType<typeof adapter.execute>>> => {
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
         const adapterContext = { ...context };
         const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
           db,
@@ -16155,22 +15986,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
-        return await adapter.execute({
+        adapterResult = await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
           config: runtimeConfig,
           context: adapterContext,
-          runtimeCommandSpec:
-            adapter.getRuntimeCommandSpec?.(runtimeConfig, {
-              // A managed, pre-baked sandbox image carries the CLI already; never
-              // emit a network install for it (locked egress would stall it until
-              // timeout). The execution target fails fast on an image mismatch.
-              prebakedRuntime:
-                executionTarget?.kind === "remote" &&
-                executionTarget.transport === "sandbox" &&
-                executionTarget.prebakedRuntime === true,
-            }) ?? null,
+          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
@@ -16187,39 +16009,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
-          // Persist a credential the runtime rotated mid-run. Codex is the live
-          // case: a ChatGPT-plan auth.json carries a single-use refresh token
-          // that the CLI rotates whenever the access token expires, and the
-          // rotated copy dies with the sandbox. Without this the stored
-          // credential is invalid from the next run onward, so the plan route
-          // would work for about an hour and then break for good.
-          onCredentialRotated: async ({ envKey, value }) => {
-            try {
-              const bindings = await secretsSvc.listBindings(agent.companyId);
-              const binding = bindings.find(
-                (candidate) =>
-                  candidate.targetType === "agent" &&
-                  candidate.targetId === agent.id &&
-                  candidate.configPath === `env.${envKey}`,
-              );
-              if (!binding) return;
-              // Attributed to the agent, not a user: nobody typed this value,
-              // the runtime produced it. Keeps the secret's audit trail honest
-              // about who wrote each version.
-              await secretsSvc.rotate(binding.secretId, { value }, { agentId: agent.id });
-            } catch (err) {
-              // Never fail a run that already did the user's work over a
-              // bookkeeping write. A missed rotation surfaces later as an
-              // ordinary auth error, which is recoverable; a failed run is not.
-              // No value or fragment of it is ever logged.
-              await onLog(
-                "stdout",
-                `[paperclip] Could not store the refreshed ${envKey} credential: ${
-                  err instanceof Error ? err.message : String(err)
-                }\n`,
-              );
-            }
-          },
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
@@ -16232,129 +16021,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
-      };
-
-      // Gap-2 self-heal (closes what #9950's fail-fast gate left open): the
-      // gate detects a run on the wrong runtime image but does not recover.
-      // Destroy the mismatched lease and re-acquire + re-realize the
-      // environment ONCE so the retried adapter.execute has a chance to land
-      // on a pod carrying the right harness. There is no existing in-run
-      // setup-retry seam in heartbeat.ts to hook (EnvironmentRunError from
-      // acquireForRun/realizeForRun is not retried anywhere today); this is
-      // the narrowest insertion point available short of restructuring the
-      // ~800-line acquire/realize/execute sequence into a generic retry loop.
-      const recoverEnvironmentLeaseAfterImageMismatch = async (): Promise<void> => {
-        logger.warn(
-          {
-            runId: run.id,
-            issueId,
-            agentId: agent.id,
-            environmentId: selectedEnvironment.id,
-            leaseId: activeEnvironmentLease.lease.id,
-          },
-          "adapter runtime image mismatch on sandbox lease; destroying lease and re-acquiring once",
-        );
-        const mismatchedLeaseId = activeEnvironmentLease.lease.id;
-        try {
-          await envOrchestrator.runtime.destroyRunLease({
-            environment: activeEnvironmentLease.environment,
-            lease: activeEnvironmentLease.lease,
-            failureReason: "adapter_runtime_image_mismatch",
-          });
-        } catch (destroyErr) {
-          logger.warn(
-            { err: destroyErr, runId: run.id, leaseId: mismatchedLeaseId },
-            "failed to destroy mismatched sandbox lease before re-acquiring; continuing with re-acquire",
-          );
-          // The destroy RPC threw before the driver's destroyRunLease could
-          // mark this lease "failed" (that only happens AFTER a successful
-          // destroy), so the row is still "active" and still owned by this
-          // run's heartbeatRunId. If the healed retry below succeeds, run
-          // teardown (releaseEnvironmentLeasesForRun ->
-          // leaseReleaseStatusForRunStatus("succeeded")) releases every lease
-          // still tied to this run with status "released", which would put
-          // this KNOWN-BAD lease back into the reusable pool. Mark it
-          // non-reusable directly here, mirroring the exact call the driver's
-          // destroyRunLease would have made on success. Best-effort: this
-          // must not block recovery from proceeding even if it also fails.
-          try {
-            await environmentsSvc.releaseLease(mismatchedLeaseId, "failed", {
-              failureReason: "adapter_runtime_image_mismatch",
-            });
-          } catch (markFailedErr) {
-            logger.warn(
-              { err: markFailedErr, runId: run.id, leaseId: mismatchedLeaseId },
-              "failed to mark mismatched sandbox lease as failed after destroy RPC error; it may remain reusable",
-            );
-          }
-        }
-
-        const reacquiredEnvironment = await envOrchestrator.acquireForRun({
-          companyId: agent.companyId,
-          selectedEnvironmentId,
-          localEnvironmentId: localEnvironment.id,
-          adapterType: agent.adapterType,
-          issueId: issueId ?? null,
-          heartbeatRunId: run.id,
-          agentId: agent.id,
-          persistedExecutionWorkspace,
-          executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
-        });
-        activeEnvironmentLease = {
-          environment: reacquiredEnvironment.environment,
-          lease: reacquiredEnvironment.lease,
-          leaseContext: reacquiredEnvironment.leaseContext,
-        };
-        // Keep selectedEnvironment in sync with the freshly reacquired
-        // environment (same pattern as the initial setup, which sources it
-        // from acquiredEnvironment.environment) so the re-realization call
-        // below never uses the stale pre-recovery reference.
-        selectedEnvironment = reacquiredEnvironment.environment;
-        const rerealizationResult = await envOrchestrator.realizeForRun({
-          environment: selectedEnvironment,
-          lease: activeEnvironmentLease.lease,
-          adapterType: agent.adapterType,
-          companyId: agent.companyId,
-          issueId: issueId ?? null,
-          heartbeatRunId: run.id,
-          executionWorkspace,
-          effectiveExecutionWorkspaceMode,
-          persistedExecutionWorkspace,
-        });
-        activeEnvironmentLease = {
-          ...activeEnvironmentLease,
-          lease: rerealizationResult.lease,
-        };
-        persistedExecutionWorkspace = rerealizationResult.persistedExecutionWorkspace;
-        workspaceRealization = rerealizationResult.workspaceRealization;
-        executionTarget = rerealizationResult.executionTarget;
-        remoteExecution = rerealizationResult.remoteExecution;
-        context.paperclipEnvironment = buildPaperclipEnvironmentContext();
-        await db
-          .update(heartbeatRuns)
-          .set({
-            contextSnapshot: context,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, run.id));
-      };
-
-      const recordAdapterFinalizeFailure = async (err: unknown) => {
-        try {
-          await recordWorkspaceFinalize("failed", {
-            errorMessage: err instanceof Error ? err.message : String(err),
-          });
-        } catch (recordErr) {
-          logger.warn(
-            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
-            "failed to record workspace_finalize=failed operation; dependents may remain gated",
-          );
-        }
-      };
-
-      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
-      try {
-        adapterResult = await runAdapterExecuteAttempt();
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -16363,32 +16029,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // finalize row.
         await recordWorkspaceFinalize("succeeded");
       } catch (adapterErr) {
-        if (isAdapterRuntimeImageMismatchError(adapterErr) && !imageMismatchRecoveryAttempted) {
-          imageMismatchRecoveryAttempted = true;
-          try {
-            await recoverEnvironmentLeaseAfterImageMismatch();
-            adapterResult = await runAdapterExecuteAttempt();
-            await recordWorkspaceFinalize("succeeded");
-          } catch (retryErr) {
-            // Either recovery itself failed (e.g. the re-acquire could not
-            // find a healthy lease) or the retried adapter.execute mismatched
-            // again. Either way this run gets exactly one recovery attempt:
-            // surface whatever the second attempt threw as the terminal
-            // failure (the same AdapterRuntimeImageMismatchError on a repeat
-            // mismatch; a different error if recovery infrastructure itself
-            // failed).
-            await recordAdapterFinalizeFailure(retryErr);
-            throw retryErr;
-          }
-        } else {
-          // Adapter (or its restore finally) threw, or the finalize record
-          // write itself threw. Either way the workspace may be in a partial
-          // state. Best-effort record finalize=failed so the dependent readiness
-          // check keeps the gate closed instead of waking on stale local state,
-          // and surface the original error to the caller.
-          await recordAdapterFinalizeFailure(adapterErr);
-          throw adapterErr;
+        // Adapter (or its restore finally) threw — or the finalize record
+        // write itself threw. Either way the workspace may be in a partial
+        // state. Best-effort record finalize=failed so the dependent readiness
+        // check keeps the gate closed instead of waking on stale local state,
+        // and surface the original error to the caller.
+        try {
+          await recordWorkspaceFinalize("failed", {
+            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+          });
+        } catch (recordErr) {
+          logger.warn(
+            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+            "failed to record workspace_finalize=failed operation; dependents may remain gated",
+          );
         }
+        throw adapterErr;
       } finally {
         try {
           await revokeHeartbeatRunGatewayTokens({
@@ -16524,13 +16180,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               );
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-      const runErrorCode = resolveHeartbeatRunErrorCode({
-        outcome,
-        adapterErrorCode: adapterResult.errorCode,
-        cancelledErrorCode: latestRun?.errorCode,
-        responsibleUserDenialCode: recordedResponsibleUserDenialCode,
-        infraFailureCode: classifySandboxInfraFailure(adapterResult.errorMessage),
-      });
+      const runErrorCode =
+        outcome === "timed_out"
+          ? "timeout"
+          : outcome === "cancelled"
+            ? (latestRun?.errorCode ?? "cancelled")
+            : outcome === "failed"
+              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -16717,62 +16374,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          const transientRetry = await scheduleBoundedRetryForRun(livenessRun, agent);
-          // A bounded retry caps attempts inside ONE chain, but the next
-          // heartbeat opens a fresh chain, so a permanent misconfiguration that
-          // merely looks transient loops failed runs forever. One company
-          // reached 521 failed runs in 48 hours this way: an OpenRouter key
-          // asked for an amazon-bedrock model, which answers "Unexpected server
-          // error" and classifies as a retryable upstream fault every time.
-          // Once the budget is spent, hand the run to the storm breaker, which
-          // still only pauses after CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD
-          // terminal runs share one error code. A real upstream blip recovers
-          // long before that.
-          if (transientRetry?.outcome === "retry_exhausted") {
-            await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
-          }
-        } else if (
-          outcome === "failed" &&
-          isPermanentAuthFailureRun(livenessRun) &&
-          agent.status !== "paused" &&
-          agent.status !== "terminated"
-        ) {
-          // No valid provider credential: pause the agent so its heartbeat stops
-          // re-running (and failing auth) every interval, and surface the reason so
-          // a human connects a model key and resumes.
-          const authFailurePauseReason =
-            "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.";
-          const authFailurePauseWrite = await db
-            .update(agents)
-            .set({
-              status: "paused",
-              pauseReason: truncateAgentErrorReason(authFailurePauseReason),
-              pausedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(agents.id, agent.id))
-            .catch((pauseErr) => {
-              logger.warn(
-                { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
-                "failed to pause agent after permanent auth failure",
-              );
-              return null;
-            });
-          if (authFailurePauseWrite !== null) {
-            // Mirror manual pause (routes/agents.ts cancelActiveForAgent): a paused
-            // agent must have no live runs, or a just-enqueued retry can sit in
-            // "queued" forever since dequeue skips paused agents. livenessRun is
-            // already terminal (setRunStatusIfRunning above), so it cannot be
-            // re-cancelled here.
-            await cancelActiveForAgentInternal(
-              agent.id,
-              `Cancelled because the agent was paused: ${authFailurePauseReason}`,
-              "agent_paused",
-            );
-          }
-        } else if (outcome === "failed") {
-          // Fallback storm breaker for failure codes no dedicated branch handles.
-          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
+          await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -16866,25 +16468,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
-      // A repeat adapter_runtime_image_mismatch (the one-shot self-heal above
-      // already destroyed+re-acquired once and still landed on the wrong
-      // image) surfaces its own typed error code instead of the generic
-      // adapter_failed, so operators see the real cause on the terminal run.
-      const adapterRuntimeImageMismatchFailure = isAdapterRuntimeImageMismatchError(err) ? err : null;
-      // The sandbox never answered the runtime probe. Distinct from the mismatch
-      // above on purpose: no image is at fault, so recording it as one sends
-      // operators (and the user-facing run error) after the wrong thing.
-      const adapterSandboxProbeUnansweredFailure = isAdapterSandboxProbeUnansweredError(err)
-        ? err
-        : null;
       const failureErrorCode =
-        workspaceValidationFailure?.code ??
-        configurationIncompleteFailure?.code ??
-        recordedResponsibleUserDenialCode ??
-        adapterRuntimeImageMismatchFailure?.code ??
-        adapterSandboxProbeUnansweredFailure?.code ??
-        classifySandboxInfraFailure(message) ??
-        "adapter_failed";
+        workspaceValidationFailure?.code
+        ?? configurationIncompleteFailure?.code
+        ?? recordedResponsibleUserDenialCode
+        ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -16963,9 +16551,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
-        // Thrown adapter failures never reach the finalize chain above, so the
-        // storm breaker also runs here for repeated identical failure codes.
-        await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleIssueReviewPathDisposition(livenessRun);
 
@@ -17089,45 +16674,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
-              // Permanent setup failure (adapter not runnable in this environment):
-              // pause the agent so the heartbeat stops re-invoking it every interval
-              // (which otherwise produces a setup_failed retry storm), and surface the
-              // reason so it routes to a human to reconfigure the adapter.
-              if (
-                isNonRetryableAdapterSetupFailure(outerErr) &&
-                failedAgent.status !== "paused" &&
-                failedAgent.status !== "terminated"
-              ) {
-                const setupFailurePauseReason =
-                  `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
-                const setupFailurePauseWrite = await db
-                  .update(agents)
-                  .set({
-                    status: "paused",
-                    pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
-                    pausedAt: new Date(),
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(agents.id, failedAgent.id))
-                  .catch((pauseErr) => {
-                    logger.warn(
-                      { err: pauseErr, agentId: failedAgent.id, runId },
-                      "failed to pause agent after non-retryable setup failure",
-                    );
-                    return null;
-                  });
-                if (setupFailurePauseWrite !== null) {
-                  // Mirror manual pause: a paused agent must have no live runs, or
-                  // a just-enqueued retry can sit in "queued" forever since dequeue
-                  // skips paused agents. livenessRun is already terminal (the CAS
-                  // write above only succeeded because it left "running").
-                  await cancelActiveForAgentInternal(
-                    failedAgent.id,
-                    `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
-                    "agent_paused",
-                  );
-                }
-              }
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
@@ -19765,7 +19311,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runOrLookup: string | {
         id: string;
         companyId: string;
-        status?: string | null;
         logStore: string | null;
         logRef: string | null;
       },
@@ -19994,40 +19539,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
-    },
-
-    /**
-     * Await the detached run executions this service instance spawned (the
-     * fire-and-forget `void executeRun(...)` chains from startNextQueuedRunForAgent).
-     * Call this before closing the DB client / stopping the database so in-flight
-     * queries finish against a live socket instead of rejecting with
-     * "write CONNECTION_ENDED/CONNECTION_DESTROYED".
-     *
-     * Bounded by `timeoutMs` (default 5s): the common case to drain is the fast
-     * post-run unwind (lease release, status writes), which settles in
-     * milliseconds. An execution genuinely stuck on external I/O (e.g. a gateway
-     * agent.wait that never returns, or a scheduled retry) must NOT hang the
-     * caller's teardown forever, so drain resolves once `timeoutMs` elapses even
-     * if some executions are still pending. `maxPasses` re-checks for executions
-     * chained from a draining one within the time budget. Returns true if fully
-     * drained, false if it gave up on a deadline.
-     */
-    drain: async (options: { timeoutMs?: number; maxPasses?: number } = {}): Promise<boolean> => {
-      const timeoutMs = Math.max(0, options.timeoutMs ?? 5_000);
-      const maxPasses = Math.max(1, options.maxPasses ?? 50);
-      const deadline = Date.now() + timeoutMs;
-      for (let pass = 0; pass < maxPasses && pendingExecutions.size > 0; pass += 1) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) break;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const budget = new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, remaining);
-          timer.unref?.();
-        });
-        await Promise.race([Promise.allSettled([...pendingExecutions]), budget]);
-        if (timer) clearTimeout(timer);
-      }
-      return pendingExecutions.size === 0;
     },
   };
 }

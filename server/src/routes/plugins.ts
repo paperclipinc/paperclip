@@ -2252,11 +2252,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found
    */
   router.get("/plugins/:pluginId/config", async (req, res) => {
-    // Plugin instance config is admin-scoped data: it is instance-wide (not
-    // company-scoped) and may contain sensitive values. Mirror the write gate
-    // (POST below) so non-admin board actors cannot read another tenant's
-    // instance plugin configuration.
-    assertInstanceAdmin(req);
+    assertBoardOrgAccess(req);
     const { pluginId } = req.params;
     const companyId = requirePluginConfigCompanyId(req, req.query.companyId);
 

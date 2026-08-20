@@ -128,25 +128,21 @@ export function applyPlatformProvisionedEnvironmentFloor<T extends {
 }
 
 /**
- * Restricted (non-instance-admin) viewers must not see environment secrets or
- * operator configuration, but they still need to know an environment's kind:
- * the UI resolves the managed Kubernetes sandbox via `config.provider` (see
- * `resolveForcedKubernetesEnvironment`), so a fully-empty redacted config makes
- * a forced-Kubernetes instance look unconfigured to every restricted viewer.
- * Keep only the non-secret `provider` discriminator; drop everything else.
+ * Whether this platform-provisioned row participates in the tenant
+ * env-vars contract: the generalized managed sandbox slot only. The local
+ * slot and legacy kubernetes-marker rows do not — the tenant never runs
+ * on local under this regime, and legacy rows may carry platform-written
+ * values.
  */
-export function redactEnvironmentForRestrictedView<T extends {
-  config: Record<string, unknown> | null;
-  envVars?: Record<string, unknown> | null;
+function isTenantEditableManagedSandbox(environment: {
+  driver?: string;
   metadata: Record<string, unknown> | null;
-}>(environment: T): T {
-  const provider = environment.config?.provider;
-  return {
-    ...environment,
-    config: typeof provider === "string" ? { provider } : {},
-    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
-    metadata: null,
-  };
+}): boolean {
+  return (
+    environment.driver === "sandbox" &&
+    environment.metadata?.managedByPaperclip === true &&
+    environment.metadata?.managedKubernetesSandbox !== true
+  );
 }
 
 const PLATFORM_PROVISIONED_MARKER_KEYS = [
@@ -375,6 +371,19 @@ export function environmentRoutes(
   function canReadFullInstanceEnvironment(req: Request) {
     return req.actor.type === "board"
       && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
+  }
+
+  function redactEnvironmentForRestrictedView<T extends {
+    config: Record<string, unknown> | null;
+    envVars?: Record<string, unknown> | null;
+    metadata: Record<string, unknown> | null;
+  }>(environment: T): T {
+    return {
+      ...environment,
+      config: {},
+      ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
+      metadata: null,
+    };
   }
 
   function presentEnvironmentForRead<T extends {

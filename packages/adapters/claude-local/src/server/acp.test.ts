@@ -8,7 +8,6 @@ import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
-  resolveClaudeAuthAdvice,
   resolveClaudeAcpBillingIdentity,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
@@ -951,85 +950,6 @@ describe("claude_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
-  });
-});
-
-describe("resolveClaudeAuthAdvice (ACP lane)", () => {
-  it("recognizes CLAUDE_CODE_OAUTH_TOKEN as valid subscription auth", () => {
-    expect(
-      resolveClaudeAuthAdvice({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value" }),
-    ).toEqual({
-      code: "claude_acp_subscription_token_detected",
-      level: "info",
-      message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
-    });
-  });
-
-  it("defers to the ANTHROPIC_API_KEY branch when both are set", () => {
-    expect(
-      resolveClaudeAuthAdvice({
-        ANTHROPIC_API_KEY: "sk-ant-api-fake",
-        CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-token-value",
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when neither auth signal is present (unchanged local-login guidance)", () => {
-    expect(resolveClaudeAuthAdvice({})).toBeNull();
-  });
-});
-
-describe("claude_local ACP session-init lane fallback", () => {
-  function throwingRuntime() {
-    return {
-      ensureSession: async () => {
-        throw new Error("Internal error");
-      },
-      startTurn: () => ({
-        events: (async function* () {})(),
-        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-        cancel: async () => {},
-      }),
-      setConfigOption: async () => {},
-      close: async () => {},
-    };
-  }
-
-  it("throws AcpxSessionInitError for an auto-selected run so execute() can fall back to CLI", async () => {
-    const root = await makeTempRoot("paperclip-claude-acp-fallback-");
-    const execute = createClaudeAcpExecutor({
-      createRuntime: () => throwingRuntime() as never,
-    });
-    const ctx = buildContext(root, {
-      // No engine=acp: an auto-selected default ACP run is fallback-eligible.
-      config: {
-        cwd: root,
-        stateDir: path.join(root, "state"),
-        promptTemplate: "Do the assigned work.",
-      },
-    });
-
-    const thrown = await execute(ctx).then(
-      () => null,
-      (err: unknown) => err,
-    );
-
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).name).toBe("AcpxSessionInitError");
-    expect((thrown as { errorCode?: string }).errorCode).toBe("acpx_session_init_failed");
-  });
-
-  it("returns the terminal failed result for an explicit engine=acp run (no lane switch)", async () => {
-    const root = await makeTempRoot("paperclip-claude-acp-explicit-");
-    const execute = createClaudeAcpExecutor({
-      createRuntime: () => throwingRuntime() as never,
-    });
-    // buildContext defaults to config.engine === "acp" (explicit).
-    const result = await execute(buildContext(root));
-
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("acpx_session_init_failed");
   });
 });
 

@@ -17,7 +17,6 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
@@ -181,8 +180,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   });
 
   afterAll(async () => {
-    await heartbeat?.drain();
-    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 

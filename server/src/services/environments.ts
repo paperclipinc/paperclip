@@ -66,7 +66,6 @@ export interface KubernetesEnvironmentConfigInput {
   inCluster?: boolean;
   runtimeClassName?: string;
   egressMode?: "cilium" | "standard";
-  egressPolicy?: "allowlist" | "open-internet";
   egressAllowFqdns?: string[];
   egressAllowCidrs?: string[];
   namespacePrefix?: string;

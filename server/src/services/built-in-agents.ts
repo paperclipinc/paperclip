@@ -10,7 +10,6 @@ import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { inheritCompanyCredentialEnv } from "./agent-credential-inheritance.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
@@ -21,7 +20,6 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { listAdapterModels } from "../adapters/registry.js";
 import {
   resourceStatus,
@@ -800,21 +798,13 @@ function isBuiltInAgentMarkerConflict(error: unknown): boolean {
   return false;
 }
 
-export function builtInAgentService(
-  db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
-) {
+export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
   const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
   const instructionsSvc = agentInstructionsService();
   const skillSvc = companySkillService(db);
-  // Routine runs dispatch heartbeat runs, which acquire sandbox leases. Without
-  // the worker manager the runtime cannot resolve a plugin-backed sandbox
-  // provider and every run fails setup.
-  const routineSvc = routineService(db, {
-    pluginWorkerManager: options.pluginWorkerManager,
-  });
+  const routineSvc = routineService(db);
 
   async function findSingleRootManager(companyId: string) {
     const roots = await db
@@ -1665,12 +1655,10 @@ export function builtInAgentService(
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const patch = definitionPatch(definition, resolvedInput);
-    patch.adapterConfig = await inheritCompanyCredentialEnv(db, companyId, patch.adapterType, patch.adapterConfig);
     let created: Agent;
     try {
       created = await agentSvc.create(companyId, {
-        ...patch,
+        ...definitionPatch(definition, resolvedInput),
         status: definition.defaultStatus ?? "idle",
         pauseReason: definition.defaultStatus === "paused"
           ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
@@ -1772,12 +1760,10 @@ export function builtInAgentService(
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
-    const pendingPatch = definitionPatch(definition, input);
-    pendingPatch.adapterConfig = await inheritCompanyCredentialEnv(db, companyId, pendingPatch.adapterType, pendingPatch.adapterConfig);
     let pending: Agent;
     try {
       pending = await agentSvc.create(companyId, {
-        ...pendingPatch,
+        ...definitionPatch(definition, input),
         status: "pending_approval",
         reportsTo,
         metadata: builtInMetadata(definition),
