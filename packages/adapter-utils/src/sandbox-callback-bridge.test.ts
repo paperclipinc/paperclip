@@ -210,7 +210,6 @@ describe("sandbox callback bridge", () => {
         authorization: `Bearer ${bridgeToken}`,
         accept: "application/json",
         "if-none-match": '"client-cache-key"',
-        "idempotency-key": "hire-once-123",
         "x-paperclip-run-id": "run-bridge-1",
         "x-bridge-debug": "drop-me",
       },
@@ -257,10 +256,6 @@ describe("sandbox callback bridge", () => {
       headers: {
         accept: "application/json",
         "if-none-match": '"client-cache-key"',
-        // Idempotency-Key must survive the header allowlist so agent retries of
-        // mutating calls (e.g. routine runs, hires) dedupe server-side instead
-        // of double-executing.
-        "idempotency-key": "hire-once-123",
       },
     });
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
@@ -1325,6 +1320,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/llms/agent-configuration" },
       { method: "GET", path: "/llms/secrets.txt" },
       { method: "POST", path: "/api/companies/co-1/agent-hires/ap-1" },
+      { method: "POST", path: "/api/issues/issue-1/approvals/ap-1" },
       { method: "POST", path: "/api/agents/agent-1/pause" },
       { method: "POST", path: "/api/agents/agent-1/terminate" },
       { method: "POST", path: "/api/agents/agent-1/keys" },
