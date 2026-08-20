@@ -25,7 +25,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { copyTextToClipboard } from "../lib/clipboard";
+import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AdapterCredentialConnect } from "../components/AdapterCredentialConnect";

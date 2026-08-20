@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+import { AgentConfigForm } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -47,8 +47,7 @@ const mockAccessApi = vi.hoisted(() => ({
 
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
-  listProposals: vi.fn(),
-  listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
+  create: vi.fn(),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -600,10 +599,11 @@ describe("AgentConfigForm environment selector", () => {
       checks: [],
       testedAt: new Date(0).toISOString(),
     });
-    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
-    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
+      }),
+    );
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({

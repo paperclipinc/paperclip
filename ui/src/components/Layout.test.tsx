@@ -540,8 +540,10 @@ describe("Layout", () => {
   });
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
-    currentPathname = "/PAP/apps";
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    currentPathname = "/PAP/apps/browse";
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
+    );
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

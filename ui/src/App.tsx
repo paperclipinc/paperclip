@@ -112,8 +112,15 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
-      <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
-      <Route path="company/settings/members" element={<CompanyAccess />} />
+      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
+      <Route
+        path="company/settings/members"
+        element={
+          <SurfaceGuard surface="company.members">
+            <CompanyAccess />
+          </SurfaceGuard>
+        }
+      />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       <Route
         path="company/settings/invites"
@@ -428,6 +435,7 @@ export function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
+  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
 
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`

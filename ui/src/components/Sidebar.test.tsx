@@ -168,11 +168,8 @@ describe("Sidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("shows Search as a nav item instead of a header icon", async () => {
-    // The header's spare width goes to the workspace name (which otherwise
-    // truncates at ~78px), so search lives in the nav list — still
-    // exactly one pointer affordance, just relocated.
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  it("links the top search icon to the search page without showing Search in Work nav", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
     const root = await renderSidebar();
 
     expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();

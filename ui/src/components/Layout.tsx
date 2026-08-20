@@ -33,9 +33,9 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { instanceSettingsApi } from "../api/instanceSettings";
-import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { useOptionalToastActions } from "../context/ToastContext";
+import { useFeatures } from "../hooks/useFeatures";
+import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -211,15 +211,14 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    if (health?.deploymentMode === "authenticated") return;
-    // Cloud provisions the single company for a stack, and POST /companies is a
-    // 403 floor there — auto-opening the wizard could only dead-end.
-    if (health?.cloud) return;
+    // In authenticated mode, CloudAccessGate has already routed users who
+    // cannot create a company (waiting page / no-access page), so anyone who
+    // reaches an empty companies list here is allowed to onboard.
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
+  }, [companies, companiesLoading, openOnboarding]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;

@@ -73,15 +73,6 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-const mockDecisionsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
-}));
-
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/issues/PAP-1",
@@ -146,13 +137,6 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
-vi.mock("../api/decisions", () => ({
-  decisionsApi: mockDecisionsApi,
-}));
-
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -1077,16 +1061,6 @@ describe("IssueDetail", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
-    mockDecisionsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockOpenPanel.mockClear();
@@ -2152,17 +2126,46 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[aria-label="Open file in this issue"]')).not.toBeNull();
   });
 
-  it("hides the properties sidebar on the first onboarding task until a plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
-    mockIssuesApi.get.mockResolvedValue(
-      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+  it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false },
+      }),
     );
-    // No plan yet: the hook's 404 resolves to null.
-    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
+      {
+        id: "decomp-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        acceptedPlanRevisionId: "plan-rev-1",
+        acceptedPlanRevisionNumber: 2,
+        acceptedInteractionId: null,
+        status: "completed",
+        requestFingerprint: "fingerprint-1",
+        requestedChildCount: 2,
+        childIssueIds: ["issue-2", "issue-3"],
+        childIssues: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "First child issue",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerRunId: null,
+        completedAt: "2026-05-28T06:00:00.000Z",
+        createdAt: "2026-05-28T05:50:00.000Z",
+        updatedAt: "2026-05-28T06:00:00.000Z",
+      },
+    ]);
 
     await act(async () => {
       root.render(

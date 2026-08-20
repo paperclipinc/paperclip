@@ -249,30 +249,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
-  // non-permitted viewers simply get an empty list.
-  const editAgentId = !isCreate ? props.agent.id : null;
-  const { data: pendingProposals = [] } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
-      : ["secret-proposals", "none"],
-    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
-    enabled: Boolean(selectedCompanyId) && !isCreate,
-    retry: false,
-  });
-  const agentBindingProposals = useMemo(
-    () =>
-      pendingProposals.filter(
-        (proposal) => proposal.kind === "binding" && proposal.target?.id === editAgentId,
-      ),
-    [pendingProposals, editAgentId],
-  );
-  const proposalReview = useProposalReview(selectedCompanyId, []);
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
   // Instance execution policy (general settings). When `executionMode` is
@@ -439,106 +416,44 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
 
-  // Create mode holds the non-secret stored-session claim after a Claude
-  // subscription login reaches the server `stored` state. The claim marks the
-  // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
-  // in the create request; the server binds and enforces the token
-  // independently. The claim never carries a token value.
-  const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
+  // Env editor state: single source of truth shared by the environment
+  // variables editor and the guided credential-connect card, so a bind from
+  // either surface persists through the same save path.
+  const currentEnv = isCreate
+    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
 
-  // After a login binds CLAUDE_CODE_OAUTH_TOKEN, the user-secret-definitions list
-  // in the cache is stale. The form reads that list once at page load, so it does
-  // not contain the definition the login just bound. The bound row then compares
-  // its key against the stale list and shows a false "no longer exists" health
-  // error. Invalidate the list so the row reads the fresh definitions and clears
-  // the error.
-  const invalidateUserSecretDefinitions = () => {
-    if (!selectedCompanyId) return;
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.secrets.userDefinitions(selectedCompanyId),
-    });
-  };
+  function updateEnv(env: Record<string, EnvBinding> | undefined) {
+    if (isCreate) {
+      set!({ envBindings: env ?? {}, envVars: "" });
+    } else {
+      mark("adapterConfig", "env", env);
+    }
+  }
 
-  // Add the fixed binding to the create-mode form state after the login stores.
-  // Keep every unrelated binding. Hold the claim so the create request sends it.
-  const handleClaudeLoginStored = (storedSessionId: string) => {
-    if (!isCreate || !set) return;
-    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
-    set({
-      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
-      claudeStoredSessionId: storedSessionId,
-    });
-    invalidateUserSecretDefinitions();
-  };
+  function isEnvValueBound(binding: EnvBinding | undefined): boolean {
+    if (binding === undefined) return false;
+    if (typeof binding === "string") return binding.trim().length > 0;
+    if (binding.type === "plain") return binding.value.trim().length > 0;
+    return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+  }
 
-  // Edit mode: after a login stores the token, add the fixed binding to the
-  // existing agent and persist it at once. The server already stored the token;
-  // this step binds `CLAUDE_CODE_OAUTH_TOKEN` to the agent's environment through
-  // the normal agent-update patch path, so no manual bind step remains. Flush any
-  // pending editor draft first, keep every unrelated binding, and mark the merged
-  // set into the overlay so the editor and the saved patch agree.
-  //
-  // An update can never consume a fresh login's stored-session claim -- only the
-  // create and hire paths can, per `enforceClaudeOAuthBindingClaim`. So this save
-  // must set `applyStoredClaudeLogin`, the same way `handleApplyStoredClaudeLoginEdit`
-  // does, or the server rejects the patch with the fixed claim error even though
-  // the login already stored the token. Without the flag every fresh login on an
-  // existing agent's own page fails to save the binding.
-  const handleClaudeLoginStoredEdit = async () => {
-    if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
-    const baseEnv =
-      flushedEnv ??
-      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
-    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
-    const nextOverlay: AgentConfigOverlay = {
-      ...overlay,
-      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
-    };
-    setOverlay(nextOverlay);
-    await props.onSave({
-      ...buildAgentUpdatePatch(props.agent, nextOverlay),
-      applyStoredClaudeLogin: true,
-    });
-    invalidateUserSecretDefinitions();
-  };
+  const boundEnvKeys = useMemo(() => {
+    if (!credentialSetup) return [];
+    return credentialSetup.options
+      .map((option) => option.envKey)
+      .filter((envKey) => isEnvValueBound(currentEnv[envKey]));
+  }, [credentialSetup, currentEnv]);
 
-  // Create mode: bind the fixed reference to an existing stored login with no new
-  // login round trip. Add the fixed binding and set the apply-existing flag. The
-  // create request sends the flag; the server binds the token only for a user
-  // actor and only when a stored value exists. Keep every unrelated binding.
-  const handleApplyStoredClaudeLogin = () => {
-    if (!isCreate || !set) return;
-    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
-    set({
-      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
-      claudeApplyStoredLogin: true,
-    });
-    invalidateUserSecretDefinitions();
-  };
-
-  // Edit mode: bind the fixed reference to an existing stored login with no new
-  // login round trip, then persist it at once. Add the fixed binding to the
-  // existing agent and save the patch with the apply-existing flag. Flush any
-  // pending editor draft first and keep every unrelated binding.
-  const handleApplyStoredClaudeLoginEdit = async () => {
-    if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
-    const baseEnv =
-      flushedEnv ??
-      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
-    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
-    const nextOverlay: AgentConfigOverlay = {
-      ...overlay,
-      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
-    };
-    setOverlay(nextOverlay);
-    await props.onSave({
-      ...buildAgentUpdatePatch(props.agent, nextOverlay),
-      applyStoredClaudeLogin: true,
-    });
-    invalidateUserSecretDefinitions();
-  };
+  function handleCredentialBind(envKey: string, secretId: string) {
+    updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
+    // The newly created secret isn't in the company secrets list query cache
+    // yet, so without invalidating, SecretPicker would render this env row
+    // as "Missing secret (…)" until something else happens to refetch.
+    if (selectedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    }
+  }
 
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
@@ -1732,11 +1647,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                  }
+                  value={currentEnv}
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {

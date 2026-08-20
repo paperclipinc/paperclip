@@ -132,8 +132,6 @@ describe("CompanySettingsNav", () => {
         value: "members",
         items: [
           { value: "general", label: "General" },
-          { value: "export", label: "Export" },
-          { value: "import", label: "Import" },
           { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },

@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
-import { ApiError } from "@/api/client";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {

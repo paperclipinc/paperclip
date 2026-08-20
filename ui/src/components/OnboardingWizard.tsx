@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AdapterEnvironmentCheck,
@@ -19,7 +19,8 @@ import {
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
-import { useCompanyListQuery } from "../api/companies-query";
+import { cloudCompaniesApi } from "../api/cloudCompanies";
+import { healthApi } from "../api/health";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -155,77 +156,12 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-// Exported so tests write/read the exact key the component uses, instead of
-// duplicating the literal and silently drifting from it if it's ever renamed.
-export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-const DEFAULT_TASK_TITLE = "Paperclip onboarding";
-const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
-understand what the user wants and turn it into a concrete plan — not to
-start building yet.
-
-A greeting has already been posted to the user on your behalf, so don't
-re-introduce yourself — go straight to the questions.
-
-This is a user-facing chat. Everything you post here is read by the user, so
-keep your messages terse and written for them. Only surface things meant for
-the user: the questions, the plan, the team, next-step options, and short
-status ("Got your answers — here's the plan."). Never narrate how you work.
-Don't post your internal steps or thinking into the chat — no "let me probe
-the schema", "schema learned", "building the questions payload", "orienting
-myself with the API", or similar play-by-play of your API/tool calls. Do that
-work silently and post only the result.
-
-Work in this order:
-
-1. Ask a few focused, clarifying questions. Use an ask_user_questions interaction to settle on one concrete goal to tackle first— scope, priorities, constraints, and what "done" looks like. Don't guess; ask.
-
-2. Propose one plan. Once you understand the goal, write a short approach plan to the \`plan\` document. At the bottom, list the agents you'd hire (with their roles) and any follow-up tasks you'd create. Then present the whole thing as a SINGLE request_checkbox_confirmation that targets the \`plan\` document, with each proposed hire and follow-up task as its own checkable option, checked by default. Give each option a stable id you can act on later. Do NOT use suggest_tasks or a separate request_confirmation — one checkbox card is the plan and its approval. In the card's message keep the summary to a line or two and point the user to the full write-up in the plan on the right sidebar (it opens to the Plan there automatically) — don't paste the whole plan into the card, and never say the write-up is "above" or "in the plan doc above"; it lives in the right sidebar.
-
-3. Wait for approval. Don't hire anyone or create work until the user approves the plan. They can uncheck anything they don't want before approving, and unchecking simply drops it. If they ask for changes, revise the plan document and re-confirm.
-
-4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
-
-Propose, don't decide. Keep it conversational.`;
-/**
- * The onboarding draft in `localStorage`, via a browser that is allowed to say
- * no.
- *
- * Storage access throws outright where a browser denies it — Safari's private
- * mode, a blocked third-party context — and every call site here sits in a
- * render, an effect, or a close handler, so an escaping exception takes down
- * something the customer was using. Losing the ability to resume onboarding is
- * a far smaller failure than the wizard tearing down mid-answer, or refusing
- * to close.
- *
- * Routed through one object on purpose. Guarding these one at a time is how
- * three of the four call sites ended up unguarded while the fourth looked
- * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
- * all have the same failure and want the same answer.
- */
-const onboardingDraftStorage = {
-  read(): string | null {
-    try {
-      return localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  },
-  write(value: string): void {
-    try {
-      localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
-    } catch {
-      // Storage unavailable: the draft is simply not resumable this session.
-    }
-  },
-  clear(): void {
-    try {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-    } catch {
-      // Nothing to do. A draft that cannot be cleared is re-rejected on the
-      // next load by the same ownership check that rejected it here.
-    }
-  },
-};
+const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
+// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
+const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
+const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
+const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
@@ -234,119 +170,47 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
  * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
  * very first render, so it must never mount before the restored draft is
- * final, otherwise every field locks to its default and the draft is lost
+ * final — otherwise every field locks to its default and the draft is lost
  * for good. restoreOnboardingState requires the SETTLED companies list (see
  * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  // Deliberately does not call `useCompany()`. The list it exposes is the
-  // shared cache, which is what this gate must not trust - see below.
+  const { companies, loading: companiesLoading } = useCompany();
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
   const rawBlob = useMemo(() => {
-    const raw = onboardingDraftStorage.read();
+    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
     if (!raw) return undefined;
     try {
       return JSON.parse(raw) as unknown;
     } catch {
-      return null; // malformed: treated as stale below
+      return null; // malformed: treated as stale below, same as before
     }
   }, []);
 
-  // Whether this account owns the company the draft names is an authorization
-  // question, and the answer has to be about the account asking now.
-  //
-  // The shared company cache could not answer it at all: one entry for every
-  // account, served for thirty seconds after a switch with no loading state and
-  // no error, so a check that trusted "not loading, no error" handed one
-  // account's draft to the next. The entry is keyed by account now, and that
-  // trap is gone with it.
-  //
-  // What survives is smaller and still worth a request. A cached list is the
-  // right account's but can be thirty seconds old, so a company created moments
-  // ago in another tab is missing from it — and missing reads as "you do not own
-  // this", which deletes the draft rather than withholding it. So this still
-  // asks for a list fetched for this mount.
-  const companiesQuery = useCompanyListQuery({
-    staleTime: 0,
-    // Only a *parseable* saved draft poses the question. Without one there is
-    // nothing to authorize, and this must not add a request to every wizard
-    // mount - nor make the cleanup of unreadable junk wait on an endpoint that
-    // has no bearing on whether it is junk.
-    enabled: rawBlob !== undefined && rawBlob !== null,
-  });
-
-  // Decidable only with a list that succeeded, actually arrived, and that the
-  // server was willing to give us.
-  //
-  // Whose list it is stopped being a question here: the entry is keyed by
-  // account, so the previous account's list is unreachable rather than merely
-  // rejected. What the checks still answer is whether there is an answer at all,
-  // and the reason that matters is the *destructive* branch below — an
-  // undecidable draft is withheld and recoverable, but a draft judged
-  // not-yours is deleted.
-  //
-  // `isSuccess`: React Query keeps the last good `data` through a failed
-  // refetch, and a retained list is not evidence about now.
-  //
-  // `staleTime: 0` on the query, still: a cached list is the right account's but
-  // can be thirty seconds old, and a company created moments ago in another tab
-  // would be missing from it — which reads as "this draft belongs to a company
-  // you do not own" and deletes it.
-  //
-  // `unauthorized`: the query folds 401 and 403 into
-  // `{ companies: [], unauthorized: true }` rather than throwing, so an auth
-  // blip arrives as a *successful* fetch of an empty list and would otherwise
-  // read as "this account owns nothing" and delete the draft.
-  const ownershipDecidable =
-    companiesQuery.isSuccess &&
-    companiesQuery.data !== undefined &&
-    !companiesQuery.data.unauthorized;
-
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
-    // Unreadable, so junk regardless of who owns what. Judged before the
-    // ownership check rather than after it, so clearing it does not wait on a
-    // company request that cannot change the answer.
+    // Companies not settled yet: restoreOnboardingState must not be called
+    // (see its CONTRACT). Not stale, just not decidable yet.
+    if (companiesLoading) return { saved: null, staleStateDetected: false };
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
-    // Not decidable yet, or not decidable at all. Either way: restore nothing,
-    // delete nothing. A draft withheld is recoverable on the next load; a
-    // draft deleted, or one handed to the wrong account, is not.
-    if (!ownershipDecidable) return { saved: null, staleStateDetected: false };
-    const restored = restoreOnboardingState(rawBlob, companiesQuery.data!.companies);
+    const restored = restoreOnboardingState(rawBlob, companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, ownershipDecidable, companiesQuery.data]);
+  }, [rawBlob, companiesLoading, companies]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
   useEffect(() => {
-    if (!staleStateDetected) return;
-    onboardingDraftStorage.clear();
+    if (staleStateDetected) {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    }
   }, [staleStateDetected]);
 
-  // A saved blob exists and the verification fetch is still in flight: wait,
-  // rather than mount the inner wizard with a premature and unrecoverable
-  // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
-  // only read `saved` once.
-  //
-  // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
-  // holds retained data, so a refetch over a warm cache would mount the wizard
-  // while ownership was still undecidable - and with the wizard open, the
-  // persist effect would overwrite the customer's own draft with defaults
-  // before the answer arrived. `isFetching` covers the refetch too.
-  //
-  // While in flight, not on failure. The companies query sets `retry: false`,
-  // so a failed fetch stays failed; and with no companies the dashboard offers
-  // a "Get Started" button wired to onboarding, which a gate that returned null
-  // here would make do nothing at all.
-  //
-  // Mounting does not cost the draft. The persist effect that would overwrite
-  // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
-  // wizard writes nothing. If the wizard is open the customer is onboarding
-  // right now, which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesQuery.isFetching) {
+  // A saved blob exists but companies haven't settled yet: wait rather than
+  // mount the inner wizard with a premature (and unrecoverable) guess.
+  if (rawBlob !== undefined && companiesLoading) {
     return null;
   }
 
@@ -708,20 +572,29 @@ function OnboardingWizardInner({
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // Backfill the name too, for the same company and the same reason.
-  //
-  // `companyName` is otherwise only ever typed on step 1, so a company that
-  // enters the wizard further along has none. That is a dead end rather than a
-  // cosmetic gap: the mission step prints the name in its own copy, and both
-  // ways forward from that step - the button and the Enter key - require
-  // `companyName.trim()`. An existing company opened on the mission step could
-  // not leave it. Nothing reached that state until the dashboard started
-  // opening agentless companies there.
+  // When onboarding skips the naming step (initialStep >= 2: an existing/auto-
+  // created company entered via the /<prefix>/onboarding route), the company
+  // already has a name. Backfill it so the mission header, the "Confirm mission"
+  // guard, and the review checklist reflect the real name instead of a blank.
+  // We never prefill on the initialStep 1 rename path — there the user names it
+  // fresh.
   useEffect(() => {
-    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
+    if (!effectiveOnboardingOpen || initialStep < 2 || companyName || !createdCompanyId) {
+      return;
+    }
     const company = companies.find((c) => c.id === createdCompanyId);
-    if (company) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
+    if (company?.name) setCompanyName(company.name);
+  }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
+
+  // credentialBindings is company-scoped even though it isn't persisted: if
+  // createdCompanyId changes while the wizard stays mounted (an in-SPA company
+  // switch, no page reload), a binding collected under the previous company
+  // must not read as "connected" for the new one.
+  useEffect(() => {
+    setCredentialBindings({});
+    setFailedCredentialEnvKeys(new Set());
+    setCredentialProbeError(null);
+  }, [createdCompanyId]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
@@ -846,11 +719,6 @@ function OnboardingWizardInner({
   // grid hides it, so without this snap the wizard would silently keep an
   // invisible selection and create an agent that can never acquire a lease.
   useEffect(() => {
-    // Not until the registry has loaded. External adapter types are only
-    // registered once the adapters query resolves, so before that a saved
-    // external adapter is indistinguishable from a disabled one - and snapping
-    // would replace the customer's choice with a built-in and persist it.
-    if (!adapterRegistryLoaded) return;
     const visible = [...recommendedAdapters, ...moreAdapters].filter(
       (a) => !a.comingSoon,
     );
@@ -872,7 +740,7 @@ function OnboardingWizardInner({
       return;
     }
     setModel("");
-  }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
+  }, [recommendedAdapters, moreAdapters, adapterType]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
@@ -1258,69 +1126,10 @@ function OnboardingWizardInner({
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      // An existing company needs its mission written, not just skipped past.
-      // This branch used to advance without saving anything, which was
-      // harmless while nothing sent an existing company to the mission step -
-      // a company reached step 2 only by creating itself on step 1, one line
-      // below. The dashboard now opens an agentless company here, so the
-      // customer types a mission and presses "Confirm mission". Advancing
-      // without writing it would leave the company with no mission at all,
-      // which is the state this whole change exists to remove.
-      //
-      // A goal already in hand means update it, not skip the write. It used
-      // to mean skip, which was safe only while the field could not hold an
-      // unsaved change: the id was set by *writing* the mission, so arriving
-      // here with one meant nothing had been typed since. Hydration breaks
-      // that - the id now also arrives from the company's existing goal, with
-      // the customer's edits sitting in the field beside it - and skipping
-      // would discard exactly the answer this step asked for.
-      setLoading(true);
-      setError(null);
-      try {
-        // The company may already have a mission this step could not see.
-        // `useCompanyMission` fails open, so a goal lookup that exhausted its
-        // retries sends a company that has one here anyway. Adding a second
-        // company-level goal would leave two, and the earlier one would keep
-        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
-        //
-        // So read once more before writing, and update rather than add. The
-        // customer just answered the question on a step that asked it, so
-        // their answer is the mission. A read that fails still writes: an
-        // unwritten mission is the failure this whole change exists to remove.
-        let existingGoalId: string | null = createdCompanyGoalId;
-        try {
-          const goals = await queryClient.fetchQuery({
-            queryKey: queryKeys.goals.list(createdCompanyId),
-            queryFn: () => goalsApi.list(createdCompanyId)
-          });
-          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
-        } catch {
-          // Still cannot tell. Fall through and write.
-        }
-
-        const plan = planMissionPersistence({
-          goalInput: companyGoal,
-          existingGoalId,
-        });
-        if (plan.kind === "skip") {
-          setStep(3);
-          return;
-        }
-        const goal =
-          plan.kind === "update"
-            ? await goalsApi.update(plan.goalId, plan.payload)
-            : await goalsApi.create(createdCompanyId, plan.payload);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(createdCompanyId)
-        });
-        if (!stillTheSameCompany(createdCompanyId)) return;
-        setCreatedCompanyGoalId(goal.id);
-        setStep(3);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to save the mission");
-      } finally {
-        setLoading(false);
-      }
+      // The company already exists (auto-created in cloud_tenant mode, or carried
+      // in from the "add another agent" entry point). Naming + goal were handled
+      // on entry, so just advance to creating the team lead.
+      setStep(3);
       return;
     }
     if (isCloud && companies.length > 0) {
@@ -1720,8 +1529,7 @@ function OnboardingWizardInner({
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
-        handleGiveHeartbeat();
+      else if (step === 4 && agentName.trim() && credentialConnected) handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -2668,7 +2476,7 @@ function OnboardingWizardInner({
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
+                  {step > 1 && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -2725,7 +2533,7 @@ function OnboardingWizardInner({
                         !agentName.trim() ||
                         loading ||
                         adapterEnvLoading ||
-                        missionUnresolvedForHire
+                        (requiresCredential && !credentialConnected)
                       }
                       onClick={handleGiveHeartbeat}
                     >
