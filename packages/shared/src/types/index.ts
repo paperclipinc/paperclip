@@ -94,6 +94,12 @@ export type {
   IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "./instance.js";
 export type {
+  CloudUpstreamSummaryCount,
+  CloudUpstreamWarning,
+  CloudUpstreamConflict,
+  CloudUpstreamRunEvent,
+} from "./cloud-upstream.js";
+export type {
   SmokeLabServiceStatus,
   SmokeRun,
   SmokeRunStatus,
