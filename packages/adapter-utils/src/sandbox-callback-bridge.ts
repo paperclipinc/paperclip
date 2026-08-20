@@ -25,7 +25,6 @@ const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // document reads/writes with an opaque 502. 1MB covers a max document plus its
 // JSON envelope with margin; the queue protocol already base64-chunks large bodies.
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 1024 * 1024;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
