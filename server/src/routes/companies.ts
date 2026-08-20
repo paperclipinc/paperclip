@@ -24,7 +24,6 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden } from "../errors.js";
 import {
   COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
   companyImportTransferDeclarationSchema,
@@ -61,12 +60,6 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
-import {
-  canCreateStackCompany,
-  cloudTenantCompanyId,
-  isCompanyIdConflict,
-  withCloudStackSlugAlias,
-} from "../services/cloud-tenant-company.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";

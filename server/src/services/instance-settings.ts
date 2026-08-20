@@ -510,9 +510,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(base.experimental, managedConfig);
     return { ...base, experimental: { ...experimental, managedKeys } } as InstanceSettings;
   }
-
-  async function getOrCreateRow() {
-    const existing = await db
   async function getOrCreateRow(runner: InstanceSettingsWriteDb = db) {
     const existing = await runner
       .select()
@@ -553,7 +550,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
     update: async (
       patch: PatchInstanceSettings,

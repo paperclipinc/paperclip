@@ -23,7 +23,6 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
-  streamed?: boolean;
   // The stop timestamp and the measured wall time of one execution. Both are
   // optional and additive: a producer that does not measure them leaves them
   // absent, so the many existing `RunProcessResult` producers stay unchanged.

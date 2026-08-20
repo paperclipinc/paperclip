@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState, useMemo } from "react";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -20,8 +19,6 @@ import {
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
-import { cloudCompaniesApi } from "../api/cloudCompanies";
-import { healthApi } from "../api/health";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -158,12 +155,6 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
-// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
-const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
-const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
 // Exported so tests write/read the exact key the component uses, instead of
 // duplicating the literal and silently drifting from it if it's ever renamed.
 export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
@@ -243,39 +234,23 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
  * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
  * very first render, so it must never mount before the restored draft is
- * final — otherwise every field locks to its default and the draft is lost
  * final, otherwise every field locks to its default and the draft is lost
  * for good. restoreOnboardingState requires the SETTLED companies list (see
  * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  const { companies, loading: companiesLoading } = useCompany();
   // Deliberately does not call `useCompany()`. The list it exposes is the
   // shared cache, which is what this gate must not trust - see below.
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
   const rawBlob = useMemo(() => {
-    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
     const raw = onboardingDraftStorage.read();
     if (!raw) return undefined;
     try {
       return JSON.parse(raw) as unknown;
     } catch {
-      return null; // malformed: treated as stale below, same as before
-    }
-  }, []);
-
-  const { saved, staleStateDetected } = useMemo(() => {
-    if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
-    // Companies not settled yet: restoreOnboardingState must not be called
-    // (see its CONTRACT). Not stale, just not decidable yet.
-    if (companiesLoading) return { saved: null, staleStateDetected: false };
-    if (rawBlob === null) return { saved: null, staleStateDetected: true };
-    const restored = restoreOnboardingState(rawBlob, companies);
-    return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, companiesLoading, companies]);
       return null; // malformed: treated as stale below
     }
   }, []);
@@ -347,14 +322,6 @@ export function OnboardingWizard() {
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
   useEffect(() => {
-    if (staleStateDetected) {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-    }
-  }, [staleStateDetected]);
-
-  // A saved blob exists but companies haven't settled yet: wait rather than
-  // mount the inner wizard with a premature (and unrecoverable) guess.
-  if (rawBlob !== undefined && companiesLoading) {
     if (!staleStateDetected) return;
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
@@ -741,29 +708,6 @@ function OnboardingWizardInner({
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // When onboarding skips the naming step (initialStep >= 2: an existing/auto-
-  // created company entered via the /<prefix>/onboarding route), the company
-  // already has a name. Backfill it so the mission header, the "Confirm mission"
-  // guard, and the review checklist reflect the real name instead of a blank.
-  // We never prefill on the initialStep 1 rename path — there the user names it
-  // fresh.
-  useEffect(() => {
-    if (!effectiveOnboardingOpen || initialStep < 2 || companyName || !createdCompanyId) {
-      return;
-    }
-    const company = companies.find((c) => c.id === createdCompanyId);
-    if (company?.name) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
-
-  // credentialBindings is company-scoped even though it isn't persisted: if
-  // createdCompanyId changes while the wizard stays mounted (an in-SPA company
-  // switch, no page reload), a binding collected under the previous company
-  // must not read as "connected" for the new one.
-  useEffect(() => {
-    setCredentialBindings({});
-    setFailedCredentialEnvKeys(new Set());
-    setCredentialProbeError(null);
-  }, [createdCompanyId]);
   // Backfill the name too, for the same company and the same reason.
   //
   // `companyName` is otherwise only ever typed on step 1, so a company that
@@ -928,7 +872,6 @@ function OnboardingWizardInner({
       return;
     }
     setModel("");
-  }, [recommendedAdapters, moreAdapters, adapterType]);
   }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
@@ -1315,10 +1258,6 @@ function OnboardingWizardInner({
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      // The company already exists (auto-created in cloud_tenant mode, or carried
-      // in from the "add another agent" entry point). Naming + goal were handled
-      // on entry, so just advance to creating the team lead.
-      setStep(3);
       // An existing company needs its mission written, not just skipped past.
       // This branch used to advance without saving anything, which was
       // harmless while nothing sent an existing company to the mission step -
@@ -1380,61 +1319,6 @@ function OnboardingWizardInner({
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to save the mission");
       } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    if (isCloud && companies.length > 0) {
-      // Cloud, and the user already has a stack company: creating an ADDITIONAL
-      // company must go through the gateway's POST /api/cloud/companies, which
-      // provisions a separate control-plane tenant on its own stack and returns
-      // a URL. Hard-navigate to it (a client-side navigate would not trigger the
-      // gateway to inject the new company's stack); the new tenant's own first-run
-      // wizard then handles naming + goal + lead agent. The FIRST company instead
-      // falls through to companiesApi.create below (PR A makes the server create
-      // the stack company for the cloud tenant).
-      setLoading(true);
-      setError(null);
-      setCompanyUpgradeRequired(false);
-      setCompanySlotRequired(false);
-      try {
-        const created = await cloudCompaniesApi.create({ name: companyName.trim() });
-        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-        window.location.assign(created.url);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 402) {
-          // Three outcomes share the 402: the trial plan gate (upgrade_required),
-          // an active subscriber who must buy another company slot first
-          // (slot_required, confirm-first billing), and a failed per-company
-          // billing update for an already-paying user (billing_update_failed).
-          const body = err.body as { error?: string; limit?: number } | null;
-          const code = body?.error;
-          if (code === "slot_required") {
-            setCompanySlotRequired(true);
-            const limit = body?.limit;
-            setError(
-              limit != null
-                ? `Your subscription covers ${limit} ${
-                    limit === 1 ? "company" : "companies"
-                  }. Add another company slot to create this one.`
-                : "Your subscription does not cover another company yet. Add a company slot to create this one.",
-            );
-          } else {
-            const upgradeRequired = code !== "billing_update_failed";
-            setCompanyUpgradeRequired(upgradeRequired);
-            setError(
-              code === "billing_update_failed"
-                ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
-                : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
-            );
-          }
-        } else if (err instanceof ApiError && err.status === 409) {
-          setError("You have reached the fair use company limit. Contact us to raise it.");
-        } else {
-          setError(
-            err instanceof Error ? err.message : "Failed to create company",
-          );
-        }
         setLoading(false);
       }
       return;
@@ -1781,7 +1665,6 @@ function OnboardingWizardInner({
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && credentialConnected) handleGiveHeartbeat();
       else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
         handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
@@ -2730,7 +2613,6 @@ function OnboardingWizardInner({
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && (
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
                     <Button
                       variant="ghost"
@@ -2788,7 +2670,6 @@ function OnboardingWizardInner({
                         !agentName.trim() ||
                         loading ||
                         adapterEnvLoading ||
-                        (requiresCredential && !credentialConnected)
                         missionUnresolvedForHire
                       }
                       onClick={handleGiveHeartbeat}

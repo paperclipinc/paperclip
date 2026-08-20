@@ -29,8 +29,6 @@ vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
 vi.mock("@/lib/browserNavigation", () => ({
   navigateTopLevel: mockNavigateTopLevel,
 }));
@@ -197,11 +195,6 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
-    // gateway's marketing sign-in page rather than invalidating in-app
-    // queries (there's no app left to refetch into).
-    expect(assignSpy).toHaveBeenCalledOnce();
-    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
 

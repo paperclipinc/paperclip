@@ -46,8 +46,6 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
-import { forbidden, unprocessable } from "../errors.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -561,30 +559,6 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  // The stack's company is created lazily through the standard onboarding
-  // wizard (POST /api/companies with the deterministic stack company id) —
-  // never fabricated here. Until it exists this actor simply has no
-  // membership in it; once it exists, this upsert keeps late-joining stack
-  // users (and role changes from the gateway) in sync on every request.
-  let stackCompanyExists = false;
-  try {
-    stackCompanyExists = await db
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows.length > 0);
-  } catch {
-    stackCompanyExists = false;
-  }
-
-  if (stackCompanyExists) {
-    const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    const membership = await db
-      .insert(companyMemberships)
-      .values({
-        companyId,
-        principalType: "user",
-        principalId: userId,
   if (shouldSync) await db
     .insert(companies)
     .values({
@@ -722,8 +696,6 @@ export async function resolveCloudTenantActor(
     userId,
     userName,
     userEmail,
-    companyIds: memberships.map((row) => row.companyId),
-    memberships,
     companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
     memberships: [
       {
@@ -744,26 +716,6 @@ export async function resolveCloudTenantActor(
   };
 }
 
-export function resolveCloudTenantWsAuth(
-  headers: Record<string, string | string[] | undefined>,
-): { userId: string; companyId: string } | null {
-  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!expectedToken) return null;
-  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
-  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
-  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
-  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
-  if (!userId || !stackId) return null;
-  return { userId, companyId: cloudTenantCompanyId(stackId) };
-}
-
-function firstHeaderValue(value: string | string[] | undefined): string | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const trimmed = raw?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : null;
-}
-
-function requiredCloudHeader(req: Request, name: string): string {
 function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {

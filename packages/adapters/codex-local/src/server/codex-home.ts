@@ -663,11 +663,6 @@ export async function seedManagedCodexHome(
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
-  if (!apiKey && !authJson && seedFromShared) {
   // A regular-file auth.json in the target home is one of two very different
   // things. The device-login promotion writes the company credential as a
   // regular file, and that file is the durable outcome of an interactive login,

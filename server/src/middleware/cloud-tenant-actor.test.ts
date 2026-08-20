@@ -5,8 +5,6 @@ import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 
-type SeededMembership = { companyId: string; membershipRole: string; status: string };
-
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
@@ -42,11 +40,6 @@ function createFakeDb(options: {
       : options?.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
-  const selectedTables: unknown[] = [];
-  const insertedValues = new Map<unknown, Record<string, unknown>>();
-  let currentTable: unknown = null;
-  const memberships = options?.seededMemberships ?? [membershipRow];
-  const companyRows = options?.companyRows ?? [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
   const chain: Record<string, unknown> = {};
   chain.values = (values: Record<string, unknown>) => {
@@ -104,7 +97,6 @@ function createFakeDb(options: {
       return { where: async () => undefined };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectedTables, insertedValues };
   return { db, insertedTables, deletedTables, selectWheres };
 }
 
@@ -169,8 +161,6 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(deletedTables).toContain(instanceUserRoles);
   });
 
-  it("is scoped to exactly the one company from its stack", async () => {
-    const { db } = createFakeDb({ companyRows: [{ id: "company-x" }] });
   it("stays scoped to exactly the stack's company when the user has no other membership rows", async () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
@@ -244,121 +234,6 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
   });
 
-  it("never creates the company (lazy creation)", async () => {
-    const { db, insertedTables } = createFakeDb();
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(actor).not.toBeNull();
-    expect(insertedTables).toContain(authUsers);
-    expect(insertedTables).not.toContain(companies);
-  });
-
-  it("skips the membership upsert while the stack company does not exist", async () => {
-    const { db, insertedTables } = createFakeDb({ companyRows: [], seededMemberships: [] });
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(insertedTables).not.toContain(companyMemberships);
-    expect(actor!.companyIds).toEqual([]);
-    expect(actor!.memberships).toEqual([]);
-  });
-
-  it("upserts the membership once the stack company exists", async () => {
-    const { db, insertedTables } = createFakeDb({ companyRows: [{ id: "company-x" }] });
-    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(insertedTables).toContain(companyMemberships);
-  });
-
-  it("exposes the stack context on the actor", async () => {
-    const { db } = createFakeDb();
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
-  });
-
-  it("captures the optional gateway stack slug on the stack context", async () => {
-    const { db } = createFakeDb();
-    const actor = await resolveCloudTenantActor(
-      db,
-      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "jannes-stubbemann" }),
-    );
-    expect(actor!.cloudStack).toEqual({
-      stackId: "stack-abc",
-      stackRole: "owner",
-      stackSlug: "jannes-stubbemann",
-    });
-  });
-
-  it("ignores a blank stack slug header", async () => {
-    const { db } = createFakeDb();
-    const actor = await resolveCloudTenantActor(
-      db,
-      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "   " }),
-    );
-    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
-  });
-
-  it("exposes a non-creator stack role verbatim", async () => {
-    const { db } = createFakeDb();
-    const actor = await resolveCloudTenantActor(
-      db,
-      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "support" }),
-    );
-    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "support" });
-  });
-
-  // Fork-only behavior (upstream lacks it): the actor's access list is read back
-  // from ALL of the user's active memberships, not just the stack company.
-  it("includes ALL active memberships, not just the stack company", async () => {
-    // The user owns their stack company A and was also invited to company B (owned
-    // by a different account/stack). Both must surface in the actor's access list.
-    const stackCompany = { companyId: "company-a", membershipRole: "owner", status: "active" };
-    const invitedCompany = { companyId: "company-b", membershipRole: "member", status: "active" };
-    const { db, selectedTables } = createFakeDb({
-      membershipRow: stackCompany,
-      seededMemberships: [stackCompany, invitedCompany],
-      companyRows: [{ id: "company-a" }],
-    });
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-
-    expect(actor).not.toBeNull();
-    // The access list reads the user's REAL memberships, not a synthesized 1:1.
-    expect(selectedTables).toContain(companyMemberships);
-    expect(actor!.companyIds).toEqual(expect.arrayContaining(["company-a", "company-b"]));
-    expect(actor!.companyIds).toHaveLength(2);
-    expect(actor!.memberships).toHaveLength(2);
-    const byCompany = Object.fromEntries((actor!.memberships ?? []).map((m) => [m.companyId, m]));
-    expect(byCompany["company-a"]?.membershipRole).toBe("owner");
-    expect(byCompany["company-a"]?.status).toBe("active");
-    expect(byCompany["company-b"]?.membershipRole).toBe("member");
-    expect(byCompany["company-b"]?.status).toBe("active");
-  });
-
-  it("surfaces invited-company memberships even before the stack company exists", async () => {
-    // Lazy creation must not hide companies the user was invited to: the stack
-    // company is not created yet, but company B's membership is real.
-    const invitedCompany = { companyId: "company-b", membershipRole: "member", status: "active" };
-    const { db, insertedTables } = createFakeDb({
-      seededMemberships: [invitedCompany],
-      companyRows: [],
-    });
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(insertedTables).not.toContain(companyMemberships);
-    expect(actor!.companyIds).toEqual(["company-b"]);
-    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
-  });
-
-  it("with only the stack company still returns exactly that one (backward compat)", async () => {
-    // Single-company regression guard: only the upserted owner membership exists.
-    const stackCompany = { companyId: "company-solo", membershipRole: "owner", status: "active" };
-    const { db } = createFakeDb({
-      membershipRow: stackCompany,
-      seededMemberships: [stackCompany],
-      companyRows: [{ id: "company-solo" }],
-    });
-    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-
-    expect(actor!.companyIds).toEqual(["company-solo"]);
-    expect(actor!.memberships).toHaveLength(1);
-    expect(actor?.memberships?.[0]?.membershipRole).toBe("owner");
-    expect(actor?.memberships?.[0]?.companyId).toBe("company-solo");
-    expect(actor!.source).toBe("cloud_tenant");
   describe("company membership union", () => {
     // The primary company id is derived from the stack id; resolve it once
     // through the same code path instead of duplicating the hash here.

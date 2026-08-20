@@ -1,5 +1,3 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { open, rename, rm } from "node:fs/promises";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";

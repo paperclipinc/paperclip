@@ -2651,60 +2651,6 @@ type AcpxExecutionPhase =
   | "prepare_turn"
   | "turn";
 
-/**
- * Thrown by the ACPX engine when session initialization fails on an
- * auto-selected (non-explicit) run so the calling adapter's `execute()` wrapper
- * can fall back to its proven CLI lane. The classified `errorCode` and the
- * child process stderr tail travel with the error so the fallback log and any
- * eventual terminal result surface the real cause instead of a bare
- * "Internal error". Explicit `engine=acp` runs keep the terminal failed result
- * (no silent lane switch) rather than throwing.
- */
-export class AcpxSessionInitError extends Error {
-  readonly errorCode: string;
-  readonly errorMeta: AdapterExecutionResult["errorMeta"];
-  readonly childStderrTail: string | null;
-  readonly acpxPhase: AcpxExecutionPhase = "ensure_session";
-
-  constructor(input: {
-    message: string;
-    errorCode: string;
-    errorMeta?: AdapterExecutionResult["errorMeta"];
-    childStderrTail: string | null;
-    cause?: unknown;
-  }) {
-    super(input.message);
-    this.name = "AcpxSessionInitError";
-    this.errorCode = input.errorCode;
-    this.errorMeta = input.errorMeta;
-    this.childStderrTail = input.childStderrTail;
-    if (input.cause !== undefined) {
-      (this as { cause?: unknown }).cause = input.cause;
-    }
-  }
-}
-
-/**
- * Fold the child process stderr tail (and any distinct cause message) into the
- * tenant-facing failure text. A JSON-RPC -32603 handshake failure arrives as a
- * bare "Internal error"; the actionable detail (auth rejection, missing binary,
- * backend timeout) lives only in the child stderr, so surface it here.
- */
-function composeSessionInitFailureMessage(input: {
-  message: string;
-  causeMessage: string | null;
-  childStderrTail: string | null;
-}): string {
-  const parts: string[] = [input.message];
-  if (input.causeMessage && !input.message.includes(input.causeMessage)) {
-    parts.push(`cause: ${input.causeMessage}`);
-  }
-  if (input.childStderrTail && !input.message.includes(input.childStderrTail)) {
-    parts.push(`agent process stderr (tail):\n${input.childStderrTail}`);
-  }
-  return parts.join("\n");
-}
-
 function describeErrorDiagnostics(err: unknown): {
   errorName: string;
   acpCode: string | null;
@@ -3844,54 +3790,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // agent turn runs after and is out of the span's scope.
         rootSpan.end(startupFailed);
       }
-    } catch (err) {
-      const { classified, message, childStderrTail } = await emitAcpxFailure({
-        ctx,
-        prepared,
-        err,
-        phase: "ensure_session",
-      });
-      const causeMessage =
-        typeof classified.errorMeta?.causeMessage === "string"
-          ? classified.errorMeta.causeMessage
-          : null;
-      // The composed message becomes the tenant-facing, persisted
-      // errorMessage/summary. The raw child stderr (and cause) can carry
-      // secrets (tokens, Authorization headers, api-key values), so redact
-      // before surfacing. The full unredacted tail still reached the internal
-      // run log and the acpx.error event above.
-      const composedMessage = redactSensitiveText(
-        composeSessionInitFailureMessage({
-          message,
-          causeMessage,
-          childStderrTail,
-        }),
-      );
-      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-      await cleanupRemoteBridges(prepared);
-      // Auto-selected (non-explicit) runs throw so the adapter's execute()
-      // wrapper catches it and falls back to the proven CLI lane. Explicit
-      // engine=acp runs keep the terminal failed result (no silent lane switch).
-      if (allowSessionInitLaneFallback(ctx)) {
-        throw new AcpxSessionInitError({
-          message: composedMessage,
-          errorCode: classified.errorCode ?? "acpx_session_init_failed",
-          errorMeta: classified.errorMeta,
-          childStderrTail,
-          cause: err,
-        });
-      }
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: composedMessage,
-        ...classified,
-        ...billingFields,
-        model: prepared.requestedModel || null,
-        clearSession,
-        resultJson: { phase: "ensure_session" },
-        summary: composedMessage,
       const configureSessionStart = now();
       try {
         await applySessionConfigOptions({

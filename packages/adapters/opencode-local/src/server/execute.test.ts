@@ -1,7 +1,9 @@
-import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
+});
 
 import { buildOpenCodeSkillsDir, ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
 

@@ -125,28 +125,24 @@ export function applyPlatformProvisionedEnvironmentFloor<T extends {
       ? { envVars: {} }
       : {}),
   };
+ * Whether this platform-provisioned row participates in the tenant
+ * env-vars contract: the generalized managed sandbox slot only. The local
+ * slot and legacy kubernetes-marker rows do not — the tenant never runs
+ * on local under this regime, and legacy rows may carry platform-written
+ * values.
+ */
+function isTenantEditableManagedSandbox(environment: {
+  driver?: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.driver === "sandbox" &&
+    environment.metadata?.managedByPaperclip === true &&
+    environment.metadata?.managedKubernetesSandbox !== true
+  );
 }
 
 /**
- * Restricted (non-instance-admin) viewers must not see environment secrets or
- * operator configuration, but they still need to know an environment's kind:
- * the UI resolves the managed Kubernetes sandbox via `config.provider` (see
- * `resolveForcedKubernetesEnvironment`), so a fully-empty redacted config makes
- * a forced-Kubernetes instance look unconfigured to every restricted viewer.
- * Keep only the non-secret `provider` discriminator; drop everything else.
- */
-export function redactEnvironmentForRestrictedView<T extends {
-  config: Record<string, unknown> | null;
-  envVars?: Record<string, unknown> | null;
-  metadata: Record<string, unknown> | null;
-}>(environment: T): T {
-  const provider = environment.config?.provider;
-  return {
-    ...environment,
-    config: typeof provider === "string" ? { provider } : {},
-    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
-    metadata: null,
-  };
  * Whether this platform-provisioned row participates in the tenant
  * env-vars contract: the generalized managed sandbox slot only. The local
  * slot and legacy kubernetes-marker rows do not — the tenant never runs

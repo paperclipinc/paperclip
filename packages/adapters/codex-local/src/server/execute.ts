@@ -166,6 +166,29 @@ export function firstMeaningfulStderrLine(text: string): string {
   return meaningful ?? firstNonEmptyLine(text);
 }
 
+// Benign stderr lines that never explain a nonzero exit and must not be
+// surfaced as the run error: Codex always prints the YOLO approvals warning
+// because this adapter passes the approvals-bypass flag itself, and
+// "[paperclip] ..." lines are diagnostics the adapter injected (e.g. ACP
+// fallback notes). Keep this list conservative so real errors are never
+// skipped.
+const BENIGN_CODEX_STDERR_LINE_RES: readonly RegExp[] = [
+  /^YOLO mode is enabled\b/i,
+  /^\[paperclip\]/,
+];
+
+function isBenignCodexStderrLine(line: string): boolean {
+  return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
+}
+
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
+}
+
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },
   signal: NodeJS.Signals,
@@ -363,6 +386,13 @@ async function probeSandboxCodexAuthJson(input: {
   } catch {
     return "unknown";
   }
+
+  throw new Error(
+    `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+      `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+      `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+      `OPENAI_API_KEY.`,
+  );
 }
 
 async function sandboxCodexAuthJsonExists(input: {
@@ -719,17 +749,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
-    configuredAuthJson: configuredCodexAuthJson,
-  });
-  if (credentialReadiness.managed && !credentialReadiness.ready) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
-        `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
-        `self-hosted install, signing in to Codex on the host also works.`,
-    );
-  }
     effectiveCodexHome,
     target: executionTarget,
     cwd,
@@ -913,8 +932,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                  }));
-                },
                     // Additive cache write (sandbox to host): also cache the
                     // sandbox subscription credential in its per-identity slot,
                     // keyed by the real `account_id`. Company-scoped root; the

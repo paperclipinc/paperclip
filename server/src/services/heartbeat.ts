@@ -730,37 +730,6 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
-// A permanent, non-retryable setup failure: the agent's adapter is not runnable in
-// this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
-// which fails to acquire the k8s lease with "Adapter ... is not in the configured
-// adapter registry"). Re-invoking such an agent every heartbeat produces a
-// setup_failed retry storm, so it must pause the agent instead of looping.
-export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return /is not in the configured adapter registry/i.test(message);
-}
-
-// A permanent authentication failure: the agent has no valid provider credential
-// (e.g. a keyless agent activated without connecting a model key), so every
-// heartbeat run completes with `outcome:"failed"` + this errorCode and will keep
-// failing until a human wires up a credential. Pause the agent instead of looping.
-const PERMANENT_AUTH_FAILURE_CODES = new Set([
-  "claude_auth_required",
-  "codex_auth_required",
-  "inference_auth_invalid",
-]);
-function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
-  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
-}
-
-// Generic failure-storm breaker: when this many consecutive terminal runs of an
-// agent all failed with the same errorCode (no success in between), the agent is
-// not making progress and every further automated re-invocation burns the same
-// failure again. Pause it and route the reason to a human. This is the fallback
-// for failure shapes that no dedicated branch (transient retry contracts, the
-// permanent-auth pause, the non-retryable setup pause) already handles.
-export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
-
 // A sandbox provider plugin's worker can be briefly down during its own
 // restart window (e.g. a rolling deploy of the plugin worker process). Lease
 // acquisition fails immediately in that window, but the condition is
@@ -9119,55 +9088,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
-  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
-  // itself carries the precondition (status = 'queued') so a concurrent claim
-  // of the same row (another scheduler pass, or a manual resume flipping it to
-  // "running") between the SELECT and this UPDATE cannot be clobbered back to
-  // "cancelled". `updated: false` tells the caller the row had already moved
-  // on, so it must not touch the run's wakeup or append a lifecycle event.
-  async function setRunStatusIfQueued(
-    runId: string,
-    status: string,
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
-  ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(updated);
-      return { run: updated, updated: true as const };
-    }
-
-    const current = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-
-    return { run: current, updated: false as const };
   // Invariant: when a run releases its environment lease, the run row must be
   // terminal. The finalizer writes the terminal status in a step that is
   // separate from the agent status=done PATCH. If the sandbox or the run
@@ -10856,63 +10776,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    options: {
-      /** Max time to wait for in-flight runs to finish before interrupting. */
-      drainTimeoutMs?: number;
-      /** How often to re-check for in-flight completion while waiting. */
-      pollIntervalMs?: number;
-      /** Injectable sleep (tests). Defaults to a real setTimeout. */
-      sleep?: (ms: number) => Promise<void>;
-      /** Injectable clock (tests) for the wall-clock drain bound. */
-      nowMs?: () => number;
-      /**
-       * Predicate for whether any run is still executing in THIS process.
-       * Defaults to the local in-process execution set; DB-only "running" rows
-       * with no local execution (orphans) are NOT waited for; they can never
-       * finish on their own and are interrupted immediately as before.
-       */
-      hasInflightRuns?: () => boolean;
-    } = {},
-  ) {
-    // 1. Quiesce: stop the scheduler from dispatching NEW runs. Every dispatch/
-    //    execution entrypoint gates on getSchedulingSuppression(), so flipping
-    //    this makes them all no-op for the remainder of the process lifetime.
-    shutdownDraining = true;
-
-    // 2. Soft-drain: give in-flight runs a bounded window to finish on their
-    //    own. Only runs still running at the deadline get interrupted below, so
-    //    a normal rollout no longer interrupts every in-flight run.
-    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
-    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
-    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-    const clock = options.nowMs ?? (() => Date.now());
-    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
-
-    if (drainTimeoutMs > 0 && hasInflightRuns()) {
-      const deadline = clock() + drainTimeoutMs;
-      logger.info(
-        { signal, drainTimeoutMs, pollIntervalMs },
-        "soft-draining in-flight heartbeat runs before shutdown",
-      );
-      while (hasInflightRuns() && clock() < deadline) {
-        // Cap each wait to the remaining budget so a sub-interval remainder can
-        // never sleep a full poll interval past the deadline. Overrunning would
-        // push the drain (plus the interrupt+retry cleanup that follows) beyond
-        // the timeout and risk a SIGKILL mid-cleanup.
-        const remainingMs = deadline - clock();
-        if (remainingMs <= 0) break;
-        await sleep(Math.min(pollIntervalMs, remainingMs));
-      }
-      if (hasInflightRuns()) {
-        logger.warn(
-          { signal, drainTimeoutMs },
-          "soft-drain deadline reached with in-flight runs remaining; interrupting for restart recovery",
-        );
-      } else {
-        logger.info({ signal }, "in-flight heartbeat runs drained gracefully before shutdown");
-      }
-    }
-
     runIds: readonly string[] | null = null,
   ) {
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
@@ -13534,7 +13397,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
   // Clamp the stored attempt count to the range [0, cap]. The SQL reader
   // `pendingCleanupAttemptsSql` clamps to the same range, so both readers yield
   // the same value for every input. The claim predicate compares the two values,
@@ -14168,45 +14030,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    // Cost-plus fold: cost_cents = ceil((wholesale model tokens + wholesale
-    // Kubecost compute) * margin * 100). modelUsd === null means "skip
-    // metering" (BYOK / subscription_included / model not in the price table)
-    // and yields 0 cents, preserving today's behaviour when env is unset.
-    const modelUsd = priceCloudTokens(cloudPriceTable, {
-      model: result.model ?? "unknown",
-      billingType,
-      costUsd: result.costUsd,
-      inputTokens,
-      cachedInputTokens,
-      outputTokens,
-    });
-    // Compute cost is only attributed for a metered run (modelUsd !== null;
-    // BYOK/subscription_included/unpriced runs skip it). No k8s namespace is
-    // resolvable server-side in cloud_tenant mode (the tenant->namespace mapping
-    // lives in the gateway/operator, not the product DB), so pass ""; the
-    // Kubecost client then filters by the globally-unique paperclip.io/run-id
-    // label alone. Kubecost is the PREFERRED source when it returns a positive
-    // cost, but it is fragile here (KSM must expose the run-id label; short runs
-    // round to 0 vs the scrape interval), so resolveComputeUsd falls through to
-    // a deterministic duration x pod-hour floor -- a managed run is NEVER metered
-    // with 0 compute (which is what every run did before this floor).
-    let computeUsd = 0;
-    if (modelUsd !== null) {
-      const runStart = run.startedAt ?? run.createdAt ?? new Date();
-      const runEnd = run.finishedAt ?? new Date();
-      const kubecostUsd = await computeCostUsdForRun(kubecostCfg, {
-        runId: run.id,
-        namespace: "",
-        start: runStart,
-        end: runEnd,
-      });
-      computeUsd = resolveComputeUsd({
-        kubecostUsd,
-        durationSec: (runEnd.getTime() - runStart.getTime()) / 1000,
-        ratePerHour: cloudComputeRatePerHour,
-      });
-    }
-    const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
     const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
