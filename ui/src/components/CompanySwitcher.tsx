@@ -1,5 +1,6 @@
 import { ChevronsUpDown, Plus, PlusCircle, Settings } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { ChevronsUpDown, Plus, RefreshCw, Settings } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { healthApi } from "@/api/health";
@@ -38,6 +39,8 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
   const [internalOpen, setInternalOpen] = useState(false);
   const [newCompanyOpen, setNewCompanyOpen] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+    useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
@@ -86,7 +89,26 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
-          <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          // "No companies" is a claim about the account, and after a failed list
+          // request it is one we cannot make — say what actually happened and
+          // give the customer the way out, since nothing else in the app does.
+          companyListUnavailable ? (
+            <>
+              <DropdownMenuItem disabled>Couldn't load companies</DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  // Keep the menu open so the result of the retry is visible.
+                  event.preventDefault();
+                  void retryCompanies?.();
+                }}
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Try again
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          )
         )}
         <DropdownMenuSeparator />
         {isCloud && (

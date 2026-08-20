@@ -39,10 +39,15 @@ export interface PaperclipInstallStartedDimensions {
 
 }
 
+export interface PaperclipInteractionCreatedDimensions {
+interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "request_item_verdicts" | "other")
+used_deprecated_resolver_policy_alias: boolean
+}
+
 export interface PaperclipInteractionResolvedDimensions {
-interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "other")
+interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "request_item_verdicts" | "other")
 status: ("accepted" | "rejected" | "answered" | "cancelled" | "expired" | "failed" | "other")
-resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "expired" | "cancelled" | "other")
+resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "other")
 resolved_by_kind: ("user" | "agent" | "system" | "other")
 created_by_kind?: ("agent" | "user" | "other")
 creator_agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
@@ -59,6 +64,7 @@ resolution_latency_seconds?: number
 interaction_id?: string
 created_by_agent_id?: string
 source_run_id?: string
+legacy_inherited_restriction: boolean
 }
 
 export interface PaperclipProjectCreatedDimensions {
@@ -88,6 +94,7 @@ export type PaperclipEventName =
   | "goal.created"
   | "install.completed"
   | "install.started"
+  | "interaction.created"
   | "interaction.resolved"
   | "project.created"
   | "routine.created"
@@ -103,6 +110,7 @@ export interface EventDimensionsMap {
   "goal.created": PaperclipGoalCreatedDimensions;
   "install.completed": PaperclipInstallCompletedDimensions;
   "install.started": PaperclipInstallStartedDimensions;
+  "interaction.created": PaperclipInteractionCreatedDimensions;
   "interaction.resolved": PaperclipInteractionResolvedDimensions;
   "project.created": PaperclipProjectCreatedDimensions;
   "routine.created": PaperclipRoutineCreatedDimensions;
@@ -119,6 +127,7 @@ export const PAPERCLIP_EVENTS = {
   "goal.created": "goal.created",
   "install.completed": "install.completed",
   "install.started": "install.started",
+  "interaction.created": "interaction.created",
   "interaction.resolved": "interaction.resolved",
   "project.created": "project.created",
   "routine.created": "routine.created",
@@ -233,12 +242,23 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
     }
   },
+  "interaction.created": {
+    "interaction_kind": {
+      "suggest_tasks": "Board-facing interaction that proposes concrete subtasks for acceptance.",
+      "ask_user_questions": "Board-facing interaction that asks structured questions and stores answers.",
+      "request_confirmation": "Board-facing interaction that asks for a single accept or reject decision.",
+      "request_checkbox_confirmation": "Board-facing interaction that asks the board to select options and confirm.",
+      "request_item_verdicts": "Board-facing interaction that collects a verdict for each known item.",
+      "other": "Fallback when the interaction kind is unknown or not represented by the tracked enum."
+    }
+  },
   "interaction.resolved": {
     "interaction_kind": {
       "suggest_tasks": "Board-facing interaction that proposes concrete subtasks for acceptance.",
       "ask_user_questions": "Board-facing interaction that asks structured questions and stores answers.",
       "request_confirmation": "Board-facing interaction that asks for a single accept or reject decision.",
       "request_checkbox_confirmation": "Board-facing interaction that asks the board to select options and confirm.",
+      "request_item_verdicts": "Board-facing interaction that collects a verdict for each known item.",
       "other": "Fallback when the interaction kind is unknown or not represented by the tracked enum."
     },
     "status": {
@@ -255,6 +275,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "rejected": "Stored result outcome says the interaction was rejected.",
       "stale_target": "Bound target, such as an issue document revision, was no longer current.",
       "superseded_by_comment": "A later user or board comment superseded the pending confirmation.",
+      "superseded_by_newer_request": "A newer confirmation from the same agent superseded the pending confirmation.",
       "expired": "Interaction expired for a generic expiration reason.",
       "cancelled": "Interaction was explicitly cancelled.",
       "other": "Fallback when the resolution reason is unknown or not represented by the tracked enum."

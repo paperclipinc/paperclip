@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
-  CloudUpload,
   Cpu,
+  Download,
   FlaskConical,
   KeyRound,
   MailPlus,
@@ -12,6 +12,7 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Upload,
   UserRoundPen,
   Users,
 } from "lucide-react";
@@ -123,6 +124,16 @@ export function CompanySettingsSidebar() {
               end
             />
           ) : null}
+          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          <SidebarNavItem
+            to="/company/settings/members"
+            label="Members"
+            icon={Users}
+            badge={badges?.joinRequests ?? 0}
+            end
+          />
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
