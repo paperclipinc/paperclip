@@ -37,9 +37,6 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockStorage = vi.hoisted(() => ({
   headObject: vi.fn(),
 }));
-const mockInstanceSettingsService = vi.hoisted(() => ({
-  getVisibility: vi.fn(),
-}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -48,7 +45,6 @@ vi.mock("../services/index.js", () => ({
   deduplicateAgentName: vi.fn(),
   logActivity: mockLogActivity,
   notifyHireApproved: vi.fn(),
-  instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -150,16 +146,6 @@ describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
     mockAgentService.getById.mockReset();
     mockLogActivity.mockResolvedValue(undefined);
     mockStorage.headObject.mockResolvedValue({ exists: true, contentLength: 3, contentType: "image/png" });
-    mockInstanceSettingsService.getVisibility.mockReset();
-    mockInstanceSettingsService.getVisibility.mockResolvedValue({
-      companySurfaces: [
-        "company.general",
-        "company.members",
-        "company.invites",
-        "company.secrets",
-        "company.plugins",
-      ],
-    });
   });
 
   it("rejects non-CEO agent callers", async () => {

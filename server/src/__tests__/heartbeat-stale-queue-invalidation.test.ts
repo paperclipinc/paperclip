@@ -17,7 +17,6 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
@@ -181,8 +180,6 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   });
 
   afterAll(async () => {
-    await heartbeat?.drain();
-    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 
@@ -368,6 +365,48 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeups[0]?.reason).toBe("heartbeat.timer.no_actionable_work");
     expect(agent?.lastHeartbeatAt).toBeInstanceOf(Date);
     expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThan(now.getTime() - 120_000);
+  });
+
+  it("atomically claims a due timer interval across overlapping scheduler ticks", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 60,
+      },
+    });
+    const now = new Date();
+    await db
+      .update(agents)
+      .set({
+        createdAt: new Date(now.getTime() - 120_000),
+        lastHeartbeatAt: null,
+      })
+      .where(eq(agents.id, agentId));
+
+    const results = await Promise.all([
+      heartbeat.tickTimers(now),
+      heartbeat.tickTimers(now),
+    ]);
+
+    expect(results.reduce((total, result) => total + result.enqueued, 0)).toBe(1);
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const [agent] = await db
+      .select({ lastHeartbeatAt: agents.lastHeartbeatAt })
+      .from(agents)
+      .where(eq(agents.id, agentId));
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.contextSnapshot).toMatchObject({
+      timerClaimWasFirstHeartbeat: true,
+    });
+    expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThanOrEqual(now.getTime());
   });
 
   it("allows generic timer wakes when the agent has assigned todo work", async () => {

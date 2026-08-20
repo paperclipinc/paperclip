@@ -79,3 +79,18 @@ export function redactSensitiveText(
     .replace(BARE_BEARER_TOKEN_RE, `$1${redactedValue}`)
     .replace(GOOGLE_API_KEY_RE, redactedValue);
 }
+
+const JSON_SECRET_FIELD_RE = new RegExp(
+  String.raw`("(?:${SECRET_NAME_PATTERN})"\s*:\s*")(?:\\[\s\S]|[^"\\])*(")`,
+  "gi",
+);
+const JSON_ESCAPED_SECRET_FIELD_RE = new RegExp(
+  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")(?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*(\\")`,
+  "gi",
+);
+
+export function redactDiagnosticText(text: string, redactedValue = REDACTED_COMMAND_TEXT_VALUE): string {
+  return redactCommandText(text, redactedValue)
+    .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
+    .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);
+}

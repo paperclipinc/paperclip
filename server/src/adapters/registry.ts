@@ -1,7 +1,6 @@
 import type {
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
-  AdapterRuntimeCommandSpecOptions,
   ServerAdapterModule,
 } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
@@ -10,6 +9,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -20,6 +20,9 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  parseSetupTokenPrompt,
+  parseSetupTokenCredential,
 } from "@paperclipai/adapter-claude-local/server";
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
@@ -34,6 +37,8 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,
+  CODEX_DEVICE_LOGIN_COMMAND,
+  parseDeviceLoginPrompt,
 } from "@paperclipai/adapter-codex-local/server";
 import {
   agentConfigurationDoc as codexAgentConfigurationDoc,
@@ -145,16 +150,9 @@ function buildNpmRuntimeCommandSpec(
   config: Record<string, unknown>,
   fallbackCommand: string,
   packageName: string,
-  options?: AdapterRuntimeCommandSpecOptions,
 ): AdapterRuntimeCommandSpec {
   const command = readConfiguredCommand(config, fallbackCommand);
-  // Managed, pre-baked sandbox images (plugin-backed providers behind locked
-  // egress) carry the CLI already. Never emit a network install for them: a
-  // missing CLI means the run landed on the wrong runtime image, and an install
-  // would just stall against a blocked egress until timeout. Fail-fast on the
-  // image mismatch is handled downstream in the execution target.
-  const canSelfInstall =
-    !options?.prebakedRuntime && !hasPathSeparator(command) && command === fallbackCommand;
+  const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
   const installLine = buildSandboxNpmInstallCommand(packageName);
   return {
     command,
@@ -189,6 +187,43 @@ The standalone ACPX adapter has been retired. Use:
 Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly instead of falling back to the process adapter.
 `;
 
+// The Claude interactive login capability. Claude runs `claude setup-token` on a
+// real pseudo-terminal. The user pastes a browser code back into the flow. The
+// flow uses a fixed host-side timeout and records a stored session identifier on
+// success. The capability data holds no secret; the callbacks return runtime
+// values only.
+const claudeLoginCapability: AdapterLoginCapability = {
+  panelMode: "submitted_browser_code",
+  sandboxTransport: "pseudo_terminal",
+  timeoutPolicy: "fixed",
+  getCommand: () => CLAUDE_SETUP_TOKEN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseSetupTokenPrompt(output);
+    return prompt ? { url: prompt.url } : null;
+  },
+  captureCredential: (output) => {
+    const token = parseSetupTokenCredential(output);
+    return token === null ? null : Buffer.from(token, "utf8");
+  },
+  completionClaim: "storedSessionId",
+};
+
+// The Codex interactive login capability. Codex runs `codex login --device-auth`
+// over the streamed exec channel. The flow shows a one-time code that the user
+// enters in the browser. The caller sets the host-side timeout. The device-login
+// flow writes its credential inside the sandbox, so the capability declares no
+// terminal credential capture and no completion claim.
+const codexLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  sandboxTransport: "streamed_exec",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: stampClaudeAgentIdHeader(claudeExecute),
@@ -213,11 +248,12 @@ const claudeLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config, options) =>
-    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code", options),
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
+  loginCapability: claudeLoginCapability,
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {
@@ -286,11 +322,11 @@ const codexLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config, options) =>
-    buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex", options),
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getConfigSchema: getCodexConfigSchema,
   getQuotaWindows: codexGetQuotaWindows,
+  loginCapability: codexLoginCapability,
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
@@ -349,8 +385,8 @@ const geminiLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config, options) =>
-    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli", options),
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "gemini", "@google/gemini-cli"),
   agentConfigurationDoc: geminiAgentConfigurationDoc,
   getConfigSchema: getGeminiConfigSchema,
 };
@@ -406,8 +442,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config, options) =>
-    buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai", options),
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "opencode", "opencode-ai"),
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
@@ -426,8 +461,8 @@ const piLocalAdapter: ServerAdapterModule = {
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: true,
-  getRuntimeCommandSpec: (config, options) =>
-    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent", options),
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 

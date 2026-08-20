@@ -6,11 +6,9 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
-  getVisibility: vi.fn(),
   update: vi.fn(),
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
-  updateVisibility: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -19,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findManagedSandboxEnvironment: vi.fn(),
+  update: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -33,6 +33,10 @@ function registerModuleMocks() {
   }));
 }
 
+// Identity object the mocked db.transaction hands to writers; tests assert
+// both the marker clear and the settings update receive THIS same tx.
+const TX_SENTINEL = { __tx: true };
+
 async function createApp(actor: any) {
   const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -44,7 +48,13 @@ async function createApp(actor: any) {
     req.actor = actor;
     next();
   });
-  app.use("/api", instanceSettingsRoutes({} as any));
+  const mockDb = {
+    // Runs the callback with a sentinel tx and propagates throws, so a
+    // failing write inside rejects the whole request exactly like a real
+    // transaction rollback.
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  };
+  app.use("/api", instanceSettingsRoutes(mockDb as any));
   app.use(errorHandler);
   return app;
 }
@@ -64,12 +74,13 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.update.mockReset();
     mockInstanceSettingsService.updateGeneral.mockReset();
     mockInstanceSettingsService.updateExperimental.mockReset();
-    mockInstanceSettingsService.getVisibility.mockReset();
-    mockInstanceSettingsService.updateVisibility.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
+    mockEnvironmentService.update.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
@@ -84,7 +95,6 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: false,
         enableIssuePlanDecompositions: false,
         enableExperimentalFileViewer: false,
-        enableCloudSync: false,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
         enableBetaSkills: false,
@@ -113,7 +123,6 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
       enableBetaSkills: false,
@@ -141,7 +150,6 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: true,
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
-        enableCloudSync: true,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
         enableBetaSkills: false,
@@ -175,7 +183,6 @@ describe("instance settings routes", () => {
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
         enableTaskWatchdogs: true,
-        enableCloudSync: true,
         enableExternalObjects: false,
         enableBuiltInAgents: true,
         enableGoalsSidebarLink: false,
@@ -191,19 +198,6 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
-    mockInstanceSettingsService.getVisibility.mockResolvedValue({
-      companySurfaces: [
-        "company.general",
-        "company.members",
-        "company.invites",
-        "company.secrets",
-        "company.plugins",
-      ],
-    });
-    mockInstanceSettingsService.updateVisibility.mockResolvedValue({
-      id: "instance-settings-1",
-      visibility: { companySurfaces: ["company.general", "company.members"] },
-    });
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
       lookbackHours: 24,
       cutoff: "2026-04-26T12:00:00.000Z",
@@ -249,7 +243,6 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
       enableBetaSkills: false,
@@ -315,10 +308,79 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
-      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
-    });
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
+    // A tenant write of defaultEnvironmentId reclassifies the default as
+    // tenant-chosen: the reconciliation stamp marker on the managed
+    // sandbox row must not survive, or a later managed-sandbox-only
+    // mode-off pass would mistake the tenant's choice for a stamp.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBe(200);
+    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
+      "managed-env-1",
+      { metadata: { managedByPaperclip: true } },
+      { db: TX_SENTINEL },
+    );
+    // Both writes commit in ONE transaction — each receives the SAME tx —
+    // so no partial failure can desync the stamp marker from the default
+    // (neither a stale stamp on a tenant choice, nor a reconciliation
+    // default that lost its marker and can never revert).
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
+      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
+      { db: TX_SENTINEL },
+    );
+  });
+
+  it("aborts the whole request (no committed settings) when the stamp-marker clear fails inside the transaction", async () => {
+    // The marker clear and the settings write share a transaction, so a
+    // failure in either rolls the whole thing back — a real DB would
+    // discard both; here the settings write is never even reached.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    mockEnvironmentService.update.mockRejectedValue(new Error("metadata write failed"));
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBeGreaterThanOrEqual(500);
+    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {
@@ -529,7 +591,7 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("rejects non-admin board users from reading or updating experimental settings", async () => {
+  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -538,13 +600,13 @@ describe("instance settings routes", () => {
       companyIds: ["company-1"],
     });
 
-    await request(app).get("/api/instance/settings/experimental").expect(403);
-    expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
+    await request(app).get("/api/instance/settings/experimental").expect(200);
 
     await request(app)
       .patch("/api/instance/settings/experimental")
       .send({ enableTaskWatchdogs: true })
       .expect(403);
+
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
@@ -581,7 +643,7 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects non-admin board users from reading general settings", async () => {
+  it("allows non-admin board users to read general settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -591,8 +653,13 @@ describe("instance settings routes", () => {
     });
 
     const res = await request(app).get("/api/instance/settings/general");
-    expect(res.status).toBe(403);
-    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
   });
 
   it("rejects signed-in users without company access from reading general settings", async () => {
@@ -642,104 +709,6 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
-  });
-
-  it("allows instance admins to read and update the visibility policy", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const getRes = await request(app).get("/api/instance/settings/visibility");
-    expect(getRes.status).toBe(200);
-    expect(getRes.body.companySurfaces).toContain("company.members");
-
-    const patchRes = await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: ["company.general", "company.members"] });
-    expect(patchRes.status).toBe(200);
-    expect(patchRes.body).toEqual({
-      companySurfaces: ["company.general", "company.members"],
-    });
-    expect(mockInstanceSettingsService.updateVisibility).toHaveBeenCalledWith({
-      companySurfaces: ["company.general", "company.members"],
-    });
-    expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
-
-  it("rejects non-admin board users from reading or updating the visibility policy", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "user-1",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: ["company-1"],
-    });
-
-    await request(app).get("/api/instance/settings/visibility").expect(403);
-    await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: [] })
-      .expect(403);
-    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
-  });
-
-  it("rejects agent callers from the visibility policy", async () => {
-    const app = await createApp({
-      type: "agent",
-      agentId: "agent-1",
-      companyId: "company-1",
-      source: "agent_key",
-    });
-
-    await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: [] })
-      .expect(403);
-  });
-
-  it("rejects unknown surfaces in the visibility patch with a validation error", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: ["instance.general"] });
-    expect(res.status).toBe(400);
-    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
-  });
-
-  it("rejects non-admin board users from reading the full instance settings", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "user-1",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: ["company-1"],
-    });
-
-    await request(app).get("/api/instance/settings").expect(403);
-    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
-  });
-
-  it("local_trusted regression: the implicit local actor still reads everything", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app).get("/api/instance/settings").expect(200);
-    await request(app).get("/api/instance/settings/general").expect(200);
-    await request(app).get("/api/instance/settings/experimental").expect(200);
-    await request(app).get("/api/instance/settings/visibility").expect(200);
   });
 
   describe("executionMode floor on cloud-managed instances", () => {

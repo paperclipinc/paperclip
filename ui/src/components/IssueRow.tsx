@@ -57,8 +57,40 @@ interface IssueRowProps {
    * not crossed out by it.
    */
   chevronInGuide?: boolean;
-  /** Suppress the row divider (parents with expanded children keep visual attachment to their subtree). */
-  hideDivider?: boolean;
+  /** Opt in to a bottom divider on this row (default off; used by views that intentionally keep separators). */
+  showDivider?: boolean;
+}
+
+export function InboxArchiveButton({
+  onArchive,
+  disabled,
+}: {
+  onArchive: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      data-slot="icon-button"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onArchive();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onArchive();
+      }}
+      disabled={disabled}
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+      aria-label="Archive"
+    >
+      <Archive className="h-3.5 w-3.5" />
+      Archive
+    </button>
+  );
 }
 
 export function IssueRow({
@@ -86,7 +118,7 @@ export function IssueRow({
   onMouseEnter,
   treeGuides = 0,
   chevronInGuide = false,
-  hideDivider = false,
+  showDivider = false,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
@@ -162,27 +194,42 @@ export function IssueRow({
   ) : null;
 
   return (
-    <Link
-      to={createIssueDetailPath(issuePathId)}
-      state={detailState}
-      disableIssueQuicklook
-      issuePrefetch={issue}
-      data-inbox-issue-link
-      id={checklistRowId}
-      aria-current={checklistCurrentStep ? "step" : undefined}
-      onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+    <div
       onMouseEnter={onMouseEnter}
       className={cn(
         // No color transition on the row band: hover/selection must snap
         // instantly. A fade (transition-colors) leaves a trail of fading bands
         // when scrubbing the mouse fast across the list.
-        "group relative flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
-        !hideDivider && "border-b border-border last:border-b-0",
+        "group relative flex items-start gap-2 rounded-lg py-2.5 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
+        showUnreadSlot ? "pl-4" : "pl-2",
+        "[&_button]:relative [&_button]:z-10",
+        // Divider + hover/selected/checklist wash live on the ROOT row band so
+        // the tint paints BEHIND the content and `last:border-b-0` matches the
+        // real last row. Keeping these on the overlay Link (PR #10526) made the
+        // last row keep its border and the hover wash paint over the text.
+        showDivider && "border-b border-border last:border-b-0",
         selected ? "hover:bg-transparent" : "hover:bg-accent/50",
         checklistCurrentStep ? "bg-primary/5" : null,
         className,
       )}
     >
+      <Link
+        to={createIssueDetailPath(issuePathId)}
+        state={detailState}
+        disableIssueQuicklook
+        issuePrefetch={issue}
+        data-inbox-issue-link
+        id={checklistRowId}
+        aria-current={checklistCurrentStep ? "step" : undefined}
+        onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+        className={cn(
+          // Overlay Link keeps ONLY positioning + focus ring so header controls
+          // stay clickable above it; visual washes belong on the root above.
+          "absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
+        )}
+      >
+        <span className="sr-only">Open {identifier}: {issue.title}</span>
+      </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
@@ -277,27 +324,7 @@ export function IssueRow({
       {(onArchive || desktopTrailing || trailingMeta || externalObjectSummary) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
           {onArchive ? (
-            <button
-              type="button"
-              data-slot="icon-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                event.stopPropagation();
-                onArchive();
-              }}
-              disabled={archiveDisabled}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-              aria-label="Archive"
-            >
-              <Archive className="h-3.5 w-3.5" />
-              Archive
-            </button>
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
           ) : null}
           {externalObjectSummary ? (
             <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
@@ -309,14 +336,14 @@ export function IssueRow({
         </span>
       ) : null}
       {showUnreadDot ? (
-        // Mobile keeps the dot in flow as the leading item (mobile has no
-        // reserved desktop dot gutter). Desktop renders the dot in the reserved
-        // leading slot above instead, so this is mobile-only.
-        <span className="order-first inline-flex h-4 w-4 shrink-0 items-center justify-center self-center sm:hidden">
+        // Inbox rows reserve a mobile gutter on both read and unread rows. The
+        // full control stays inside overflow-clipping row containers while its
+        // absolute position avoids shifting or covering the leading control.
+        <span className="absolute left-0 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center sm:hidden">
           {unreadDotButton}
         </span>
       ) : null}
-    </Link>
+    </div>
   );
 }
 

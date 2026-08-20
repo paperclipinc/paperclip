@@ -67,6 +67,7 @@ export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
   redactSensitiveText,
+  redactDiagnosticText,
 } from "./command-redaction.js";
 export {
   firstMeaningfulStderrLine,
@@ -117,3 +118,23 @@ export type {
   SandboxCallbackBridgeWorkerHandle,
   StartedSandboxCallbackBridgeServer,
 } from "./sandbox-callback-bridge.js";
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
+export {
+  ADAPTER_LOGIN_PANEL_MODES,
+  ADAPTER_LOGIN_SANDBOX_TRANSPORTS,
+  ADAPTER_LOGIN_TIMEOUT_POLICIES,
+  ADAPTER_LOGIN_COMPLETION_CLAIMS,
+  assertValidAdapterLoginCapability,
+} from "./login-capability.js";
+export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
+export type {
+  LoginRunnerRaceResult,
+  LoginRunnerResult,
+  LoginRunnerOutcome,
+  LoginRunnerLifecycleOptions,
+  LoginRunnerDisposable,
+} from "./login-runner-lifecycle.js";

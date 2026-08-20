@@ -145,7 +145,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp(options: { agentRows?: Array<Record<string, unknown>> } = {}) {
+async function createApp() {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -163,19 +163,14 @@ async function createApp(options: { agentRows?: Array<Record<string, unknown>> }
     next();
   });
   const db = {
-    // Field-selects (`select({...})`) are agent-row lookups; bare selects return the company row.
-    select: vi.fn((fields?: unknown) => ({
+    select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(async () =>
-          fields
-            ? options.agentRows ?? []
-            : [
-                {
-                  id: "company-1",
-                  requireBoardApprovalForNewAgents: false,
-                },
-              ],
-        ),
+        where: vi.fn(async () => [
+          {
+            id: "company-1",
+            requireBoardApprovalForNewAgents: false,
+          },
+        ]),
       })),
     })),
   };
@@ -341,95 +336,6 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
-  it("inherits a same-adapter company agent's secret_ref env when creating an agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        {
-          role: "ceo",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({
-          name: "Second Agent",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
-    });
-  });
-
-  it("skips donors without secret_ref bindings so an empty-env ceo does not shadow a credentialed agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        { role: "ceo", adapterConfig: { env: {} } },
-        {
-          role: "general",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({
-          name: "Second Agent",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
-    });
-  });
-
-  it("inherits a same-adapter company agent's secret_ref env when hiring an agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        {
-          role: "general",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agent-hires")
-        .send({
-          name: "Hired Agent",
-          role: "general",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333", version: "latest" },
-    });
-  });
-
   it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -446,6 +352,58 @@ describe("agent routes adapter validation", () => {
     const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("forwards a claude_local→process adapter move that drops the OAuth binding to the service unchanged", async () => {
+    // The agent has the fixed Claude Code OAuth binding on the claude_local
+    // adapter. A PATCH moves the agent to the process adapter and sends an empty
+    // env in the same request. The route must forward the new adapter type and
+    // the dropped binding to the service without a re-injection, so the
+    // service-enforced binding invariant sees the removal and rejects it.
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      name: "Claude",
+      urlKey: "claude",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "user_secret_ref", key: "CLAUDE_CODE_OAUTH_TOKEN" } } },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterType: "process",
+          adapterConfig: { env: {} },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    // The route forwards the requested adapter type, so the service can see the
+    // adapter move.
+    expect(patch.adapterType).toBe("process");
+    // The route does not re-inject the fixed binding from the prior config, so
+    // the service invariant sees the removal.
+    const env = ((patch.adapterConfig as Record<string, unknown>).env as Record<string, unknown> | undefined) ?? {};
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
@@ -518,21 +476,6 @@ describe("agent routes adapter validation", () => {
     const env = adapterConfig.env as Record<string, unknown>;
     expect(env.OPENAI_API_KEY).toBe("sk-test-key");
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
-  });
-
-  it("does not materialize a default instructions bundle for an inert process agent", async () => {
-    const app = await createApp();
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({
-          name: "Inert Worker",
-          adapterType: "process",
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {

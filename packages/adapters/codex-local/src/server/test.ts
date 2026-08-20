@@ -26,6 +26,7 @@ import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -217,7 +218,6 @@ export async function testEnvironment(
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
@@ -293,16 +293,6 @@ export async function testEnvironment(
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
       detail: `Detected in ${source}.`,
-    });
-  } else if (!callerControlsHost) {
-    // Hosted multi-tenant: see the matching branch in acp.ts. The host's
-    // auth.json is not this user's and `codex auth` is not a command they can
-    // run, so both halves of the advice below would be dead ends.
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "No OpenAI API key is configured for this agent. Codex runs will fail until one is added.",
-      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
     });
   } else if (!targetIsRemote) {
     // Local-only auth file check. On remote targets, the probe will surface
@@ -430,13 +420,21 @@ export async function testEnvironment(
             message: "Codex CLI is installed, but authentication is not ready.",
             ...(detail ? { detail } : {}),
             hint: probeApiKey
-              ? callerControlsHost
-                ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
-                : "The key was provided but Codex still rejected it. Check that it is a valid OpenAI API key and that the account behind it has credit, then paste it again."
-              : callerControlsHost
-                ? "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first."
-                : "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
+              ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
+              : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
           });
+          if (targetIsSandbox) {
+            // Emit the neutral canonical check so the user interface can decide
+            // login eligibility from a stable code. The user interface does not
+            // read the message text or the top-level status.
+            checks.push({
+              code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+              level: "warn",
+              message: "The sandbox has no ready authentication for this adapter.",
+              ...(detail ? { detail } : {}),
+              hint: "Provide credentials for this adapter, or start login in the sandbox.",
+            });
+          }
         } else {
           checks.push({
             code: "codex_hello_probe_failed",

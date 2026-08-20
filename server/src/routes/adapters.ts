@@ -41,11 +41,16 @@ import {
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
+import type {
+  AdapterLoginPanelMode,
+  AdapterLoginSandboxTransport,
+  AdapterLoginTimeoutPolicy,
+} from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
-import { assertBoard, assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -79,6 +84,18 @@ interface AdapterInstallRequest {
   version?: string;
 }
 
+/**
+ * The safe scalar login fields the adapter listing projects to the client. It
+ * carries only the panel mode, the sandbox transport, and the timeout policy.
+ * It carries no function member and no secret. The user interface reads it to
+ * pick the login flow and the login panel.
+ */
+interface AdapterLoginProjection {
+  panelMode: AdapterLoginPanelMode;
+  sandboxTransport: AdapterLoginSandboxTransport;
+  timeoutPolicy: AdapterLoginTimeoutPolicy;
+}
+
 interface AdapterCapabilities {
   supportsInstructionsBundle: boolean;
   supportsSkills: boolean;
@@ -86,6 +103,11 @@ interface AdapterCapabilities {
   requiresMaterializedRuntimeSkills: boolean;
   supportsModelProfiles: boolean;
   supportsAcp: boolean;
+  /**
+   * The projected login capability. It is present only when the adapter
+   * declares an interactive login capability. It is absent otherwise.
+   */
+  login?: AdapterLoginProjection;
 }
 
 interface AdapterInfo {
@@ -134,7 +156,13 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
   }
 }
 
-function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+/**
+ * Build the client capability view for one adapter. The login projection carries
+ * only the safe scalar fields; it drops the function members and the completion
+ * claim, so the response holds no secret and no code.
+ */
+export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
+  const login = adapter.loginCapability;
   return {
     supportsInstructionsBundle: adapter.supportsInstructionsBundle ?? false,
     supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
@@ -142,6 +170,15 @@ function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabili
     requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
     supportsModelProfiles: Boolean(adapter.modelProfiles?.length || adapter.listModelProfiles),
     supportsAcp: Boolean(adapter.acp),
+    ...(login
+      ? {
+          login: {
+            panelMode: login.panelMode,
+            sandboxTransport: login.sandboxTransport,
+            timeoutPolicy: login.timeoutPolicy,
+          },
+        }
+      : {}),
   };
 }
 
@@ -221,17 +258,9 @@ export function adapterRoutes() {
    */
   router.get("/adapters", async (_req, res) => {
     // Adapter inventory is needed by ordinary board members when creating or
-    // editing company agents, AND during onboarding — before the first company
-    // exists, when the actor has no membership to check. Gating this read on
-    // company membership 403'd exactly those users, which silently emptied the
-    // disabled-adapter set the picker filters on: the wizard then offered
-    // harnesses the instance had disabled (PAPERCLIP_ADAPTERS), and the first
-    // run died at lease time with "not in the configured adapter registry".
-    // The payload is instance-level inventory (types, labels, capabilities),
-    // never company data, so any authenticated board member may read it.
-    // Mutating adapter management routes below remain instance-admin only
-    // because they affect the whole server runtime.
-    assertBoard(_req);
+    // editing company agents. Mutating adapter management routes below remain
+    // instance-admin only because they affect the whole server runtime.
+    assertBoardOrgAccess(_req);
 
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(

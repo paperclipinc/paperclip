@@ -92,7 +92,10 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/environments")).toBe("instance-environments");
-    expect(getCompanySettingsTab("/company/settings/cloud-upstream")).toBe("cloud-upstream");
+    expect(getCompanySettingsTab("/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/PAP/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/company/import")).toBe("import");
+    expect(getCompanySettingsTab("/PAP/company/import")).toBe("import");
     expect(getCompanySettingsTab("/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/access")).toBe("members");

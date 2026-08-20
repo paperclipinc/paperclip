@@ -1,5 +1,16 @@
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+
+/**
+ * A `Db` or an open transaction handle — the subset of query builders the
+ * settings writes use. Lets `update` run inside a caller's transaction so
+ * it commits atomically with a sibling write.
+ */
+type InstanceSettingsTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type InstanceSettingsWriteDb = Pick<
+  Db | InstanceSettingsTransaction,
+  "select" | "insert" | "update"
+>;
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
@@ -16,11 +27,6 @@ import {
   type InstanceSettings,
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
-  COMPANY_SETTINGS_SURFACES,
-  instanceVisibilitySettingsSchema,
-  type InstanceVisibilitySettings,
-  type PatchInstanceVisibilitySettings,
-  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
@@ -28,7 +34,6 @@ import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
 const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
-const instanceVisibilitySettingsStorageSchema = instanceVisibilitySettingsSchema.strip();
 const TRUTHY_RUNTIME_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 interface InstanceSettingsServiceOptions {
@@ -76,109 +81,6 @@ function stripServerManagedExperimentalPatchFields(
     ...patchable
   } = patch as Record<string, unknown>;
   return patchable as PatchInstanceExperimentalSettings;
-}
-
-const OVERRIDES_ENV_VAR = "PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES";
-
-export interface InstanceSettingsOverrides {
-  general: Record<string, unknown>;
-  experimental: Record<string, unknown>;
-  visibility: Record<string, unknown>;
-}
-
-function emptyOverrides(): InstanceSettingsOverrides {
-  return { general: {}, experimental: {}, visibility: {} };
-}
-
-const warnedOverrideInputs = new Set<string>();
-
-function warnOverridesOnce(cacheKey: string, message: string) {
-  if (warnedOverrideInputs.has(cacheKey)) return;
-  warnedOverrideInputs.add(cacheKey);
-  console.warn(message);
-}
-
-/**
- * Parses PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES (a JSON object with optional
- * "general" / "experimental" / "visibility" sections). Overridden keys win over
- * the stored instance settings at read time, letting operators pin settings
- * declaratively from deployment config. Invalid JSON or an invalid section is
- * warned about once and ignored (the stored settings apply). The "visibility"
- * section is fork-only (upstream has no visibility concept), included so
- * overrides are internally consistent across all instance settings sections.
- */
-export function parseInstanceSettingsOverrides(
-  env: Record<string, string | undefined> = process.env,
-): InstanceSettingsOverrides {
-  const raw = env[OVERRIDES_ENV_VAR]?.trim();
-  if (!raw) return emptyOverrides();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} is not valid JSON; ignoring overrides`);
-    return emptyOverrides();
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} must be a JSON object; ignoring overrides`);
-    return emptyOverrides();
-  }
-
-  const sections = parsed as Record<string, unknown>;
-  const sectionSchemas = {
-    general: instanceGeneralSettingsSchema.partial().strip(),
-    experimental: instanceExperimentalSettingsSchema.partial().strip(),
-    visibility: instanceVisibilitySettingsSchema.partial().strip(),
-  } as const;
-
-  const result = emptyOverrides();
-  for (const key of ["general", "experimental", "visibility"] as const) {
-    if (sections[key] === undefined) continue;
-    const sectionParsed = sectionSchemas[key].safeParse(sections[key]);
-    if (!sectionParsed.success) {
-      warnOverridesOnce(
-        `${raw}:${key}`,
-        `${OVERRIDES_ENV_VAR}.${key} failed validation; ignoring this section`,
-      );
-      continue;
-    }
-    result[key] = sectionParsed.data as Record<string, unknown>;
-  }
-  result.experimental = stripServerManagedExperimentalPatchFields(
-    result.experimental,
-  ) as Record<string, unknown>;
-  return result;
-}
-
-/**
- * Override-aware resolution: normalize the stored value, spread the env
- * overrides on top, and re-normalize. Nested objects (backupRetention) are
- * overridden whole, matching the existing shallow patch semantics.
- */
-export function resolveGeneralSettings(
-  raw: unknown,
-  overrides: Record<string, unknown> = {},
-): InstanceGeneralSettings {
-  return normalizeGeneralSettings({ ...normalizeGeneralSettings(raw), ...overrides });
-}
-
-export function resolveExperimentalSettings(
-  raw: unknown,
-  overrides: Record<string, unknown> = {},
-): InstanceExperimentalSettings {
-  return normalizeExperimentalSettings({ ...normalizeExperimentalSettings(raw), ...overrides });
-}
-
-/** Env-overridden keys are read-time-forced and must never persist via a patch. */
-export function stripOverriddenPatchKeys<T extends Record<string, unknown>>(
-  patch: T,
-  overrideKeys: string[],
-): T {
-  if (overrideKeys.length === 0) return patch;
-  const next: Record<string, unknown> = { ...patch };
-  for (const key of overrideKeys) delete next[key];
-  return next as T;
 }
 
 export function applyExperimentalSettingsPatch(
@@ -317,16 +219,18 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
+      enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableApps: parsed.data.enableApps ?? false,
       enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
+      enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
-      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
+      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       enableSmokeLab: parsed.data.enableSmokeLab ?? false,
       enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
@@ -336,6 +240,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableDecisions: parsed.data.enableDecisions ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
+      enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       cloudBilling:
@@ -347,6 +252,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+      enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
@@ -358,12 +264,14 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   }
   return {
     enableEnvironments: false,
+    enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enableApps: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
+    enableClassicTaskInterface: false,
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
@@ -377,6 +285,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
+    enableSimplifiedEnglishInteractions: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
@@ -384,42 +293,13 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
-}
-
-export function normalizeVisibilitySettings(raw: unknown): InstanceVisibilitySettings {
-  const parsed = instanceVisibilitySettingsStorageSchema.safeParse(raw ?? {});
-  if (!parsed.success) {
-    // Corrupt row: fall back to the spec default (everything exposed),
-    // mirroring normalizeGeneralSettings/normalizeExperimentalSettings.
-    return {
-      ...DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
-      companySurfaces: [...DEFAULT_INSTANCE_VISIBILITY_SETTINGS.companySurfaces],
-    };
-  }
-  const stored = parsed.data.companySurfaces;
-  // Canonical order + dedupe: intersect the constant list with the stored set.
-  return {
-    companySurfaces: COMPANY_SETTINGS_SURFACES.filter((surface) => stored.includes(surface)),
-  };
-}
-
-/**
- * Override-aware resolution for visibility settings, symmetric with
- * resolveGeneralSettings/resolveExperimentalSettings above. Upstream has no
- * visibility concept (it's fork-only), so this keeps env overrides
- * internally consistent across all three settings sections.
- */
-export function resolveVisibilitySettings(
-  raw: unknown,
-  overrides: Record<string, unknown> = {},
-): InstanceVisibilitySettings {
-  return normalizeVisibilitySettings({ ...normalizeVisibilitySettings(raw), ...overrides });
 }
 
 export type ManagedExperimentalKeyMetadata = Partial<
@@ -452,23 +332,7 @@ export function applyManagedExperimentalOverlay(
   return { experimental: next, managedKeys };
 }
 
-function toInstanceSettings(
-  row: typeof instanceSettings.$inferSelect,
-  overrides: InstanceSettingsOverrides = emptyOverrides(),
-): InstanceSettings {
-  return {
-    id: row.id,
-    defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-    general: resolveGeneralSettings(row.general, overrides.general),
-    experimental: resolveExperimentalSettings(row.experimental, overrides.experimental),
-    visibility: resolveVisibilitySettings(row.visibility, overrides.visibility),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  } as InstanceSettings;
-}
-
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
-  const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
@@ -482,18 +346,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return managedConfig ? { ...experimental, managedKeys } : experimental;
   }
 
-  function toManagedInstanceSettings(
-    row: typeof instanceSettings.$inferSelect,
-    ov: InstanceSettingsOverrides,
-  ): InstanceSettings {
-    const base = toInstanceSettings(row, ov);
-    if (!managedConfig) return base;
-    const { experimental, managedKeys } = applyManagedExperimentalOverlay(base.experimental, managedConfig);
-    return { ...base, experimental: { ...experimental, managedKeys } } as InstanceSettings;
+  function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
+    return {
+      id: row.id,
+      defaultEnvironmentId: row.defaultEnvironmentId ?? null,
+      general: normalizeGeneralSettings(row.general),
+      experimental: toExperimentalView(row.experimental),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    } as InstanceSettings;
   }
-
-  async function getOrCreateRow() {
-    const existing = await db
+  async function getOrCreateRow(runner: InstanceSettingsWriteDb = db) {
+    const existing = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -501,13 +365,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     if (existing) return existing;
 
     const now = new Date();
-    const [created] = await db
+    const [created] = await runner
       .insert(instanceSettings)
       .values({
         singletonKey: DEFAULT_SINGLETON_KEY,
         general: {},
         experimental: {},
-        visibility: {},
         createdAt: now,
         updatedAt: now,
       })
@@ -521,7 +384,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     if (created) return created;
 
-    const raced = await db
+    const raced = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -532,12 +395,20 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
-    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
+    update: async (
+      patch: PatchInstanceSettings,
+      writeOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceSettings> => {
+      // The write may run inside a caller-supplied transaction so it commits
+      // atomically with a sibling write (e.g. clearing the managed-default
+      // stamp on the environment row alongside a defaultEnvironmentId
+      // change). Reads use the same runner so the row is visible to the tx.
+      const runner = writeOptions?.db ?? db;
+      const current = await getOrCreateRow(runner);
       const now = new Date();
-      const [updated] = await db
+      const [updated] = await runner
         .update(instanceSettings)
         .set({
           ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
@@ -547,33 +418,24 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return resolveGeneralSettings(row.general, overrides.general);
+      return normalizeGeneralSettings(row.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
       const row = await getOrCreateRow();
-      return toExperimentalView(resolveExperimentalSettings(row.experimental, overrides.experimental));
-    },
-
-    getVisibility: async (): Promise<InstanceVisibilitySettings> => {
-      const row = await getOrCreateRow();
-      return resolveVisibilitySettings(row.visibility, overrides.visibility);
+      return toExperimentalView(row.experimental);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const effectivePatch = stripOverriddenPatchKeys(
-        patch as Record<string, unknown>,
-        Object.keys(overrides.general),
-      );
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
-        ...effectivePatch,
+        ...patch,
       });
       const now = new Date();
       const [updated] = await db
@@ -584,16 +446,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const effectivePatch = stripOverriddenPatchKeys(
-        patch as Record<string, unknown>,
-        Object.keys(overrides.experimental),
-      ) as PatchInstanceExperimentalSettings;
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, effectivePatch, options);
+      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -603,29 +461,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
-    },
-
-    updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
-      const effectivePatch = stripOverriddenPatchKeys(
-        patch as Record<string, unknown>,
-        Object.keys(overrides.visibility),
-      ) as PatchInstanceVisibilitySettings;
-      const nextVisibility = normalizeVisibilitySettings({
-        ...normalizeVisibilitySettings(current.visibility),
-        ...effectivePatch,
-      });
-      const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          visibility: { ...nextVisibility },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

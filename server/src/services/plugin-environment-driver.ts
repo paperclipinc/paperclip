@@ -28,7 +28,26 @@ import {
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import { resolveMaxRpcTimeoutMs, type PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+
+/**
+ * The worker methods a sandbox provider must advertise before the host reuses
+ * a provider lease across runs. The host resumes a lease through
+ * `environmentResumeLease`, ends it through `environmentReleaseLease`, and tears
+ * down a stale lease through `environmentDestroyLease`. The reuse path destroys
+ * the stale lease when a resume fails and then acquires a fresh lease, so a
+ * provider that omits any of the three methods can strand the stale lease and
+ * can never complete the reuse path.
+ *
+ * The runtime capability normalizer maps `reusableLeases` to these same methods,
+ * so the acquisition guard, the effective-capability snapshot, and the published
+ * provider-capabilities value all read one source and cannot drift.
+ */
+export const REUSABLE_LEASE_WORKER_METHODS = [
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+] as const;
 
 export interface ReadyPluginWorkerRecovery {
   pluginKeys: readonly string[];
@@ -44,12 +63,22 @@ export interface ReadyPluginEnvironmentDriver {
   description?: string;
   configSchema: PluginEnvironmentDriverDeclaration["configSchema"];
   supportsReusableLeases?: PluginEnvironmentDriverDeclaration["supportsReusableLeases"];
+  sandboxCapabilities?: PluginEnvironmentDriverDeclaration["sandboxCapabilities"];
+  /**
+   * The running worker for this exact plugin advertises ALL reusable-lease
+   * lifecycle methods (`REUSABLE_LEASE_WORKER_METHODS`: resume, release, and
+   * destroy). The published provider-capabilities value grants reusable leases
+   * only when the declaration allows them AND this flag is true, so presentation
+   * matches the acquisition guard, which also verifies the same methods live.
+   */
+  reusableLeaseMethodsVerified: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
   templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
   templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
   supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
+  supportsLoginPty?: PluginEnvironmentDriverDeclaration["supportsLoginPty"];
 }
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
@@ -130,6 +159,35 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
   return null;
 }
 
+/**
+ * Resolve the sandbox-provider driver declaration from one exact plugin id.
+ *
+ * A driver key is only unique inside a single manifest. Two installed plugins
+ * can declare the same driver key. A lease pins the plugin that acquired it
+ * through `metadata.pluginId`. Use this resolver, not the by-key resolver, when
+ * the caller must read the declaration from that exact plugin. The by-key
+ * resolver returns the first installed plugin with the key, which can be a
+ * different, even disabled, plugin.
+ *
+ * This resolver fails closed. It returns `null` when the plugin id is unknown,
+ * or when that plugin no longer declares a `sandbox_provider` driver with the
+ * given key.
+ */
+export async function resolvePluginSandboxProviderDriverById(input: {
+  db: Db;
+  pluginId: string;
+  driverKey: string;
+}): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["getById"]>>; driver: PluginEnvironmentDriverDeclaration } | null> {
+  const pluginRegistry = pluginRegistryService(input.db);
+  const plugin = await pluginRegistry.getById(input.pluginId);
+  if (!plugin) return null;
+  const driver = plugin.manifestJson.environmentDrivers?.find(
+    (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
+  ) as PluginEnvironmentDriverDeclaration | undefined;
+  if (!driver) return null;
+  return { plugin, driver };
+}
+
 export async function listReadyPluginEnvironmentDrivers(input: {
   db: Db;
   workerManager?: PluginWorkerManager;
@@ -173,6 +231,13 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     if (!input.workerManager.isRunning(plugin.id)) {
       continue;
     }
+    // The plugin is running, so read the live worker's verified methods once per
+    // plugin. A provider advertises reusable leases only when its worker carries
+    // all reuse lifecycle methods; the declaration alone never grants them.
+    const workerMethods = new Set(input.workerManager.getWorker(plugin.id)?.supportedMethods ?? []);
+    const reusableLeaseMethodsVerified = REUSABLE_LEASE_WORKER_METHODS.every(
+      (method) => workerMethods.has(method),
+    );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
         .filter((driver) => driver.kind === "sandbox_provider")
@@ -184,12 +249,15 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           description: driver.description,
           configSchema: driver.configSchema,
           supportsReusableLeases: driver.supportsReusableLeases,
+          sandboxCapabilities: driver.sandboxCapabilities,
+          reusableLeaseMethodsVerified,
           supportsInteractiveSetup: driver.supportsInteractiveSetup,
           interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
           supportsTemplateCapture: driver.supportsTemplateCapture,
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
+          supportsLoginPty: driver.supportsLoginPty,
         })),
     );
   }
@@ -435,19 +503,14 @@ export async function executePluginEnvironmentCommand(input: {
         workerManager: input.workerManager,
         config: input.config,
       });
-  // Resolve BOTH budgets together so the plugin-side timeout always
-  // undercuts the host RPC timer by the overhead buffer (see
-  // resolvePluginExecuteBudget). Passing the raw requested timeout through
-  // to the plugin would defeat the buffer whenever it exceeds the host cap.
-  const budget = resolvePluginExecuteBudget({
-    requestedTimeoutMs: input.params.timeoutMs,
-    config: input.config.driverConfig,
-  });
   return await input.workerManager.call(
     plugin.id,
     "environmentExecute",
-    { ...input.params, timeoutMs: budget.pluginTimeoutMs ?? input.params.timeoutMs },
-    budget.rpcTimeoutMs,
+    input.params,
+    resolvePluginExecuteRpcTimeoutMs({
+      requestedTimeoutMs: input.params.timeoutMs,
+      config: input.config.driverConfig,
+    }),
   );
 }
 
@@ -558,52 +621,18 @@ export async function deletePluginEnvironmentTemplate(input: {
 
 const RPC_OVERHEAD_BUFFER_MS = 30_000;
 
-function resolvePluginExecuteBaseMs(input: {
-  requestedTimeoutMs?: number;
-  config: Record<string, unknown>;
-}): number | undefined {
-  if (Number.isFinite(input.requestedTimeoutMs) && (input.requestedTimeoutMs ?? 0) > 0) {
-    return Math.trunc(input.requestedTimeoutMs!);
-  }
-  const configTimeoutMs = typeof input.config.timeoutMs === "number" ? input.config.timeoutMs : null;
-  if (configTimeoutMs && Number.isFinite(configTimeoutMs) && configTimeoutMs > 0) {
-    return Math.trunc(configTimeoutMs);
-  }
-  return undefined;
-}
-
 export function resolvePluginExecuteRpcTimeoutMs(input: {
   requestedTimeoutMs?: number;
   config: Record<string, unknown>;
 }): number | undefined {
-  const baseMs = resolvePluginExecuteBaseMs(input);
-  return baseMs != null ? baseMs + RPC_OVERHEAD_BUFFER_MS : undefined;
-}
-
-/**
- * Resolve the execute-call budgets so the plugin-side graceful timeout path
- * ALWAYS fires before the host-side RPC timer.
- *
- * The host clamps every RPC timeout at resolveMaxRpcTimeoutMs(). Before this
- * helper, a requested timeout whose value + buffer exceeded that cap was
- * clamped to EXACTLY the cap while the plugin still received the full
- * requested budget — the buffer was defeated and the host timer fired first,
- * producing a contentless "RPC call timed out" failure with everything the
- * plugin knew about the run discarded.
- *
- * Invariant: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS <= rpcTimeoutMs <= cap.
- * When neither a requested nor a config timeout exists, both budgets stay
- * undefined and legacy behavior is preserved.
- */
-export function resolvePluginExecuteBudget(input: {
-  requestedTimeoutMs?: number;
-  config: Record<string, unknown>;
-}): { pluginTimeoutMs: number | undefined; rpcTimeoutMs: number | undefined } {
-  const baseMs = resolvePluginExecuteBaseMs(input);
-  if (baseMs == null) {
-    return { pluginTimeoutMs: undefined, rpcTimeoutMs: undefined };
+  let baseMs: number | undefined;
+  if (Number.isFinite(input.requestedTimeoutMs) && (input.requestedTimeoutMs ?? 0) > 0) {
+    baseMs = Math.trunc(input.requestedTimeoutMs!);
+  } else {
+    const configTimeoutMs = typeof input.config.timeoutMs === "number" ? input.config.timeoutMs : null;
+    if (configTimeoutMs && Number.isFinite(configTimeoutMs) && configTimeoutMs > 0) {
+      baseMs = Math.trunc(configTimeoutMs);
+    }
   }
-  const maxRpcTimeoutMs = resolveMaxRpcTimeoutMs();
-  const pluginTimeoutMs = Math.min(baseMs, maxRpcTimeoutMs - RPC_OVERHEAD_BUFFER_MS);
-  return { pluginTimeoutMs, rpcTimeoutMs: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS };
+  return baseMs != null ? baseMs + RPC_OVERHEAD_BUFFER_MS : undefined;
 }

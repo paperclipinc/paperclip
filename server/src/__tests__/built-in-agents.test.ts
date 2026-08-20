@@ -13,8 +13,6 @@ import {
   builtInManagedResources,
   companies,
   companyMemberships,
-  companySecretBindings,
-  companySecrets,
   companySkillVersions,
   companySkills,
   createDb,
@@ -134,8 +132,6 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(companySkills);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
-    await db.delete(companySecretBindings);
-    await db.delete(companySecrets);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(approvals);
@@ -260,66 +256,6 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
-  });
-
-  async function seedDonorAgent(companyId: string) {
-    const secretId = randomUUID();
-    await db.insert(companySecrets).values({
-      id: secretId,
-      companyId,
-      key: "claude-oauth-token",
-      name: "Claude OAuth token",
-    });
-    await db.insert(agents).values({
-      id: randomUUID(),
-      companyId,
-      name: "CEO",
-      role: "ceo",
-      status: "idle",
-      adapterType: "claude_local",
-      adapterConfig: {
-        model: "claude-sonnet-4-5",
-        env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId } },
-      },
-      runtimeConfig: {},
-      permissions: {},
-      metadata: {},
-    });
-    return secretId;
-  }
-
-  it("inherits the company credential env from a same-adapter agent on provisioning", async () => {
-    const companyId = await seedCompany({ requireApproval: false });
-    const secretId = await seedDonorAgent(companyId);
-
-    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
-
-    expect(state.agent?.adapterConfig).toMatchObject({
-      model: "claude-haiku-4-5",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId, version: "latest" } },
-    });
-  });
-
-  it("inherits the company credential env on the pending-approval provisioning path", async () => {
-    const companyId = await seedCompany();
-    const secretId = await seedDonorAgent(companyId);
-
-    const result = await builtInAgentService(db).provision(companyId, "summarizer");
-
-    expect(result.state.agent?.status).toBe("pending_approval");
-    expect(result.state.agent?.adapterConfig).toMatchObject({
-      model: "claude-haiku-4-5",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId, version: "latest" } },
-    });
-  });
-
-  it("provisions a built-in agent unchanged when no same-adapter donor has a credential", async () => {
-    const companyId = await seedCompany({ requireApproval: false });
-
-    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
-
-    expect(state.agent?.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
-    expect(state.agent?.adapterConfig).not.toHaveProperty("env");
   });
 
   it("routes policy-gated built-in provisioning through a pending hire approval", async () => {
@@ -633,7 +569,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
-  it("auto-provisions a paused Reflection Coach bundle with skill sync and a disabled routine", async () => {
+  it("reconciles an enabled Reflection Coach bundle with skill sync and a disabled routine", async () => {
     const companyId = await seedCompany({ requireApproval: false });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -645,6 +581,17 @@ describeEmbeddedPostgres("built-in agents", () => {
       permissions: {},
     });
 
+    // The Reflection Coach is opt-in (not auto-created). Enabling it on demand
+    // materializes its managed bundle in a single pass.
+    const enabled = await builtInAgentService(db).ensure(companyId, "reflection-coach");
+    expect(enabled.agent?.adapterConfig).toMatchObject({
+      instructionsBundleMode: "managed",
+      instructionsEntryFile: "AGENTS.md",
+    });
+    expect(enabled.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
+
+    // Startup reconcile keeps the enabled bundle tracking stock and re-grants
+    // the root/company default permissions.
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.autoEnsured).toBeGreaterThanOrEqual(1);
     expect(result.defaultGrantsEnsured).toBeGreaterThanOrEqual(4);
@@ -670,11 +617,6 @@ describeEmbeddedPostgres("built-in agents", () => {
         },
       },
     });
-    expect(state.agent?.adapterConfig).toMatchObject({
-      instructionsBundleMode: "managed",
-      instructionsEntryFile: "AGENTS.md",
-    });
-    expect(state.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
       ["skill", "stock_current"],
@@ -757,7 +699,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     )).size).toBe(3);
   });
 
-  it("preserves new-agent approval gates during automatic Reflection Coach provisioning", async () => {
+  it("preserves new-agent approval gates during on-demand Reflection Coach provisioning", async () => {
     const companyId = await seedCompany({ requireApproval: true });
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -774,12 +716,11 @@ describeEmbeddedPostgres("built-in agents", () => {
       applyInSeparateFollowUpRun: true,
     };
 
-    const result = await reconcileBuiltInAgentsOnStartup(db);
-
-    expect(result).toMatchObject({
-      autoEnsured: 2,
-      pendingApprovals: 2,
-    });
+    // The Reflection Coach is opt-in, so it's enabled on demand. With board
+    // approval required, provisioning it must leave a pending agent + a
+    // hire_agent approval rather than an active agent.
+    const provisioned = await builtInAgentService(db).provision(companyId, "reflection-coach");
+    expect(provisioned.approval).not.toBeNull();
     const state = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(state).toMatchObject({
       status: "pending_approval",
@@ -815,7 +756,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
-    expect(pendingReconcile.pendingApprovals).toBe(2);
+    expect(pendingReconcile.pendingApprovals).toBe(1);
     const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(stillPending).toMatchObject({
       status: "pending_approval",
@@ -851,7 +792,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
-    expect(approvalRows).toHaveLength(2);
+    expect(approvalRows).toHaveLength(1);
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {
@@ -1126,7 +1067,21 @@ describeEmbeddedPostgres("built-in agents", () => {
     const { olderId, newerId } = await seedLegacyDuplicateBriefs(affectedCompanyId);
     // A second company created after the affected one — previously skipped
     // entirely because the duplicate error escaped the reconciliation loop.
+    // Give it a drifted built-in row so we can prove reconcile still reached it.
     const healthyCompanyId = await seedCompany({ requireApproval: false });
+    const healthyBriefsId = randomUUID();
+    await db.insert(agents).values({
+      id: healthyBriefsId,
+      companyId: healthyCompanyId,
+      name: "Stale Briefs",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+    });
 
     const result = await reconcileBuiltInAgentsOnStartup(db);
     expect(result.companyFailures).toBe(0);
@@ -1141,9 +1096,10 @@ describeEmbeddedPostgres("built-in agents", () => {
       ),
     ).toHaveLength(1);
 
-    // The company after the affected one still had its bundled agents provisioned.
-    const healthyCoach = await builtInAgentService(db).get(healthyCompanyId, "reflection-coach");
-    expect(healthyCoach.agentId).toBeTruthy();
+    // The company after the affected one was still reconciled (its drifted
+    // built-in row was repaired to stock) rather than skipped.
+    const [healthyBriefs] = await db.select().from(agents).where(eq(agents.id, healthyBriefsId));
+    expect(healthyBriefs?.name).toBe("Briefs Agent");
   });
 
   it("automatically materializes the Reflection Coach bundle without enabling background work", async () => {

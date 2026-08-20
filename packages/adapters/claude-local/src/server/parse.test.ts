@@ -11,98 +11,139 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
-  isClaudeInvalidCredentialError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
-  it("classifies Claude's invalid API key login prompt as auth required and as a credential rejection", () => {
+  it("classifies Claude's invalid API key login prompt as auth required", () => {
     expect(
       detectClaudeLoginRequired({
         parsed: null,
         stdout: "",
         stderr: "Invalid API key · Please run /login",
       }),
-    ).toEqual({ requiresLogin: true, loginUrl: null, credentialRejected: true });
+    ).toEqual({ requiresLogin: true, loginUrl: null });
   });
 
-  it("does not classify a bare invalid API key as the Claude login flow, but still flags it as a credential rejection", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
-      stdout: "",
-      stderr: "Invalid API key",
-    });
-    expect(result.requiresLogin).toBe(false);
-    expect(result.credentialRejected).toBe(true);
-  });
-
-  it("does not flag a plain 'please log in' prompt (no credential attempted) as a rejection", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
-      stdout: "",
-      stderr: "Please log in. Run `claude login` first.",
-    });
-    expect(result.requiresLogin).toBe(true);
-    expect(result.credentialRejected).toBe(false);
-  });
-
-  it("flags credentialRejected via the 401/authentication_error signal even without login-prompt wording", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
-      stdout: "",
-      stderr:
-        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
-    });
-    expect(result.requiresLogin).toBe(false);
-    expect(result.credentialRejected).toBe(true);
-  });
-
-  // Known false-negative surface: our patterns are a curated list of
-  // wordings we've actually seen, not a generic "sounds auth-related"
-  // classifier. A rejection phrased outside that list falls through to the
-  // permissive (non-authFailure) path rather than crashing — this pins
-  // that as intentional, documented behavior, not silently-broken behavior.
-  // (The overall probe still hard-fails via the generic error bucket in
-  // test.ts; see test.probe.test.ts for the full-pipeline pin.)
-  it("documents a false negative: an unrecognized rejection wording ('token revoked') is not classified as auth-related at all", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
-      stdout: "",
-      stderr: "Your token has been revoked.",
-    });
-    expect(result.requiresLogin).toBe(false);
-    expect(result.credentialRejected).toBe(false);
+  it("does not classify a bare invalid API key as the Claude login flow", () => {
     expect(
-      isClaudeInvalidCredentialError({
+      detectClaudeLoginRequired({
         parsed: null,
         stdout: "",
-        stderr: "Your token has been revoked.",
-      }),
+        stderr: "Invalid API key",
+      }).requiresLogin,
     ).toBe(false);
   });
 
-  // Known false-positive guard: detectClaudeLoginRequired joins the FULL
-  // raw stdout/stderr text into the searched blob (see the `messages` array
-  // in the implementation), not just structured CLI result fields. Without
-  // a word-boundary on the single bare-word alternative, an unrelated log
-  // line that merely CONTAINS "unauthorized" as a substring (e.g. a URL
-  // query param) would wrongly read as the provider rejecting the
-  // credential.
-  it("does not flag credentialRejected from an incidental 'unauthorized' substring inside unrelated noise", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
-      stdout: "",
-      stderr: "Fetching https://api.example.com/orders?status=unauthorized_pending",
-    });
-    expect(result.credentialRejected).toBe(false);
+  it("classifies an invalid or expired OAuth bearer token as login required", () => {
+    // Grounded on the real Claude CLI output for CLAUDE_CODE_OAUTH_TOKEN=invalid:
+    // the result event carries a 401 authentication failure and an "Invalid
+    // bearer token" message. This is an auth failure, not a probe that could not
+    // run, so the detector must classify it as login required.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      api_error_status: 401,
+      error: "authentication_failed",
+      result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate. API Error: 401 Invalid bearer token"}]},"error":"authentication_failed"}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
   });
 
-  it("still flags credentialRejected for the standalone word 'unauthorized' in a real auth context", () => {
-    const result = detectClaudeLoginRequired({
-      parsed: null,
+  it("does not route an invalid token to the transient or quota classifiers", () => {
+    // An auth failure must win over the transient and quota lanes, so a run
+    // surfaces login required instead of a retry.
+    const input = {
+      parsed: {
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+      },
       stdout: "",
-      stderr: "401 Unauthorized: request rejected",
-    });
-    expect(result.credentialRejected).toBe(true);
+      stderr: "",
+    };
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(false);
+  });
+
+  it("classifies an expired or revoked token in the parsed result as login required", () => {
+    // The result event marks the run as a failure and reports an expired token.
+    // This is a token failure, so the detector classifies it as login required.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      result: "Failed to authenticate. Your OAuth access token is expired.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not classify a successful probe whose assistant text repeats a token phrase", () => {
+    // A healthy run can print an auth phrase in its answer text. The parsed
+    // result is a success, so the token-failure markers must not fire on the raw
+    // stdout assistant event.
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "hello",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"The phrase authentication_failed means an invalid bearer token."}]}}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify a success whose result text repeats a token phrase", () => {
+    // The model's own answer repeats a token phrase, so the phrase lands in the
+    // parsed result. The run is a success, so the failure gate keeps it healthy.
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "Sure. An invalid bearer token means authentication_failed.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("keeps a transient failure with an assistant token phrase on the transient lane", () => {
+    // The run fails on a 503 transient error. The token phrase appears only in
+    // the raw stdout assistant event, not the parsed result, so the run stays
+    // transient and never classifies as login required.
+    const input = {
+      parsed: {
+        is_error: true,
+        subtype: "error_during_execution",
+        result: "API Error: 503 service unavailable",
+      },
+      stdout:
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"authentication_failed: the bearer token is invalid"}]}}',
+      stderr: "",
+    };
+    expect(detectClaudeLoginRequired(input).requiresLogin).toBe(false);
+    expect(isClaudeTransientUpstreamError(input)).toBe(true);
+  });
+
+  it("does not treat a bare token phrase in raw stdout with no parsed result as login required", () => {
+    // Untrusted stdout alone must not satisfy a token-failure marker. Only the
+    // parsed terminal result fields of a failed run can trip the token markers.
+    expect(
+      detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "authentication_failed while the assistant called a tool",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
   });
 });
 
@@ -121,55 +162,6 @@ describe("isClaudeModelNotFoundError", () => {
   it("does not classify unrelated provider failures as model resolution errors", () => {
     expect(isClaudeModelNotFoundError({
       errorMessage: "API Error: 503 service unavailable",
-    })).toBe(false);
-  });
-});
-
-describe("isClaudeInvalidCredentialError", () => {
-  it("detects the 401 invalid bearer token failure from the CLI result", () => {
-    expect(isClaudeInvalidCredentialError({
-      parsed: {
-        subtype: "success",
-        is_error: true,
-        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
-      },
-    })).toBe(true);
-  });
-
-  it("detects the 401 invalid OAuth access token failure", () => {
-    expect(isClaudeInvalidCredentialError({
-      parsed: {
-        subtype: "success",
-        is_error: true,
-        result: "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
-      },
-    })).toBe(true);
-  });
-
-  it("detects invalid x-api-key and authentication_error payloads from fallback output", () => {
-    expect(isClaudeInvalidCredentialError({
-      stderr: "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
-    })).toBe(true);
-    expect(isClaudeInvalidCredentialError({
-      errorMessage: "Claude exited with code 1: authentication_error",
-    })).toBe(true);
-  });
-
-  it("requires a 401 alongside a bare 'failed to authenticate' message", () => {
-    expect(isClaudeInvalidCredentialError({
-      errorMessage: "Failed to authenticate. API Error: 401",
-    })).toBe(true);
-    expect(isClaudeInvalidCredentialError({
-      errorMessage: "Failed to authenticate because the network dropped",
-    })).toBe(false);
-  });
-
-  it("does not classify unrelated failures or quota errors as invalid credentials", () => {
-    expect(isClaudeInvalidCredentialError({
-      errorMessage: "API Error: 503 service unavailable",
-    })).toBe(false);
-    expect(isClaudeInvalidCredentialError({
-      errorMessage: "You've hit your session limit - resets at 4pm",
     })).toBe(false);
   });
 });

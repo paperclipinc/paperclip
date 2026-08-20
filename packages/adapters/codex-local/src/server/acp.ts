@@ -36,13 +36,15 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure, isCodexInvalidApiKeyError } from "./parse.js";
+import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -275,10 +277,6 @@ async function prepareCodexRemoteManagedHome(
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
-    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
-    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
-    // the terminal failed result instead of silently switching lanes.
-    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
     adapterType: "codex_local",
@@ -287,38 +285,27 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
-  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-  const authFailure = classifyCodexAuthRefreshFailure({ errorMessage });
-  if (authFailure) {
-    return {
-      ...result,
-      errorCode: authFailure,
+  const authFailure = classifyCodexAuthRefreshFailure({
+    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n"),
+  });
+  if (!authFailure) return result;
+
+  return {
+    ...result,
+    errorCode: authFailure,
+    errorFamily: authFailure,
+    resultJson: {
+      ...(result.resultJson ?? {}),
       errorFamily: authFailure,
-      resultJson: {
-        ...(result.resultJson ?? {}),
-        errorFamily: authFailure,
-      },
-    };
-  }
-
-  // A rejected/missing OpenAI API key is a permanent auth failure: surface it
-  // as codex_auth_required (no errorFamily; it is not a retry contract) so the
-  // heartbeat pauses the agent and the run card offers credential-connect.
-  if (isCodexInvalidApiKeyError({ errorMessage })) {
-    return {
-      ...result,
-      errorCode: "codex_auth_required",
-    };
-  }
-
-  return result;
+    },
+  };
 }
 
 /**
@@ -368,7 +355,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexAuthFailureClassification(result);
+    return withCodexAuthRefreshFailureClassification(result);
   };
 }
 
@@ -506,19 +493,6 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-async function hasCodexNativeCredentials(codexHome: string): Promise<boolean> {
-  const raw = await fs.readFile(path.join(codexHome, "auth.json"), "utf8").catch(() => null);
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const record = parsed as Record<string, unknown>;
-    return isNonEmpty(record.OPENAI_API_KEY) || isNonEmpty(record.refresh_token);
-  } catch {
-    return false;
-  }
-}
-
 export async function testCodexAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -526,7 +500,7 @@ export async function testCodexAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
 
   checks.push({
     code: "codex_engine_selected",
@@ -589,48 +563,73 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
-  const configApiKey = envConfig.OPENAI_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.OPENAI_API_KEY : undefined;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
-    checks.push({
-      code: "codex_acp_openai_api_key_detected",
-      level: "info",
-      message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-      detail: `Detected in ${source}.`,
+  if (!targetIsRemote) {
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const hostApiKey =
+      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+        ? null
+        : isNonEmpty(process.env.OPENAI_API_KEY)
+        ? process.env.OPENAI_API_KEY
+        : null;
+    const configuredApiKey = configApiKey ?? hostApiKey;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey,
     });
-  } else if (!callerControlsHost) {
-    // Hosted multi-tenant: the host's `~/.codex` is not this user's, and they
-    // have no shell to run `codex login` on, so neither the native-auth check
-    // nor the login hint below can mean anything to them. Say the one thing
-    // they can act on. Deliberately explicit that a ChatGPT plan is not a
-    // route here: it authenticates only through that local login, so a
-    // subscriber who reads a bare "set OPENAI_API_KEY" keeps hunting for the
-    // plan option instead of buying the credit the key needs.
-    checks.push({
-      code: "codex_acp_credentials_missing",
-      level: "warn",
-      message: "No Codex credentials are configured for this agent.",
-      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
-    });
-  } else if (!targetIsRemote) {
-    const codexHome = isNonEmpty(envConfig.CODEX_HOME)
-      ? envConfig.CODEX_HOME
-      : path.join(process.env.HOME ?? "", ".codex");
-    if (codexHome && await hasCodexNativeCredentials(codexHome)) {
+
+    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+      checks.push({
+        code: "codex_acp_openai_api_key_detected",
+        level: "info",
+        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+      });
+    } else if (credentialReadiness.ready && !credentialReadiness.managed) {
+      checks.push({
+        code: "codex_acp_external_home_configured",
+        level: "info",
+        message: "Codex ACP will use an externally managed CODEX_HOME.",
+        detail: credentialReadiness.effectiveHome,
+      });
+    } else if (credentialReadiness.ready) {
       checks.push({
         code: "codex_acp_native_auth_detected",
         level: "info",
         message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials found in ${path.join(codexHome, "auth.json")}.`,
+        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
       });
     } else {
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials were detected.",
-        hint: "Set OPENAI_API_KEY or run `codex login` before starting a Codex ACP agent.",
+        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+      });
+    }
+  } else if (targetIsSandbox) {
+    // The ACP Test does not probe the sandbox, so it predicts readiness from the
+    // credentials the Paperclip server can seed into the sandbox. The host
+    // environment is not seeded, so only the adapter config key counts here.
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey: configApiKey,
+    });
+    if (!credentialReadiness.ready) {
+      // Emit the neutral canonical check so the user interface can decide login
+      // eligibility from a stable code. The user interface does not read the
+      // message text or the top-level status.
+      checks.push({
+        code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+        level: "warn",
+        message: "The sandbox has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the sandbox.",
       });
     }
   }

@@ -28,6 +28,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
 }));
 
+const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
+}));
+
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
@@ -47,6 +51,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
+  }));
+
+  vi.doMock("../services/run-secret-redaction.js", () => ({
+    createRunSecretRedactionRegistry: () => mockRunSecretRedactionRegistry,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -219,7 +227,6 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
-      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -353,7 +360,6 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
       id: "run-1",
       companyId: "company-1",
-      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     }, {
@@ -367,60 +373,6 @@ describe("agent live run routes", () => {
       content: "chunk",
       nextOffset: 5,
     });
-  });
-
-  it.each(["queued", "running", "scheduled_retry"] as const)(
-    "returns an empty log (not 404) for a %s run that has not opened its log yet",
-    async (status) => {
-      // The runner writes the log handle when it opens the file, so a
-      // non-terminal run legitimately has none — including a run waiting on a
-      // scheduled retry, which has no handle at all yet. The transcript poller
-      // only stops re-requesting on a 404 for TERMINAL runs, so 404ing these
-      // made every such run 404 on every poll for its whole life.
-      mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-        id: "run-1",
-        companyId: "company-1",
-        status,
-        logStore: null,
-        logRef: null,
-      });
-
-      const res = await requestApp(
-        await createApp(),
-        (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
-      );
-
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body).toEqual({
-        runId: "run-1",
-        store: null,
-        logRef: null,
-        content: "",
-        nextOffset: 12,
-      });
-      expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
-    },
-  );
-
-  it("still 404s the log of a terminal run that never wrote one", async () => {
-    // A cancelled/failed run with no handle never got one, so the client is
-    // right to stop asking — that path keeps its 404.
-    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-      id: "run-1",
-      companyId: "company-1",
-      status: "cancelled",
-      logStore: null,
-      logRef: null,
-    });
-    const { notFound } = await import("../errors.js");
-    mockHeartbeatService.readLog.mockRejectedValue(notFound("Run log not found"));
-
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log"),
-    );
-
-    expect(res.status).toBe(404);
   });
 
   it("caps company live run polling by default", async () => {

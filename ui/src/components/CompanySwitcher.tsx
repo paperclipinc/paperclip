@@ -86,7 +86,26 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           </DropdownMenuItem>
         ))}
         {sidebarCompanies.length === 0 && (
-          <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          // "No companies" is a claim about the account, and after a failed list
+          // request it is one we cannot make — say what actually happened and
+          // give the customer the way out, since nothing else in the app does.
+          companyListUnavailable ? (
+            <>
+              <DropdownMenuItem disabled>Couldn't load companies</DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(event) => {
+                  // Keep the menu open so the result of the retry is visible.
+                  event.preventDefault();
+                  void retryCompanies?.();
+                }}
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Try again
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+          )
         )}
         <DropdownMenuSeparator />
         {isCloud && (
