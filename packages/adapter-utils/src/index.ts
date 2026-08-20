@@ -132,8 +132,9 @@ export {
 } from "./login-capability.js";
 export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
 export type {
-  LoginRunnerExitRaceResult,
-  LoginRunnerExitRaceSuccess,
-  LoginRunnerExitRaceTimeout,
-  LoginRunnerExitRaceTokenReceived,
+  LoginRunnerRaceResult,
+  LoginRunnerResult,
+  LoginRunnerOutcome,
+  LoginRunnerLifecycleOptions,
+  LoginRunnerDisposable,
 } from "./login-runner-lifecycle.js";
