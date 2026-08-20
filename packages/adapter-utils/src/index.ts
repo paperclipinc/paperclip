@@ -67,6 +67,7 @@ export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
   redactDiagnosticText,
+  redactSensitiveText,
 } from "./command-redaction.js";
 export {
   firstMeaningfulStderrLine,
@@ -86,6 +87,25 @@ export type {
   RuntimeProgressTarget,
   RuntimeProgressReporter,
   RuntimeProgressReporterOptions,
+export type {
+  InferenceFailureCode,
+  InferenceFailureClassification,
+  InferenceFailureRetryPolicy,
+  InferenceFailureDescription,
+  InferenceFailureInput,
+} from "./inference-failure.js";
+export {
+  classifyInferenceFailure,
+  inferenceFailureRetryPolicy,
+  inferenceFailureErrorCode,
+  describeRunFailure,
+} from "./inference-failure.js";
+export type { SandboxInfraFailureCode } from "./sandbox-infra-failure.js";
+export {
+  SANDBOX_NOT_READY_ERROR_CODE,
+  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
+  classifySandboxInfraFailure,
+} from "./sandbox-infra-failure.js";
   RuntimeStatusPhase,
   RuntimeStatusSink,
   RuntimeStatusUpdate,

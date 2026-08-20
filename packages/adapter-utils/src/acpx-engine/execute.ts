@@ -60,7 +60,6 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { redactSensitiveText } from "../command-redaction.js";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -354,15 +353,6 @@ export interface AcpxEngineExecutorOptions {
   resolveBillingIdentity?: (
     ctx: AdapterExecutionContext,
   ) => AcpxEngineBillingIdentity | null | Promise<AcpxEngineBillingIdentity | null>;
-  /**
-   * Decide whether a session-init failure on this run may throw an
-   * {@link AcpxSessionInitError} so the calling adapter's `execute()` wrapper can
-   * fall back to its CLI lane. Return `true` for auto-selected (non-explicit)
-   * runs and `false` for explicit `engine=acp` runs (which keep the terminal
-   * failed result instead of silently switching lanes). When unset the engine
-   * preserves the legacy behavior and always returns the terminal failed result.
-   */
-  allowSessionInitLaneFallback?: (ctx: AdapterExecutionContext) => boolean;
   /**
    * Per-adapter remote managed-home seed + remap (+ codex copy-back). See
    * {@link AcpxRemoteManagedHomeContext}. Absent → the remote lane stages the
@@ -2651,6 +2641,45 @@ type AcpxExecutionPhase =
   | "prepare_turn"
   | "turn";
 
+export class AcpxSessionInitError extends Error {
+  readonly errorCode: string;
+  readonly errorMeta: AdapterExecutionResult["errorMeta"];
+  readonly childStderrTail: string | null;
+  readonly acpxPhase: AcpxExecutionPhase = "ensure_session";
+
+  constructor(input: {
+    message: string;
+    errorCode: string;
+    errorMeta?: AdapterExecutionResult["errorMeta"];
+    childStderrTail: string | null;
+    cause?: unknown;
+  }) {
+    super(input.message);
+    this.name = "AcpxSessionInitError";
+    this.errorCode = input.errorCode;
+    this.errorMeta = input.errorMeta;
+    this.childStderrTail = input.childStderrTail;
+    if (input.cause !== undefined) {
+      (this as { cause?: unknown }).cause = input.cause;
+    }
+  }
+}
+
+function composeSessionInitFailureMessage(input: {
+  message: string;
+  causeMessage: string | null;
+  childStderrTail: string | null;
+}): string {
+  const parts: string[] = [input.message];
+  if (input.causeMessage && !input.message.includes(input.causeMessage)) {
+    parts.push(`cause: ${input.causeMessage}`);
+  }
+  if (input.childStderrTail && !input.message.includes(input.childStderrTail)) {
+    parts.push(`agent process stderr (tail):\n${input.childStderrTail}`);
+  }
+  return parts.join("\n");
+}
+
 function describeErrorDiagnostics(err: unknown): {
   errorName: string;
   acpCode: string | null;
@@ -2685,20 +2714,9 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
-// A genuine auth/credential FAILURE signal (so a failure maps to the actionable
-// connect-a-key code rather than the opaque session-init code). This must be
-// failure-shaped, not a mere mention: a backend outage that logs "loading api
-// key from credential store" while returning a 5xx is NOT an auth failure and
-// must keep its session-init classification. So we require an HTTP 401/403, an
-// explicit unauthorized/forbidden/permission-denied, an authentication failure,
-// or a credential/key/token that is invalid/expired/rejected/revoked.
-const AUTH_FAILURE_RE =
-  /\b40[13]\b|unauthor|forbidden|permission[\s_-]*denied|authentication[\s_-]*(?:failed|error)|(?:invalid|expired|revoked|rejected|bad|missing)[\s_-]*(?:api[\s_-]*)?(?:key|token|credentials?)|(?:api[\s_-]*key|token|credentials?|oauth)[\s\S]{0,32}?(?:is[\s_-]*)?(?:invalid|expired|revoked|rejected|not[\s_-]*authorized|unauthorized)|x-api-key[\s\S]{0,32}?(?:invalid|rejected|missing)/i;
-
 function classifyError(
   err: unknown,
   phase?: AcpxExecutionPhase,
-  childStderrTail?: string | null,
 ): Pick<AdapterExecutionResult, "errorCode" | "errorMeta"> {
   const message = err instanceof Error ? err.message : String(err);
   const diagnostics = describeErrorDiagnostics(err);
@@ -2711,26 +2729,9 @@ function classifyError(
     ...(stackPreview ? { stackPreview } : {}),
     ...(phase ? { phase } : {}),
   };
-  // Only reclassify as connect-a-key when the error message carries a genuine
-  // auth-FAILURE signal (a 401/403, an invalid/expired credential, etc.), not a
-  // mere mention of "auth"/"credential" (which a backend outage also logs).
-  if (AUTH_FAILURE_RE.test(message)) {
-    return {
-      errorCode: "acpx_auth_required",
-      errorMeta: { category: "auth", ...baseMeta },
-    };
-  }
-  // A session-init failure whose message is opaque (no ACP_* code, e.g. a
-  // JSON-RPC -32603 "Internal error") but whose child stderr shows a genuine
-  // auth rejection is an actionable connect-a-key case, not a generic init
-  // failure. A generic "api key"/"credential" mention alongside a non-auth
-  // terminal error (e.g. a 5xx backend outage) must NOT reclassify.
-  if (
-    phase === "ensure_session" &&
-    !acpCode &&
-    childStderrTail &&
-    AUTH_FAILURE_RE.test(childStderrTail)
-  ) {
+  const lower = message.toLowerCase();
+  const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
+  if (authLike) {
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },
@@ -2804,8 +2805,8 @@ async function emitAcpxFailure(input: {
   const { ctx, prepared, err, phase, messageOverride } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
   const message = messageOverride ?? rawMessage;
+  const classified = classifyError(err, phase);
   const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
-  const classified = classifyError(err, phase, childStderrTail);
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
@@ -3211,7 +3212,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
   const engine = resolveEngineSettings(deps);
-  const allowSessionInitLaneFallback = deps.allowSessionInitLaneFallback ?? (() => false);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
     let billingIdentity: AcpxEngineBillingIdentity | null = null;
