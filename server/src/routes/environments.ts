@@ -125,21 +125,6 @@ export function applyPlatformProvisionedEnvironmentFloor<T extends {
       ? { envVars: {} }
       : {}),
   };
- * Whether this platform-provisioned row participates in the tenant
- * env-vars contract: the generalized managed sandbox slot only. The local
- * slot and legacy kubernetes-marker rows do not — the tenant never runs
- * on local under this regime, and legacy rows may carry platform-written
- * values.
- */
-function isTenantEditableManagedSandbox(environment: {
-  driver?: string;
-  metadata: Record<string, unknown> | null;
-}): boolean {
-  return (
-    environment.driver === "sandbox" &&
-    environment.metadata?.managedByPaperclip === true &&
-    environment.metadata?.managedKubernetesSandbox !== true
-  );
 }
 
 /**

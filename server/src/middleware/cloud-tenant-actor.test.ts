@@ -5,6 +5,8 @@ import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 
+type SeededMembership = { companyId: string; membershipRole: string; status: string };
+
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
@@ -13,11 +15,6 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./au
 // the user's own membership rows (rows configurable via membershipQueryRows,
 // where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
-function createFakeDb(options?: {
-  membershipRow?: SeededMembership;
-  seededMemberships?: SeededMembership[];
-  /** Rows returned by the SELECT over `companies` — [] means the stack company does not exist yet. */
-  companyRows?: Array<{ id: string }>;
 function createFakeDb(options: {
   membershipRow?: { companyId: string; membershipRole: string; status: string };
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
@@ -59,23 +56,6 @@ function createFakeDb(options: {
     select: () => {
       if (options?.selectThrows) throw new Error("select unavailable");
       return {
-        from: (table: unknown) => {
-          selectedTables.push(table);
-          return {
-            where: () => ({
-              then: (resolve: (v: unknown) => unknown) => {
-                const result = table === companies
-                  ? companyRows
-                  : table === instanceSettings && settingsRow
-                    ? [settingsRow]
-                    : table === companyMemberships
-                      ? memberships
-                      : [];
-                return Promise.resolve(result).then(resolve);
-              },
-            }),
-          };
-        },
         from: (table: unknown) => ({
           where: (condition: unknown) => {
             selectWheres.push({ table, condition });

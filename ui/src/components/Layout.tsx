@@ -211,9 +211,6 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    // In authenticated mode, CloudAccessGate has already routed users who
-    // cannot create a company (waiting page / no-access page), so anyone who
-    // reaches an empty companies list here is allowed to onboard.
     if (health?.deploymentMode === "authenticated") return;
     // Cloud provisions the single company for a stack, and POST /companies is a
     // 403 floor there — auto-opening the wizard could only dead-end.
@@ -240,27 +237,6 @@ export function Layout() {
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
       navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
-      return;
-    }
-
-    // Stale state (remembered paths, history, bookmarks, restored tabs)
-    // deposits users into archived companies long after archiving; a cold
-    // arrival bounces to an active company instead of dwelling there.
-    // Deliberate visits (the company is already the selection) stay put.
-    const bounce = resolveArchivedCompanyBounce({
-      matchedCompany,
-      selectedCompanyId,
-      companies,
-    });
-    if (bounce) {
-      pushToast?.({
-        title: `${matchedCompany.name} is archived`,
-        body: `Switched to ${bounce.name}.`,
-        tone: "info",
-        dedupeKey: `archived-company-bounce:${matchedCompany.id}`,
-      });
-      setSelectedCompanyId(bounce.id, { source: "route_sync" });
-      navigate(`/${bounce.issuePrefix}/dashboard`, { replace: true });
       return;
     }
 

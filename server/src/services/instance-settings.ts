@@ -550,7 +550,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (
       patch: PatchInstanceSettings,

@@ -29,7 +29,6 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  isHeartbeatRunTerminalStatus,
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,

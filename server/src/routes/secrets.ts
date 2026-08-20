@@ -16,8 +16,6 @@ import {
   updateUserSecretValueSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess, assertSurfaceExposed, getAccessibleResource } from "./authz.js";
-import { instanceSettingsService, logActivity, secretService } from "../services/index.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
@@ -896,8 +894,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    await assertSurfaceExposed(req, "company.secrets", getExposedCompanySurfaces);
     assertCompanySecretWrite(req, companyId);
 
     const created = await svc.create(

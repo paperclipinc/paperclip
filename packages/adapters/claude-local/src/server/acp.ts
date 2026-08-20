@@ -810,45 +810,6 @@ export async function testClaudeAcpEnvironment(
     }
   }
 
-  // A sandbox target can start a login flow, and subscription auth is the only
-  // credential source left after the branches above rule out Bedrock and an
-  // API key. Prepare the sandbox the same way the CLI lane does — install the
-  // Claude CLI when it is absent and materialize the managed CLAUDE_CONFIG_DIR
-  // — then probe the stored Claude login. The Test result carries the canonical
-  // adapter_auth_missing signal when login is required, and a distinct warn
-  // check when the probe cannot run. The user interface reads the canonical
-  // signal to offer login on the default ACP path.
-  if (
-    target?.kind === "remote" &&
-    target.transport === "sandbox" &&
-    !hasBedrock &&
-    !isNonEmpty(configApiKey)
-  ) {
-    const probeEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(envConfig)) {
-      if (typeof value === "string") probeEnv[key] = value;
-    }
-    const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    checks.push(
-      ...(await prepareSandboxClaudeProbeRuntime({
-        runId,
-        target,
-        cwd,
-        companyId: ctx.companyId,
-        env: probeEnv,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: "claude",
-        targetIsRemote: true,
-        targetIsSandbox: true,
-        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, 90),
-      })),
-    );
-    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
-    if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
-    }
-  }
-
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
   const warmHandleIdleMs = asNumber(
     config.warmHandleIdleMs ?? config.acpWarmHandleIdleMs,

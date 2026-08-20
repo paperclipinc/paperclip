@@ -149,8 +149,6 @@ export function SummarySlotCard({
     ? { companyId, scopeKind, scopeId, slotKey }
     : null;
 
-  const { data: features, isLoading: featuresLoading } = useFeatures();
-  const summariesEnabled = features?.enableSummaries === true;
   const experimentalQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),

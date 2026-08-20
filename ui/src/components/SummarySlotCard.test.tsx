@@ -231,9 +231,6 @@ describe("SummarySlotCard", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: true } }),
-    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableSummaries: true,
       enableBuiltInAgents: true,
@@ -256,9 +253,6 @@ describe("SummarySlotCard", () => {
   });
 
   it("renders nothing and does not fetch slots when the summaries flag is off", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: false } }),
-    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableSummaries: false,
       enableBuiltInAgents: true,

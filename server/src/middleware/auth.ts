@@ -508,7 +508,6 @@ export async function resolveCloudTenantActor(
   // gateway proxies verbatim (post-checkout and account-page links use it).
   const stackSlug = req.header("x-paperclip-cloud-stack-slug")?.trim() || undefined;
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
-  const companyId = cloudTenantCompanyId(stackId);
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
   const paperclipCompanyName = req
     .header("x-paperclip-cloud-paperclip-company-name")
@@ -620,36 +619,6 @@ export async function resolveCloudTenantActor(
 
     await ensureHumanRoleDefaultGrants(db, {
       companyId,
-      principalId: userId,
-      membershipRole: membership.membershipRole,
-      grantedByUserId: userId,
-    });
-
-  }
-
-  // Fork feature (upstream lacks this): the actor's memberships are read
-  // back from ALL active company memberships for the user, not just the
-  // stack company, so tenant users retain access to any additional
-  // companies they belong to on this instance.
-  let memberships: Array<{ companyId: string; membershipRole: string | null; status: string }>;
-  try {
-    memberships = await db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      );
-  } catch {
-    const fallbackRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    memberships = [{ companyId, membershipRole: fallbackRole, status: "active" }];
       membershipRole,
       status: "active",
     }) : { companyId, membershipRole, status: "active" as const };

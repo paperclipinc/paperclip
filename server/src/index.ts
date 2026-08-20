@@ -36,6 +36,11 @@ import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/e
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
+  configureLiveEventsTransport,
+  resolveLiveEventsRedisUrl,
+  resolveLiveEventsTransportMode,
+} from "./services/live-events.js";
+import {
   feedbackService,
   applyManagedEnvironments,
   attentionService,

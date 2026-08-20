@@ -249,7 +249,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
   const editAgentId = !isCreate ? props.agent.id : null;
@@ -440,44 +439,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
 
-  // Env editor state: single source of truth shared by the environment
-  // variables editor and the guided credential-connect card, so a bind from
-  // either surface persists through the same save path.
-  const currentEnv = isCreate
-    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
-
-  function updateEnv(env: Record<string, EnvBinding> | undefined) {
-    if (isCreate) {
-      set!({ envBindings: env ?? {}, envVars: "" });
-    } else {
-      mark("adapterConfig", "env", env);
-    }
-  }
-
-  function isEnvValueBound(binding: EnvBinding | undefined): boolean {
-    if (binding === undefined) return false;
-    if (typeof binding === "string") return binding.trim().length > 0;
-    if (binding.type === "plain") return binding.value.trim().length > 0;
-    return binding.type === "secret_ref" || binding.type === "user_secret_ref";
-  }
-
-  const boundEnvKeys = useMemo(() => {
-    if (!credentialSetup) return [];
-    return credentialSetup.options
-      .map((option) => option.envKey)
-      .filter((envKey) => isEnvValueBound(currentEnv[envKey]));
-  }, [credentialSetup, currentEnv]);
-
-  function handleCredentialBind(envKey: string, secretId: string) {
-    updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
-    // The newly created secret isn't in the company secrets list query cache
-    // yet, so without invalidating, SecretPicker would render this env row
-    // as "Missing secret (…)" until something else happens to refetch.
-    if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    }
-  }
   // Create mode holds the non-secret stored-session claim after a Claude
   // subscription login reaches the server `stored` state. The claim marks the
   // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
@@ -1771,7 +1732,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
-                  value={currentEnv}
                   value={
                     isCreate
                       ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)

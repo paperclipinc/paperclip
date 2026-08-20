@@ -1323,6 +1323,61 @@ function OnboardingWizardInner({
       }
       return;
     }
+    if (isCloud && companies.length > 0) {
+      // Cloud, and the user already has a stack company: creating an ADDITIONAL
+      // company must go through the gateway's POST /api/cloud/companies, which
+      // provisions a separate control-plane tenant on its own stack and returns
+      // a URL. Hard-navigate to it (a client-side navigate would not trigger the
+      // gateway to inject the new company's stack); the new tenant's own first-run
+      // wizard then handles naming + goal + lead agent. The FIRST company instead
+      // falls through to companiesApi.create below (PR A makes the server create
+      // the stack company for the cloud tenant).
+      setLoading(true);
+      setError(null);
+      setCompanyUpgradeRequired(false);
+      setCompanySlotRequired(false);
+      try {
+        const created = await cloudCompaniesApi.create({ name: companyName.trim() });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        window.location.assign(created.url);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 402) {
+          // Three outcomes share the 402: the trial plan gate (upgrade_required),
+          // an active subscriber who must buy another company slot first
+          // (slot_required, confirm-first billing), and a failed per-company
+          // billing update for an already-paying user (billing_update_failed).
+          const body = err.body as { error?: string; limit?: number } | null;
+          const code = body?.error;
+          if (code === "slot_required") {
+            setCompanySlotRequired(true);
+            const limit = body?.limit;
+            setError(
+              limit != null
+                ? `Your subscription covers ${limit} ${
+                    limit === 1 ? "company" : "companies"
+                  }. Add another company slot to create this one.`
+                : "Your subscription does not cover another company yet. Add a company slot to create this one.",
+            );
+          } else {
+            const upgradeRequired = code !== "billing_update_failed";
+            setCompanyUpgradeRequired(upgradeRequired);
+            setError(
+              code === "billing_update_failed"
+                ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
+                : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
+            );
+          }
+        } else if (err instanceof ApiError && err.status === 409) {
+          setError("You have reached the fair use company limit. Contact us to raise it.");
+        } else {
+          setError(
+            err instanceof Error ? err.message : "Failed to create company",
+          );
+        }
+        setLoading(false);
+      }
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

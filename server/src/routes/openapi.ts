@@ -1161,36 +1161,6 @@ registry.registerPath({
       }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      serverInfo: z.object({
-        processStartedAt: z.string().datetime(),
-        git: z.union([
-          z.object({
-            available: z.literal(true),
-            fullSha: z.string(),
-            shortSha: z.string(),
-            branchName: z.string().nullable(),
-            subject: z.string(),
-            committedAt: z.string().datetime().nullable(),
-            localChanges: z.union([
-              z.object({
-                available: z.literal(true),
-                hasLocalChanges: z.boolean(),
-                stagedFileCount: z.number().int().nonnegative(),
-                unstagedFileCount: z.number().int().nonnegative(),
-                untrackedFileCount: z.number().int().nonnegative(),
-              }).strict(),
-              z.object({
-                available: z.literal(false),
-                unavailableReason: z.enum(["git_status_unavailable"]),
-              }).strict(),
-            ]),
-          }).strict(),
-          z.object({
-            available: z.literal(false),
-            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
-          }).strict(),
-        ]),
-      }).strict().optional(),
       databaseBackup: z.object({
         enabled: z.boolean(),
         status: z.enum(["ok", "warning"]),

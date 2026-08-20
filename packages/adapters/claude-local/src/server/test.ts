@@ -18,9 +18,6 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
-import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
-import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
@@ -65,7 +62,6 @@ export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEn
         "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
     };
   }
-  return null;
   return "";
 }
 

@@ -31,7 +31,6 @@ vi.mock("../dev-server-status.js", () => ({
   toDevServerHealthStatus: vi.fn(),
 }));
 
-function createApp(db?: Db, serverInfo = testServerInfo) {
 function createApp(
   db?: Db,
   serverInfo = testServerInfo,

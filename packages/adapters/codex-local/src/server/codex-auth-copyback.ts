@@ -101,29 +101,6 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
   }
 
   const hostDir = path.dirname(hostAuthPath);
-  try {
-    return await withDirectoryMergeLock(hostDir, async () => {
-      // Stage on the same filesystem as the host target so both the predicate read
-      // and the final rename stay device-local (rename across devices is not
-      // atomic and would fail with EXDEV).
-      const stagedTempPath = path.join(hostDir, `.auth.json.copyback-${process.pid}-${randomUUID()}.tmp`);
-      // `wx` + explicit mode create the temp private (0600) and fail if it somehow
-      // already exists, so we never write through a pre-existing symlink.
-      const handle = await open(stagedTempPath, "wx", 0o600);
-      try {
-        await handle.writeFile(sandboxAuthBytes);
-        await handle.close();
-
-        const decision = await decideExitCode(stagedTempPath, hostAuthPath);
-        if (decision === USE_SOURCE_EXIT) {
-          // Atomic same-directory swap; rename preserves the temp's 0600 mode.
-          await rename(stagedTempPath, hostAuthPath);
-          await log(
-            "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
-          );
-          return "copied";
-        }
-
   await mkdir(hostDir, { recursive: true });
   const hostOutcome = await withDirectoryMergeLock(hostDir, async () => {
     // Stage on the same filesystem as the host target so both the predicate read
@@ -179,8 +156,6 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       );
       return "kept-host";
     }
-    throw error;
-  }
   });
 
   // Additive cache write. Independent of the host default overwrite above: it

@@ -4382,11 +4382,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         version: "1.0.0",
         displayName: "Fake Sandbox Provider",
         description: "Test schema-driven provider",
-        id: "acme.unverified-worker-sandbox-provider",
-        apiVersion: 1,
-        version: "1.0.0",
-        displayName: "Unverified-worker Sandbox Provider",
-        description: "Test provider that declares reusable leases but whose worker lacks the reuse methods",
         author: "Paperclip",
         categories: ["automation"],
         capabilities: ["environment.drivers.register"],
@@ -4739,13 +4734,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driver: "sandbox",
       config: providerConfig,
     };
-    await secretService(db).createBinding({
-      companyId,
-      secretId: apiSecret.id,
-      targetType: "environment",
-      targetId: environment.id,
-      configPath: "apiKey",
-    });
     await environmentService(db).update(environment.id, {
       driver: "sandbox",
       name: environment.name,
@@ -4770,7 +4758,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         entrypoints: { worker: "dist/worker.js" },
         environmentDrivers: [
           {
-            driverKey: "secure-plugin",
+            driverKey: "fake-plugin",
             kind: "sandbox_provider",
             displayName: "Fake Plugin",
             supportsReusableLeases: true,
@@ -4971,54 +4959,32 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
                 reuseLease: { type: "boolean" },
               },
             },
-          };
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const acquired = await runtimeWithPlugin.acquireRunLease({
-      companyId,
-      environment,
-      issueId: null,
-      agentId,
-      heartbeatRunId: runId,
-      persistedExecutionWorkspace: {
-        id: executionWorkspaceId,
-        mode: "shared_workspace",
+          },
+        ],
       },
-      adapterType: scopedAdapterType,
-    });
-
-    // The legacy lease is resumed via the runtime fallback (no fresh acquire).
-    expect(workerManager.call).toHaveBeenCalledWith(
-      pluginId,
-      "environmentResumeLease",
-      expect.objectContaining({ providerLeaseId: "reusable-plugin-lease" }),
-      expect.anything(),
-    );
-    expect(workerManager.call).not.toHaveBeenCalledWith(
-      pluginId,
-      "environmentAcquireLease",
-      expect.anything(),
-      expect.anything(),
-    );
-    // The resumed lease keeps the legacy provider lease id (persisted as a fresh
-    // row, so the runtime lease id may differ).
-    expect(acquired.lease.providerLeaseId).toBe("reusable-plugin-lease");
-  });
-
-  it("preserves active reusable sandbox leases held by another running run", async () => {
-    const { pluginId, companyId, agentId, environment, executionWorkspaceId, reusableLease } =
-      await seedReusablePluginSandboxLease();
-    const nextRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({
-      id: nextRunId,
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
       companyId,
-      agentId,
-      invocationSource: "manual",
-      status: "running",
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -5218,57 +5184,22 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.insert(projects).values({
       id: projectId,
       companyId,
-      environment,
-      issueId: null,
-      agentId,
-      heartbeatRunId: runId,
-      adapterType: "claude_local",
-      persistedExecutionWorkspace: {
-        id: executionWorkspaceId,
-        mode: "shared_workspace",
-      },
-    });
-
-    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude");
-    expect(workerManager.call).toHaveBeenCalledTimes(1);
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
-    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      name: `Workspace ${projectId.slice(0, 8)}`,
       status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
-  });
-
-  it("does not reuse a plugin-backed sandbox lease scoped to a concrete adapter type when the run requests none", async () => {
-    // Symmetric gap-1 case: a lease scoped to a real adapter must not be
-    // handed to a run whose adapterType is null/absent either.
-    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
-      await seedReusablePluginSandboxLease({ scopedAdapterType: "claude_local" });
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      call: vi.fn(async (_pluginId: string, method: string) => {
-        if (method === "environmentAcquireLease") {
-          return {
-            providerLeaseId: "fresh-plugin-lease-null-adapter",
-            metadata: {
-              provider: "fake-plugin",
-              image: "fake:test",
-              timeoutMs: 1234,
-              reuseLease: true,
-              remoteCwd: "/workspace",
-            },
-          };
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const acquired = await runtimeWithPlugin.acquireRunLease({
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
       companyId,
       projectId,
       mode: "shared_workspace",
       strategyType: "project_primary",
       name: "Non-reusable workspace",
       status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
     });
     await environmentService(db).acquireLease({
       companyId,
@@ -5301,14 +5232,6 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       },
     });
 
-  it("does not reuse a plugin-backed sandbox lease when both the stored scope and the run's adapter type are null", async () => {
-    // The core gap-1 case: null must never be treated as a wildcard, even
-    // when it happens to match null-for-null. A null-scoped plugin lease is
-    // ambiguous about which runtime image it actually carries, so no run
-    // (including another null-adapterType one) may resume it; it always
-    // falls through to a fresh environmentAcquireLease.
-    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
-      await seedReusablePluginSandboxLease({ scopedAdapterType: null });
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
@@ -5469,18 +5392,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentAcquireLease") {
           return {
-            providerLeaseId: "resolved-plugin-lease",
+            providerLeaseId: "fresh-plugin-lease",
             metadata: {
               provider: "fake-plugin",
               image: "fake:test",
               timeoutMs: 1234,
               reuseLease: true,
               remoteCwd: "/workspace",
-              // The plugin's own resolution: no per-run hint came from the
-              // server (acquireRunLease is called below without adapterType),
-              // but the plugin still resolved a concrete adapter/image (e.g.
-              // the environment's configured default).
-              adapterType: "codex_local",
             },
           };
         }
@@ -5522,9 +5440,15 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     // and leaves the old reusable lease untouched.
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `inplace-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
     const providerConfig = {
-      provider: "fake-plugin",
-      image: "fake:test",
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
       timeoutMs: 1234,
       reuseLease: true,
     };
@@ -5534,6 +5458,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       driver: "sandbox",
       config: providerConfig,
     };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
     await environmentService(db).update(environment.id, {
       driver: "sandbox",
       name: environment.name,
@@ -5558,7 +5489,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         entrypoints: { worker: "dist/worker.js" },
         environmentDrivers: [
           {
-            driverKey: "fake-plugin",
+            driverKey: "secure-plugin",
             kind: "sandbox_provider",
             displayName: "Fake Plugin",
             sandboxCapabilities: { reusableLeases: true },
