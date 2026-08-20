@@ -87,6 +87,10 @@ export type {
   RuntimeProgressTarget,
   RuntimeProgressReporter,
   RuntimeProgressReporterOptions,
+  RuntimeStatusPhase,
+  RuntimeStatusSink,
+  RuntimeStatusUpdate,
+} from "./runtime-progress.js";
 export type {
   InferenceFailureCode,
   InferenceFailureClassification,
@@ -106,10 +110,6 @@ export {
   SANDBOX_UNSCHEDULABLE_ERROR_CODE,
   classifySandboxInfraFailure,
 } from "./sandbox-infra-failure.js";
-  RuntimeStatusPhase,
-  RuntimeStatusSink,
-  RuntimeStatusUpdate,
-} from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
