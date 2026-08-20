@@ -29,9 +29,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  startAdapterAuthSessionRequestSchema,
-  startClaudeSetupTokenSessionRequestSchema,
-  submitBrowserCodeRequestSchema,
+  isHeartbeatRunTerminalStatus,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,

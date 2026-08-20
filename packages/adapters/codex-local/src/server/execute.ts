@@ -719,11 +719,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
-    effectiveCodexHome,
-    target: executionTarget,
-    cwd,
-    onLog,
+    configuredAuthJson: configuredCodexAuthJson,
   });
+  if (credentialReadiness.managed && !credentialReadiness.ready) {
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
+        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+        `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
+        `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
+        `self-hosted install, signing in to Codex on the host also works.`,
+    );
+  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
@@ -902,18 +908,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                    // Additive cache write (sandbox to host): also cache the
-                    // sandbox subscription credential in its per-identity slot,
-                    // keyed by the real `account_id`. Company-scoped root; the
-                    // helper ensures the slot directory private and containment-
-                    // guarded. The off-switch (default on) is read inside.
-                    resolveCacheEntryPath: (accountId) =>
-                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
-                    env: process.env,
-                  })),
-                // No `exclude` denylist: `stagedCodexHomeDir` already contains
-                // ONLY the allowlisted files (auth/config/skills), so there is
-                // nothing to filter out.
+                  }));
+                },
               },
             ],
           });

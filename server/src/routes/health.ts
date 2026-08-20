@@ -7,17 +7,6 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
-import {
-  getCloudStackContext,
-  isCloudManagedInstance,
-  type CloudInstanceEnv,
-} from "../services/cloud-instance.js";
-import {
-  inspectDatabaseBackupHealth,
-  type DatabaseBackupHealthStatus,
-  type DatabaseBackupHealthWarning,
-  type InspectDatabaseBackupHealthOptions,
-} from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../services/workspace-readiness.js";
 import {
@@ -47,55 +36,6 @@ function matchesSharedToken(expectedToken: string | undefined | null, providedTo
   return timingSafeEqual(expected, provided);
 }
 
-function hasDevServerStatusToken(providedToken: string | undefined) {
-  return matchesSharedToken(process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN, providedToken);
-}
-
-/**
- * Whether the caller may read this instance's workspace readiness.
- *
- * A managed workspace runs in `authenticated` mode, so its own control plane has
- * no board session against it. The runtime injects a derived probe token into the
- * guest and presents it here — the same shared-secret shape the dev-server
- * supervisor already uses, and never a browser-supplied identity header.
- */
-function hasWorkspaceReadinessToken(providedToken: string | undefined) {
-  return matchesSharedToken(resolveWorkspaceReadinessLocalToken(), providedToken);
-}
-
-function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
-  const messages: Record<DatabaseBackupHealthWarning["code"], string> = {
-    database_backup_check_failed: "Database backup health check failed.",
-    database_backup_last_failure: "Database backup failure marker is present.",
-    database_backup_missing: "No recent database backup was found.",
-    database_backup_stale: "Latest database backup is stale.",
-  };
-  return {
-    code: warning.code,
-    message: messages[warning.code],
-  };
-}
-
-function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus) {
-  return {
-    enabled: databaseBackup.enabled,
-    status: databaseBackup.status,
-    warnings: databaseBackup.warnings.map(redactedDatabaseBackupWarning),
-  };
-}
-
-function getCloudHealthStatus(env: CloudInstanceEnv) {
-  const context = getCloudStackContext(env);
-  if (!context) return undefined;
-
-  return {
-    managed: true as const,
-    managedBy: "paperclip-cloud" as const,
-    stackSlug: context.stackSlug,
-    cloudBaseUrl: context.cloudOrigin,
-  };
-}
-
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -104,8 +44,6 @@ export function healthRoutes(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
-    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
-    runtimeEnv?: CloudInstanceEnv;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -276,18 +214,6 @@ export function healthRoutes(
         activeRunCount,
       });
     }
-
-    const workspaceReadiness = exposeWorkspaceReadiness
-      ? await resolveWorkspaceReadiness({ db, handoffSubject }).catch((error) => {
-          logger.warn({ err: error }, "workspace readiness probe failed");
-          return null;
-        })
-      : null;
-
-    const databaseBackup = opts.databaseBackupHealth
-      ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
-      : undefined;
-    const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
 
     if (!exposeFullDetails) {
       res.json({

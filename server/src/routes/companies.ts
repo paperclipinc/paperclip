@@ -24,17 +24,7 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import {
-  COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
-  companyImportTransferDeclarationSchema,
-  type CompanyImportTransferCreated,
-  type CompanyImportTransferDeclaration,
-  type CompanyImportTransferPartUploadResult,
-  type CompanyImportTransferStatus,
-} from "@paperclipai/shared/company-import-transfer";
-import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
-import { logger } from "../middleware/logger.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import {
   assembleImportTransferZip,
@@ -60,7 +50,12 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
-import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import {
+  canCreateStackCompany,
+  cloudTenantCompanyId,
+  isCompanyIdConflict,
+  withCloudStackSlugAlias,
+} from "../services/cloud-tenant-company.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";

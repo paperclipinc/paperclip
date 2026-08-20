@@ -59,7 +59,11 @@ import type {
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import { logger } from "../middleware/logger.js";
-import { traceparentFromContextToken } from "../instrumentation.js";
+import {
+  createPluginStreamBus,
+  type PluginStreamBus,
+  type StreamEventType,
+} from "./plugin-stream-bus.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -745,15 +749,16 @@ export interface PluginWorkerManager {
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
-   * Open one live login pseudo-terminal route on a specific plugin worker
-   * See {@link PluginWorkerHandle.openSetupTokenPtySession}.
+   * The stream bus this manager publishes worker `streams.*` notifications to.
    *
-   * @throws if the worker is not registered.
+   * Every worker started by this manager forwards its `ctx.streams` open/emit/
+   * close notifications here, so any host code holding the manager (SSE bridge
+   * routes, the environment runtime's live-output bridge) can `subscribe` to a
+   * (pluginId, channel, companyId) tuple without threading a separate bus. The
+   * real factory always populates it; kept optional so hand-rolled test doubles
+   * of this interface don't have to provide one.
    */
-  openSetupTokenPtySession(
-    pluginId: string,
-    input: SetupTokenPtyOpenInput,
-  ): Promise<SetupTokenPtyHostSession>;
+  readonly streamBus?: PluginStreamBus;
 }
 
 // ---------------------------------------------------------------------------

@@ -1161,38 +1161,36 @@ registry.registerPath({
       }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      databaseBackup: z.object({
-        enabled: z.boolean(),
-        status: z.enum(["ok", "warning"]),
-        backupDir: z.string().optional(),
-        maxAgeHours: z.number().optional(),
-        latestBackup: z.object({
-          name: z.string(),
-          path: z.string(),
-          mtime: z.string().datetime(),
-          ageHours: z.number(),
-          sizeBytes: z.number(),
-        }).nullable().optional(),
-        lastFailure: z.object({
-          path: z.string(),
-          mtime: z.string().datetime(),
-          message: z.string(),
-        }).nullable().optional(),
-        warnings: z.array(z.object({
-          code: z.enum([
-            "database_backup_check_failed",
-            "database_backup_last_failure",
-            "database_backup_missing",
-            "database_backup_stale",
-          ]),
-          message: z.string(),
-        })),
-      }).optional(),
-      warnings: z.array(z.object({
-        code: z.string(),
-        message: z.string(),
-      })).optional(),
-      serverInfo: healthServerInfoSchema.optional(),
+      serverInfo: z.object({
+        processStartedAt: z.string().datetime(),
+        git: z.union([
+          z.object({
+            available: z.literal(true),
+            fullSha: z.string(),
+            shortSha: z.string(),
+            branchName: z.string().nullable(),
+            subject: z.string(),
+            committedAt: z.string().datetime().nullable(),
+            localChanges: z.union([
+              z.object({
+                available: z.literal(true),
+                hasLocalChanges: z.boolean(),
+                stagedFileCount: z.number().int().nonnegative(),
+                unstagedFileCount: z.number().int().nonnegative(),
+                untrackedFileCount: z.number().int().nonnegative(),
+              }).strict(),
+              z.object({
+                available: z.literal(false),
+                unavailableReason: z.enum(["git_status_unavailable"]),
+              }).strict(),
+            ]),
+          }).strict(),
+          z.object({
+            available: z.literal(false),
+            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+          }).strict(),
+        ]),
+      }).strict().optional(),
     })),
     // The database-unreachable body still carries version and commit so
     // deployment tooling can verify the running build during an outage;

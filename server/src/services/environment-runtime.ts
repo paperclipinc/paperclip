@@ -57,19 +57,15 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type {
-  ExecuteLogSink,
-  PluginWorkerManager,
-  DuplexChannelHostSession,
-  DuplexChannelOpenInput as WorkerManagerDuplexChannelOpenInput,
-} from "./plugin-worker-manager.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginStreamBus } from "./plugin-stream-bus.js";
 import {
   REUSABLE_LEASE_WORKER_METHODS,
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
-  resolvePluginSandboxProviderDriverById,
+  resolvePluginExecuteBudget,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
@@ -539,32 +535,20 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
-  /**
-   * Run this command outside the lease's persistent session. The run
-   * orchestrator sets this on the workspace provision command, which runs before
-   * the run opens its trace root. A sandbox provider that opens a persistent
-   * session on the first command must run this command one-shot and keep the
-   * session closed, so the session first opens on an in-run command whose setup
-   * span parents to the run trace. The default keeps the session path.
-   */
-  bypassSession?: boolean;
-  /**
-   * Force the command onto the lease's persistent session even when no run step
-   * is active. The ACP process session bridge sets this so the long-lived agent
-   * command opens the session and streams its output through the session log
-   * stream. `bypassSession: true` still wins, so an explicit bypass is never
-   * overridden. The default keeps the context-based session selection.
-   */
-  forceSession?: boolean;
-  /**
-   * Incremental log sink for one execute call. When set, the plugin worker
-   * delivers each `stdout` and `stderr` chunk to this sink through the
-   * `execute.log` notification while the command runs, before the final result.
-   * The runtime forwards it to the plugin worker manager, which routes each
-   * chunk to this sink by the host-issued invocation id. A driver that does not
-   * stream ignores it and returns only the final result.
-   */
-  onLog?: ExecuteLogSink;
+  // Optional live-output sink. When a driver executes in-process it can forward
+  // stdout/stderr chunks here as they arrive and set `streamed: true` on its
+  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
+  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
+  // a function cannot cross that boundary — so this sink is not delivered to the
+  // worker today and those providers fall back to buffered-at-end output. The
+  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+  // Run correlation id. For plugin-backed sandbox providers this is forwarded
+  // over the worker RPC boundary and used (with `onOutput`) to bridge live
+  // stdout/stderr from the worker back to `onOutput` via the plugin stream bus
+  // (see the `execute` impl below). Null/undefined -> no live streaming, the
+  // provider falls back to buffered-at-end output.
+  runId?: string | null;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
@@ -2524,34 +2508,47 @@ function createSandboxEnvironmentDriver(
             provider: providerKey,
           });
           const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-          return await pluginWorkerManager.call(pluginId, "environmentExecute", {
-            driverKey: providerKey,
-            companyId: input.lease.companyId,
-            environmentId: input.environment.id,
-            issueId: input.lease.issueId,
-            config: sanitizedConfig,
-            lease: {
-              providerLeaseId: input.lease.providerLeaseId,
-              metadata: input.lease.metadata ?? undefined,
-              expiresAt: input.lease.expiresAt?.toISOString() ?? null,
-            },
-            command: input.command,
-            args: input.args,
-            cwd: input.cwd,
-            env: input.env,
-            stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-            // Forward the effective session-bypass flag so a provider that opens
-            // a persistent session skips it for a pre-run or context-less command
-            // (the workspace provision command, the CLI install command, the
-            // resolvability probe, the agent process launch). The session then
-            // opens on the first in-run command that carries a run parent, whose
-            // setup span parents to the run trace.
-            bypassSession,
-          }, resolvePluginExecuteRpcTimeoutMs({
+          const runId = input.runId ?? null;
+          // Bridge live output across the worker RPC boundary: subscribe to the
+          // worker's stream channel and forward chunks to input.onOutput, then
+          // ask the worker to stream (streamOutput flag) since the onOutput
+          // callback itself can't cross the boundary. Falls back to buffered
+          // output when onOutput/runId/streamBus are unavailable.
+          // Resolve BOTH budgets together so the plugin-side timeout always
+          // undercuts the host RPC timer by the overhead buffer (see
+          // resolvePluginExecuteBudget).
+          const execBudget = resolvePluginExecuteBudget({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,
-          }), input.onLog);
+          });
+          return await withPluginExecOutputStream({
+            streamBus: pluginWorkerManager.streamBus,
+            pluginId,
+            companyId: input.lease.companyId,
+            runId,
+            onOutput: input.onOutput,
+            run: (streaming) =>
+              pluginWorkerManager.call(pluginId, "environmentExecute", {
+                driverKey: providerKey,
+                companyId: input.lease.companyId,
+                environmentId: input.environment.id,
+                issueId: input.lease.issueId,
+                config: sanitizedConfig,
+                lease: {
+                  providerLeaseId: input.lease.providerLeaseId,
+                  metadata: input.lease.metadata ?? undefined,
+                  expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+                },
+                command: input.command,
+                args: input.args,
+                cwd: input.cwd,
+                env: input.env,
+                stdin: input.stdin,
+                timeoutMs: execBudget.pluginTimeoutMs ?? input.timeoutMs,
+                runId,
+                ...(streaming ? { streamOutput: true } : {}),
+              }, execBudget.rpcTimeoutMs),
+          });
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");

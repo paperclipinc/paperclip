@@ -49,8 +49,8 @@ import type {
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
+import { assertBoard, assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);

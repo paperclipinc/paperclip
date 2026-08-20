@@ -730,6 +730,37 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A permanent, non-retryable setup failure: the agent's adapter is not runnable in
+// this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
+// which fails to acquire the k8s lease with "Adapter ... is not in the configured
+// adapter registry"). Re-invoking such an agent every heartbeat produces a
+// setup_failed retry storm, so it must pause the agent instead of looping.
+export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /is not in the configured adapter registry/i.test(message);
+}
+
+// A permanent authentication failure: the agent has no valid provider credential
+// (e.g. a keyless agent activated without connecting a model key), so every
+// heartbeat run completes with `outcome:"failed"` + this errorCode and will keep
+// failing until a human wires up a credential. Pause the agent instead of looping.
+const PERMANENT_AUTH_FAILURE_CODES = new Set([
+  "claude_auth_required",
+  "codex_auth_required",
+  "inference_auth_invalid",
+]);
+function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
+  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
+}
+
+// Generic failure-storm breaker: when this many consecutive terminal runs of an
+// agent all failed with the same errorCode (no success in between), the agent is
+// not making progress and every further automated re-invocation burns the same
+// failure again. Pause it and route the reason to a human. This is the fallback
+// for failure shapes that no dedicated branch (transient retry contracts, the
+// permanent-auth pause, the non-retryable setup pause) already handles.
+export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
+
 // A sandbox provider plugin's worker can be briefly down during its own
 // restart window (e.g. a rolling deploy of the plugin worker process). Lease
 // acquisition fails immediately in that window, but the condition is
@@ -9088,73 +9119,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  // Invariant: when a run releases its environment lease, the run row must be
-  // terminal. The finalizer writes the terminal status in a step that is
-  // separate from the agent status=done PATCH. If the sandbox or the run
-  // process stops between the two steps, heartbeat_runs.status stays "running".
-  // The UI reads liveness from that row, so a finished task shows "Live"
-  // forever. This function closes the gap in the run teardown: when the run is
-  // still running or queued, it forces a terminal status before the lease is
-  // released. It never overwrites a status that another path already made
-  // terminal.
-  async function terminalizeRunOnLeaseRelease(
-    run: typeof heartbeatRuns.$inferSelect,
-  ): Promise<typeof heartbeatRuns.$inferSelect> {
-    if (isHeartbeatRunTerminalStatus(run.status)) return run;
-    if (run.status !== "running" && run.status !== "queued") return run;
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
 
-    // Choose the terminal status that reflects the true outcome. When the issue
-    // already reached a terminal status, the run reached its goal, so use the
-    // matching terminal run status. Otherwise the teardown cut the run short,
-    // so use "interrupted".
-    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-    let terminalStatus: "succeeded" | "cancelled" | "interrupted" = "interrupted";
-    if (issueId) {
-      const issueStatus = await db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0]?.status ?? null);
-      if (issueStatus === "done") terminalStatus = "succeeded";
-      else if (issueStatus === "cancelled") terminalStatus = "cancelled";
-    }
-
-    const message =
-      `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
-    // Match both "running" and "queued". A queued run has released its lease but
-    // never reached "running", so a running-only update would miss it and leave
-    // a phantom live run behind.
-    const write = await setRunStatusFromLive(run.id, terminalStatus, ["running", "queued"], {
-      finishedAt: run.finishedAt ?? new Date(),
-      error: run.error ?? (terminalStatus === "interrupted" ? message : null),
-      errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? "lease_released_before_terminal" : null),
-    });
-    if (!write.updated) {
-      // Another path already finalized the run. Keep that terminal outcome.
-      return write.run ?? run;
-    }
-
-    const terminalRun = write.run;
-    if (terminalRun) {
-      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: terminalStatus === "interrupted" ? "warn" : "info",
-        message,
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
         payload: {
-          previousStatus: run.status,
-          terminalStatus,
-          reason: "environment_lease_release",
-          ...(issueId ? { issueId } : {}),
+          runId: updated.id,
+          agentId: updated.agentId,
+          status: updated.status,
+          invocationSource: updated.invocationSource,
+          triggerDetail: updated.triggerDetail,
+          error: updated.error ?? null,
+          errorCode: updated.errorCode ?? null,
+          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
-      }).catch((eventErr) => {
-        logger.warn(
-          { err: eventErr, runId: run.id },
-          "failed to append run event for lease-release terminalization",
-        );
       });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
     }
-    return terminalRun ?? run;
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
@@ -10776,12 +10789,63 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    runIds: readonly string[] | null = null,
+    options: {
+      /** Max time to wait for in-flight runs to finish before interrupting. */
+      drainTimeoutMs?: number;
+      /** How often to re-check for in-flight completion while waiting. */
+      pollIntervalMs?: number;
+      /** Injectable sleep (tests). Defaults to a real setTimeout. */
+      sleep?: (ms: number) => Promise<void>;
+      /** Injectable clock (tests) for the wall-clock drain bound. */
+      nowMs?: () => number;
+      /**
+       * Predicate for whether any run is still executing in THIS process.
+       * Defaults to the local in-process execution set; DB-only "running" rows
+       * with no local execution (orphans) are NOT waited for; they can never
+       * finish on their own and are interrupted immediately as before.
+       */
+      hasInflightRuns?: () => boolean;
+    } = {},
   ) {
-    const selectedRunIds = runIds ? [...new Set(runIds)] : null;
-    if (selectedRunIds?.length === 0) {
-      return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
+    // 1. Quiesce: stop the scheduler from dispatching NEW runs. Every dispatch/
+    //    execution entrypoint gates on getSchedulingSuppression(), so flipping
+    //    this makes them all no-op for the remainder of the process lifetime.
+    shutdownDraining = true;
+
+    // 2. Soft-drain: give in-flight runs a bounded window to finish on their
+    //    own. Only runs still running at the deadline get interrupted below, so
+    //    a normal rollout no longer interrupts every in-flight run.
+    const drainTimeoutMs = options.drainTimeoutMs ?? resolveShutdownDrainTimeoutMs(runtimeEnv);
+    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? SHUTDOWN_DRAIN_POLL_INTERVAL_MS);
+    const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const clock = options.nowMs ?? (() => Date.now());
+    const hasInflightRuns = options.hasInflightRuns ?? (() => activeRunExecutions.size > 0);
+
+    if (drainTimeoutMs > 0 && hasInflightRuns()) {
+      const deadline = clock() + drainTimeoutMs;
+      logger.info(
+        { signal, drainTimeoutMs, pollIntervalMs },
+        "soft-draining in-flight heartbeat runs before shutdown",
+      );
+      while (hasInflightRuns() && clock() < deadline) {
+        // Cap each wait to the remaining budget so a sub-interval remainder can
+        // never sleep a full poll interval past the deadline. Overrunning would
+        // push the drain (plus the interrupt+retry cleanup that follows) beyond
+        // the timeout and risk a SIGKILL mid-cleanup.
+        const remainingMs = deadline - clock();
+        if (remainingMs <= 0) break;
+        await sleep(Math.min(pollIntervalMs, remainingMs));
+      }
+      if (hasInflightRuns()) {
+        logger.warn(
+          { signal, drainTimeoutMs },
+          "soft-drain deadline reached with in-flight runs remaining; interrupting for restart recovery",
+        );
+      } else {
+        logger.info({ signal }, "in-flight heartbeat runs drained gracefully before shutdown");
+      }
     }
+
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -13397,280 +13461,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  // Clamp the stored attempt count to the range [0, cap]. The SQL reader
-  // `pendingCleanupAttemptsSql` clamps to the same range, so both readers yield
-  // the same value for every input. The claim predicate compares the two values,
-  // so this alignment lets the claim match for a malformed lease.
-  function readPendingCleanupRetryAttempts(metadata: Record<string, unknown>): number {
-    const value = metadata[PENDING_CLEANUP_ATTEMPTS_METADATA_KEY];
-    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
-    return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
-  }
-
-  // Atomically claim one retry attempt on a pending_cleanup lease. The update
-  // only matches when the lease is still pending_cleanup and its stored attempt
-  // count still equals `expectedAttempts`. Two concurrent sweeps read the same
-  // count, but Postgres serializes the two updates on the row and only the first
-  // matches the guard. The loser gets zero rows and skips the lease. This bounds
-  // the retries to the cap and stops a second destroy of the same lease.
-  // Returns true only for the sweep that won the claim.
-  //
-  // The update writes only the attempts key with `jsonb_set`. It never writes a
-  // copied metadata object, so a concurrent write to an unrelated metadata key
-  // survives. The guard reads the stored count through the safe SQL reader, so a
-  // malformed value never throws.
-  async function claimPendingCleanupRetryAttempt(
-    leaseId: string,
-    expectedAttempts: number,
-  ): Promise<boolean> {
-    const now = new Date();
-    const claimed = await db
-      .update(environmentLeases)
-      .set({
-        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
-        lastUsedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(environmentLeases.id, leaseId),
-          eq(environmentLeases.status, "pending_cleanup"),
-          sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
-        ),
-      )
-      .returning({ id: environmentLeases.id });
-    return claimed.length > 0;
-  }
-
-  // Atomically claim the one-time cap warning for a lease. The update only
-  // matches when the lease is still pending_cleanup, its stored attempt count is
-  // at or above the cap, and it has not yet carried the warned flag. Two
-  // concurrent sweeps that both reach the cap race here, but only one update
-  // sets the flag and returns a row. The loser skips the warning. This keeps the
-  // warning to one log line per lease.
-  //
-  // The status and cap predicates are the last line of defense. They stop a warn
-  // flag write to a lease that left pending_cleanup or dropped below the cap
-  // between the read and this claim. The update writes only the warned key with
-  // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
-  async function claimPendingCleanupCapWarning(leaseId: string): Promise<boolean> {
-    const now = new Date();
-    const claimed = await db
-      .update(environmentLeases)
-      .set({
-        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(environmentLeases.id, leaseId),
-          eq(environmentLeases.status, "pending_cleanup"),
-          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
-          sql`${pendingCleanupCapWarnedSql()} = false`,
-        ),
-      )
-      .returning({ id: environmentLeases.id });
-    return claimed.length > 0;
-  }
-
-  // Defer a pending_cleanup lease whose provider plugin is not ready this tick.
-  // The sweep reads one page of the oldest rows, ordered by `updatedAt`. A lease
-  // that the sweep only skips keeps its old `updatedAt`, so it stays the oldest
-  // and refills the page on every tick. That starves a newer lease whose
-  // provider is ready. The defer bumps `updatedAt` to now, so the unavailable
-  // lease moves to the back of the queue and a ready lease takes its page slot.
-  // The defer never writes the attempt count, so a long provider outage never
-  // consumes a finite retry. The status guard keeps the write on a lease that is
-  // still pending_cleanup.
-  async function deferPendingCleanupLease(leaseId: string): Promise<void> {
-    const now = new Date();
-    await db
-      .update(environmentLeases)
-      .set({ updatedAt: now })
-      .where(
-        and(
-          eq(environmentLeases.id, leaseId),
-          eq(environmentLeases.status, "pending_cleanup"),
-        ),
-      );
-  }
-
-  // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
-  // lease in that state forever without this sweep. The reaper tick runs the
-  // sweep. The backoff equals the reaper staleness threshold, so a lease waits
-  // for that period between attempts. The sweep reads and writes the attempt
-  // count in the lease metadata. It warns once when a lease reaches the attempt
-  // cap and then stops the retries for that lease.
-  async function sweepPendingCleanupLeases(opts?: { backoffMs?: number }): Promise<{
-    swept: number;
-    destroyed: number;
-    capped: number;
-  }> {
-    const backoffMs = opts?.backoffMs ?? 0;
-    const now = new Date();
-    const cutoff = new Date(now.getTime() - backoffMs);
-
-    // Flush the in-process orphan-cleanup buffer first. A failed acquire buffers
-    // an orphan there when every synchronous pending-cleanup write failed after a
-    // failed teardown. The flush re-inserts each buffered record, so a durable
-    // `pending_cleanup` row lands once the database recovers. The flush runs
-    // before the read below, so this same tick tears down a freshly-landed row.
-    try {
-      const flushed = await environmentRuntime.flushDeferredOrphanCleanups?.();
-      if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
-        logger.info(
-          { recovered: flushed.recovered, pending: flushed.pending },
-          "flushed the in-process orphan sandbox cleanup buffer to the database",
-        );
-      }
-    } catch {
-      // A flush failure never stops the sweep. The buffer keeps the orphan for a
-      // later tick, and the database rows below still need this sweep. The caught
-      // exception never enters the log, because a write error can carry a
-      // credential in its message, code, cause, or stack.
-      logger.warn("orphan sandbox cleanup buffer flush failed; the sweep continues");
-    }
-
-    const rows = await db
-      .select()
-      .from(environmentLeases)
-      .where(
-        and(
-          eq(environmentLeases.status, "pending_cleanup"),
-          backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
-        ),
-      )
-      .orderBy(asc(environmentLeases.updatedAt))
-      .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
-
-    let destroyed = 0;
-    let capped = 0;
-    for (const row of rows) {
-      const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
-      const attempts = readPendingCleanupRetryAttempts(metadata);
-
-      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
-        capped += 1;
-        // Warn once, then leave the lease for manual cleanup. The atomic claim
-        // keeps the warning to one log line even when two sweeps overlap.
-        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id);
-          if (warned) {
-            logger.warn(
-              { leaseId: row.id, environmentId: row.environmentId, attempts },
-              "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
-            );
-          }
-        }
-        continue;
-      }
-
-      const environment = row.environmentId
-        ? await environmentsSvc.getById(row.environmentId)
-        : null;
-      const lease = await environmentsSvc.getLeaseById(row.id);
-      if (!lease) continue;
-
-      // An orphan ephemeral lease keeps its provider, its provider lease id, and
-      // its sandbox config in the lease row. A failed acquire records it, and its
-      // environment row may be gone or foreign-bound. A reuse_by_environment lease
-      // whose environment a delete removed keeps the same recorded data, because
-      // the schema sets the environment reference to null on delete and preserves
-      // the row. Both leases tear down from the recorded lease data through
-      // `retryPendingSandboxTeardown`, which never reads the environment row. So
-      // the sweep uses that path whenever the lease is an orphan ephemeral lease
-      // or its environment row is gone. A reuse_by_environment lease whose
-      // environment still exists tears down through `destroyRunLease`. That
-      // path uses the provider and configuration recorded on the lease first;
-      // the environment is lifecycle context and only a legacy fallback.
-      const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
-
-      // Do not consume a finite cleanup attempt while the provider plugin is
-      // briefly unavailable. A plugin worker restart, a plugin reload, or a
-      // plugin reinstall makes the provider unavailable for a short window. The
-      // plugin can be missing or not ready in that window. A teardown then throws,
-      // and the atomic claim below would count that throw against the cap, so a
-      // long restart or reload could exhaust the retries and strand a live
-      // sandbox. So probe the provider first, and defer the lease this tick when
-      // the provider is not ready. The sweep preserves the pending_cleanup row,
-      // and a later sweep retries after the provider recovers. The probe reports
-      // ready only for a permanent condition (a missing provider string, a
-      // built-in provider, or no worker manager), so a genuine teardown failure
-      // still runs, throws, and counts toward the cap. A runtime with no probe
-      // method treats the lease as ready, so the sweep keeps its earlier
-      // behavior.
-      const workerReady = environmentRuntime.isPendingCleanupWorkerReady
-        ? await environmentRuntime.isPendingCleanupWorkerReady({ environment, lease })
-        : true;
-      if (!workerReady) {
-        // Move the unavailable lease to the back of the sweep queue. Otherwise
-        // the oldest unavailable rows refill the page on every tick and starve a
-        // newer lease that has a ready provider. The defer bumps `updatedAt`
-        // only, so it consumes no finite retry attempt.
-        await deferPendingCleanupLease(row.id);
-        continue;
-      }
-
-      // Atomically claim the attempt before the retry. Only the winning sweep
-      // increments the count and tears the sandbox down, so an overlapping sweep
-      // never tears the same sandbox down twice or exceeds the attempt cap. The
-      // claim records the attempt before the retry, so a thrown driver error
-      // still counts against the cap.
-      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
-      if (!claimed) continue;
-
-      try {
-        if (useRecordedTeardown) {
-          // Tear the sandbox down from the recorded provider config and the
-          // cleanup-authorized secret versions. The teardown returns no value
-          // and throws on failure, so the sweep releases the lease itself.
-          await environmentRuntime.retryPendingSandboxTeardown({ environment, lease });
-          await environmentsSvc.releaseLease(lease.id, "expired", {
-            cleanupStatus: "success",
-            failureReason: "pending_cleanup_retry",
-          });
-          destroyed += 1;
-        } else if (environment) {
-          const result = await environmentRuntime.destroyRunLease({
-            environment,
-            lease,
-            failureReason: "pending_cleanup_retry",
-          });
-          if (result && result.status !== "pending_cleanup") {
-            destroyed += 1;
-          }
-        }
-      } catch {
-        // The recorded-data teardown throws on failure, so revert the lease to
-        // pending_cleanup for a later sweep. The claimed attempt still counts
-        // against the cap, so the retries stay bounded. The `destroyRunLease`
-        // path reverts the lease itself, so this revert only runs for the
-        // recorded-data teardown path.
-        if (useRecordedTeardown) {
-          await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
-            cleanupStatus: "failed",
-            failureReason: "pending_cleanup_retry",
-          });
-        }
-        // Log a constant errorKind only. The exception can carry a credential in
-        // its name, code, message, cause, or stack, so the sweep never reads it.
-        logger.warn(
-          {
-            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
-            leaseId: row.id,
-            environmentId: row.environmentId,
-            attempts: attempts + 1,
-          },
-          "pending_cleanup lease retry failed",
-        );
-      }
-    }
-
-    return { swept: rows.length, destroyed, capped };
-  }
-
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
@@ -14030,8 +13821,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
-    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
+    // Cost-plus fold: cost_cents = ceil((wholesale model tokens + wholesale
+    // Kubecost compute) * margin * 100). modelUsd === null means "skip
+    // metering" (BYOK / subscription_included / model not in the price table)
+    // and yields 0 cents, preserving today's behaviour when env is unset.
+    const modelUsd = priceCloudTokens(cloudPriceTable, {
+      model: result.model ?? "unknown",
+      billingType,
+      costUsd: result.costUsd,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    });
+    // Compute cost is only attributed for a metered run (modelUsd !== null;
+    // BYOK/subscription_included/unpriced runs skip it). No k8s namespace is
+    // resolvable server-side in cloud_tenant mode (the tenant->namespace mapping
+    // lives in the gateway/operator, not the product DB), so pass ""; the
+    // Kubecost client then filters by the globally-unique paperclip.io/run-id
+    // label alone. Kubecost is the PREFERRED source when it returns a positive
+    // cost, but it is fragile here (KSM must expose the run-id label; short runs
+    // round to 0 vs the scrape interval), so resolveComputeUsd falls through to
+    // a deterministic duration x pod-hour floor -- a managed run is NEVER metered
+    // with 0 compute (which is what every run did before this floor).
+    let computeUsd = 0;
+    if (modelUsd !== null) {
+      const runStart = run.startedAt ?? run.createdAt ?? new Date();
+      const runEnd = run.finishedAt ?? new Date();
+      const kubecostUsd = await computeCostUsdForRun(kubecostCfg, {
+        runId: run.id,
+        namespace: "",
+        start: runStart,
+        end: runEnd,
+      });
+      computeUsd = resolveComputeUsd({
+        kubecostUsd,
+        durationSec: (runEnd.getTime() - runStart.getTime()) / 1000,
+        ratePerHour: cloudComputeRatePerHour,
+      });
+    }
+    const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
