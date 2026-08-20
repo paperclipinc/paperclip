@@ -243,6 +243,12 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      cloudBilling:
+        process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
+        (parsed.data.cloudBilling ?? false),
+      cloudTrialBanner:
+        process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true" ||
+        (parsed.data.cloudTrialBanner ?? false),
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
@@ -282,6 +288,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableSimplifiedEnglishInteractions: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
+    cloudTrialBanner: process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true",
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
