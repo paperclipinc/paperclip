@@ -78,6 +78,8 @@ export function redactSensitiveText(
   return redactCommandText(text, redactedValue)
     .replace(BARE_BEARER_TOKEN_RE, `$1${redactedValue}`)
     .replace(GOOGLE_API_KEY_RE, redactedValue);
+}
+
 // A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The
 // command redaction handles shell `KEY=value` syntax only. A sandbox diagnostic
 // can also carry a serialized JSON error, so the sanitizer must redact the JSON
