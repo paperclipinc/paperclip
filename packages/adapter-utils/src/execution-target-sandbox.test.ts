@@ -26,7 +26,6 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   isAdapterRuntimeImageMismatchError,
   isAdapterSandboxProbeUnansweredError,
-  postedIssueCommentLogMarker,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -1132,44 +1131,358 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  describe("streamed output (streamOutputViaSession)", () => {
-    it("bridges bidirectional sessions when the wrapper streams output to stdout", async () => {
-      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-echo-"));
-      cleanupDirs.push(rootDir);
-      const childPath = path.join(rootDir, "echo-acp-child.mjs");
-      await writeFile(
-        childPath,
-        [
-          "process.stdin.on('data', (chunk) => {",
-          "  process.stdout.write('out:' + chunk.toString());",
-          "  process.stderr.write('err:' + chunk.toString());",
-          "});",
-        ].join("\n"),
-        "utf8",
-      );
-      const target: AdapterSandboxExecutionTarget = {
-        kind: "remote",
-        transport: "sandbox",
-        providerKey: "local-test",
-        remoteCwd: rootDir,
-        timeoutMs: 30_000,
-        runner: createLocalSandboxRunner(),
-      };
+  it("logs and recovers from a transient mid-batch event read failure without losing order or escalating", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-mid-batch-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "mid-batch-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('AAA\\n');",
+        "setTimeout(() => process.stdout.write('BBB\\n'), 20);",
+        "setTimeout(() => process.stdout.write('CCC\\n'), 40);",
+        "setTimeout(() => process.exit(0), 400);",
+      ].join("\n"),
+      "utf8",
+    );
 
-      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-        runId: "run-stream-echo",
-        target,
-        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-        adapterKey: "acpx",
-        command: process.execPath,
-        args: [childPath],
-        cwd: rootDir,
-        env: {},
-        timeoutSec: 5,
-        onLog: async () => {},
-        streamOutputViaSession: true,
-      });
-      expect(bridge).not.toBeNull();
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Fail the very first read of the second event file (000000000002.json)
+    // exactly once. The poll loop must not throw, must not deliver the third
+    // event ahead of it, and must retry it (and anything after it) on the
+    // next cycle.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRead: (fileName, attempt) => fileName === "000000000002.json" && attempt === 1,
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-mid-batch",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("AAA\nBBB\nCCC\n");
+      expect(result.stderr).toBe("");
+      // A single-file read failure must still count as a failed poll cycle
+      // (the events read before it, AAA, are still delivered), but since the
+      // very next cycle successfully reads and delivers the rest, the streak
+      // resets to 0 and the session never escalates to the fatal teardown.
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(1);
+      expect(failureLogLines[0]).toContain("000000000002.json");
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("escalates to the fatal frame after 5 consecutive cycles of a persistently failing single event file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-persistent-bad-file-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "persistent-bad-file-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('EARLY\\n');",
+        "setTimeout(() => process.stdout.write('LATER\\n'), 20);",
+        "setTimeout(() => process.exit(0), 10_000);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // The second event file never reads successfully, on any attempt. Every
+    // poll cycle after the first therefore stops the batch at that same
+    // file forever: this is the livelock this fix closes, so it must be
+    // reported (logged, counted) rather than silently retried at 100ms with
+    // no escalation.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRead: (fileName) => fileName === "000000000002.json",
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-persistent-bad-file",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      // The first event (EARLY) is delivered exactly once before the batch
+      // reader hits the permanently bad file and stops; LATER is never
+      // reached (it sits behind the bad file in sequence order) and the
+      // session tears itself down with the fatal frame instead of looping
+      // forever.
+      expect(result.stdout).toBe("EARLY\n");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("000000000002.json");
+
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(5);
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+      expect(failureLogLines[4]).toContain("(attempt 5/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("stops delivering at a mid-batch malformed event, keeps the watermark behind it, and re-delivers on retry", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-malformed-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "malformed-event-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('FIRST\\n');",
+        "setTimeout(() => process.stdout.write('SECOND\\n'), 20);",
+        "setTimeout(() => process.exit(0), 400);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Corrupt the body of the second event file on its first read only (the
+    // read itself succeeds, but the JSON is garbage), then let subsequent
+    // reads through untouched so the retry on the next cycle sees the real
+    // (valid) body. This simulates a JSON.parse throw mid-batch, distinct
+    // from a read failure: readRemoteJsonFiles hands the event back to
+    // poll() as successfully read, and it is poll()'s own parse/delivery
+    // step that fails.
+    let corrupted = false;
+    const base = createLocalSandboxRunner();
+    const runner = {
+      execute: async (execInput: Parameters<typeof base.execute>[0]) => {
+        const result = await base.execute(execInput);
+        const script = (execInput.args?.[1] ?? "").trim();
+        const readMatch = /^base64 < '([^']*\/events\/000000000002\.json)'$/.exec(script);
+        if (readMatch && !corrupted && result.exitCode === 0) {
+          corrupted = true;
+          return { ...result, stdout: Buffer.from("not valid json", "utf8").toString("base64") };
+        }
+        return result;
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-malformed",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      // Both events are eventually delivered in order, exactly once: the
+      // corrupted read is retried (with valid JSON) on the next cycle
+      // rather than being skipped or duplicated.
+      expect(result.stdout).toBe("FIRST\nSECOND\n");
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(1);
+      expect(failureLogLines[0]).toContain("000000000002.json");
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("tolerates transient poll failures, resets the streak on success, and escalates only after 5 consecutive failures", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-failures-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "silent-acp-child.mjs");
+    await writeFile(childPath, "setTimeout(() => process.exit(0), 10_000);", "utf8");
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // Fail cycles 1-2, succeed cycle 3 (must reset the consecutive-failure
+    // counter back to 0), then fail 5 cycles in a row (4-8) to cross the
+    // escalation threshold on the 5th consecutive failure.
+    const failingCycles = new Set([1, 2, 4, 5, 6, 7, 8]);
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failList: (attempt) => failingCycles.has(attempt),
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-poll-failures",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      // A single transient failure (well under the threshold) must not tear
+      // the session down: the proxy connects and simply waits, since no
+      // fatal frame is delivered yet at cycle 1 or 2.
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("simulated event listing failure");
+
+      const failureLogLines = combinedStream(logs, "stderr")
+        .split("\n")
+        .filter((line) => line.includes("ACP process session bridge poll failed"));
+      expect(failureLogLines).toHaveLength(7);
+      expect(failureLogLines[0]).toContain("(attempt 1/5)");
+      expect(failureLogLines[1]).toContain("(attempt 2/5)");
+      // Cycle 3 succeeded, so the streak restarts from 1 rather than
+      // continuing to 3.
+      expect(failureLogLines[2]).toContain("(attempt 1/5)");
+      expect(failureLogLines[3]).toContain("(attempt 2/5)");
+      expect(failureLogLines[4]).toContain("(attempt 3/5)");
+      expect(failureLogLines[5]).toContain("(attempt 4/5)");
+      expect(failureLogLines[6]).toContain("(attempt 5/5)");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("logs a warning and never re-delivers an event whose remove call keeps failing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-remove-failure-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "single-shot-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('hello\\n');",
+        "setTimeout(() => process.exit(0), 500);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    // The remove call always fails, so the event file is left on disk on
+    // every cycle. Without a delivery watermark this would cause the same
+    // event to be re-listed, re-read, and re-delivered indefinitely.
+    const runner = createProcessSessionEventFaultInjectingRunner({
+      base: createLocalSandboxRunner(),
+      failRemove: () => true,
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-remove-failure",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      // "hello" must be delivered exactly once even though its event file
+      // was never successfully removed and kept being re-listed.
+      expect(result.stdout).toBe("hello\n");
+      expect(combinedStream(logs, "stderr")).toMatch(
+        /failed to remove processed event file.*000000000001\.json/,
+      );
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
+    const sandboxTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: createLocalSandboxRunner(),
+    };
 
       try {
         const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
@@ -1654,351 +1967,6 @@ describe("sandbox adapter execution targets", () => {
         await bridge?.stop();
       }
     });
-  });
-
-  it("logs and recovers from a transient mid-batch event read failure without losing order or escalating", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-mid-batch-"));
-    cleanupDirs.push(rootDir);
-    const childPath = path.join(rootDir, "mid-batch-acp-child.mjs");
-    await writeFile(
-      childPath,
-      [
-        "process.stdout.write('AAA\\n');",
-        "setTimeout(() => process.stdout.write('BBB\\n'), 20);",
-        "setTimeout(() => process.stdout.write('CCC\\n'), 40);",
-        "setTimeout(() => process.exit(0), 400);",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
-    // Fail the very first read of the second event file (000000000002.json)
-    // exactly once. The poll loop must not throw, must not deliver the third
-    // event ahead of it, and must retry it (and anything after it) on the
-    // next cycle.
-    const runner = createProcessSessionEventFaultInjectingRunner({
-      base: createLocalSandboxRunner(),
-      failRead: (fileName, attempt) => fileName === "000000000002.json" && attempt === 1,
-    });
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "local-test",
-      remoteCwd: rootDir,
-      timeoutMs: 30_000,
-      runner,
-    };
-
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-mid-batch",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async (stream, chunk) => {
-        logs.push({ stream, chunk });
-      },
-    });
-    expect(bridge).not.toBeNull();
-
-    try {
-      const result = await runProxyWithInput(bridge!.agentCommand, "");
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe("AAA\nBBB\nCCC\n");
-      expect(result.stderr).toBe("");
-      // A single-file read failure must still count as a failed poll cycle
-      // (the events read before it, AAA, are still delivered), but since the
-      // very next cycle successfully reads and delivers the rest, the streak
-      // resets to 0 and the session never escalates to the fatal teardown.
-      const failureLogLines = combinedStream(logs, "stderr")
-        .split("\n")
-        .filter((line) => line.includes("ACP process session bridge poll failed"));
-      expect(failureLogLines).toHaveLength(1);
-      expect(failureLogLines[0]).toContain("000000000002.json");
-      expect(failureLogLines[0]).toContain("(attempt 1/5)");
-    } finally {
-      await bridge?.stop();
-    }
-  });
-
-  it("escalates to the fatal frame after 5 consecutive cycles of a persistently failing single event file", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-persistent-bad-file-"));
-    cleanupDirs.push(rootDir);
-    const childPath = path.join(rootDir, "persistent-bad-file-acp-child.mjs");
-    await writeFile(
-      childPath,
-      [
-        "process.stdout.write('EARLY\\n');",
-        "setTimeout(() => process.stdout.write('LATER\\n'), 20);",
-        "setTimeout(() => process.exit(0), 10_000);",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
-    // The second event file never reads successfully, on any attempt. Every
-    // poll cycle after the first therefore stops the batch at that same
-    // file forever: this is the livelock this fix closes, so it must be
-    // reported (logged, counted) rather than silently retried at 100ms with
-    // no escalation.
-    const runner = createProcessSessionEventFaultInjectingRunner({
-      base: createLocalSandboxRunner(),
-      failRead: (fileName) => fileName === "000000000002.json",
-    });
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "local-test",
-      remoteCwd: rootDir,
-      timeoutMs: 30_000,
-      runner,
-    };
-
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-persistent-bad-file",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async (stream, chunk) => {
-        logs.push({ stream, chunk });
-      },
-    });
-    expect(bridge).not.toBeNull();
-
-    try {
-      const result = await runProxyWithInput(bridge!.agentCommand, "");
-      // The first event (EARLY) is delivered exactly once before the batch
-      // reader hits the permanently bad file and stops; LATER is never
-      // reached (it sits behind the bad file in sequence order) and the
-      // session tears itself down with the fatal frame instead of looping
-      // forever.
-      expect(result.stdout).toBe("EARLY\n");
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("000000000002.json");
-
-      const failureLogLines = combinedStream(logs, "stderr")
-        .split("\n")
-        .filter((line) => line.includes("ACP process session bridge poll failed"));
-      expect(failureLogLines).toHaveLength(5);
-      expect(failureLogLines[0]).toContain("(attempt 1/5)");
-      expect(failureLogLines[4]).toContain("(attempt 5/5)");
-    } finally {
-      await bridge?.stop();
-    }
-  });
-
-  it("stops delivering at a mid-batch malformed event, keeps the watermark behind it, and re-delivers on retry", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-malformed-"));
-    cleanupDirs.push(rootDir);
-    const childPath = path.join(rootDir, "malformed-event-acp-child.mjs");
-    await writeFile(
-      childPath,
-      [
-        "process.stdout.write('FIRST\\n');",
-        "setTimeout(() => process.stdout.write('SECOND\\n'), 20);",
-        "setTimeout(() => process.exit(0), 400);",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
-    // Corrupt the body of the second event file on its first read only (the
-    // read itself succeeds, but the JSON is garbage), then let subsequent
-    // reads through untouched so the retry on the next cycle sees the real
-    // (valid) body. This simulates a JSON.parse throw mid-batch, distinct
-    // from a read failure: readRemoteJsonFiles hands the event back to
-    // poll() as successfully read, and it is poll()'s own parse/delivery
-    // step that fails.
-    let corrupted = false;
-    const base = createLocalSandboxRunner();
-    const runner = {
-      execute: async (execInput: Parameters<typeof base.execute>[0]) => {
-        const result = await base.execute(execInput);
-        const script = (execInput.args?.[1] ?? "").trim();
-        const readMatch = /^base64 < '([^']*\/events\/000000000002\.json)'$/.exec(script);
-        if (readMatch && !corrupted && result.exitCode === 0) {
-          corrupted = true;
-          return { ...result, stdout: Buffer.from("not valid json", "utf8").toString("base64") };
-        }
-        return result;
-      },
-    };
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "local-test",
-      remoteCwd: rootDir,
-      timeoutMs: 30_000,
-      runner,
-    };
-
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-malformed",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async (stream, chunk) => {
-        logs.push({ stream, chunk });
-      },
-    });
-    expect(bridge).not.toBeNull();
-
-    try {
-      const result = await runProxyWithInput(bridge!.agentCommand, "");
-      expect(result.code).toBe(0);
-      // Both events are eventually delivered in order, exactly once: the
-      // corrupted read is retried (with valid JSON) on the next cycle
-      // rather than being skipped or duplicated.
-      expect(result.stdout).toBe("FIRST\nSECOND\n");
-      const failureLogLines = combinedStream(logs, "stderr")
-        .split("\n")
-        .filter((line) => line.includes("ACP process session bridge poll failed"));
-      expect(failureLogLines).toHaveLength(1);
-      expect(failureLogLines[0]).toContain("000000000002.json");
-      expect(failureLogLines[0]).toContain("(attempt 1/5)");
-    } finally {
-      await bridge?.stop();
-    }
-  });
-
-  it("tolerates transient poll failures, resets the streak on success, and escalates only after 5 consecutive failures", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-poll-failures-"));
-    cleanupDirs.push(rootDir);
-    const childPath = path.join(rootDir, "silent-acp-child.mjs");
-    await writeFile(childPath, "setTimeout(() => process.exit(0), 10_000);", "utf8");
-
-    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
-    // Fail cycles 1-2, succeed cycle 3 (must reset the consecutive-failure
-    // counter back to 0), then fail 5 cycles in a row (4-8) to cross the
-    // escalation threshold on the 5th consecutive failure.
-    const failingCycles = new Set([1, 2, 4, 5, 6, 7, 8]);
-    const runner = createProcessSessionEventFaultInjectingRunner({
-      base: createLocalSandboxRunner(),
-      failList: (attempt) => failingCycles.has(attempt),
-    });
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "local-test",
-      remoteCwd: rootDir,
-      timeoutMs: 30_000,
-      runner,
-    };
-
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-poll-failures",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async (stream, chunk) => {
-        logs.push({ stream, chunk });
-      },
-    });
-    expect(bridge).not.toBeNull();
-
-    try {
-      // A single transient failure (well under the threshold) must not tear
-      // the session down: the proxy connects and simply waits, since no
-      // fatal frame is delivered yet at cycle 1 or 2.
-      const result = await runProxyWithInput(bridge!.agentCommand, "");
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("simulated event listing failure");
-
-      const failureLogLines = combinedStream(logs, "stderr")
-        .split("\n")
-        .filter((line) => line.includes("ACP process session bridge poll failed"));
-      expect(failureLogLines).toHaveLength(7);
-      expect(failureLogLines[0]).toContain("(attempt 1/5)");
-      expect(failureLogLines[1]).toContain("(attempt 2/5)");
-      // Cycle 3 succeeded, so the streak restarts from 1 rather than
-      // continuing to 3.
-      expect(failureLogLines[2]).toContain("(attempt 1/5)");
-      expect(failureLogLines[3]).toContain("(attempt 2/5)");
-      expect(failureLogLines[4]).toContain("(attempt 3/5)");
-      expect(failureLogLines[5]).toContain("(attempt 4/5)");
-      expect(failureLogLines[6]).toContain("(attempt 5/5)");
-    } finally {
-      await bridge?.stop();
-    }
-  });
-
-  it("logs a warning and never re-delivers an event whose remove call keeps failing", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-remove-failure-"));
-    cleanupDirs.push(rootDir);
-    const childPath = path.join(rootDir, "single-shot-acp-child.mjs");
-    await writeFile(
-      childPath,
-      [
-        "process.stdout.write('hello\\n');",
-        "setTimeout(() => process.exit(0), 500);",
-      ].join("\n"),
-      "utf8",
-    );
-
-    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
-    // The remove call always fails, so the event file is left on disk on
-    // every cycle. Without a delivery watermark this would cause the same
-    // event to be re-listed, re-read, and re-delivered indefinitely.
-    const runner = createProcessSessionEventFaultInjectingRunner({
-      base: createLocalSandboxRunner(),
-      failRemove: () => true,
-    });
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "local-test",
-      remoteCwd: rootDir,
-      timeoutMs: 30_000,
-      runner,
-    };
-
-    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
-      runId: "run-process-session-remove-failure",
-      target,
-      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
-      adapterKey: "acpx",
-      command: process.execPath,
-      args: [childPath],
-      cwd: rootDir,
-      env: {},
-      timeoutSec: 5,
-      onLog: async (stream, chunk) => {
-        logs.push({ stream, chunk });
-      },
-    });
-    expect(bridge).not.toBeNull();
-
-    try {
-      const result = await runProxyWithInput(bridge!.agentCommand, "");
-      expect(result.code).toBe(0);
-      // "hello" must be delivered exactly once even though its event file
-      // was never successfully removed and kept being re-listed.
-      expect(result.stdout).toBe("hello\n");
-      expect(combinedStream(logs, "stderr")).toMatch(
-        /failed to remove processed event file.*000000000001\.json/,
-      );
-    } finally {
-      await bridge?.stop();
-    }
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
@@ -3239,80 +3207,6 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  it("forwards the host indeterminate-outcome header so the sandbox server maps the 504 to a non-retryable 409", async () => {
-    // The host marks a possibly-committed mutation with a 504 and the
-    // `x-paperclip-bridge-outcome: indeterminate` header. The forward must keep
-    // that header, so the in-sandbox server maps the 504 to a non-retryable 409.
-    // If the forward drops the header, the client sees a retryable 504 and a
-    // retry repeats a mutation that already committed.
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-outcome-"));
-    cleanupDirs.push(rootDir);
-    const remoteCwd = path.join(rootDir, "workspace");
-    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
-    await mkdir(runtimeRootDir, { recursive: true });
-
-    const responseBody = JSON.stringify({ error: "Mutation outcome is indeterminate.", outcome: "indeterminate", retryable: false });
-    const apiServer = createServer((_req, res) => {
-      res.writeHead(504, {
-        "content-type": "application/json",
-        "x-paperclip-bridge-outcome": "indeterminate",
-      });
-      res.end(responseBody);
-    });
-    await new Promise<void>((resolve, reject) => {
-      apiServer.once("error", reject);
-      apiServer.listen(0, "127.0.0.1", () => resolve());
-    });
-    const address = apiServer.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected the bridge outcome test API server to listen on a TCP port.");
-    }
-
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "e2b",
-      environmentId: "env-1",
-      leaseId: "lease-1",
-      remoteCwd,
-      runner: createLocalSandboxRunner(),
-      timeoutMs: 30_000,
-    };
-
-    const bridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId: "run-bridge-outcome",
-      target,
-      runtimeRootDir,
-      adapterKey: "codex",
-      hostApiToken: "real-run-jwt",
-      hostApiUrl: `http://127.0.0.1:${address.port}`,
-    });
-    try {
-      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/issue-1/comments`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ body: "Status update." }),
-      });
-
-      // The sandbox server maps the indeterminate 504 to a non-retryable 409.
-      expect(response.status).toBe(409);
-      // The outcome header and body still reach the client, so a caller that
-      // reads them still sees the indeterminate result.
-      expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
-      await expect(response.json()).resolves.toEqual({
-        error: "Mutation outcome is indeterminate.",
-        outcome: "indeterminate",
-        retryable: false,
-      });
-    } finally {
-      await bridge?.stop();
-      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
-    }
-  });
-
   it("forwards bridge traffic to the local listen origin even when public API URLs are configured", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-local-"));
     cleanupDirs.push(rootDir);
@@ -3455,668 +3349,4 @@ describe("sandbox adapter execution targets", () => {
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
   });
-
-  it("forwards bridge traffic to the local listen origin even when public API URLs are configured", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-local-"));
-    cleanupDirs.push(rootDir);
-    const remoteCwd = path.join(rootDir, "workspace");
-    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
-    await mkdir(runtimeRootDir, { recursive: true });
-
-    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
-    const apiServer = createServer((req, res) => {
-      requests.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        auth: req.headers.authorization ?? null,
-        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
-      });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-    });
-    await new Promise<void>((resolve, reject) => {
-      apiServer.once("error", reject);
-      apiServer.listen(0, "127.0.0.1", () => resolve());
-    });
-    const address = apiServer.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected the bridge local-origin test API server to listen on a TCP port.");
-    }
-
-    // Simulate a deployment where a public base URL is configured: server boot
-    // exports the public origin via PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL
-    // and the local listen host/port via PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT.
-    // The wildcard listen host must map to the loopback address of the same
-    // family (0.0.0.0 -> 127.0.0.1), where the test API server is bound.
-    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
-    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
-    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "0.0.0.0");
-    vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(address.port));
-
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "e2b",
-      environmentId: "env-1",
-      leaseId: "lease-1",
-      remoteCwd,
-      runner: createLocalSandboxRunner(),
-      timeoutMs: 30_000,
-    };
-
-    const bridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId: "run-bridge-local",
-      target,
-      runtimeRootDir,
-      adapterKey: "claude",
-      hostApiToken: "real-run-jwt",
-    });
-    try {
-      expect(bridge).not.toBeNull();
-      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
-        headers: {
-          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
-          accept: "application/json",
-        },
-      });
-
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ ok: true });
-      expect(requests).toEqual([{
-        method: "GET",
-        url: "/api/agents/me",
-        auth: "Bearer real-run-jwt",
-        runId: "run-bridge-local",
-      }]);
-    } finally {
-      await bridge?.stop();
-      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
-    }
-  });
-
-  it("lets an explicit hostApiUrl input override the bridge forward target", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-override-"));
-    cleanupDirs.push(rootDir);
-    const remoteCwd = path.join(rootDir, "workspace");
-    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
-    await mkdir(runtimeRootDir, { recursive: true });
-
-    const requests: string[] = [];
-    const apiServer = createServer((req, res) => {
-      requests.push(req.url ?? "/");
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-    });
-    await new Promise<void>((resolve, reject) => {
-      apiServer.once("error", reject);
-      apiServer.listen(0, "127.0.0.1", () => resolve());
-    });
-    const address = apiServer.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected the bridge override test API server to listen on a TCP port.");
-    }
-
-    // Neither the public URL envs nor the listen host/port should matter when
-    // the caller passes an explicit hostApiUrl.
-    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
-    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
-    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "203.0.113.1");
-    vi.stubEnv("PAPERCLIP_LISTEN_PORT", "9");
-
-    const target: AdapterSandboxExecutionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "e2b",
-      environmentId: "env-1",
-      leaseId: "lease-1",
-      remoteCwd,
-      runner: createLocalSandboxRunner(),
-      timeoutMs: 30_000,
-    };
-
-    const bridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId: "run-bridge-override",
-      target,
-      runtimeRootDir,
-      adapterKey: "claude",
-      hostApiToken: "real-run-jwt",
-      hostApiUrl: `http://127.0.0.1:${address.port}`,
-    });
-    try {
-      expect(bridge).not.toBeNull();
-      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
-        headers: {
-          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
-          accept: "application/json",
-        },
-      });
-
-      expect(response.status).toBe(200);
-      expect(requests).toEqual(["/api/agents/me"]);
-    } finally {
-      await bridge?.stop();
-      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
-    }
-  });
-});
-
-// One decoded stdout frame from the generated duplex gateway. The gateway writes
-// newline-delimited JSON frames to stdout, so the test parses each line.
-interface DecodedGatewayFrame {
-  version?: number;
-  type?: string;
-  id?: string;
-  method?: string;
-  path?: string;
-  query?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  address?: string;
-  __unparsed?: string;
-}
-
-// One decode result from the embedded codec. The shape mirrors the host codec:
-// a valid frame or a protocol error with a code.
-interface EmbeddedDecodeResult {
-  ok: boolean;
-  frame?: unknown;
-  error?: { code: string; message: string };
-}
-
-// The names the embedded codec source declares. A test wraps the source and
-// reads these names back.
-interface EmbeddedCodec {
-  encodeDuplexFrame: (frame: unknown) => string;
-  decodeDuplexLine: (line: string | Buffer) => EmbeddedDecodeResult;
-  DuplexFrameDecoder: new (options?: { maxFrameBytes?: number }) => {
-    push: (chunk: Buffer) => EmbeddedDecodeResult[];
-  };
-  DUPLEX_FRAME_VERSION: number;
-  DEFAULT_MAX_DUPLEX_FRAME_BYTES: number;
-}
-
-type ExpectedVectorResult = { frame: unknown } | { error: string };
-
-interface DuplexFrameVector {
-  name: string;
-  category: string;
-  bytes: string;
-  splitByteOffsets?: number[];
-  maxFrameBytes?: number;
-  roundTrip?: boolean;
-  expected: ExpectedVectorResult[];
-}
-
-interface DuplexFrameFixture {
-  frameVersion: number;
-  defaultMaxFrameBytes: number;
-  vectors: DuplexFrameVector[];
-}
-
-describe("sandbox duplex gateway", () => {
-  const duplexCleanupDirs: string[] = [];
-  const duplexChildren: Array<ReturnType<typeof spawn>> = [];
-
-  afterEach(async () => {
-    while (duplexChildren.length > 0) {
-      const child = duplexChildren.pop();
-      if (!child) continue;
-      child.kill("SIGKILL");
-    }
-    while (duplexCleanupDirs.length > 0) {
-      const dir = duplexCleanupDirs.pop();
-      if (!dir) continue;
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-    }
-  });
-
-  interface DuplexGatewayHandle {
-    baseUrl: string;
-    frames: DecodedGatewayFrame[];
-    stderr: () => string;
-    waitForFrame: (
-      predicate: (frame: DecodedGatewayFrame) => boolean,
-      timeoutMs?: number,
-    ) => Promise<DecodedGatewayFrame>;
-    sendFrame: (frame: Record<string, unknown>) => void;
-    sendRaw: (text: string) => void;
-    endStdin: () => void;
-    exited: Promise<number | null>;
-    stop: () => Promise<void>;
-  }
-
-  // Start the generated gateway `.mjs` in duplex mode as a real child process.
-  // The test writes response frames to the child stdin and reads request frames
-  // from the child stdout, so it stands in for the host side of the channel.
-  async function startDuplexGateway(env: Record<string, string>): Promise<DuplexGatewayHandle> {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-duplex-gateway-"));
-    duplexCleanupDirs.push(rootDir);
-    const entrypoint = path.join(rootDir, "gateway.mjs");
-    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
-
-    const child = spawn(process.execPath, [entrypoint], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PAPERCLIP_API_BRIDGE_MODE: "duplex_v1",
-        PAPERCLIP_BRIDGE_HOST: "127.0.0.1",
-        PAPERCLIP_BRIDGE_PORT: "0",
-        ...env,
-      },
-    });
-    duplexChildren.push(child);
-
-    const frames: DecodedGatewayFrame[] = [];
-    const waiters: Array<{
-      predicate: (frame: DecodedGatewayFrame) => boolean;
-      resolve: (frame: DecodedGatewayFrame) => void;
-    }> = [];
-    let stdoutBuffer = "";
-    let stderrText = "";
-
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      stdoutBuffer += chunk;
-      let newlineIndex = stdoutBuffer.indexOf("\n");
-      while (newlineIndex !== -1) {
-        const line = stdoutBuffer.slice(0, newlineIndex);
-        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (line.length > 0) {
-          let frame: DecodedGatewayFrame;
-          try {
-            frame = JSON.parse(line) as DecodedGatewayFrame;
-          } catch {
-            frame = { __unparsed: line };
-          }
-          frames.push(frame);
-          for (const waiter of [...waiters]) {
-            if (waiter.predicate(frame)) {
-              waiters.splice(waiters.indexOf(waiter), 1);
-              waiter.resolve(frame);
-            }
-          }
-        }
-        newlineIndex = stdoutBuffer.indexOf("\n");
-      }
-    });
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      stderrText += chunk;
-    });
-
-    const exited = new Promise<number | null>((resolve) => {
-      child.on("exit", (code) => resolve(code));
-    });
-
-    const waitForFrame = (
-      predicate: (frame: DecodedGatewayFrame) => boolean,
-      timeoutMs = 5000,
-    ): Promise<DecodedGatewayFrame> => {
-      const existing = frames.find(predicate);
-      if (existing) return Promise.resolve(existing);
-      return new Promise<DecodedGatewayFrame>((resolve, reject) => {
-        const waiter = {
-          predicate,
-          resolve: (frame: DecodedGatewayFrame) => {
-            clearTimeout(timer);
-            resolve(frame);
-          },
-        };
-        const timer = setTimeout(() => {
-          const index = waiters.indexOf(waiter);
-          if (index !== -1) waiters.splice(index, 1);
-          reject(new Error(`Timed out waiting for a gateway frame. stderr: ${stderrText}`));
-        }, timeoutMs);
-        waiters.push(waiter);
-      });
-    };
-
-    const handle: DuplexGatewayHandle = {
-      baseUrl: "",
-      frames,
-      stderr: () => stderrText,
-      waitForFrame,
-      sendFrame: (frame) => {
-        child.stdin?.write(`${JSON.stringify(frame)}\n`);
-      },
-      sendRaw: (text) => {
-        child.stdin?.write(text);
-      },
-      endStdin: () => {
-        child.stdin?.end();
-      },
-      exited,
-      stop: async () => {
-        child.kill("SIGKILL");
-        await exited.catch(() => null);
-      },
-    };
-
-    const ready = await waitForFrame((frame) => frame.type === "ready");
-    handle.baseUrl = String(ready.address);
-    return handle;
-  }
-
-  it("embedded gateway codec passes every vector in the shared fixture", async () => {
-    const codecFactory = new Function(
-      `${getSandboxDuplexGatewayCodecSource()}\nreturn { encodeDuplexFrame, decodeDuplexLine, DuplexFrameDecoder, DUPLEX_FRAME_VERSION, DEFAULT_MAX_DUPLEX_FRAME_BYTES };`,
-    ) as unknown as () => EmbeddedCodec;
-    const codec = codecFactory();
-
-    const fixturePath = fileURLToPath(new URL("./duplex-frame-vectors.json", import.meta.url));
-    const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as DuplexFrameFixture;
-
-    expect(fixture.frameVersion).toBe(codec.DUPLEX_FRAME_VERSION);
-    expect(fixture.defaultMaxFrameBytes).toBe(codec.DEFAULT_MAX_DUPLEX_FRAME_BYTES);
-    expect(fixture.vectors.length).toBeGreaterThanOrEqual(22);
-
-    const failures: string[] = [];
-    for (const vector of fixture.vectors) {
-      const decoder = new codec.DuplexFrameDecoder(
-        vector.maxFrameBytes ? { maxFrameBytes: vector.maxFrameBytes } : undefined,
-      );
-      const buffer = Buffer.from(vector.bytes, "utf8");
-      const offsets = vector.splitByteOffsets;
-      const bounds =
-        offsets && offsets.length > 0 ? [0, ...offsets, buffer.length] : [0, buffer.length];
-      const results: EmbeddedDecodeResult[] = [];
-      for (let index = 0; index < bounds.length - 1; index += 1) {
-        results.push(...decoder.push(buffer.subarray(bounds[index], bounds[index + 1])));
-      }
-
-      if (results.length !== vector.expected.length) {
-        failures.push(`${vector.name}: got ${results.length} results, want ${vector.expected.length}`);
-        continue;
-      }
-      vector.expected.forEach((want, index) => {
-        const got = results[index];
-        if ("frame" in want) {
-          if (!got.ok) {
-            failures.push(`${vector.name}[${index}]: expected a frame, got an error`);
-            return;
-          }
-          try {
-            expect(got.frame).toEqual(want.frame);
-          } catch {
-            failures.push(`${vector.name}[${index}]: frame does not match`);
-          }
-        } else {
-          if (got.ok) {
-            failures.push(`${vector.name}[${index}]: expected an error, got a frame`);
-            return;
-          }
-          if (got.error?.code !== want.error) {
-            failures.push(`${vector.name}[${index}]: error ${got.error?.code} != ${want.error}`);
-          }
-        }
-      });
-    }
-    expect(failures).toEqual([]);
-
-    // The encode side stays wire compatible too: one line, one newline, and the
-    // same frame after a decode round trip.
-    for (const vector of fixture.vectors.filter((entry) => entry.roundTrip)) {
-      const want = vector.expected[0];
-      if (!("frame" in want)) continue;
-      const encoded = codec.encodeDuplexFrame(want.frame);
-      expect(encoded.endsWith("\n")).toBe(true);
-      expect(encoded.slice(0, -1)).not.toContain("\n");
-      const decoded = codec.decodeDuplexLine(encoded.slice(0, -1));
-      expect(decoded.ok).toBe(true);
-      expect(decoded.frame).toEqual(want.frame);
-    }
-  });
-
-  it("returns the same HTTP response as the file gateway for a forwarded request", async () => {
-    const token = "duplex-token-forward";
-    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
-
-    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me?view=compact`, {
-      headers: {
-        authorization: `Bearer ${token}`,
-        accept: "application/json",
-        "if-none-match": '"cache-key"',
-        "x-bridge-debug": "drop-me",
-      },
-    });
-    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
-    expect(requestFrame.method).toBe("GET");
-    expect(requestFrame.path).toBe("/api/agents/me");
-    expect(requestFrame.query).toBe("?view=compact");
-    // Only allowlisted headers forward; the bearer and the debug header drop.
-    expect(requestFrame.headers).toEqual({
-      accept: "application/json",
-      "if-none-match": '"cache-key"',
-    });
-
-    gateway.sendFrame({
-      version: 1,
-      type: "response",
-      id: requestFrame.id,
-      status: 200,
-      headers: { "content-type": "application/json", etag: '"rev-1"', "content-length": "999" },
-      body: JSON.stringify({ ok: true }),
-      outcome: "completed",
-    });
-    const response = await responsePromise;
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(response.headers.get("etag")).toBe('"rev-1"');
-    await expect(response.json()).resolves.toEqual({ ok: true });
-
-    // An indeterminate outcome maps to a non-retryable 409, the same contract the
-    // file gateway applies through the outcome header.
-    const indeterminatePromise = fetch(`${gateway.baseUrl}/api/issues/issue-1`, {
-      method: "PATCH",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ status: "in_progress" }),
-    });
-    const patchFrame = await gateway.waitForFrame(
-      (frame) => frame.type === "request" && frame.id !== requestFrame.id,
-    );
-    gateway.sendFrame({
-      version: 1,
-      type: "response",
-      id: patchFrame.id,
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ error: "outcome_indeterminate" }),
-      outcome: "indeterminate",
-    });
-    const indeterminate = await indeterminatePromise;
-    expect(indeterminate.status).toBe(409);
-
-    await gateway.stop();
-  }, 20000);
-
-  it("enforces the bearer check, JSON-only rule, body limit, and depth limit", async () => {
-    const token = "duplex-token-contract";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH: "1",
-      PAPERCLIP_BRIDGE_MAX_BODY_BYTES: "16",
-    });
-
-    const badAuth = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: "Bearer wrong-token" },
-    });
-    expect(badAuth.status).toBe(401);
-    await expect(badAuth.json()).resolves.toEqual({ error: "Invalid bridge token." });
-
-    const nonJson = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
-      body: "not json",
-    });
-    expect(nonJson.status).toBe(415);
-    await expect(nonJson.json()).resolves.toEqual({
-      error: "Bridge only accepts JSON request bodies.",
-    });
-
-    const oversizeBody = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ body: "x".repeat(64) }),
-    });
-    expect(oversizeBody.status).toBe(502);
-    await expect(oversizeBody.json()).resolves.toEqual({
-      error: "Bridge request body exceeded the configured size limit.",
-    });
-
-    // No request frame forwarded so far: the guards rejected before forwarding.
-    const framesBeforeDepth = gateway.frames.filter((frame) => frame.type === "request").length;
-    expect(framesBeforeDepth).toBe(0);
-
-    // One outstanding request fills the single depth slot; the host never
-    // responds, so the slot stays used.
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    void outstanding.catch(() => undefined);
-    await gateway.waitForFrame((frame) => frame.type === "request");
-
-    const queueFull = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(queueFull.status).toBe(503);
-    await expect(queueFull.json()).resolves.toEqual({ error: "Bridge request queue is full." });
-
-    // Only the outstanding request forwarded a frame; the queue-full request did
-    // not.
-    const framesAfterDepth = gateway.frames.filter((frame) => frame.type === "request").length;
-    expect(framesAfterDepth).toBe(1);
-
-    await gateway.stop();
-  }, 20000);
-
-  it("answers outstanding requests 409 and new requests 503 on stdin EOF, then exits", async () => {
-    const token = "duplex-token-eof";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
-    });
-
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    await gateway.waitForFrame((frame) => frame.type === "request");
-    gateway.endStdin();
-
-    const lossResponse = await outstanding;
-    expect(lossResponse.status).toBe(409);
-    expect(lossResponse.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
-    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
-
-    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(afterLoss.status).toBe(503);
-    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
-
-    const exitCode = await gateway.exited;
-    expect(exitCode).toBe(0);
-  }, 20000);
-
-  it("applies the same loss behavior on a heartbeat timeout", async () => {
-    const token = "duplex-token-heartbeat";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "400",
-      PAPERCLIP_BRIDGE_LOSS_EXIT_GRACE_MS: "3000",
-      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "30000",
-    });
-
-    // Never send an inbound frame: inbound silence trips the heartbeat timeout.
-    const outstanding = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    await gateway.waitForFrame((frame) => frame.type === "request");
-
-    const lossResponse = await outstanding;
-    expect(lossResponse.status).toBe(409);
-    await expect(lossResponse.json()).resolves.toEqual({ error: "outcome_indeterminate" });
-
-    const afterLoss = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(afterLoss.status).toBe(503);
-    await expect(afterLoss.json()).resolves.toEqual({ error: "bridge_unavailable" });
-
-    const exitCode = await gateway.exited;
-    expect(exitCode).toBe(0);
-  }, 20000);
-
-  it("keeps diagnostics off stdout; stdout carries only frames", async () => {
-    const token = "duplex-token-stdout";
-    const gateway = await startDuplexGateway({ PAPERCLIP_BRIDGE_TOKEN: token });
-
-    const responsePromise = fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const requestFrame = await gateway.waitForFrame((frame) => frame.type === "request");
-
-    // Feed a malformed inbound line and an unknown response id. Both force a
-    // diagnostic path; none of it may reach stdout.
-    gateway.sendRaw("this is not a frame\n");
-    gateway.sendFrame({
-      version: 1,
-      type: "response",
-      id: "unknown-id",
-      status: 200,
-      headers: {},
-      body: "",
-      outcome: "completed",
-    });
-    gateway.sendFrame({
-      version: 1,
-      type: "response",
-      id: requestFrame.id,
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: "{}",
-      outcome: "completed",
-    });
-
-    const response = await responsePromise;
-    expect(response.status).toBe(200);
-
-    // Every stdout line parsed as a frame; none was diagnostic text.
-    expect(gateway.frames.some((frame) => frame.__unparsed !== undefined)).toBe(false);
-    expect(
-      gateway.frames.every(
-        (frame) => typeof frame.version === "number" && typeof frame.type === "string",
-      ),
-    ).toBe(true);
-    const allowedTypes = new Set(["ready", "heartbeat", "request"]);
-    expect(gateway.frames.every((frame) => allowedTypes.has(String(frame.type)))).toBe(true);
-
-    // The malformed inbound line produced a stderr diagnostic, not a stdout one.
-    expect(gateway.stderr()).toContain("dropped an inbound frame");
-
-    await gateway.stop();
-  }, 20000);
-
-  it("defaults the wait budget to 35 s and honors the environment key override", async () => {
-    // The generated source carries the 35 s default.
-    expect(getSandboxCallbackBridgeServerSource()).toContain("35000");
-
-    const token = "duplex-token-budget";
-    const gateway = await startDuplexGateway({
-      PAPERCLIP_BRIDGE_TOKEN: token,
-      PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS: "150",
-      PAPERCLIP_BRIDGE_HEARTBEAT_TIMEOUT_MS: "30000",
-    });
-
-    const started = Date.now();
-    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toEqual({
-      error: "Timed out waiting for host bridge response.",
-    });
-    expect(Date.now() - started).toBeLessThan(4000);
-
-    await gateway.stop();
-  }, 20000);
 });

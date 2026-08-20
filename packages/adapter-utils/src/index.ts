@@ -66,8 +66,8 @@ export {
 export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
-  redactDiagnosticText,
   redactSensitiveText,
+  redactDiagnosticText,
 } from "./command-redaction.js";
 export {
   firstMeaningfulStderrLine,
@@ -91,6 +91,7 @@ export type {
   RuntimeStatusSink,
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
+export { inferOpenAiCompatibleBiller } from "./billing.js";
 export type {
   InferenceFailureCode,
   InferenceFailureClassification,
@@ -110,33 +111,6 @@ export {
   SANDBOX_UNSCHEDULABLE_ERROR_CODE,
   classifySandboxInfraFailure,
 } from "./sandbox-infra-failure.js";
-export { inferOpenAiCompatibleBiller } from "./billing.js";
-export {
-  ADAPTER_LOGIN_PANEL_MODES,
-  ADAPTER_LOGIN_SANDBOX_TRANSPORTS,
-  ADAPTER_LOGIN_TIMEOUT_POLICIES,
-  ADAPTER_LOGIN_COMPLETION_CLAIMS,
-  assertValidAdapterLoginCapability,
-  validateAdapterLoginCapability,
-} from "./login-capability.js";
-export type {
-  AdapterLoginPanelMode,
-  AdapterLoginSandboxTransport,
-  AdapterLoginTimeoutPolicy,
-  AdapterLoginCompletionClaim,
-  AdapterLoginPrompt,
-  AdapterLoginCompletionContext,
-  AdapterLoginCapability,
-} from "./login-capability.js";
-export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
-export type {
-  LoginRunnerOutcome,
-  LoginRunnerResult,
-  LoginRunnerLog,
-  LoginRunnerLifecycleOptions,
-  LoginRunnerDisposable,
-  LoginRunnerRaceResult,
-} from "./login-runner-lifecycle.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

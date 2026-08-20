@@ -143,6 +143,14 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * set to `false` to explicitly opt out back to batch-at-end delivery.
    */
   streamRunLogs?: boolean | null;
+  /**
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
+   */
   prebakedRuntime?: boolean | null;
 }
 
@@ -151,10 +159,23 @@ export type AdapterExecutionTarget =
   | AdapterSshExecutionTarget
   | AdapterSandboxExecutionTarget;
 
+/** Stable error code for a wrong-runtime-image sandbox run. */
 export const ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE = "adapter_runtime_image_mismatch" as const;
 
+// How many times the pre-baked runtime probe is asked before the sandbox is
+// declared unreachable. Two, because the probe is a shell builtin: one lost
+// answer is a channel blip worth re-asking, and a second says the channel is
+// genuinely gone rather than slow.
 const PREBAKED_RUNTIME_PROBE_ATTEMPTS = 2;
 
+/**
+ * Thrown when a managed, pre-baked sandbox does not carry the adapter's runtime
+ * CLI on PATH. The run landed on a runtime image for a different harness, so the
+ * image the plugin picked does not match the harness the server exec's. We
+ * surface this immediately instead of attempting a doomed network install
+ * (locked egress) that would otherwise stall until the adapter timeout and
+ * report a confusing `adapter_failed`.
+ */
 export class AdapterRuntimeImageMismatchError extends Error {
   readonly code = ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE;
   readonly adapterCommand: string;
@@ -178,6 +199,17 @@ export function isAdapterRuntimeImageMismatchError(
   );
 }
 
+/**
+ * Thrown when the pre-baked runtime probe never answered. `command -v` returns
+ * in microseconds, so a timeout says the exec channel died (a dropped exec
+ * WebSocket, an apiserver restart, a pod evicted mid-probe), not that the image
+ * is missing the CLI. Keeping this distinct from
+ * {@link AdapterRuntimeImageMismatchError} matters twice over: the user is told
+ * the truth rather than that their run "landed on the wrong runtime image", and
+ * recovery does not spend the one-shot image self-heal re-leasing a fresh
+ * sandbox for a fault no image can fix. Carries the same stable code as the
+ * exec watchdog so downstream attribution is unchanged.
+ */
 export class AdapterSandboxProbeUnansweredError extends Error {
   readonly code = SANDBOX_EXEC_TIMEOUT_ERROR_CODE;
   readonly adapterCommand: string;
@@ -626,6 +658,20 @@ async function ensureSandboxCommandResolvable(
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
   }
 
+  // A managed, pre-baked image is fixed: its CLI set is decided at build time.
+  // `adapterConfig.command` is a free-form string, so an agent can ask for a
+  // binary that is simply not in the image, and there the install below is
+  // doomed twice over. Locked/sovereign egress blocks it, so it stalls until
+  // the adapter's entire timeout budget is spent, and even a successful
+  // install would be thrown away with the lease. Say what is actually true
+  // and stop, rather than reporting "not installed or not on PATH", which
+  // reads as something a retry or an operator could fix.
+  if (target.prebakedRuntime === true) {
+    throw new Error(
+      `Command "${command}" is not part of this sandbox's pre-baked runtime image, and a managed sandbox cannot install one. Set the agent's command back to the adapter's own CLI.`,
+    );
+  }
+
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
@@ -712,9 +758,11 @@ export async function runAdapterExecutionTargetProcess(
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
-        // The tail loop already streams incremental chunks; suppress the
-        // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
+        runId,
+        onOutput: runLogTail ? undefined : (stream, text) => {
+          void options.onLog(stream, text);
+        },
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
@@ -828,6 +876,14 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
+      // Forward the run id so a streaming sandbox runner can bridge worker
+      // output chunks back to onLog live (across the plugin worker boundary).
+      runId,
+      // Route streamed chunks to the same log tail; a streaming runner sets
+      // `streamed` so the buffered dump is suppressed upstream (no double log).
+      onOutput: (stream, text) => {
+        void onLog(stream, text);
+      },
     });
   }
 
@@ -977,12 +1033,67 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   graceSec?: number;
   onLog?: AdapterExecutionTargetShellOptions["onLog"];
 }): Promise<void> {
+  const sandboxTarget =
+    input.target?.kind === "remote" && input.target.transport === "sandbox"
+      ? input.target
+      : null;
+  const isSandbox = sandboxTarget !== null;
+  const detectCommand = input.detectCommand?.trim();
+
+  // Managed, pre-baked sandbox: the runtime CLI is contractually part of the
+  // image. A network install is never appropriate (locked/sovereign egress
+  // blocks it and the run stalls until timeout). Probe once; if the CLI is
+  // missing the run landed on the wrong runtime image (a different harness) and
+  // we fail fast with a typed, actionable error instead of installing.
+  if (sandboxTarget && sandboxTarget.prebakedRuntime === true) {
+    if (!detectCommand) {
+      // Nothing to assert (no probe command); never attempt an install either.
+      return;
+    }
+    // A probe that times out has told us nothing about the image: `command -v`
+    // is a shell builtin that answers instantly, so no answer means the exec
+    // channel dropped. Ask again before drawing any conclusion; the retry is
+    // free when the sandbox is healthy.
+    let probe: Awaited<ReturnType<typeof runAdapterExecutionTargetShellCommand>> | null = null;
+    for (let attempt = 1; attempt <= PREBAKED_RUNTIME_PROBE_ATTEMPTS; attempt += 1) {
+      probe = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        input.target,
+        `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+        {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: input.timeoutSec,
+          graceSec: input.graceSec,
+        },
+      );
+      if (!probe.timedOut) break;
+    }
+    if (probe && !probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+    // Still no answer after every attempt: the sandbox is unreachable, which is
+    // a transient infrastructure fault and NOT a verdict on the image.
+    if (!probe || probe.timedOut) {
+      throw new AdapterSandboxProbeUnansweredError(
+        detectCommand,
+        describeAdapterExecutionTarget(input.target),
+        PREBAKED_RUNTIME_PROBE_ATTEMPTS,
+      );
+    }
+    // The probe answered and the CLI is not there: the image really is wrong.
+    throw new AdapterRuntimeImageMismatchError(
+      detectCommand,
+      describeAdapterExecutionTarget(input.target),
+      `detect probe exited ${probe.exitCode ?? "?"}`,
+    );
+  }
+
   const installCommand = input.installCommand?.trim();
-  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!installCommand || !isSandbox) {
     return;
   }
 
-  const detectCommand = input.detectCommand?.trim();
   if (detectCommand) {
     const probe = await runAdapterExecutionTargetShellCommand(
       input.runId,
@@ -1454,19 +1565,61 @@ async function syncProcessSessionRemoteScript(input: {
   return { uploaded };
 }
 
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+// Event files are named with a monotonic zero-padded sequence
+// ("000000000001.json", "000000000002.json", ...) written by a serial,
+// atomic (tmp+rename) writer, so string comparison of names is equivalent
+// to sequence order. This lets the reader stop the batch at the first bad
+// file it finds, rather than skipping past it, so events are never
+// delivered out of order.
+//
+// Removing a file is the caller's responsibility (see poll()): this
+// function only reads and reports, so a file can never be removed before
+// the caller has actually delivered its event.
 async function readRemoteJsonFiles(input: {
   client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
   dir: string;
-}): Promise<Array<{ name: string; body: string }>> {
-  const names = await input.client.listJsonFiles(input.dir);
+  afterName: string | null;
+}): Promise<{
+  events: Array<{ name: string; body: string }>;
+  // Set when the batch stopped before exhausting every listed name (a read
+  // failure or an empty body). The caller must treat this as a failed
+  // cycle for escalation purposes, even though the events read before the
+  // stop point are still delivered normally.
+  stoppedEarly: { name: string; error: unknown } | null;
+}> {
+  const listedNames = await input.client.listJsonFiles(input.dir);
+  const names = input.afterName
+    ? listedNames.filter((name) => name > input.afterName!)
+    : listedNames;
   const out: Array<{ name: string; body: string }> = [];
+  let stoppedEarly: { name: string; error: unknown } | null = null;
   for (const name of names) {
     const filePath = path.posix.join(input.dir, name);
-    const body = await input.client.readTextFile(filePath);
-    await input.client.remove(filePath).catch(() => undefined);
+    let body: string;
+    try {
+      body = await input.client.readTextFile(filePath);
+    } catch (error) {
+      // Stop the batch at the first file that fails to read (missing,
+      // non-zero exit, or otherwise) rather than skipping past it. Events
+      // must be delivered in filename (sequence) order: if file N fails but
+      // N+1 happens to succeed, delivering N+1 before N would reorder
+      // events. The file is left in place (nothing here removes it), so
+      // the next poll cycle re-lists it (names are monotonic, nothing was
+      // skipped over) and retries from exactly this point.
+      stoppedEarly = { name, error };
+      break;
+    }
+    // Treat an empty read the same as a failed one: a momentarily-empty or
+    // partially observed file must not be delivered as a real event.
+    if (!body.trim()) {
+      stoppedEarly = { name, error: new Error("event file was empty") };
+      break;
+    }
     out.push({ name, body });
   }
-  return out;
+  return { events: out, stoppedEarly };
 }
 
 async function waitForLocalServerListen(server: net.Server): Promise<number> {
@@ -1774,12 +1927,43 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     });
   });
 
+  // In-memory per session/poll-loop instance: a fresh bridge (and thus a
+  // fresh watermark and failure streak) starts on every run, which is fine.
+  // There is nothing to recover across restarts, since the whole point of
+  // the watermark is to dedupe within a single still-running poll loop.
+  let lastDeliveredEventName: string | null = null;
+  let consecutivePollFailures = 0;
+
+  const logPollFailure = async (message: string) => {
+    consecutivePollFailures += 1;
+    await onLog(
+      "stderr",
+      `[paperclip] ACP process session bridge poll failed: ${message} ` +
+        `(attempt ${consecutivePollFailures}/${MAX_CONSECUTIVE_POLL_FAILURES})\n`,
+    );
+    // A single failed poll cycle (e.g. the directory listing itself
+    // failing, a single event file that will not read, or a malformed
+    // event body) is treated as transient: only tear the session down once
+    // MAX_CONSECUTIVE_POLL_FAILURES full cycles have failed back to back.
+    // Any cycle that completes without a failure resets the streak to 0.
+    if (consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+      deliverRemoteEvent({ type: "error", message });
+      return true;
+    }
+    return false;
+  };
+
   const poll = async () => {
     if (stopping) return;
     try {
-      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      const { events, stoppedEarly } = await readRemoteJsonFiles({
+        client,
+        dir: eventsDir,
+        afterName: lastDeliveredEventName,
+      });
+      let midBatchFailure: string | null = null;
       for (const event of events) {
-        const parsed = JSON.parse(event.body) as {
+        let parsed: {
           type?: string;
           stream?: "stdout" | "stderr";
           data?: string;
@@ -1787,14 +1971,51 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           signal?: string | null;
           message?: string;
         };
-        deliverRemoteEvent(parsed);
+        try {
+          parsed = JSON.parse(event.body) as typeof parsed;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to parse ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        try {
+          deliverRemoteEvent(parsed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to deliver ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        // Only now that the event has actually been handed to the caller do
+        // we advance the watermark and attempt to remove the remote file. A
+        // throw above (parse or deliver) leaves both untouched, so the file
+        // is re-read from exactly this point on the next cycle and nothing
+        // already delivered is ever repeated.
+        lastDeliveredEventName = event.name;
+        const filePath = path.posix.join(eventsDir, event.name);
+        try {
+          await client.remove(filePath);
+        } catch (removeError) {
+          const removeMessage = removeError instanceof Error ? removeError.message : String(removeError);
+          await onLog(
+            "stderr",
+            `[paperclip] ACP process session bridge failed to remove processed event file ${event.name}; ` +
+              `relying on the delivery watermark to avoid re-sending it: ${removeMessage}\n`,
+          );
+        }
         if (parsed.type === "exit" || parsed.type === "error") return;
+      }
+      if (midBatchFailure) {
+        if (await logPollFailure(midBatchFailure)) return;
+      } else if (stoppedEarly) {
+        const error = stoppedEarly.error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (await logPollFailure(`failed to read ACP process session event file ${stoppedEarly.name}: ${message}`)) return;
+      } else {
+        consecutivePollFailures = 0;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
-      return;
+      if (await logPollFailure(message)) return;
     } finally {
       if (!stopping) {
         schedulePoll();
@@ -2304,7 +2525,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
 
   await onLog(
     "stdout",
-    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir}.\n`,
+    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir} (forward target: ${hostApiUrl}).\n`,
   );
 
   const bridgeAsset = await createSandboxCallbackBridgeAsset();
@@ -2350,33 +2571,67 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
-        // Abort the forward when the worker aborts the request (its per-iteration
-        // timeout or watchdog fired), or after the 30s ceiling, whichever comes
-        // first. The worker abort lets the bridge fail a hung forward fast
-        // instead of stranding the request until the 30s ceiling.
-        const timeoutSignal = AbortSignal.timeout(30_000);
-        const forwardSignal = options?.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
-          : timeoutSignal;
-        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
-          method,
-          headers,
-          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: forwardSignal,
-        });
+        let response: Response;
+        try {
+          response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+            method,
+            headers,
+            ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+            signal: AbortSignal.timeout(30_000),
+          });
+        } catch (error) {
+          // Map fetch failures to a faithful status the in-sandbox agent can act
+          // on, instead of letting them surface as an opaque generic 502. A
+          // timeout in particular is ambiguous on a mutating call ("did my write
+          // land?"), so it must be distinguishable — otherwise the agent tends to
+          // confabulate an outcome.
+          const name = error instanceof Error ? error.name : "";
+          if (name === "TimeoutError" || name === "AbortError") {
+            return {
+              status: 504,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                error: "The Paperclip API did not respond within the 30s bridge timeout. The request may or may not have been applied; re-read state before retrying.",
+                code: "bridge_upstream_timeout",
+              }),
+            };
+          }
+          return {
+            status: 502,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: `Bridge could not reach the Paperclip API: ${error instanceof Error ? error.message : String(error)}`,
+              code: "bridge_upstream_unreachable",
+            }),
+          };
+        }
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
-            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""} (url=${response.url || "-"} ct=${response.headers.get("content-type") ?? "-"} server=${response.headers.get("server") ?? "-"} xpb=${response.headers.get("x-powered-by") ?? "-"} redirected=${response.redirected})\n`,
           );
         }
-        const responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
-        const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
-        if (commentMarker) await onLog("stdout", commentMarker);
+        let body: string;
+        try {
+          body = await readBridgeForwardResponseBody(response, maxBodyBytes);
+        } catch (error) {
+          // Oversized response body: surface a clear 413 (not a generic 502) so
+          // the agent knows the call succeeded server-side but the payload was
+          // too large to relay, rather than assuming the operation failed.
+          return {
+            status: 413,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              code: "bridge_response_too_large",
+              upstreamStatus: response.status,
+            }),
+          };
+        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
-          body: responseBody,
+          body,
         };
       },
     });
