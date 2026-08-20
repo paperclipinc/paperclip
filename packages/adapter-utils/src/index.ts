@@ -118,3 +118,22 @@ export type {
   SandboxCallbackBridgeWorkerHandle,
   StartedSandboxCallbackBridgeServer,
 } from "./sandbox-callback-bridge.js";
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
+export {
+  ADAPTER_LOGIN_PANEL_MODES,
+  ADAPTER_LOGIN_SANDBOX_TRANSPORTS,
+  ADAPTER_LOGIN_TIMEOUT_POLICIES,
+  ADAPTER_LOGIN_COMPLETION_CLAIMS,
+  assertValidAdapterLoginCapability,
+} from "./login-capability.js";
+export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
+export type {
+  LoginRunnerExitRaceResult,
+  LoginRunnerExitRaceSuccess,
+  LoginRunnerExitRaceTimeout,
+  LoginRunnerExitRaceTokenReceived,
+} from "./login-runner-lifecycle.js";
