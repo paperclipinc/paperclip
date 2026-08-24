@@ -3321,7 +3321,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
   const engine = resolveEngineSettings(deps);
-  const allowSessionInitLaneFallback = deps.allowSessionInitLaneFallback ?? (() => false);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
     let billingIdentity: AcpxEngineBillingIdentity | null = null;

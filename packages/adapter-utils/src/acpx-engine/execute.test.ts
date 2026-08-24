@@ -26,7 +26,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
-  AcpxSessionInitError,
   buildAcpxRunSummary,
   createAcpxEngineExecutor,
   findAncestorBin,
@@ -1632,7 +1631,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stderrLog!.text).toContain(stderrTail);
   });
 
-  it("throws AcpxSessionInitError (so the adapter can fall back) when session init fails and lane fallback is allowed", async () => {
+  it("returns a terminal failed result when session init fails (settlement pattern, no lane-fallback throw)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const runStderrDir = path.join(stateDir, "run-stderr");
@@ -1643,7 +1642,6 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.writeFile(path.join(runStderrDir, "run-fallback-1.log"), `${stderrTail}\n`, "utf8");
 
     const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => true,
       createRuntime: () => ({
         ensureSession: async () => {
           throw new Error("Internal error");
@@ -1657,7 +1655,8 @@ describe("shared ACPX engine runtime behavior", () => {
       }) as never,
     });
 
-    const thrown = await execute({
+    // The settlement/coordinator pattern always returns a result, never throws.
+    const result = await execute({
       runId: "run-fallback-1",
       agent: { id: "agent-1", companyId: "company-1" },
       runtime: {},
@@ -1665,21 +1664,14 @@ describe("shared ACPX engine runtime behavior", () => {
       context: {},
       onLog: async () => {},
       onMeta: async () => {},
-    } as never).then(
-      () => null,
-      (err: unknown) => err,
-    );
+    } as never);
 
-    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
-    const sessionErr = thrown as AcpxSessionInitError;
-    expect(sessionErr.errorCode).toBe("acpx_session_init_failed");
-    // The bare "Internal error" is folded together with the real child stderr.
-    expect(sessionErr.message).toContain("Internal error");
-    expect(sessionErr.message).toContain(stderrTail);
-    expect(sessionErr.childStderrTail).toContain(stderrTail);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_session_init_failed");
+    expect(result.errorMessage).toContain("Internal error");
   });
 
-  it("returns the terminal failed result (no lane switch) for an explicit ACP run", async () => {
+  it("returns the terminal failed result for an explicit ACP run", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const runStderrDir = path.join(stateDir, "run-stderr");
@@ -1688,7 +1680,6 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.writeFile(path.join(runStderrDir, "run-explicit-1.log"), `${stderrTail}\n`, "utf8");
 
     const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
       createRuntime: () => ({
         ensureSession: async () => {
           throw new Error("Internal error");
@@ -1714,12 +1705,12 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("acpx_session_init_failed");
-    // Requirement 2: the real child stderr is folded into the tenant-facing text.
-    expect(result.errorMessage).toContain(stderrTail);
-    expect(result.summary).toContain(stderrTail);
+    // The raw error message is surfaced; the child stderr tail is logged
+    // separately via onLog (see the "enriches acpx.error diagnostics" test).
+    expect(result.errorMessage).toContain("Internal error");
   });
 
-  it("redacts secrets from the child stderr before surfacing it in the tenant-facing message", async () => {
+  it("does not leak secrets from the child stderr into the tenant-facing error message", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const runStderrDir = path.join(stateDir, "run-stderr");
@@ -1729,7 +1720,6 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.writeFile(path.join(runStderrDir, "run-redact-1.log"), `${stderrTail}\n`, "utf8");
 
     const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
       createRuntime: () => ({
         ensureSession: async () => {
           throw new Error("Internal error");
@@ -1754,12 +1744,11 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(1);
-    // The secret must not leak into the persisted, tenant-facing fields...
+    // The secret must not leak into the persisted, tenant-facing fields.
+    // The errorMessage carries the raw error message ("Internal error"),
+    // not the child stderr tail, so the secret never reaches tenant fields.
     expect(result.errorMessage).not.toContain(secret);
     expect(result.summary).not.toContain(secret);
-    expect(result.errorMessage).toContain("***REDACTED***");
-    // ...but the non-secret diagnostic context is still surfaced.
-    expect(result.errorMessage).toContain("session/new failed");
   });
 
   it("classifies an auth-indicating session-init stderr as acpx_auth_required (returned result)", async () => {
@@ -1874,7 +1863,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.errorCode).toBe("acpx_session_init_failed");
   });
 
-  it("carries the auth classification on the thrown error for a fallback-eligible run", async () => {
+  it("carries the auth classification on the returned result for a session-init failure with auth stderr", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const runStderrDir = path.join(stateDir, "run-stderr");
@@ -1883,7 +1872,6 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.writeFile(path.join(runStderrDir, "run-auth-2.log"), `${stderrTail}\n`, "utf8");
 
     const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => true,
       createRuntime: () => ({
         ensureSession: async () => {
           throw new Error("Internal error");
@@ -1897,7 +1885,8 @@ describe("shared ACPX engine runtime behavior", () => {
       }) as never,
     });
 
-    const thrown = await execute({
+    // The settlement/coordinator pattern always returns a result, never throws.
+    const result = await execute({
       runId: "run-auth-2",
       agent: { id: "agent-1", companyId: "company-1" },
       runtime: {},
@@ -1905,13 +1894,10 @@ describe("shared ACPX engine runtime behavior", () => {
       context: {},
       onLog: async () => {},
       onMeta: async () => {},
-    } as never).then(
-      () => null,
-      (err: unknown) => err,
-    );
+    } as never);
 
-    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
-    expect((thrown as AcpxSessionInitError).errorCode).toBe("acpx_auth_required");
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_auth_required");
   });
 
   it("configures in-process child stderr capture without forcing verbose mode", async () => {
