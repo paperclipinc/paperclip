@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
 
 let currentPathname = "/company/settings";
@@ -92,7 +93,10 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/environments")).toBe("instance-environments");
-    expect(getCompanySettingsTab("/company/settings/cloud-upstream")).toBe("cloud-upstream");
+    expect(getCompanySettingsTab("/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/PAP/company/export")).toBe("export");
+    expect(getCompanySettingsTab("/company/import")).toBe("import");
+    expect(getCompanySettingsTab("/PAP/company/import")).toBe("import");
     expect(getCompanySettingsTab("/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
@@ -100,21 +104,36 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
     expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
     expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("instance-general");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
     expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
     expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
     expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
   });
+
+  function renderNav(root: ReturnType<typeof createRoot>, hiddenSettings?: string[]) {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      ...(hiddenSettings ? { hiddenSettings } : {}),
+    });
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <CompanySettingsNav />
+      </QueryClientProvider>,
+    );
+  }
 
   it("renders the active tab and navigates when a different tab is selected", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    await asyncAct(async () => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <CompanySettingsNav />
@@ -129,17 +148,18 @@ describe("CompanySettingsNav", () => {
         value: "members",
         items: [
           { value: "general", label: "General" },
+          { value: "export", label: "Export" },
+          { value: "import", label: "Import" },
           { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },
-          { value: "instance-profile", label: "Instance profile" },
-          { value: "instance-general", label: "Instance general" },
-          { value: "instance-environments", label: "Instance environments" },
-          { value: "instance-access", label: "Instance access" },
-          { value: "instance-heartbeats", label: "Instance heartbeats" },
-          { value: "instance-experimental", label: "Instance experimental" },
-          { value: "instance-plugins", label: "Instance plugins" },
-          { value: "instance-adapters", label: "Instance adapters" },
+          { value: "instance-profile", label: "Profile" },
+          { value: "instance-environments", label: "Environments" },
+          { value: "instance-access", label: "Access" },
+          { value: "instance-heartbeats", label: "Heartbeats" },
+          { value: "instance-experimental", label: "Experimental" },
+          { value: "instance-plugins", label: "Plugins" },
+          { value: "instance-adapters", label: "Adapters" },
         ],
       }),
     );
@@ -169,7 +189,7 @@ describe("CompanySettingsNav", () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    await asyncAct(async () => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <CompanySettingsNav />
@@ -183,11 +203,13 @@ describe("CompanySettingsNav", () => {
     };
     expect(rendered.items.map((item) => item.value)).toEqual([
       "general",
+      "export",
+      "import",
       "secrets",
       "instance-profile",
     ]);
 
-    await asyncAct(async () => {
+    await act(async () => {
       root.unmount();
     });
   });
