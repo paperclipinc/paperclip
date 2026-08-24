@@ -1,9 +1,10 @@
 import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildOpenCodeSkillsDir, ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 
 describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
   const cleanupDirs: string[] = [];
@@ -108,15 +109,10 @@ describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
   });
 });
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
 });
-
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
-import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
 
