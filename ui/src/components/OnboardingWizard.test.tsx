@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CompanySecret } from "@paperclipai/shared";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -31,14 +32,6 @@ const mockCompany = vi.hoisted(() => ({
   loading: false,
 }));
 
-const mockCompaniesApi = vi.hoisted(() => ({
-  create: vi.fn(),
-  update: vi.fn(),
-}));
-const mockGoalsApi = vi.hoisted(() => ({
-  create: vi.fn(),
-  list: vi.fn(),
-}));
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
@@ -117,32 +110,6 @@ const mockAdapterRegistry = vi.hoisted(() => ({
   >,
 }));
 
-const mockAgentsApi = vi.hoisted(() => ({
-  adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
-  testEnvironment: vi.fn(
-    async (
-      _companyId: string,
-      _adapterType: string,
-      _data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
-    ): Promise<AdapterEnvironmentTestResult> => ({
-      adapterType: "claude_local",
-      status: "pass",
-      checks: [],
-      testedAt: new Date().toISOString(),
-    }),
-  ),
-  hire: vi.fn(async (_companyId: string, _data: Record<string, unknown>) => ({
-    agent: { id: "agent-1" },
-    approval: null,
-  })),
-  instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
-  saveInstructionsFile: vi.fn(async () => ({})),
-// layer entirely and drive it through this knob.
-const mockAdapterRegistry = vi.hoisted(() => ({
-  list: [] as Array<{ type: string }>,
-  disabled: new Set<string>(),
-}));
-
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/", search: "", hash: "", state: null }),
   useNavigate: () => vi.fn(),
@@ -178,15 +145,10 @@ vi.mock("../adapters", () => ({
         ],
       },
     },
-vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
-vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+}));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
-vi.mock("../adapters", () => ({
-  listUIAdapters: () => mockAdapterRegistry.list,
-  getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
-}));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
@@ -320,17 +282,6 @@ function findButtonByText(container: HTMLElement, text: string): HTMLButtonEleme
     throw new Error(`No button found with text "${text}"`);
   }
   return match as HTMLButtonElement;
-}
-
-describe("OnboardingWizard cloud first-run", () => {
-  beforeEach(() => {
-  // The company list is keyed by account, so it stays disabled until the
-  // session is known. Seeding it is how these tests say "signed in as B".
-  queryClient.setQueryData(queryKeys.auth.session, {
-    session: { id: "session-b", userId: SESSION_USER_ID },
-    user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
-  });
-  return { container, root, queryClient };
 }
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
@@ -745,6 +696,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
   describe("step 2, which is two screens wearing one number", () => {
     // The create path's step 2 was the mission question and is skipped now. The
     // grow path's step 2 is "tell us about your team", whose answers seed the
@@ -1531,10 +1485,6 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     // "Secret must belong to same company" failure this fix exists for.
     // Bindings are session-only now, so the saved value below must be
     // ignored no matter what.
-  it("discards a saved draft for a company the signed-in account does not own, and wipes the stale blob", async () => {
-    // The actual vulnerability this fix closes: localStorage is per-origin,
-    // not per-account, so a browser that already onboarded "company-old" for
-    // a different account hands its id straight to a brand-new session.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -1620,6 +1570,20 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
     ).toBe("bound:");
     const heartbeatButton = findButtonByText(document.body, "Give it a heartbeat");
     expect(heartbeatButton.disabled).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("discards a saved draft for a company the signed-in account does not own, and wipes the stale blob", async () => {
+    // The actual vulnerability this fix closes: localStorage is per-origin,
+    // not per-account, so a browser that already onboarded "company-old" for
+    // a different account hands its id straight to a brand-new session.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 4,
         companyName: "Someone Else's Co",
         createdCompanyId: "company-old",
       }),
@@ -1733,6 +1697,12 @@ describe("OnboardingWizard step 4 — guided credential connect", () => {
       type: "secret_ref",
       secretId: "sec-gemini",
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("opens, and keeps the draft, when the initial company query fails", async () => {
     // React Query reports a failed list as `isLoading === false` with `data`
     // defaulted to `[]`, which is indistinguishable from "settled, and this
@@ -2128,6 +2098,11 @@ describe("mergeCredentialBindings", () => {
       type: "secret_ref",
       secretId: "sec-1",
     });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 
   it("does not delete a draft when the company list comes back unauthorized", async () => {
     // `companiesListQueryOptions` folds 401/403 into

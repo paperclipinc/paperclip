@@ -97,6 +97,9 @@ describe("evaluateExecutionAllowlist", () => {
     it("returns null when host login is allowed", () => {
       expect(claudeHostLoginUnavailableReason("any")).toBeNull();
       expect(claudeHostLoginUnavailableReason(undefined)).toBeNull();
+    });
+  });
+
   describe("managedSandboxOnly (deny local execution)", () => {
     const daytonaSandboxEnv: ExecutionEnvironmentCandidate = { driver: "sandbox", provider: "daytona" };
 

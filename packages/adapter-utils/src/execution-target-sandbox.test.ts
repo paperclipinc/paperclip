@@ -1570,6 +1570,7 @@ describe("sandbox adapter execution targets", () => {
     } finally {
       await bridge?.stop();
     }
+  });
 
   describe("streamed output (streamOutputViaSession)", () => {
     it("bridges bidirectional sessions when the wrapper streams output to stdout", async () => {

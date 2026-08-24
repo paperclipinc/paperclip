@@ -601,23 +601,10 @@ export async function resolveCloudTenantActor(
         status: "active",
         membershipRole,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [
-          companyMemberships.companyId,
-          companyMemberships.principalType,
-          companyMemberships.principalId,
-        ],
-        set: {
-          status: "active",
-          membershipRole,
-          updatedAt: now,
-        },
-      })
-      .returning()
-      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-
-    await ensureHumanRoleDefaultGrants(db, {
+      },
+    })
+    .returning()
+    .then((rows) => rows[0] ?? {
       companyId,
       membershipRole,
       status: "active",

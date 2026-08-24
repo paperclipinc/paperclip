@@ -148,6 +148,9 @@ export function redactEnvironmentForRestrictedView<T extends {
     ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
     metadata: null,
   };
+}
+
+/**
  * Whether this platform-provisioned row participates in the tenant
  * env-vars contract: the generalized managed sandbox slot only. The local
  * slot and legacy kubernetes-marker rows do not — the tenant never runs

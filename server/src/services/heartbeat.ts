@@ -9254,6 +9254,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     return { run: current, updated: false as const };
+  }
+
   // Invariant: when a run releases its environment lease, the run row must be
   // terminal. The finalizer writes the terminal status in a step that is
   // separate from the agent status=done PATCH. If the sandbox or the run
