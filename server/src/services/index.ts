@@ -124,6 +124,7 @@ export type {
   AuthorizationResource,
 } from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
+export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { instanceSettingsService, applyManagedExperimentalOverlay } from "./instance-settings.js";
 export {
   getManagedInstanceConfig,

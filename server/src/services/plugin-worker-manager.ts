@@ -3566,7 +3566,6 @@ export function createPluginWorkerManager(
   const duplexAggregateByteLedger = managerOptions?.duplexAggregateByteLedger ?? null;
 
   return {
-    streamBus,
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,

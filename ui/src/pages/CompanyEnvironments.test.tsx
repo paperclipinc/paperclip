@@ -154,6 +154,11 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+  getGeneral: vi.fn(),
+}));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -186,6 +191,10 @@ vi.mock("@/api/secrets", () => ({
 
 vi.mock("@/api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -172,32 +172,7 @@ export function SidebarAccountMenu({
   });
   const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async (result) => {
-      setOpen(false);
-      // If the server returns a redirect (managed deployment), follow it.
-      if (result?.redirectTo) {
-        window.location.assign(result.redirectTo);
-        return;
-      }
-      // cloud: leave the SPA entirely; the gateway serves the marketing
-      // sign-in page. signedout=1 drives its "You've been signed out" note.
-      if (deploymentMode === "authenticated") {
-        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-        window.location.assign(`/auth/sign-in?signedout=1&next=${next}`);
-        return;
-      }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-    onError: () => {
-      // cloud: even if the sign-out call failed, leave the SPA: the gate will bounce a
-      // still-valid session straight back in, and a half-dead session must not
-      // strand the user on a broken app shell.
-      if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =

@@ -23,7 +23,7 @@ function createFakeDb(options: {
   seededMemberships?: SeededMembership[];
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
-}) {
+} = {}) {
   const membershipRow: SeededMembership =
     options?.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
   const settingsRow =

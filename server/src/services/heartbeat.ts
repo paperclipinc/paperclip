@@ -11024,14 +11024,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(
-        selectedRunIds
-          ? and(
-            eq(heartbeatRuns.status, "running"),
-            inArray(heartbeatRuns.id, selectedRunIds),
-          )
-          : eq(heartbeatRuns.status, "running"),
-      );
+      .where(eq(heartbeatRuns.status, "running"));
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
@@ -13967,7 +13960,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { swept: rows.length, destroyed, capped };
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
@@ -14366,6 +14359,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
     const additionalCostCents = billedCostCents({ modelUsd, computeUsd, margin: cloudMargin });
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,

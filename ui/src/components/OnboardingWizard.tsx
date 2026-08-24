@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { MotionConfig, motion } from "motion/react";
 import type {
+  AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
   AgentRole,
   Environment,
@@ -64,7 +65,6 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
-import { restoreOnboardingState } from "../lib/onboarding-state";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
@@ -89,6 +89,7 @@ import {
   isExistingCompanyMissionUnresolved,
   planMissionPersistence,
 } from "../lib/onboarding-mission";
+import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -116,6 +117,9 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // Plugin/external adapters use arbitrary type ids, so this mirrors the master
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
+
+/** Skill key the onboarding CEO needs so it can hire the first engineer. */
+const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
 
 const MISSION_PROMPT_CHIPS = [
   "Build a SaaS product",

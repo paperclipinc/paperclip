@@ -82,6 +82,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableCloudSync: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableBetaSkills: false,

@@ -4,7 +4,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, CompanySecret } from "@paperclipai/shared";
+import { queryKeys } from "../lib/queryKeys";
+import { ONBOARDING_STORAGE_KEY } from "./OnboardingWizard";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
@@ -30,6 +32,7 @@ const mockCompany = vi.hoisted(() => ({
   companies: [] as Array<{ id: string; name: string; issuePrefix: string }>,
   setSelectedCompanyId: vi.fn(),
   loading: false,
+  error: null as Error | null,
 }));
 
 const mockAccessApi = vi.hoisted(() => ({
@@ -65,13 +68,22 @@ const mockGoalsApi = vi.hoisted(() => ({
 }));
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
-  testEnvironment: vi.fn(async () => ({
-    adapterType: "claude_local",
-    status: "pass" as const,
-    checks: [],
-    testedAt: new Date().toISOString(),
+  testEnvironment: vi.fn(
+    async (
+      _companyId: string,
+      _adapterType: string,
+      _data: { adapterConfig: Record<string, unknown>; environmentId?: string | null },
+    ): Promise<AdapterEnvironmentTestResult> => ({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date().toISOString(),
+    }),
+  ),
+  hire: vi.fn(async (_companyId: string, _data: Record<string, unknown>) => ({
+    agent: { id: "agent-1" },
+    approval: null,
   })),
-  hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
 }));

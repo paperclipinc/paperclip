@@ -657,9 +657,7 @@ export async function createApp(
       { scheduler, jobStore },
       { workerManager },
       { toolDispatcher },
-      // bridgeDeps: expose the worker manager's stream bus so the SSE bridge
-      // route (and any worker->host stream consumer) can subscribe to channels.
-      { workerManager, streamBus: workerManager.streamBus },
+      { workerManager },
       { toolGateway },
     ),
   );

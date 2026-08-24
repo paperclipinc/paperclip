@@ -14,6 +14,7 @@ import type {
   SandboxProviderCapabilities,
 } from "@paperclipai/shared";
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
+import type { PluginStreamBus } from "./plugin-stream-bus.js";
 import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import type {
   CommandManagedDuplexChannel,

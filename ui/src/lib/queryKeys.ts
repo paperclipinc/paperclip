@@ -483,4 +483,5 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
 };

@@ -113,6 +113,7 @@ export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
 export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";
+export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.js";
 export { costEvents } from "./cost_events.js";
 export { activationEvents } from "./activation_events.js";
 export { financeEvents } from "./finance_events.js";

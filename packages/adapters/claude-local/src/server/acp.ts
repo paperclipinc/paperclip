@@ -822,7 +822,6 @@ export async function testClaudeAcpEnvironment(
       level: "info",
       message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
     });
-    checks.push(...probeChecks);
   }
 
   // Run a real hello probe for every target when Bedrock and a config API key
