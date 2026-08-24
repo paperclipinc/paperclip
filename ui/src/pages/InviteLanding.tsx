@@ -8,7 +8,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { companiesListQueryOptions, fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
+import { companyListQueryOptions, fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
@@ -355,11 +355,11 @@ export function InviteLandingPage() {
     setSelectedCompanyId(companyId, { source: "manual" });
     let present = false;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { companies } = await queryClient.fetchQuery({
-        ...companiesListQueryOptions,
+      const result = await queryClient.fetchQuery({
+        ...companyListQueryOptions(sessionQuery.data?.user?.id ?? null),
         staleTime: 0,
       });
-      if (companies.some((company) => company.id === companyId)) {
+      if (result.companies.some((company: { id: string }) => company.id === companyId)) {
         present = true;
         break;
       }
