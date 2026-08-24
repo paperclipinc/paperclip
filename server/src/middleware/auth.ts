@@ -715,9 +715,10 @@ export function humanizeCloudStackSlug(stackId: string): string {
 }
 
 export function isKnownBadCloudCompanyName(
-  name: string,
+  name: string | null | undefined,
   ids: { companyId: string; paperclipCompanyId?: string },
 ): boolean {
+  if (!name) return false;
   const normalized = name.trim();
   return (
     /^paperclip-stack-.+/i.test(normalized) ||
