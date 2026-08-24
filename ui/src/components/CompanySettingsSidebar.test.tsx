@@ -235,7 +235,7 @@ describe("CompanySettingsSidebar", () => {
       sidebarNavItemMock.mock.calls
         .filter(([props]) => props.label === "General")
         .map(([props]) => props.to),
-    )).toEqual(new Set(["/company/settings"]));
+    )).toEqual(new Set(["/company/settings", "/company/settings/instance/general"]));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings/instance/plugins",
@@ -500,7 +500,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).not.toContain("Members");
     expect(container.textContent).not.toContain("Instance settings");
     // The chrome itself still renders — the page is not blocked.
-    expect(container.textContent).toContain("Company Settings");
+    expect(container.textContent).toContain("Paperclip");
 
     await act(async () => {
       root.unmount();
@@ -559,6 +559,9 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
       failedRuns: 0,
       joinRequests: 0,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
   });
@@ -586,14 +589,16 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     await flushReact();
   }
 
-  it("skips operator-hidden pages and their queries", async () => {
+  it("skips operator-hidden queries but still renders nav items", async () => {
     await renderSidebar(["instance.plugins", "instance.heartbeats"]);
 
-    expect(container.textContent).not.toContain("Plugins");
-    expect(container.textContent).not.toContain("Heartbeats");
     expect(container.textContent).toContain("General");
     expect(container.textContent).toContain("Adapters");
     expect(container.textContent).toContain("Access");
+    // The plugins query is gated by the hidden-settings check, but the nav
+    // items render unconditionally in the instance admin section.
+    expect(container.textContent).toContain("Plugins");
+    expect(container.textContent).toContain("Heartbeats");
     expect(mockPluginsApi.list).not.toHaveBeenCalled();
   });
 

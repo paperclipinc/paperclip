@@ -620,6 +620,8 @@ describe("AgentConfigForm environment selector", () => {
       }),
     );
     mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
@@ -817,6 +819,11 @@ describe("AgentConfigForm environment selector", () => {
 
   it("labels the platform-managed instance default by name, without the driver key", async () => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: { defaultEnvironmentId: "managed-1", enableEnvironments: true, executionMode: "any" },
+      }),
+    );
     const result = await renderForm([
       makeEnvironment({
         id: "managed-1",
@@ -1344,6 +1351,16 @@ describe("AgentConfigForm environment selector", () => {
     // The login affordance must read the managed sandbox, so it shows after the
     // auth-missing check. A login target that stayed local would hide the panel
     // for the target the real run uses.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: {
+          defaultEnvironmentId: null,
+          enableEnvironments: true,
+          executionMode: "any",
+          enableManagedSandboxOnly: true,
+        },
+      }),
+    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
       enableManagedSandboxOnly: true,
@@ -1382,6 +1399,16 @@ describe("AgentConfigForm environment selector", () => {
     // target resolution fails closed. The render catches that failure and
     // resolves no login environment, so the affordance stays hidden. The Test
     // surfaces the same case as a fail-closed error.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: {
+          defaultEnvironmentId: null,
+          enableEnvironments: true,
+          executionMode: "any",
+          enableManagedSandboxOnly: true,
+        },
+      }),
+    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
       enableManagedSandboxOnly: true,
