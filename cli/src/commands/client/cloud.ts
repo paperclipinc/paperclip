@@ -217,7 +217,7 @@ export async function pushCloud(opts: CloudPushOptions): Promise<unknown> {
   const coordinator = new LocalUpstreamPushCoordinator({
     targetOrigin: connection.targetOrigin,
     paperclipCompanyId: connection.targetCompanyId,
-    headers: ({ method, path }) => cloudProofHeaders(connection, method, path),
+    headers: ({ method, path }: { method: string; path: string }) => cloudProofHeaders(connection, method, path),
   });
 
   const result = opts.dryRun ? await coordinator.preview(bundle) : await coordinator.apply(bundle);
