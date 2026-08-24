@@ -1,6 +1,6 @@
 {
-  "id": "ecc034cd-9b49-418f-b40e-7372ef1e6eeb",
-  "prevId": "f1541a72-8009-4f98-b7be-50cf4a68f40a",
+  "id": "bcd5b1b3-9416-45fa-ae4f-5615147831de",
+  "prevId": "f3eac61c-76e1-487f-b86d-9cb6c176b249",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1313,28 +1313,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_review_path_recovery_idempotency_uq": {
-          "name": "agent_wakeup_requests_review_path_recovery_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_review_path_lost:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4587,13 +4565,6 @@
           "notNull": true,
           "default": false
         },
-        "interaction_resolver_governance": {
-          "name": "interaction_resolver_governance",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
           "type": "boolean",
@@ -5136,417 +5107,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.company_secret_proposals": {
-      "name": "company_secret_proposals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "proposed_name": {
-          "name": "proposed_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "proposed_key": {
-          "name": "proposed_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "proposed_description": {
-          "name": "proposed_description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "justification": {
-          "name": "justification",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "value_ciphertext": {
-          "name": "value_ciphertext",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "value_fingerprint_sha256": {
-          "name": "value_fingerprint_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "value_length": {
-          "name": "value_length",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "secret_id": {
-          "name": "secret_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "secret_proposal_id": {
-          "name": "secret_proposal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_type": {
-          "name": "target_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_id": {
-          "name": "target_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "config_path": {
-          "name": "config_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "projection_class": {
-          "name": "projection_class",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unclassified'"
-        },
-        "binding_target_policy_snapshot": {
-          "name": "binding_target_policy_snapshot",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "proposer_ancestor_ids_snapshot": {
-          "name": "proposer_ancestor_ids_snapshot",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "target_ancestor_ids_snapshot": {
-          "name": "target_ancestor_ids_snapshot",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "proposed_by_agent_id": {
-          "name": "proposed_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "origin_issue_id": {
-          "name": "origin_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "origin_run_id": {
-          "name": "origin_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "resolved_by_user_id": {
-          "name": "resolved_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolution_reason": {
-          "name": "resolution_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_secret_id": {
-          "name": "created_secret_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "applied_binding_config_path": {
-          "name": "applied_binding_config_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ciphertext_scrubbed_at": {
-          "name": "ciphertext_scrubbed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_secret_proposals_company_status_idx": {
-          "name": "company_secret_proposals_company_status_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "company_secret_proposals_proposer_status_idx": {
-          "name": "company_secret_proposals_proposer_status_idx",
-          "columns": [
-            {
-              "expression": "proposed_by_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "company_secret_proposals_expiry_idx": {
-          "name": "company_secret_proposals_expiry_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "company_secret_proposals_secret_proposal_idx": {
-          "name": "company_secret_proposals_secret_proposal_idx",
-          "columns": [
-            {
-              "expression": "secret_proposal_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_secret_proposals_company_id_companies_id_fk": {
-          "name": "company_secret_proposals_company_id_companies_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_secret_id_company_secrets_id_fk": {
-          "name": "company_secret_proposals_secret_id_company_secrets_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "company_secrets",
-          "columnsFrom": [
-            "secret_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_secret_proposal_id_company_secret_proposals_id_fk": {
-          "name": "company_secret_proposals_secret_proposal_id_company_secret_proposals_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "company_secret_proposals",
-          "columnsFrom": [
-            "secret_proposal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_target_id_agents_id_fk": {
-          "name": "company_secret_proposals_target_id_agents_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "target_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_proposed_by_agent_id_agents_id_fk": {
-          "name": "company_secret_proposals_proposed_by_agent_id_agents_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "proposed_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_origin_issue_id_issues_id_fk": {
-          "name": "company_secret_proposals_origin_issue_id_issues_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "origin_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_origin_run_id_heartbeat_runs_id_fk": {
-          "name": "company_secret_proposals_origin_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "origin_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_created_secret_id_company_secrets_id_fk": {
-          "name": "company_secret_proposals_created_secret_id_company_secrets_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "company_secrets",
-          "columnsFrom": [
-            "created_secret_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "company_secret_proposals_kind_check": {
-          "name": "company_secret_proposals_kind_check",
-          "value": "\"company_secret_proposals\".\"kind\" in ('secret', 'binding')"
-        },
-        "company_secret_proposals_status_check": {
-          "name": "company_secret_proposals_status_check",
-          "value": "\"company_secret_proposals\".\"status\" in ('pending', 'approved', 'rejected', 'withdrawn', 'expired')"
-        },
-        "company_secret_proposals_projection_check": {
-          "name": "company_secret_proposals_projection_check",
-          "value": "\"company_secret_proposals\".\"projection_class\" = 'unclassified'"
-        },
-        "company_secret_proposals_shape_check": {
-          "name": "company_secret_proposals_shape_check",
-          "value": "(\n      \"company_secret_proposals\".\"kind\" = 'secret'\n      and \"company_secret_proposals\".\"proposed_name\" is not null\n      and \"company_secret_proposals\".\"proposed_key\" is not null\n      and \"company_secret_proposals\".\"secret_id\" is null\n      and \"company_secret_proposals\".\"secret_proposal_id\" is null\n      and \"company_secret_proposals\".\"target_type\" is null\n      and \"company_secret_proposals\".\"target_id\" is null\n      and \"company_secret_proposals\".\"config_path\" is null\n    ) or (\n      \"company_secret_proposals\".\"kind\" = 'binding'\n      and ((\"company_secret_proposals\".\"secret_id\" is not null)::int + (\"company_secret_proposals\".\"secret_proposal_id\" is not null)::int) = 1\n      and \"company_secret_proposals\".\"target_type\" = 'agent'\n      and \"company_secret_proposals\".\"target_id\" is not null\n      and \"company_secret_proposals\".\"config_path\" is not null\n    )"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.company_secret_provider_configs": {
@@ -20755,20 +20315,6 @@
           "notNull": true,
           "default": "'wake_assignee'"
         },
-        "requested_resolver_policy": {
-          "name": "requested_resolver_policy",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'board_only'"
-        },
-        "effective_resolver_policy": {
-          "name": "effective_resolver_policy",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'board_only'"
-        },
         "idempotency_key": {
           "name": "idempotency_key",
           "type": "text",
@@ -20805,12 +20351,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "addressee_agent_id": {
-          "name": "addressee_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_by_user_id": {
           "name": "created_by_user_id",
           "type": "text",
@@ -20819,12 +20359,6 @@
         },
         "resolved_by_agent_id": {
           "name": "resolved_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_by_run_id": {
-          "name": "resolved_by_run_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -20980,21 +20514,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "issue_thread_interactions_addressee_agent_idx": {
-          "name": "issue_thread_interactions_addressee_agent_idx",
-          "columns": [
-            {
-              "expression": "addressee_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -21063,19 +20582,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "issue_thread_interactions_addressee_agent_id_agents_id_fk": {
-          "name": "issue_thread_interactions_addressee_agent_id_agents_id_fk",
-          "tableFrom": "issue_thread_interactions",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "addressee_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "issue_thread_interactions_resolved_by_agent_id_agents_id_fk": {
           "name": "issue_thread_interactions_resolved_by_agent_id_agents_id_fk",
           "tableFrom": "issue_thread_interactions",
@@ -21087,19 +20593,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_thread_interactions_resolved_by_run_id_heartbeat_runs_id_fk": {
-          "name": "issue_thread_interactions_resolved_by_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "issue_thread_interactions",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "resolved_by_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -22384,12 +21877,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'medium'"
-        },
-        "review_policy": {
-          "name": "review_policy",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "assignee_agent_id": {
           "name": "assignee_agent_id",

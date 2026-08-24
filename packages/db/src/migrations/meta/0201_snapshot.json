@@ -1,6 +1,6 @@
 {
-  "id": "c89027d0-0219-4e24-970c-22899cd2bceb",
-  "prevId": "e0ed9da5-1332-4b34-9246-ba4a223a1b82",
+  "id": "7421f0b4-8909-43f8-affb-64b650d66806",
+  "prevId": "f625870c-bd49-45fa-a26d-d4ac38d184b0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -8059,195 +8059,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.decision_archive_notification_outbox": {
-      "name": "decision_archive_notification_outbox",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_id": {
-          "name": "source_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "archive_version": {
-          "name": "archive_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "origin_agent_id": {
-          "name": "origin_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "origin_issue_id": {
-          "name": "origin_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "attempt_count": {
-          "name": "attempt_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_attempt_at": {
-          "name": "last_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "delivered_at": {
-          "name": "delivered_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "decision_archive_notification_outbox_uq": {
-          "name": "decision_archive_notification_outbox_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "archive_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "origin_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "decision_archive_notification_outbox_pending_idx": {
-          "name": "decision_archive_notification_outbox_pending_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "decision_archive_notification_outbox_company_id_companies_id_fk": {
-          "name": "decision_archive_notification_outbox_company_id_companies_id_fk",
-          "tableFrom": "decision_archive_notification_outbox",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "decision_archive_notification_outbox_origin_agent_id_agents_id_fk": {
-          "name": "decision_archive_notification_outbox_origin_agent_id_agents_id_fk",
-          "tableFrom": "decision_archive_notification_outbox",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "origin_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "decision_archive_notification_outbox_status_check": {
-          "name": "decision_archive_notification_outbox_status_check",
-          "value": "\"decision_archive_notification_outbox\".\"status\" IN ('pending', 'delivering', 'delivered')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.decision_queue_items": {
       "name": "decision_queue_items",
       "schema": "",
@@ -8605,6 +8416,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "decision_queues_id_company_uq": {
+          "name": "decision_queues_id_company_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -8662,16 +8494,7 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "decision_queues_id_company_uq": {
-          "name": "decision_queues_id_company_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "company_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
         "decision_queues_creator_check": {
@@ -8681,215 +8504,6 @@
         "decision_queues_retention_days_check": {
           "name": "decision_queues_retention_days_check",
           "value": "\"decision_queues\".\"retention_days\" IS NULL OR (\"decision_queues\".\"retention_days\" >= 1 AND \"decision_queues\".\"retention_days\" <= 3650)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.decision_retention": {
-      "name": "decision_retention",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_id": {
-          "name": "source_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_activity_at": {
-          "name": "source_activity_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "keep": {
-          "name": "keep",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "archived_at": {
-          "name": "archived_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "archived_reason": {
-          "name": "archived_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "archived_by_type": {
-          "name": "archived_by_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "archived_by_agent_id": {
-          "name": "archived_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "archived_by_user_id": {
-          "name": "archived_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "archived_by_run_id": {
-          "name": "archived_by_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "archive_version": {
-          "name": "archive_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "decision_retention_company_source_uq": {
-          "name": "decision_retention_company_source_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "decision_retention_company_archived_idx": {
-          "name": "decision_retention_company_archived_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "archived_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "decision_retention_company_id_companies_id_fk": {
-          "name": "decision_retention_company_id_companies_id_fk",
-          "tableFrom": "decision_retention",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "decision_retention_archived_by_agent_id_agents_id_fk": {
-          "name": "decision_retention_archived_by_agent_id_agents_id_fk",
-          "tableFrom": "decision_retention",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "archived_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "decision_retention_archived_by_run_id_heartbeat_runs_id_fk": {
-          "name": "decision_retention_archived_by_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "decision_retention",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "archived_by_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "decision_retention_archive_actor_check": {
-          "name": "decision_retention_archive_actor_check",
-          "value": "(\n        (\"decision_retention\".\"archived_at\" IS NULL AND \"decision_retention\".\"archived_by_type\" IS NULL AND \"decision_retention\".\"archived_by_agent_id\" IS NULL AND \"decision_retention\".\"archived_by_user_id\" IS NULL)\n        OR (\"decision_retention\".\"archived_at\" IS NOT NULL AND \"decision_retention\".\"archived_by_type\" = 'system' AND \"decision_retention\".\"archived_by_agent_id\" IS NULL AND \"decision_retention\".\"archived_by_user_id\" IS NULL)\n        OR (\"decision_retention\".\"archived_at\" IS NOT NULL AND \"decision_retention\".\"archived_by_type\" = 'agent' AND \"decision_retention\".\"archived_by_agent_id\" IS NOT NULL AND \"decision_retention\".\"archived_by_user_id\" IS NULL)\n        OR (\"decision_retention\".\"archived_at\" IS NOT NULL AND \"decision_retention\".\"archived_by_type\" = 'user' AND \"decision_retention\".\"archived_by_agent_id\" IS NULL AND \"decision_retention\".\"archived_by_user_id\" IS NOT NULL)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -13804,12 +13418,6 @@
         },
         "next_refresh_at": {
           "name": "next_refresh_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "refresh_started_at": {
-          "name": "refresh_started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

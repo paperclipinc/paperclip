@@ -1,6 +1,6 @@
 {
-  "id": "bcd5b1b3-9416-45fa-ae4f-5615147831de",
-  "prevId": "f3eac61c-76e1-487f-b86d-9cb6c176b249",
+  "id": "f3eac61c-76e1-487f-b86d-9cb6c176b249",
+  "prevId": "c89027d0-0219-4e24-970c-22899cd2bceb",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -17813,12 +17813,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "on_behalf_of_user_id": {
-          "name": "on_behalf_of_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "author_type": {
           "name": "author_type",
           "type": "text",
@@ -18064,19 +18058,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issue_comments_on_behalf_of_user_id_user_id_fk": {
-          "name": "issue_comments_on_behalf_of_user_id_user_id_fk",
-          "tableFrom": "issue_comments",
-          "tableTo": "user",
-          "columnsFrom": [
-            "on_behalf_of_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "issue_comments_created_by_run_id_heartbeat_runs_id_fk": {

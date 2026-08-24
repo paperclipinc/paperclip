@@ -1,6 +1,6 @@
 {
-  "id": "5f26d1e4-4e78-4976-8a1f-1bd860931b8d",
-  "prevId": "d925c84b-41b6-42d1-a0f9-4ee090ef3cd1",
+  "id": "0df620d7-2e5a-4304-a98e-36c8bc550010",
+  "prevId": "8f54003b-ed12-4ab6-a3f3-c30b4284bcc7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -279,12 +279,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "public_session_id": {
-          "name": "public_session_id",
-          "type": "varchar(128)",
-          "primaryKey": false,
-          "notNull": true
-        },
         "provider_lease_id": {
           "name": "provider_lease_id",
           "type": "text",
@@ -306,12 +300,6 @@
         },
         "promotion_expires_at": {
           "name": "promotion_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "bound_at": {
-          "name": "bound_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -365,17 +353,11 @@
           "method": "btree",
           "with": {}
         },
-        "adapter_auth_sessions_company_owner_adapter_active_uq": {
-          "name": "adapter_auth_sessions_company_owner_adapter_active_uq",
+        "adapter_auth_sessions_company_adapter_active_uq": {
+          "name": "adapter_auth_sessions_company_adapter_active_uq",
           "columns": [
             {
               "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "started_by_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -388,22 +370,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"adapter_auth_sessions\".\"status\" IN ('starting', 'waiting_for_user', 'promoting', 'awaiting_code', 'submitting')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "adapter_auth_sessions_public_session_id_uq": {
-          "name": "adapter_auth_sessions_public_session_id_uq",
-          "columns": [
-            {
-              "expression": "public_session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
+          "where": "\"adapter_auth_sessions\".\"status\" IN ('starting', 'waiting_for_user', 'promoting')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4569,6 +4536,187 @@
       },
       "isRLSEnabled": false
     },
+    "public.claude_setup_token_sessions": {
+      "name": "claude_setup_token_sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "adapter_type": {
+          "name": "adapter_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_id": {
+          "name": "lease_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'starting'"
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bound_at": {
+          "name": "bound_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "claude_setup_token_sessions_active_uq": {
+          "name": "claude_setup_token_sessions_active_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "owner_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "adapter_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"claude_setup_token_sessions\".\"state\" IN ('starting', 'awaiting_code', 'submitting', 'persisting')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "claude_setup_token_sessions_session_id_uq": {
+          "name": "claude_setup_token_sessions_session_id_uq",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "claude_setup_token_sessions_deadline_idx": {
+          "name": "claude_setup_token_sessions_deadline_idx",
+          "columns": [
+            {
+              "expression": "deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "claude_setup_token_sessions_company_id_companies_id_fk": {
+          "name": "claude_setup_token_sessions_company_id_companies_id_fk",
+          "tableFrom": "claude_setup_token_sessions",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "claude_setup_token_sessions_environment_id_environments_id_fk": {
+          "name": "claude_setup_token_sessions_environment_id_environments_id_fk",
+          "tableFrom": "claude_setup_token_sessions",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.cli_auth_challenges": {
       "name": "cli_auth_challenges",
       "schema": "",
@@ -5718,12 +5866,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "interaction_id": {
-          "name": "interaction_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "resolved_by_user_id": {
           "name": "resolved_by_user_id",
           "type": "text",
@@ -5859,21 +6001,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "company_secret_proposals_interaction_idx": {
-          "name": "company_secret_proposals_interaction_idx",
-          "columns": [
-            {
-              "expression": "interaction_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -5966,19 +6093,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "company_secret_proposals_interaction_id_issue_thread_interactions_id_fk": {
-          "name": "company_secret_proposals_interaction_id_issue_thread_interactions_id_fk",
-          "tableFrom": "company_secret_proposals",
-          "tableTo": "issue_thread_interactions",
-          "columnsFrom": [
-            "interaction_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "company_secret_proposals_created_secret_id_company_secrets_id_fk": {
