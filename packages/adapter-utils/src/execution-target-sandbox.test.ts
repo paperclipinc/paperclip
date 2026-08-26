@@ -7589,3 +7589,4 @@ describe("EffectiveSandboxCapabilities deprecated alias", () => {
     expect(aliased).toEqual(snapshot);
   });
 });
+});
