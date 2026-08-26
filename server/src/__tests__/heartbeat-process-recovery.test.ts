@@ -1888,6 +1888,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
@@ -1932,6 +1933,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
@@ -1951,6 +1953,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 100, pollIntervalMs: 25 },
     );
 
@@ -1987,6 +1990,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, nowMs, drainTimeoutMs: 100, pollIntervalMs: 25 },
     );
 
@@ -2025,6 +2029,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, nowMs, drainTimeoutMs, pollIntervalMs },
     );
 
@@ -2070,6 +2075,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await drainingInstance.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
+      null,
       { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
     );
 
