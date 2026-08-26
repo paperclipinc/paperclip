@@ -305,6 +305,8 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(databaseBackup ? { databaseBackup: redactedDatabaseBackupHealth(databaseBackup) } : {}),
+        ...(warnings ? { warnings: warnings.map(redactedDatabaseBackupWarning) } : {}),
         ...(devServer ? { devServer } : {}),
         // Token-authorized probe on an otherwise redacted response: the control
         // plane needs readiness without a board session, and nothing else about
