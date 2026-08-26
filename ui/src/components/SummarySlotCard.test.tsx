@@ -232,12 +232,8 @@ describe("SummarySlotCard", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: true } }),
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: true } }),
     );
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableSummaries: true,
-      enableBuiltInAgents: true,
-    });
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({ slot: null, document: null, generatingIssue: null } satisfies GetSummarySlotResponse);
     mockSummarySlotsApi.revisions.mockResolvedValue({ slot: null, revisions: [] } satisfies ListSummarySlotRevisionsResponse);
@@ -257,12 +253,8 @@ describe("SummarySlotCard", () => {
 
   it("renders nothing and does not fetch slots when the summaries flag is off", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: false } }),
+      buildCurrentBoardAccess({ features: { enableSummaries: false, enableBuiltInAgents: true } }),
     );
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableSummaries: false,
-      enableBuiltInAgents: true,
-    });
 
     root = renderCard(container);
     await flushQueries();
@@ -273,10 +265,9 @@ describe("SummarySlotCard", () => {
   });
 
   it("does not query built-in agents when their feature flag is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableSummaries: true,
-      enableBuiltInAgents: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableSummaries: true, enableBuiltInAgents: false } }),
+    );
 
     root = renderCard(container);
     await flushQueries();

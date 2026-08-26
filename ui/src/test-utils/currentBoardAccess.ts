@@ -21,6 +21,8 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableServerInfoDebugView: false,
   enableSummaries: false,
   enableStatusCards: false,
+  enableManagedSandboxOnly: false,
+  enableClassicTaskInterface: false,
   cloudBilling: false,
   cloudTrialBanner: false,
   keyboardShortcuts: false,

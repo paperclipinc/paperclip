@@ -574,7 +574,6 @@ describe("Layout", () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
     );
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
