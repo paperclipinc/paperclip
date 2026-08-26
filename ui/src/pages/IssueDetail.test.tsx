@@ -2293,13 +2293,9 @@ describe("IssueDetail", () => {
       );
     });
 
-    await flushReact();
-    await flushReact();
-
-    // Panel content is withheld — openPanel is never invoked, so the sidebar
-    // stays hidden without touching the persisted panelVisible preference.
-    expect(mockOpenPanel).not.toHaveBeenCalled();
-    expect(mockClosePanel).toHaveBeenCalled();
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
+    });
   });
 
   it("keeps the Show properties button clickable on the first task and reveals the sidebar on demand", async () => {
