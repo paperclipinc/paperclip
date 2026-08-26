@@ -1014,3 +1014,19 @@ export type {
 } from "./capabilities.js";
 export { derivePublicFeatureFlags } from "./capabilities.js";
 export * from "./app-definition.js";
+export type {
+  CloudUpstreamActivationDecision,
+  CloudUpstreamActivationEntityType,
+  CloudUpstreamConnectStartResponse,
+  CloudUpstreamConnection,
+  CloudUpstreamConflict,
+  CloudUpstreamPreview,
+  CloudUpstreamRun,
+  CloudUpstreamRunEvent,
+  CloudUpstreamRunStatus,
+  CloudUpstreamStep,
+  CloudUpstreamsState,
+  CloudUpstreamSummaryCount,
+  CloudUpstreamTarget,
+  CloudUpstreamWarning,
+} from "./cloud-upstream.js";

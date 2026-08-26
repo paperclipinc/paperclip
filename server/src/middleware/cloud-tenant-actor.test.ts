@@ -21,7 +21,7 @@ function createFakeDb(options: {
 
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
-}) {
+} = {}) {
   const membershipRow: SeededMembership =
     options?.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
   const settingsRow =
@@ -39,6 +39,8 @@ function createFakeDb(options: {
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  let currentTable: unknown = null;
+  const insertedValues = new Map<unknown, Record<string, unknown>>();
   const chain: Record<string, unknown> = {};
   chain.values = (values: Record<string, unknown>) => {
     if (currentTable !== null) insertedValues.set(currentTable, values);

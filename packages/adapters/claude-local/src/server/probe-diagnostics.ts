@@ -32,6 +32,7 @@ const MAX_ERROR_CLASS_NAME_CHARS = 64;
 export type SandboxProbeDiagnosticClassification =
   | "timeout"
   | "auth_required"
+  | "credential_rejected"
   | "nonzero_exit"
   | "spawn_error"
   | "empty_output"

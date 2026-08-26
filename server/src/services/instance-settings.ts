@@ -352,6 +352,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      enableCloudSync: parsed.data.enableCloudSync ?? false,
       cloudBilling:
         process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
         (parsed.data.cloudBilling ?? false),
@@ -397,6 +398,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableSimplifiedEnglishInteractions: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
+    enableCloudSync: false,
     cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
     cloudTrialBanner: process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true",
     enableWorkspaceBranchReconcileForward: true,
