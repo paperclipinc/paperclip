@@ -237,6 +237,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCloudSync: {
+    title: "Cloud Sync",
+    description:
+      "Enable the cloud upstream synchronization feature for importing and exporting company data between instances.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   cloudBilling: {
     title: "Cloud Billing",
     description:

@@ -85,6 +85,7 @@ export interface InstanceExperimentalSettings {
   enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableCloudSync: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   enableWorkspaceBranchReconcileForward: boolean;

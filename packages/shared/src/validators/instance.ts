@@ -69,6 +69,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
+  enableCloudSync: z.boolean().default(false),
   cloudBilling: z.boolean().default(false),
   cloudTrialBanner: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
