@@ -330,6 +330,8 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      ...(databaseBackup ? { databaseBackup: redactedDatabaseBackupHealth(databaseBackup) } : {}),
+      ...(warnings ? { warnings: warnings.map(redactedDatabaseBackupWarning) } : {}),
       ...(devServer ? { devServer } : {}),
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
