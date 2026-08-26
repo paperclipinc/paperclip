@@ -114,3 +114,26 @@ describe("authApi.getSession status classification", () => {
     await expect(authApi.getSession()).rejects.toMatchObject({ status: 0 });
   });
 });
+
+describe("authApi.signOut", () => {
+  it("returns the managed deployment redirect from the response", async () => {
+    const signOutFetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, redirectTo: "/cloud/logout" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", signOutFetchMock);
+
+    await expect(authApi.signOut()).resolves.toEqual({
+      success: true,
+      redirectTo: "/cloud/logout",
+    });
+    expect(signOutFetchMock).toHaveBeenCalledWith("/api/auth/sign-out", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  });
+});
