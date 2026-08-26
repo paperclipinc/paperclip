@@ -145,7 +145,7 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
 // Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
 // the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
 const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";

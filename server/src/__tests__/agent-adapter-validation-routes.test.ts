@@ -64,6 +64,7 @@ const mockApprovalService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getExperimental: vi.fn(async () => ({ enableNativeRunner: false })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -239,6 +240,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: unknown }) => ({
       adapterConfig: agent.adapterConfig,
     }));
@@ -448,6 +450,58 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
+  it("forwards a claude_local→process adapter move that drops the OAuth binding to the service unchanged", async () => {
+    // The agent has the fixed Claude Code OAuth binding on the claude_local
+    // adapter. A PATCH moves the agent to the process adapter and sends an empty
+    // env in the same request. The route must forward the new adapter type and
+    // the dropped binding to the service without a re-injection, so the
+    // service-enforced binding invariant sees the removal and rejects it.
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      name: "Claude",
+      urlKey: "claude",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "user_secret_ref", key: "CLAUDE_CODE_OAUTH_TOKEN" } } },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterType: "process",
+          adapterConfig: { env: {} },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    // The route forwards the requested adapter type, so the service can see the
+    // adapter move.
+    expect(patch.adapterType).toBe("process");
+    // The route does not re-inject the fixed binding from the prior config, so
+    // the service invariant sees the removal.
+    const env = ((patch.adapterConfig as Record<string, unknown>).env as Record<string, unknown> | undefined) ?? {};
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const app = await createApp();
@@ -621,5 +675,53 @@ describe("agent routes adapter validation", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+  });
+
+  it("rejects a new paperclip_runner selection while the rollout flag is off", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Native Codex", adapterType: "paperclip_runner" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a new paperclip_runner selection while the rollout flag is on", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Native Codex",
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "codex" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an existing paperclip_runner agent editable after the flag is disabled", async () => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" },
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ name: "Native Codex (recorded)" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledOnce();
   });
 });
