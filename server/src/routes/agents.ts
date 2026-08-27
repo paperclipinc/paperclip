@@ -385,11 +385,6 @@ export function agentRoutes(
     async markState(identity, state): Promise<void> {
       const row = setupTokenCleanupRows.get(identity.sessionId);
       if (row && scopeMatchesRow(row, identity)) row.state = state;
-        // Pin the Test lease to the agent's own adapter so the sandbox boots the
-        // harness image the Test will exec against (matching real agent runs). It
-        // also keeps the lease from being an adapter-less one, which a plugin that
-        // cannot prove a single-adapter environment now rejects.
-        adapterType: input.adapterType,
     },
     async remove(identity): Promise<void> {
       // The delete matches the full owner scope, so it never removes a row by the
@@ -822,6 +817,11 @@ export function agentRoutes(
         // change between the guard check and the lease acquire. This closes
         // that check-to-lease race so a foreign sandbox never gets a lease.
         assertCompanyBinding: true,
+        // Pin the Test lease to the agent's own adapter so the sandbox boots the
+        // harness image the Test will exec against (matching real agent runs). It
+        // also keeps the lease from being an adapter-less one, which a plugin that
+        // cannot prove a single-adapter environment now rejects.
+        adapterType: input.adapterType,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would

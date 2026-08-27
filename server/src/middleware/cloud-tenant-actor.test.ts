@@ -13,16 +13,21 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./au
 // the user's own membership rows (rows configurable via membershipQueryRows,
 // where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
-function createFakeDb(options: {
-  membershipRow?: { companyId: string; membershipRole: string; status: string };
+type SeededMembership = { companyId: string; membershipRole: string; status: string };
+
+function createFakeDb(options?: {
+  membershipRow?: SeededMembership;
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
+  seededMemberships?: SeededMembership[];
+  /** Rows returned by the SELECT over `companies` — [] means the stack company does not exist yet. */
+  companyRows?: Array<{ id: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
-} = {}) {
-  const membershipRow =
-    options.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
+}) {
+  const membershipRow: SeededMembership =
+    options?.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
   const settingsRow =
-    options.settingsRow === undefined
+    options?.settingsRow === undefined
       ? {
           id: "00000000-0000-0000-0000-000000000001",
           singletonKey: "default",
@@ -32,12 +37,20 @@ function createFakeDb(options: {
           createdAt: new Date(),
           updatedAt: new Date(),
         }
-      : options.settingsRow;
+      : options?.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
+  const selectedTables: unknown[] = [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const insertedValues = new Map<unknown, Record<string, unknown>>();
+  let currentTable: unknown = null;
+  const memberships = options?.seededMemberships ?? [membershipRow];
+  const companyRows = options?.companyRows ?? [];
   const chain: Record<string, unknown> = {};
-  chain.values = () => chain;
+  chain.values = (values: Record<string, unknown>) => {
+    if (currentTable !== null) insertedValues.set(currentTable, values);
+    return chain;
+  };
   chain.onConflictDoUpdate = () => chain;
   chain.onConflictDoNothing = () => chain;
   chain.where = () => chain;
@@ -46,33 +59,40 @@ function createFakeDb(options: {
   const db = {
     insert: (table: unknown) => {
       insertedTables.push(table);
+      currentTable = table;
       return chain;
     },
     delete: (table: unknown) => {
       deletedTables.push(table);
-      return chain;
+      return { where: async () => undefined };
     },
     select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
+      if (options?.selectThrows) throw new Error("select unavailable");
       return {
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            selectWheres.push({ table, condition });
-            const rows =
-              table === instanceSettings && settingsRow
-                ? [settingsRow]
-                : table === companyMemberships
-                  ? (options.membershipQueryRows ?? [])
-                  : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
-            };
-          },
-        }),
+        from: (table: unknown) => {
+          selectedTables.push(table);
+          return {
+            where: (condition?: unknown) => {
+              if (condition !== undefined) selectWheres.push({ table, condition });
+              return {
+                then: (resolve: (v: unknown) => unknown) => {
+                  const result = table === companies
+                    ? companyRows
+                    : table === instanceSettings && settingsRow
+                      ? [settingsRow]
+                      : table === companyMemberships
+                        ? (options?.membershipQueryRows ?? memberships)
+                        : [];
+                  return Promise.resolve(result).then(resolve);
+                },
+              };
+            },
+          };
+        },
       };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectWheres };
+  return { db, insertedTables, deletedTables, selectedTables, selectWheres, insertedValues };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {

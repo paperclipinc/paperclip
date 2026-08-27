@@ -15,7 +15,6 @@ import {
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
-  ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
@@ -859,23 +858,65 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                restore: async ({ assetDir, readFile }) => {
+                  // Hosted path first. When the run authenticated with a
+                  // credential the USER supplied, the refreshed copy has to go
+                  // back to where that credential came from -- the credential
+                  // store -- not to any host file. This is not an optimisation:
+                  // OpenAI rotates the refresh token on every refresh and the
+                  // old one dies immediately, so skipping this would leave the
+                  // stored credential invalid from the next run onward. The
+                  // feature would look fine for about an hour and then break
+                  // permanently, which is worse than not shipping it.
+                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
+                    try {
+                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
+                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
+                        await ctx.onCredentialRotated({
+                          envKey: "CODEX_AUTH_JSON",
+                          value: rotated,
+                        });
+                        await onLog(
+                          "stdout",
+                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
+                        );
+                      }
+                    } catch (err) {
+                      // A failed copy-back must never fail a run that already
+                      // did the user's work. The cost is a stale stored
+                      // credential, which surfaces as a normal auth error on a
+                      // later run, not as a lost result here.
+                      await onLog(
+                        "stdout",
+                        `[paperclip] Codex plan credential copy-back skipped: ${
+                          err instanceof Error ? err.message : String(err)
+                        }\n`,
+                      );
+                    }
+                    return;
+                  }
+                  // The copy-back exists to persist refreshed ChatGPT-subscription
+                  // tokens back to the credential the managed homes symlink to.
+                  // When no shared host credential store exists (cloud/multi-tenant
+                  // servers whose auth lives only in managed per-company homes, or
+                  // a host that never ran `codex login`) there is nothing to merge
+                  // into, and creating a shared `~/.codex` on a multi-tenant server
+                  // would leak one tenant's credential into the store every other
+                  // tenant's managed home is seeded from. Skip instead of letting
+                  // the ENOENT fail the teardown and mark a completed run failed.
+                  if (!sharedHostHasUsableAuth) {
+                    await onLog(
+                      "stdout",
+                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
+                    );
+                    return;
+                  }
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                    // Additive cache write (sandbox to host): also cache the
-                    // sandbox subscription credential in its per-identity slot,
-                    // keyed by the real `account_id`. Company-scoped root; the
-                    // helper ensures the slot directory private and containment-
-                    // guarded. The off-switch (default on) is read inside.
-                    resolveCacheEntryPath: (accountId) =>
-                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
-                    env: process.env,
-                  })),
-                // No `exclude` denylist: `stagedCodexHomeDir` already contains
-                // ONLY the allowlisted files (auth/config/skills), so there is
-                // nothing to filter out.
+                  }));
+                },
               },
             ],
           });

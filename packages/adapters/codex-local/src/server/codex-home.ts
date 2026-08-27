@@ -734,13 +734,20 @@ export async function seedManagedCodexHome(
   }
 
   if (seedFromShared) {
-    for (const name of SYMLINKED_SHARED_FILES) {
-      // The kept promoted credential is authoritative for this home; the shared
-      // symlink would silently swap the account back to the host login.
-      if (name === "auth.json" && keepPromotedAuth) continue;
-      const source = path.join(sourceHome, name);
-      if (!(await pathExists(source))) continue;
-      await ensureSymlink(path.join(targetHome, name), source);
+    // A user-supplied credential is the whole point of the hosted path, so the
+    // shared host auth.json must NOT be symlinked in on top of it: on a hosted
+    // install that file is the operator's, and on any install the symlink would
+    // make the user's own credential unreachable. Static config is still
+    // shared either way; only auth is theirs.
+    if (!authJson) {
+      for (const name of SYMLINKED_SHARED_FILES) {
+        // The kept promoted credential is authoritative for this home; the shared
+        // symlink would silently swap the account back to the host login.
+        if (name === "auth.json" && keepPromotedAuth) continue;
+        const source = path.join(sourceHome, name);
+        if (!(await pathExists(source))) continue;
+        await ensureSymlink(path.join(targetHome, name), source);
+      }
     }
 
     for (const name of COPIED_SHARED_FILES) {

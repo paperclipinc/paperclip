@@ -47,11 +47,6 @@ import {
 import type {
   JsonRpcId,
   PluginInvocationContext,
-import {
-  createPluginStreamBus,
-  type PluginStreamBus,
-  type StreamEventType,
-} from "./plugin-stream-bus.js";
   PluginInvocationScope,
   JsonRpcResponse,
   JsonRpcRequest,
@@ -63,6 +58,11 @@ import {
   WorkerToHostMethods,
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
+import {
+  createPluginStreamBus,
+  type PluginStreamBus,
+  type StreamEventType,
+} from "./plugin-stream-bus.js";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
   DUPLEX_CHANNEL_AGGREGATE_BYTES_EXCEEDED,
