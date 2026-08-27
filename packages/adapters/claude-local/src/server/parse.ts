@@ -1,12 +1,6 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
-  asNumber,
-  parseObject,
-  parseJson,
-} from "@paperclipai/adapter-utils/server-utils";
-
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 // A credential was actually PRESENTED and the provider said it is invalid,
 // as opposed to a plain "you haven't signed in yet" prompt with no
 // credential in play. CLAUDE_AUTH_REQUIRED_RE intentionally also matches
@@ -23,6 +17,23 @@ const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s
 // "invalid api key" or "authentication required" verbatim is not a
 // realistic false-positive surface the way a single common word is.
 const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|\bunauthorized\b|authentication\s+required)/i;
+  asNumber,
+  asBoolean,
+  parseObject,
+  parseJson,
+} from "@paperclipai/adapter-utils/server-utils";
+
+// The legacy login-prompt markers. The Claude CLI prints these words when it
+// asks the user to log in. The detector matches them against any probe output
+// line, which includes the raw stdout and stderr. This scope is pre-existing.
+const CLAUDE_LOGIN_PROMPT_RE =
+  /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
+
+// The token-failure markers. An assistant or model event can print these same
+// words as ordinary prose, so the detector matches them only against the parsed
+// terminal result fields of a failed run. See detectClaudeLoginRequired.
+const CLAUDE_AUTH_TOKEN_FAILURE_RE =
+  /(?:authentication[_\s-](?:failed|error)|failed\s+to\s+authenticate|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access)\s+token|(?:bearer|oauth|access)\s+token[\s\S]{0,40}(?:is\s+)?(?:invalid|expired|revoked))/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -185,30 +196,64 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+// Collect the parsed terminal result fields that carry an auth failure. The
+// CLI writes the token-failure text to the result event, so the detector reads
+// the result string, the top-level error field, and the errors array. It never
+// reads the raw stdout, so an assistant event cannot inject a token marker.
+function collectClaudeTerminalText(parsed: Record<string, unknown>): string {
+  return [
+    asString(parsed.result, ""),
+    asString(parsed.error, ""),
+    ...extractClaudeErrorMessages(parsed),
+  ]
+    .map((field) => field.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Report whether the parsed terminal result marks the run as an auth failure.
+// The token-failure markers apply only to a failed run. A successful probe
+// whose answer text repeats an auth phrase does not classify as login required.
+function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): boolean {
+  if (asBoolean(parsed.is_error, false)) return true;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype.startsWith("error")) return true;
+  const status =
+    asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
+  if (status === 401 || status === 403) return true;
+  if (asString(parsed.error, "").trim()) return true;
+  return extractClaudeErrorMessages(parsed).length > 0;
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null; credentialRejected: boolean } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const parsed = input.parsed ?? null;
+  const resultText = asString(parsed?.result, "").trim();
+
+  // The legacy login-prompt markers keep their broad scope. They match against
+  // every output line, which includes the parsed result, the parsed errors, and
+  // the raw stdout and stderr.
+  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
-  // Independent of requiresLogin: a message can say the credential is
-  // invalid without also matching the login-prompt wording (e.g. a raw
-  // 401/authentication_error payload), and detectClaudeLoginRequired is the
-  // one place that already has the full message text assembled.
-  const credentialRejected =
-    messages.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
-    isClaudeInvalidCredentialError({ parsed: input.parsed, stdout: input.stdout, stderr: input.stderr });
+  // The token-failure markers match only against the parsed terminal fields of
+  // a failed run. The raw stdout is untrusted, so a model that prints a token
+  // phrase, or a successful run that repeats one, does not flip the classifier.
+  const tokenFailure =
+    parsed !== null &&
+    claudeResultIndicatesAuthFailure(parsed) &&
+    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+
   return {
-    requiresLogin,
+    requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
-    credentialRejected,
   };
 }
 

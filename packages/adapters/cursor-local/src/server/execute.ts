@@ -25,6 +25,8 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
+  adapterExecutionTargetDuplexObservabilityRecorder,
+  adapterExecutionTargetEnablesSandboxDuplexBridge,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -44,9 +46,10 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -60,6 +63,7 @@ import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
+import { resolveCursorSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -124,18 +128,15 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function cursorSkillsHome(): string {
-  return path.join(os.homedir(), ".cursor", "skills");
-}
-
 async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-skills-"));
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
+    if (isPaperclipSkillSourceMissing(entry)) continue;
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
   }
   return target;
@@ -164,7 +165,7 @@ export async function ensureCursorSkillsInjected(
       : await readPaperclipRuntimeSkillEntries({}, __moduleDir));
   if (skillsEntries.length === 0) return;
 
-  const skillsHome = options.skillsHome ?? cursorSkillsHome();
+  const skillsHome = options.skillsHome ?? resolveCursorSkillsHome({});
   try {
     await fs.mkdir(skillsHome, { recursive: true });
   } catch (err) {
@@ -239,10 +240,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredCursorSkillNames = resolvePaperclipDesiredSkillNames(config, cursorSkillEntries);
+  const desiredCursorSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, cursorSkillEntries);
   if (!executionTargetIsRemote) {
     await ensureCursorSkillsInjected(onLog, {
-      skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+      skillsEntries: cursorSkillEntries.filter(
+        (entry) => desiredCursorSkillNames.includes(entry.key) && !isPaperclipSkillSourceMissing(entry),
+      ),
+      skillsHome: resolveCursorSkillsHome(config),
     });
   }
 
@@ -466,6 +470,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: runtimeExecutionTarget,
+      enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+      duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
       runtimeRootDir: remoteRuntimeRootDir,
       adapterKey: "cursor",
       timeoutSec,
@@ -657,6 +663,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await flushStdoutChunk(chunk);
       },
       runLogTail: paperclipBridge?.runLogTail,
+      settleRunDisposition: paperclipBridge?.settleRunDisposition,
     });
     await flushStdoutChunk("", true);
 
@@ -676,6 +683,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: boolean;
         stdout: string;
         stderr: string;
+        errorCode?: string | null;
       };
       parsed: ReturnType<typeof parseCursorJsonl>;
     },
@@ -725,6 +733,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      // Forward the transport-level error code from the run-disposition seam. A
+      // lost duplex control channel surfaces the typed `duplex_channel_lost`
+      // code; every other result carries no code here.
+      errorCode: attempt.proc.errorCode ?? null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
