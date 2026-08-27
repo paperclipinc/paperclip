@@ -90,15 +90,6 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
-  /**
-   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
-   * provider) whose adapter CLI is contractually complete. When true, the
-   * runtime-install shim is disabled: a missing CLI means the run landed on the
-   * wrong runtime image (a different harness), so we fail fast with
-   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
-   * install that a locked/sovereign egress would block until timeout.
-   */
-  prebakedRuntime?: boolean | null;
   if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
     return null;
   }
@@ -216,6 +207,15 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * bridge inert for this seam.
    */
   duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
+  /**
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
+   */
+  prebakedRuntime?: boolean | null;
 }
 
 export type AdapterExecutionTarget =
