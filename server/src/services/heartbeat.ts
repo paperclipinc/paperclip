@@ -807,15 +807,6 @@ function isSpawnLikeFailureMessage(value: unknown) {
 //
 // This is anchored on both "is installed via plugin" and "but its worker is
 // not running" so it does not also match plugin-environment-driver.ts's
-// unrelated, permanent "provider not installed" message ('Sandbox provider
-// "X" is not installed or its plugin worker is not running.'), which
-// coincidentally contains the same "worker is not running" substring but
-// describes a terminal condition that must not be retried.
-function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
-  if (typeof value !== "string") return false;
-  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
-}
-
 // A permanent, non-retryable setup failure: the agent's adapter is not runnable in
 // this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
 // which fails to acquire the k8s lease with "Adapter ... is not in the configured
