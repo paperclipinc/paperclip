@@ -892,6 +892,8 @@ export interface PluginWorkerManager {
     pluginId: string,
     input: LoginPtyOpenInput,
   ): Promise<LoginPtyHostSession>;
+
+  streamBus?: PluginStreamBus;
 }
 
 // ---------------------------------------------------------------------------

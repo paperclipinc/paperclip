@@ -563,6 +563,7 @@ export interface ServerAdapterModule {
     config: Record<string, unknown>,
     options?: AdapterRuntimeCommandSpecOptions,
   ) => AdapterRuntimeCommandSpec | null;
+  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
 }
 
 export interface AdapterRuntimeCommandSpecOptions {
