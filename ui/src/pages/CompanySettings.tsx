@@ -11,8 +11,10 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
+import { useFeatures } from "../hooks/useFeatures";
+import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal, CloudUpload, Download, Upload } from "lucide-react";
 import {
   InteractionGovernancePanel,
   applyGovernanceChange,
@@ -39,6 +41,7 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { data: experimentalSettings } = useFeatures();
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -64,6 +67,7 @@ export function CompanySettings() {
     Number.isInteger(attachmentMaxBytes)
     && attachmentMaxBytes >= BYTES_PER_MIB
     && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
+  const cloudSyncEnabled = experimentalSettings?.enableCloudSync === true;
 
   const generalDirty =
     !!selectedCompany &&
@@ -406,6 +410,41 @@ export function CompanySettings() {
       />
 
       <InstanceGeneralSettings embedded />
+
+      {/* Import / Export */}
+      <div className="max-w-2xl space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Company Packages
+        </div>
+        <div className="rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Import and export have moved to dedicated pages accessible from the{" "}
+            <Link to="/org" className="underline hover:text-foreground">Org Chart</Link> header.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {cloudSyncEnabled ? (
+              <Button size="sm" asChild>
+                <Link to="/company/settings/cloud-upstream">
+                  <CloudUpload className="mr-1.5 h-3.5 w-3.5" />
+                  Send to Paperclip Cloud
+                </Link>
+              </Button>
+            ) : null}
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/export">
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                Export
+              </Link>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <Link to="/company/import">
+                <Upload className="mr-1.5 h-3.5 w-3.5" />
+                Import
+              </Link>
+            </Button>
+          </div>
+        </div>
+      </div>
 
       {/* Danger Zone */}
       <div className="space-y-4">

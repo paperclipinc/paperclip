@@ -164,41 +164,41 @@ function AwaitingJoinApprovalPanel({
   const approverLabel = invitedByUserName ?? "A company admin";
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
-      <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6" data-testid="invite-pending-approval">
+    <div className="min-h-screen bg-background px-6 py-12 text-foreground">
+      <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6" data-testid="invite-pending-approval">
         <div className="flex items-center gap-3">
           <InviteCompanyLogo
             companyDisplayName={companyDisplayName}
             companyLogoUrl={companyLogoUrl}
             companyBrandColor={companyBrandColor}
-            className="h-12 w-12 border border-zinc-800 rounded-none"
+            className="h-12 w-12 border border-border rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
         </div>
         <div className="mt-4 space-y-3">
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-muted-foreground">
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
-          <div className="border border-zinc-800 p-3">
-            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <p className="text-sm text-zinc-200">Settings → Members</p>
+          <div className="border border-border p-3">
+            <p className="text-xs text-muted-foreground mb-1">Approval page</p>
+            <p className="text-sm text-foreground">Company Settings → Members</p>
           </div>
-          <p className="text-sm text-zinc-400">
-            Ask them to visit <span className="text-zinc-200">Settings → Members</span> to approve your request.
+          <p className="text-sm text-muted-foreground">
+            Ask them to visit <span className="text-foreground">Company Settings → Members</span> to approve your request.
           </p>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Refresh this page after you've been approved — you'll be redirected automatically.
           </p>
         </div>
         {claimSecret && claimApiKeyPath ? (
-          <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
-            <div className="text-zinc-200">Claim secret</div>
+          <div className="mt-4 space-y-1 border border-border p-3 text-xs text-muted-foreground">
+            <div className="text-foreground">Claim secret</div>
             <div className="font-mono break-all">{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
         ) : null}
         {onboardingTextUrl ? (
-          <div className="mt-4 text-xs text-zinc-400">
+          <div className="mt-4 text-xs text-muted-foreground">
             Onboarding: <span className="font-mono break-all">{onboardingTextUrl}</span>
           </div>
         ) : null}

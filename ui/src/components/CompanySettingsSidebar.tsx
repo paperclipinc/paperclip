@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
+  CloudUpload,
   Cpu,
   Download,
   FlaskConical,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { Link, NavLink } from "@/lib/router";
@@ -74,6 +76,9 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
+  const { data: boardAccess } = useBoardCapabilities();
+  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
@@ -81,6 +86,7 @@ export function CompanySettingsSidebar() {
     // operator hides the Plugins surface.
     enabled: showPlugins,
   });
+  const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -103,6 +109,14 @@ export function CompanySettingsSidebar() {
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           ) : null}
+          {showCloudUpstream ? (
+            <SidebarNavItem
+              to="/company/settings/cloud-upstream"
+              label="Cloud upstream"
+              icon={CloudUpload}
+              end
+            />
+          ) : null}
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
@@ -111,7 +125,7 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
-          {showPage("company.members") && (
+          {showPage("company.members") && exposedSurfaces.has("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
               label="Members"
@@ -131,10 +145,10 @@ export function CompanySettingsSidebar() {
                 end
               />
             ))}
-          {showPage("company.invites") && (
+          {showPage("company.invites") && exposedSurfaces.has("company.invites") && (
             <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           )}
-          {showPage("company.secrets") && (
+          {showPage("company.secrets") && exposedSurfaces.has("company.secrets") && (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
           )}
           {showPage("instance.environments") && (

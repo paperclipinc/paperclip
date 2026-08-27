@@ -647,7 +647,14 @@ export function IssueAssigneePausedNotice({
         ? "It arrived paused from a company import — imported agents stay parked until you resume them."
         : agent.pauseReason === "system"
           ? "It was paused by the system."
-          : "It was paused manually.";
+          : // A custom pause reason (e.g. an auth-failure pause) is a human-readable
+            // sentence, not one of the canned "manual"/"budget"/"system" tokens, so
+            // surface it directly instead of the generic "paused manually" copy.
+            typeof agent.pauseReason === "string" &&
+              agent.pauseReason.trim().length > 0 &&
+              agent.pauseReason !== "manual"
+              ? agent.pauseReason
+              : "It was paused manually.";
   // Budget pauses clear on their own when the budget resets; resuming by hand
   // would fight the hard stop, so the action is only offered for the rest.
   const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
