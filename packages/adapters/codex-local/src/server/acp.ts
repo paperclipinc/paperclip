@@ -520,10 +520,11 @@ export async function testCodexAcpEnvironment(
       code: "codex_acp_remote_target",
       level: "info",
       message: "Codex ACP will run against the remote execution environment.",
-  const callerControlsHost = ctx.callerControlsHost !== false;
       hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
   }
+
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   const cwd = asString(config.cwd, process.cwd());
   try {
