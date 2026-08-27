@@ -1552,21 +1552,7 @@ function publishStreamNotification(
     params.event,
     streamEventTypeForMethod(method),
   );
-    // A terminalized route reports a null exit code, which the runner treats as a
-    // failure.
-    settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (loginPtyRoute === route) loginPtyRoute = null;
-    if (!confirmed) {
-      // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse.
-      log.error(
-        { pluginId },
-        "login pseudo-terminal close not acknowledged; retiring worker",
-      );
-      void killProcess();
-    }
-  }
+}
 
   // Route one login pseudo-terminal output notification to the per-session
   // listener. Deliver only while the route is `open` and the notification carries
