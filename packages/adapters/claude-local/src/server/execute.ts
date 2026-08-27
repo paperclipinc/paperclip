@@ -1203,14 +1203,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage,
+        errorMessage: rawErrorMessage,
       });
     const transientRetryNotBefore = providerQuota || transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
           stdout: proc.stdout,
           stderr: proc.stderr,
-          errorMessage,
+          errorMessage: rawErrorMessage,
         })
       : null;
     const resolvedErrorCode = proc.errorCode
@@ -1218,13 +1218,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // first. A lost duplex control channel surfaces the typed
       // `duplex_channel_lost` code before any provider classification.
       ? proc.errorCode
-      : loginMeta.requiresLogin
+      : loginMeta.requiresLogin || invalidCredential
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage,
+        errorMessage: rawErrorMessage,
       })
       ? "model_not_found"
       : failed && clearSessionForMaxTurns

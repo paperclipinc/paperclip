@@ -355,10 +355,7 @@ export function InviteLandingPage() {
     setSelectedCompanyId(companyId, { source: "manual" });
     let present = false;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { companies } = await queryClient.fetchQuery({
-        ...companiesListQueryOptions,
-        staleTime: 0,
-      });
+      const { companies } = await fetchCompanyListForCurrentAccount(queryClient);
       if (companies.some((company) => company.id === companyId)) {
         present = true;
         break;
