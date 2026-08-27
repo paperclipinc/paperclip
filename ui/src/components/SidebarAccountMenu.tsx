@@ -147,6 +147,32 @@ export function SidebarAccountMenu({
     retry: false,
   });
 
+  const { data: experimentalSettings } = useFeatures();
+  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
+  // instances have no /account page, so no entry. The `cloudBilling` instance
+  // flag is deliberately off on the hosted cloud today (it also re-enables a
+  // server-side 403 on tenant budget writes), so detect the cloud gateway the
+  // same way CloudTrialBanner does: a successful cloud-billing summary
+  // response only ever comes from behind the gateway. Same query key as the
+  // banner so the fetch (and its cache) is shared. On self-hosted instances
+  // the probe 404s, and a rejected query has `data === undefined` forever, so
+  // staleTime/gcTime: Infinity alone do NOT stop react-query from refetching
+  // it - the app's global default is refetchOnWindowFocus: true (main.tsx),
+  // which would otherwise re-hit the probe on every tab focus. Disable every
+  // refetch trigger explicitly so a self-hosted instance fetches this exactly
+  // once per page load, ever.
+  const summaryQuery = useQuery({
+    queryKey: queryKeys.cloudBilling.summary,
+    queryFn: () => cloudBillingApi.summary(),
+    retry: false,
+    retryOnMount: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
+
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   const displayName = session?.user.name?.trim() || "Board";

@@ -390,6 +390,7 @@ export async function assertCodexCredentialsLaunchable(input: {
   companyId: string;
   configuredCodexHome: string | null;
   configuredApiKey: string | null;
+  configuredAuthJson?: string | null;
   effectiveCodexHome: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
@@ -401,6 +402,7 @@ export async function assertCodexCredentialsLaunchable(input: {
     companyId: input.companyId,
     configuredCodexHome: input.configuredCodexHome,
     configuredApiKey: input.configuredApiKey,
+    configuredAuthJson: input.configuredAuthJson,
   });
   if (!credentialReadiness.managed || credentialReadiness.ready) return;
 
@@ -442,8 +444,9 @@ export async function assertCodexCredentialsLaunchable(input: {
   throw new Error(
     `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
       `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-      `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
-      `OPENAI_API_KEY.`,
+      `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
+      `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
+      `self-hosted install, signing in to Codex on the host also works.`,
   );
 }
 
@@ -729,6 +732,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    configuredAuthJson: configuredCodexAuthJson,
     effectiveCodexHome,
     target: executionTarget,
     cwd,

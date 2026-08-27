@@ -60,6 +60,7 @@ import {
   issueService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
+  reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -942,6 +943,19 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
 
+  void reconcileCloudUpstreamRunsOnStartup(db as any)
+    .then((result) => {
+      if (result.reconciled > 0) {
+        logger.warn(
+          { reconciled: result.reconciled },
+          "reconciled cloud upstream runs from a previous server process",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
+    });
+
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.
@@ -1025,14 +1039,14 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn(managedEnvironmentsResult, "managed sandbox environments ensured from managed config");
     }
   } catch (err) {
-    const heartbeatMaxQueuedRunAgeMs = Math.max(
-      1,
-      Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
-    );
-
     logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;
   }
+
+  const heartbeatMaxQueuedRunAgeMs = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
+  );
 
   let drainHeartbeatRunsForShutdown: ((
     signal: "SIGINT" | "SIGTERM",

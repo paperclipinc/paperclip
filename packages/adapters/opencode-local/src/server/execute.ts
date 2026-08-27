@@ -59,7 +59,7 @@ import {
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
   PAPERCLIP_CREATE_AGENT_SKILL_KEY,
   PAPERCLIP_COORDINATION_SKILL_KEY,
   PARA_MEMORY_FILES_SKILL_KEY,
@@ -224,12 +224,54 @@ async function ensureOpenCodeSkillsInjected(
   }
 }
 
-async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<string> {
+/**
+ * Managed-instruction agents (the seeded CEO + hired reports) mandate the
+ * coordination + memory skills in their templates, so those skills must be
+ * force-mounted for managed agents. BYO/external-instruction agents are left
+ * untouched.
+ */
+function agentUsesManagedInstructions(agent: AdapterExecutionContext["agent"]): boolean {
+  const adapterConfig = agent.adapterConfig;
+  if (typeof adapterConfig !== "object" || adapterConfig === null) return false;
+  return (adapterConfig as Record<string, unknown>).instructionsBundleMode === "managed";
+}
+
+/**
+ * Skills that must be mounted for this agent regardless of its explicit
+ * desiredSkills configuration:
+ * - An agent that can hire (`canCreateAgents`) needs the create-agent skill so
+ *   it has the hire-flow instructions in its sandbox.
+ * - A managed agent (`managed`) is instructed by its bundle to use the
+ *   coordination (`paperclip`) and memory (`para-memory-files`) skills, so both
+ *   must be present even though managed agents carry no explicit desiredSkills.
+ */
+function alwaysIncludeSkillKeysForAgent(opts?: {
+  canCreateAgents?: boolean;
+  managed?: boolean;
+}): string[] {
+  const keys: string[] = [];
+  if (opts?.managed) {
+    keys.push(PAPERCLIP_COORDINATION_SKILL_KEY, PARA_MEMORY_FILES_SKILL_KEY);
+  }
+  if (opts?.canCreateAgents) {
+    keys.push(PAPERCLIP_CREATE_AGENT_SKILL_KEY);
+  }
+  return keys;
+}
+
+export async function buildOpenCodeSkillsDir(
+  config: Record<string, unknown>,
+  opts?: { canCreateAgents?: boolean; managed?: boolean },
+): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skills-"));
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(
+    resolvePaperclipDesiredSkillNames(config, availableEntries, {
+      alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent(opts),
+    }),
+  );
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) continue;
@@ -298,7 +340,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries, {
+    alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent({
+      canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+      managed: agentUsesManagedInstructions(agent),
+    }),
+  });
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,

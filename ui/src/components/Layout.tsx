@@ -33,8 +33,10 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { useFeatures } from "../hooks/useFeatures";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,

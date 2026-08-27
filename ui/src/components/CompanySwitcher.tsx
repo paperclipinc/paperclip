@@ -1,6 +1,9 @@
-import { ChevronsUpDown, Plus, RefreshCw, Settings } from "lucide-react";
+import { ChevronsUpDown, Plus, PlusCircle, RefreshCw, Settings } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,13 +36,26 @@ interface CompanySwitcherProps {
 
 export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
     useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
 
+  // Cloud-only affordance: "Create company" provisions a NEW control-plane tenant
+  // via the hosting gateway (POST /api/cloud/companies). In a local_trusted
+  // (self-hosted) deployment there is no cloud control plane, so we keep the
+  // native "Manage Companies" flow and hide the cloud create action.
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    staleTime: 5 * 60 * 1000,
+  });
+  const isCloud = healthQuery.data?.deploymentMode === "authenticated";
+
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button

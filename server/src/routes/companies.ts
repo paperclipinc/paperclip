@@ -24,14 +24,14 @@ import {
   feedbackVoteValueSchema,
   hidesCompanyPage,
   updateCompanyBrandingSchema,
+  updateCompanySchema,
+} from "@paperclipai/shared";
 import {
   canCreateStackCompany,
   cloudTenantCompanyId,
   isCompanyIdConflict,
   withCloudStackSlugAlias,
 } from "../services/cloud-tenant-company.js";
-  updateCompanySchema,
-} from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
   companyImportTransferDeclarationSchema,

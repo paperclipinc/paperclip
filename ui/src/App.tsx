@@ -122,11 +122,25 @@ function boardRoutes() {
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
-        <Route path="company/settings/members" element={<CompanyAccess />} />
+        <Route
+          path="company/settings/members"
+          element={
+            <SurfaceGuard surface="company.members">
+              <CompanyAccess />
+            </SurfaceGuard>
+          }
+        />
         <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
-        <Route path="company/settings/invites" element={<CompanyInvites />} />
+        <Route
+          path="company/settings/invites"
+          element={
+            <SurfaceGuard surface="company.invites">
+              <CompanyInvites />
+            </SurfaceGuard>
+          }
+        />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
         <Route
@@ -144,7 +158,14 @@ function boardRoutes() {
         </Route>
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="company.secrets" />}>
-        <Route path="company/settings/secrets" element={<Secrets />} />
+        <Route
+          path="company/settings/secrets"
+          element={
+            <SurfaceGuard surface="company.secrets">
+              <Secrets />
+            </SurfaceGuard>
+          }
+        />
       </Route>
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />

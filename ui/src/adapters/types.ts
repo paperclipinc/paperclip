@@ -35,14 +35,14 @@ export interface AdapterConfigFieldsProps {
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
 }
-  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
-  credentialSetup?: AdapterCredentialSetup;
 
 export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
+  credentialSetup?: AdapterCredentialSetup;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter
