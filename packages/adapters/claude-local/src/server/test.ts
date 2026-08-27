@@ -28,7 +28,7 @@ import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
+import { resolveClaudeAuthAdvice, resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
   buildAdapterTestTargetCheck,
