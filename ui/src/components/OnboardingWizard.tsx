@@ -1,27 +1,42 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MotionConfig, motion } from "motion/react";
 import type {
+  AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
   AgentRole,
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
+import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { AGENT_ROLES, AGENT_ROLE_LABELS } from "@paperclipai/shared";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
+import { ApiError } from "@/api/client";
+import { restoreOnboardingState } from "@/lib/onboarding-state";
+import { trackStep } from "@/telemetry";
+import {
+  credentialFailureKey,
+  credentialRejectionMessage,
+  deriveCredentialConnected,
+  findCredentialAuthFailureCheck,
+  findMatchingCompanySecret,
+} from "@/lib/credential-connected";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { cloudCompaniesApi } from "../api/cloudCompanies";
+import { healthApi } from "../api/health";
 import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { secretsApi } from "../api/secrets";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import {
@@ -50,7 +65,6 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
-import { restoreOnboardingState } from "../lib/onboarding-state";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
@@ -58,7 +72,6 @@ import {
   selectDefaultCompanyGoalId,
   selectReusableOnboardingProject,
 } from "../lib/onboarding-launch";
-import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -79,6 +92,7 @@ import {
 } from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
+import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { PillGuy } from "./onboarding/PillGuy";
 import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
@@ -140,9 +154,6 @@ function mergeCredentialBindings(
   const filteredBindings = Object.fromEntries(
     Object.entries(bindings).filter(([envKey]) => allowedEnvKeys.has(envKey))
   );
-// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
-// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
-const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
   const baseEnv =
     typeof baseConfig.env === "object" &&
     baseConfig.env !== null &&
@@ -169,8 +180,6 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-// Exported so tests write/read the exact key the component uses, instead of
-// duplicating the literal and silently drifting from it if it's ever renamed.
 export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
 const DEFAULT_TASK_TITLE = "Paperclip onboarding";
 const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
@@ -200,6 +209,9 @@ Work in this order:
 4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
 
 Propose, don't decide. Keep it conversational.`;
+// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
+// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
+const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
 /**
  * The onboarding draft in `localStorage`, via a browser that is allowed to say
  * no.
@@ -244,15 +256,6 @@ const onboardingDraftStorage = {
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
-/**
- * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
- * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
- * very first render, so it must never mount before the restored draft is
- * final, otherwise every field locks to its default and the draft is lost
- * for good. restoreOnboardingState requires the SETTLED companies list (see
- * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
- * clear before computing `saved` and mounting the inner component at all.
- */
 export function OnboardingWizard() {
   // Deliberately does not call `useCompany()`. The list it exposes is the
   // shared cache, which is what this gate must not trust - see below.
@@ -442,12 +445,40 @@ function OnboardingWizardInner({
   const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
 
+  // Cloud UI telemetry: record wizard step transitions (step number + time
+  // spent on the previous step; never any field content). trackStep is a
+  // no-op off-cloud, so this costs nothing in plain installs.
+  const stepTelemetryRef = useRef<{ step: Step; at: number } | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen) {
+      stepTelemetryRef.current = null;
+      return;
+    }
+    const prev = stepTelemetryRef.current;
+    if (prev?.step === step) return;
+    trackStep("onboarding", step, prev?.step, prev ? Date.now() - prev.at : undefined);
+    stepTelemetryRef.current = { step, at: Date.now() };
+  }, [effectiveOnboardingOpen, step]);
+
   // "Grow existing" questionnaire fields
   const [growWorkflows, setGrowWorkflows] = useState((saved?.growWorkflows as string) ?? "");
   const [growPainPoints, setGrowPainPoints] = useState((saved?.growPainPoints as string) ?? "");
   const [growAutomate, setGrowAutomate] = useState((saved?.growAutomate as string) ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True only while `error` holds the additional-company plan-gate message
+  // (the 402 upgrade_required case). Lets the error banner offer an
+  // actionable "Subscribe" link (to /account) instead of a dead end (mirrors
+  // NewCompanyDialog's inline upgrade prompt). Always reset at the top of
+  // handleConfirmMission, the only place that sets it true, so it can never
+  // linger onto an unrelated later error.
+  const [companyUpgradeRequired, setCompanyUpgradeRequired] = useState(false);
+  // True only while `error` holds the additional-company slot-required message
+  // (the 402 slot_required case: an active subscriber must buy another company
+  // slot before this one is created, confirm-first billing). Lets the error
+  // banner offer an "Add a company slot" link instead of a dead end. Reset at
+  // the top of handleConfirmMission alongside companyUpgradeRequired.
+  const [companySlotRequired, setCompanySlotRequired] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -739,20 +770,6 @@ function OnboardingWizardInner({
     if (company) setCompanyName(company.name);
   }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
 
-  // When onboarding skips the naming step (initialStep >= 2: an existing/auto-
-  // created company entered via the /<prefix>/onboarding route), the company
-  // already has a name. Backfill it so the mission header, the "Confirm mission"
-  // guard, and the review checklist reflect the real name instead of a blank.
-  // We never prefill on the initialStep 1 rename path — there the user names it
-  // fresh.
-  useEffect(() => {
-    if (!effectiveOnboardingOpen || initialStep < 2 || companyName || !createdCompanyId) {
-      return;
-    }
-    const company = companies.find((c) => c.id === createdCompanyId);
-    if (company?.name) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
-
   // credentialBindings is company-scoped even though it isn't persisted: if
   // createdCompanyId changes while the wizard stays mounted (an in-SPA company
   // switch, no page reload), a binding collected under the previous company
@@ -762,7 +779,6 @@ function OnboardingWizardInner({
     setFailedCredentialEnvKeys(new Set());
     setCredentialProbeError(null);
   }, [createdCompanyId]);
-
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -904,6 +920,10 @@ function OnboardingWizardInner({
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
       return;
     }
+    if (next === "kimi_local") {
+      setModel(DEFAULT_KIMI_LOCAL_MODEL);
+      return;
+    }
     if (next === "gemini_local") {
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
@@ -914,35 +934,6 @@ function OnboardingWizardInner({
     }
     setModel("");
   }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
-
-  // The default (or a saved) adapterType can name an adapter the server has
-  // since disabled — e.g. a cloud sandbox registry without claude_local. The
-  // grid hides it, so without this snap the wizard would silently keep an
-  // invisible selection and create an agent that can never acquire a lease.
-  useEffect(() => {
-    const visible = [...recommendedAdapters, ...moreAdapters].filter(
-      (a) => !a.comingSoon,
-    );
-    if (visible.length === 0) return;
-    if (visible.some((a) => a.type === adapterType)) return;
-    const next = visible[0].type as AdapterType;
-    setAdapterType(next);
-    if (next === "codex_local") return;
-    if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-      return;
-    }
-    if (next === "gemini_local") {
-      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-      return;
-    }
-    if (next === "cursor") {
-      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-      return;
-    }
-    setModel("");
-  }, [recommendedAdapters, moreAdapters, adapterType]);
-
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
@@ -1259,20 +1250,123 @@ function OnboardingWizardInner({
         createdCompanyId,
         adapterType,
         {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          adapterConfig:
+            adapterConfigOverride ??
+            mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup),
           environmentId,
         }
       );
       setAdapterEnvResult(result);
       return result;
     } catch (err) {
+      // The server's raw message can be an internal implementation detail
+      // (e.g. "Secret must belong to same company") that must never render
+      // verbatim — log it for support, show the operator a plain sentence.
+      // This check "cannot run" case stays permissive by design: it does
+      // not touch credentialBindings, so a prior successful bind still
+      // reads as connected.
+      // eslint-disable-next-line no-console
+      console.log(
+        "[onboarding] adapter environment test request failed:",
+        err instanceof Error ? err.message : err,
+      );
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        "We could not run the adapter check right now. You can continue and retry the test later."
       );
       return null;
     } finally {
       setAdapterEnvLoading(false);
     }
+  }
+
+  // Best-effort: disable a secret whose bound value was just rejected by the
+  // provider. Without this, the secret stays "active" server-side and, on a
+  // fresh mount (page reload), deriveCredentialConnected's company-secrets
+  // fallback would match it by name and silently re-open the heartbeat gate
+  // — the in-session failedCredentialEnvKeys marker that blocks it here
+  // does not survive a reload. A failure to disable is logged, not thrown:
+  // the in-session gate still holds for the current session either way, and
+  // AdapterCredentialConnect's existing 409-name-collision retry (the "-2"
+  // suffix) already tolerates the name staying taken by an old secret
+  // regardless of its status.
+  async function disableRejectedCredentialSecret(secretId: string, envKey: string) {
+    try {
+      await secretsApi.disable(secretId);
+      if (createdCompanyId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.secrets.list(createdCompanyId),
+        });
+      }
+    } catch (disableErr) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[onboarding] failed to disable a rejected credential secret; it may remain active server-side until disabled manually",
+        envKey,
+        secretId,
+        disableErr,
+      );
+    }
+  }
+
+  // Guided BYOK credential connect (step 4): bind an env key to a freshly
+  // created company secret, then re-run the environment check with the
+  // fresh binding included (passed explicitly rather than relying on
+  // credentialBindings state, which wouldn't have re-rendered yet).
+  //
+  // If the live probe comes back with the provider explicitly rejecting the
+  // credential (checks[].authFailure, classified server-side where the
+  // actual provider response is visible): undo the binding and disable the
+  // just-created secret so deriveCredentialConnected reads it as NOT
+  // connected — both in this session AND after a reload — and the
+  // heartbeat gate cannot open on its strength; show a plain-language error
+  // on the card. AdapterCredentialConnect's existing 409-name-collision
+  // retry (the "-2" suffix) absorbs a re-paste regardless of the disabled
+  // secret's continued (inactive) existence. Any other outcome (pass, or a
+  // non-auth warn/fail) keeps the existing permissive behavior — this is
+  // what onboarding did before this fix and must keep working for
+  // transient/infra probe failures.
+  async function handleCredentialBind(envKey: string, secretId: string) {
+    const failureKey = credentialFailureKey(adapterType, envKey);
+    const nextBindings = {
+      ...credentialBindings,
+      [envKey]: { type: "secret_ref" as const, secretId }
+    };
+    setCredentialBindings(nextBindings);
+    setAdapterEnvResult(null);
+    setCredentialProbeError(null);
+    setFailedCredentialEnvKeys((prev) => {
+      if (!prev.has(failureKey)) return prev;
+      const next = new Set(prev);
+      next.delete(failureKey);
+      return next;
+    });
+    if (createdCompanyId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.secrets.list(createdCompanyId),
+      });
+    }
+    const result = await runAdapterEnvironmentTest(
+      mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
+    );
+    const rejection = findCredentialAuthFailureCheck(result);
+    if (!rejection) return;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[onboarding] credential probe rejected the just-bound value for",
+      envKey,
+      rejection,
+    );
+    setCredentialBindings((prev) => {
+      const { [envKey]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setFailedCredentialEnvKeys((prev) => {
+      const next = new Set(prev);
+      next.add(failureKey);
+      return next;
+    });
+    setCredentialProbeError(credentialRejectionMessage(rejection));
+    await disableRejectedCredentialSecret(secretId, envKey);
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
@@ -1341,6 +1435,61 @@ function OnboardingWizardInner({
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to save the mission");
       } finally {
+        setLoading(false);
+      }
+      return;
+    }
+    if (isCloud && companies.length > 0) {
+      // Cloud, and the user already has a stack company: creating an ADDITIONAL
+      // company must go through the gateway's POST /api/cloud/companies, which
+      // provisions a separate control-plane tenant on its own stack and returns
+      // a URL. Hard-navigate to it (a client-side navigate would not trigger the
+      // gateway to inject the new company's stack); the new tenant's own first-run
+      // wizard then handles naming + goal + lead agent. The FIRST company instead
+      // falls through to companiesApi.create below (PR A makes the server create
+      // the stack company for the cloud tenant).
+      setLoading(true);
+      setError(null);
+      setCompanyUpgradeRequired(false);
+      setCompanySlotRequired(false);
+      try {
+        const created = await cloudCompaniesApi.create({ name: companyName.trim() });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        window.location.assign(created.url);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 402) {
+          // Three outcomes share the 402: the trial plan gate (upgrade_required),
+          // an active subscriber who must buy another company slot first
+          // (slot_required, confirm-first billing), and a failed per-company
+          // billing update for an already-paying user (billing_update_failed).
+          const body = err.body as { error?: string; limit?: number } | null;
+          const code = body?.error;
+          if (code === "slot_required") {
+            setCompanySlotRequired(true);
+            const limit = body?.limit;
+            setError(
+              limit != null
+                ? `Your subscription covers ${limit} ${
+                    limit === 1 ? "company" : "companies"
+                  }. Add another company slot to create this one.`
+                : "Your subscription does not cover another company yet. Add a company slot to create this one.",
+            );
+          } else {
+            const upgradeRequired = code !== "billing_update_failed";
+            setCompanyUpgradeRequired(upgradeRequired);
+            setError(
+              code === "billing_update_failed"
+                ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
+                : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
+            );
+          }
+        } else if (err instanceof ApiError && err.status === 409) {
+          setError("You have reached the fair use company limit. Contact us to raise it.");
+        } else {
+          setError(
+            err instanceof Error ? err.message : "Failed to create company",
+          );
+        }
         setLoading(false);
       }
       return;
@@ -1535,14 +1684,82 @@ function OnboardingWizardInner({
       }
 
       if (isLocalAdapter) {
+        // If we just materialized a binding above, the cached adapterEnvResult
+        // (if any) was necessarily produced before that binding existed — it
+        // could only have seen the soft "please log in" case, never a real
+        // pass/fail for this credential. Force a fresh probe against
+        // materializedBindings rather than trusting the stale cache.
+        const envConfigForProbe = mergeCredentialBindings(
+          buildAdapterConfig(),
+          materializedBindings,
+          credentialSetup
+        );
         // A cached pass or warn is still good; a cached fail is retried. With
         // the "Test now" card gone, this button is the only way to re-probe,
         // and reusing a stale fail would lock a customer out of a machine
         // they have since fixed.
         const cachedUsable =
-          adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
-        const result = cachedUsable ?? (await runAdapterEnvironmentTest());
+          !justMaterializedBinding && adapterEnvResult && adapterEnvResult.status !== "fail" ? adapterEnvResult : null;
+        const result = cachedUsable ?? (await runAdapterEnvironmentTest(envConfigForProbe));
         if (!result) return;
+        // Defense in depth: normally a rejected credential never gets this
+        // far because handleCredentialBind already undid the binding and
+        // disabled the secret. This still catches drift — e.g. the disable
+        // call above failed and the gate re-opened off a stale active
+        // secret after a reload, the key was rotated bad after a successful
+        // bind, or (the case this fresh-probe-forcing fix above closes) the
+        // gate opened purely from an orphaned active company secret this
+        // session never bound. Never hire against a credential the fresh
+        // probe just told us the provider rejected.
+        const rejection = findCredentialAuthFailureCheck(result);
+        if (rejection) {
+          // eslint-disable-next-line no-console
+          console.log(
+            "[onboarding] refusing to hire: the fresh environment probe reports the bound credential was rejected",
+            rejection,
+          );
+          const adapterEnvKeys = (credentialSetup?.options ?? []).map((option) => option.envKey);
+          const boundEnvKeysForAdapter = adapterEnvKeys.filter((envKey) =>
+            Boolean(materializedBindings[envKey]),
+          );
+          // Disable only the ones we have a secretId for (a live or
+          // just-materialized session binding, including the one we may
+          // have just materialized above). A gate that's STILL open purely
+          // via an orphaned active secret with no matching binding at all
+          // would mean findMatchingCompanySecret found nothing to
+          // materialize in the first place, so there is nothing left
+          // un-disabled here.
+          await Promise.all(
+            boundEnvKeysForAdapter.map((envKey) => {
+              const binding = materializedBindings[envKey];
+              return binding
+                ? disableRejectedCredentialSecret(binding.secretId, envKey)
+                : Promise.resolve();
+            }),
+          );
+          if (boundEnvKeysForAdapter.length > 0) {
+            setCredentialBindings((prev) => {
+              const next = { ...prev };
+              for (const envKey of boundEnvKeysForAdapter) delete next[envKey];
+              return next;
+            });
+          }
+          // Mark EVERY envKey this adapter advertises as failed, not just
+          // the ones with a live session binding, so the gate closes for
+          // the rest of this session even in the orphaned-secret case above
+          // (a later reload could still re-open it until that secret is
+          // disabled some other way — see the report's concerns section).
+          setFailedCredentialEnvKeys((prev) => {
+            const next = new Set(prev);
+            for (const envKey of adapterEnvKeys) {
+              next.add(credentialFailureKey(adapterType, envKey));
+            }
+            return next;
+          });
+          setCredentialProbeError(credentialRejectionMessage(rejection));
+          setError(credentialRejectionMessage(rejection));
+          return;
+        }
         // Block the hire on a failed environment test. A pass or a warn may
         // proceed; a fail means the agent cannot run as configured.
         if (result.status === "fail") {
@@ -1563,8 +1780,13 @@ function OnboardingWizardInner({
         name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
         role: agentRole,
         adapterType,
-        adapterConfig: buildAdapterConfig(),
-        runtimeConfig: buildNewAgentRuntimeConfig()
+        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), materializedBindings, credentialSetup),
+        runtimeConfig: buildNewAgentRuntimeConfig(),
+        // The onboarding CEO's seed task is to hire the first engineer. Attach the
+        // create-agent skill so its run session exposes the governance-aware hiring
+        // flow (POST /api/companies/:id/agent-hires); without it the agent does not
+        // know the sanctioned route and hits "Route not allowed" on guessed ones.
+        desiredSkills: [ONBOARDING_CEO_SKILL_KEY],
       });
       if (hire.approval) {
         await approvalsApi.approve(
@@ -1694,7 +1916,7 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+      else if (step === 4 && agentName.trim() && credentialConnected && !missionUnresolvedForHire)
         handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
@@ -1980,18 +2202,6 @@ function OnboardingWizardInner({
 
               {/* Step 1: name the organization (both paths). One question, one
                   design: this mirrors the funnel's naming screen — same
-                  {credentialSetup && createdCompanyId && (
-                    <AdapterCredentialConnect
-                      key={adapterType}
-                      companyId={createdCompanyId}
-                      adapterType={adapterType}
-                      setup={credentialSetup}
-                      boundEnvKeys={Object.keys(credentialBindings)}
-                      onBind={handleCredentialBind}
-                      externalError={credentialCardError}
-                    />
-                  )}
-
                   question, same sub, same left-aligned heading in a centered
                   column — so a customer creating their second organization
                   in-app is asked exactly what their first one asked them. */}
@@ -2014,7 +2224,7 @@ function OnboardingWizardInner({
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="e.g. Northwind Labs"
+                      placeholder="Name your company"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -2354,20 +2564,121 @@ function OnboardingWizardInner({
                   </div>
 
                   {/* Conditional adapter fields */}
-                  {/* No model picker. Every adapter this step offers resolves
-                      its own default (see buildAdapterConfig), so the picker
-                      asked the customer to choose a model before they had any
-                      way to judge one — and the agent's model is changeable
-                      later, where its work gives the choice meaning. */}
+                  {isLocalAdapter && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">
+                          Model
+                        </label>
+                        <Popover
+                          open={modelOpen}
+                          onOpenChange={(next) => {
+                            setModelOpen(next);
+                            if (!next) setModelSearch("");
+                          }}
+                        >
+                          <PopoverTrigger asChild>
+                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
+                              <span
+                                className={cn(
+                                  !model && "text-muted-foreground"
+                                )}
+                              >
+                                {selectedModel
+                                  ? selectedModel.label
+                                  : model ||
+                                    (adapterType === "opencode_local"
+                                      ? "Select model (required)"
+                                      : "Default")}
+                              </span>
+                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            className="w-(--radix-popover-trigger-width) p-1"
+                            align="start"
+                          >
+                            <input
+                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+                              placeholder="Search models..."
+                              value={modelSearch}
+                              onChange={(e) => setModelSearch(e.target.value)}
+                              autoFocus
+                            />
+                            {adapterType !== "opencode_local" && (
+                              <button
+                                className={cn(
+                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                  !model && "bg-accent"
+                                )}
+                                onClick={() => {
+                                  setModel("");
+                                  setModelOpen(false);
+                                }}
+                              >
+                                Default
+                              </button>
+                            )}
+                            <div className="max-h-(--sz-240px) overflow-y-auto">
+                              {groupedModels.map((group) => (
+                                <div
+                                  key={group.provider}
+                                  className="mb-1 last:mb-0"
+                                >
+                                  {adapterType === "opencode_local" && (
+                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
+                                      {group.provider} ({group.entries.length})
+                                    </div>
+                                  )}
+                                  {group.entries.map((m) => (
+                                    <button
+                                      key={m.id}
+                                      className={cn(
+                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
+                                        m.id === model && "bg-accent"
+                                      )}
+                                      onClick={() => {
+                                        setModel(m.id);
+                                        setModelOpen(false);
+                                      }}
+                                    >
+                                      <span
+                                        className="block w-full text-left truncate"
+                                        title={m.id}
+                                      >
+                                        {adapterType === "opencode_local"
+                                          ? extractModelName(m.id)
+                                          : m.label}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                            {filteredModels.length === 0 && (
+                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                No models discovered.
+                              </p>
+                            )}
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+                  )}
 
-                  {/* The environment check runs without being shown: Connect
-                      probes the adapter before hiring (see handleGiveHeartbeat)
-                      and blocks the hire on a fail. The idle card — probe
-                      explainer plus a "Test now" button — is gone from this
-                      step, so this block renders only when a probe has actually
-                      found something: the checks the blocking error tells the
-                      customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {credentialSetup && createdCompanyId && (
+                    <AdapterCredentialConnect
+                      key={adapterType}
+                      companyId={createdCompanyId}
+                      adapterType={adapterType}
+                      setup={credentialSetup}
+                      boundEnvKeys={Object.keys(credentialBindings)}
+                      onBind={handleCredentialBind}
+                      externalError={credentialCardError}
+                    />
+                  )}
+
+                  {isLocalAdapter && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
@@ -2515,7 +2826,36 @@ function OnboardingWizardInner({
               {/* Error */}
               {visibleError && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">{visibleError}</p>
+                  <p className="text-xs text-destructive">
+                    {visibleError}
+                    {companyUpgradeRequired && (
+                      <>
+                        {" "}
+                        {/* Explicit non-destructive color: the surrounding error
+                            paragraph is text-destructive, but this is a normal
+                            navigation link, not a danger action (mirrors
+                            NewCompanyDialog's muted-not-red Subscribe link). */}
+                        <a href="/account" className="font-medium text-foreground underline">
+                          Subscribe
+                        </a>
+                      </>
+                    )}
+                    {companySlotRequired && (
+                      <>
+                        {" "}
+                        {/* Same non-destructive link treatment: buying another
+                            company slot is a normal navigation, not a danger
+                            action (mirrors NewCompanyDialog's slot-required
+                            prompt). */}
+                        <a
+                          href="/subscribe?add=company"
+                          className="font-medium text-foreground underline"
+                        >
+                          Add a company slot
+                        </a>
+                      </>
+                    )}
+                  </p>
                 </div>
               )}
 
@@ -2612,6 +2952,7 @@ function OnboardingWizardInner({
                         !agentName.trim() ||
                         loading ||
                         adapterEnvLoading ||
+                        (requiresCredential && !credentialConnected) ||
                         missionUnresolvedForHire
                       }
                       onClick={handleGiveHeartbeat}
