@@ -1,6 +1,12 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
+  asNumber,
+  asBoolean,
+  parseObject,
+  parseJson,
+} from "@paperclipai/adapter-utils/server-utils";
+
 // A credential was actually PRESENTED and the provider said it is invalid,
 // as opposed to a plain "you haven't signed in yet" prompt with no
 // credential in play. CLAUDE_AUTH_REQUIRED_RE intentionally also matches
@@ -17,11 +23,6 @@ import {
 // "invalid api key" or "authentication required" verbatim is not a
 // realistic false-positive surface the way a single common word is.
 const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|\bunauthorized\b|authentication\s+required)/i;
-  asNumber,
-  asBoolean,
-  parseObject,
-  parseJson,
-} from "@paperclipai/adapter-utils/server-utils";
 
 // The legacy login-prompt markers. The Claude CLI prints these words when it
 // asks the user to log in. The detector matches them against any probe output
@@ -251,9 +252,17 @@ export function detectClaudeLoginRequired(input: {
     claudeResultIndicatesAuthFailure(parsed) &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
+  // Independent of requiresLogin: a message can say the credential is
+  // invalid without also matching the login-prompt wording (e.g. a raw
+  // 401/authentication_error payload), and detectClaudeLoginRequired is the
+  // one place that already has the full message text assembled.
+  const credentialRejected =
+    promptLines.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
+    isClaudeInvalidCredentialError({ parsed: input.parsed, stdout: input.stdout, stderr: input.stderr });
   return {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    credentialRejected,
   };
 }
 

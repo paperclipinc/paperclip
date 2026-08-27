@@ -39,7 +39,6 @@ import {
   issueWorkProducts,
   issues,
   plugins,
-  plugins,
   projects,
   projectWorkspaces,
   workspaceOperations,
