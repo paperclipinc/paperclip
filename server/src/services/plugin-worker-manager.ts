@@ -1507,15 +1507,21 @@ export function createPluginWorkerHandle(
     // A terminalized route never replays a queued pre-bind record.
     route.preBind = [];
     route.preBindChars = 0;
-
-  /**
-   * Stream bus that worker `streams.*` notifications are published to. When
-   * omitted, the manager creates its own in-memory bus. Exposed on the returned
-   * manager as `.streamBus` so host code (SSE bridge, environment runtime) can
-   * subscribe to worker-emitted channels.
-   */
-  streamBus?: PluginStreamBus;
-}
+    // A terminalized route reports a null exit code, which the runner treats as a
+    // failure.
+    settleRouteWait(route, { exitCode: null });
+    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
+    if (loginPtyRoute === route) loginPtyRoute = null;
+    if (!confirmed) {
+      // The worker did not acknowledge the close, so the host cannot prove the
+      // terminal is gone. Fail closed: retire the worker before any reuse.
+      log.error(
+        { pluginId },
+        "login pseudo-terminal close not acknowledged; retiring worker",
+      );
+      void killProcess();
+    }
+  }
 
 /** Map a `streams.*` notification method to the SSE-style event type. */
 function streamEventTypeForMethod(method: string): StreamEventType {
@@ -3716,6 +3722,13 @@ export interface PluginWorkerManagerOptions {
    * duplex bytes unbounded. The manager never makes a fresh default ledger.
    */
   duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
+  /**
+   * Stream bus that worker `streams.*` notifications are published to. When
+   * omitted, the manager creates its own in-memory bus. Exposed on the returned
+   * manager as `.streamBus` so host code (SSE bridge, environment runtime) can
+   * subscribe to worker-emitted channels.
+   */
+  streamBus?: PluginStreamBus;
 }
 
 /**

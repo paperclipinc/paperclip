@@ -147,6 +147,10 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
+}));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -178,6 +182,10 @@ vi.mock("@/api/environments", () => ({
 
 vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/api/secrets", () => ({

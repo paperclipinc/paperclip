@@ -77,6 +77,11 @@ const mockDecisionsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/issues/PAP-1",
@@ -145,6 +150,9 @@ vi.mock("../api/decisions", () => ({
   decisionsApi: mockDecisionsApi,
 }));
 
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({

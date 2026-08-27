@@ -26,12 +26,6 @@ const testServerInfo = {
   },
 } as const;
 
-function createHealthyDb(): Db {
-  return {
-    execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-  } as unknown as Db;
-}
-
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
@@ -40,7 +34,6 @@ vi.mock("../dev-server-status.js", () => ({
 function createApp(
   db?: Db,
   serverInfo = testServerInfo,
-  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
   runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
 ) {
   const app = express();
@@ -76,7 +69,7 @@ describe("GET /health", () => {
   }, 15_000);
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {});
+    const app = createApp(undefined, testServerInfo, {});
 
     const res = await request(app).get("/health");
 
@@ -92,7 +85,7 @@ describe("GET /health", () => {
   });
 
   it("exposes public stack metadata on cloud-simulated health", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {
+    const app = createApp(undefined, testServerInfo, {
       PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
       PAPERCLIP_CLOUD_STACK_ID: "stack-1",
       PAPERCLIP_STACK_SLUG: "acme",
@@ -113,7 +106,7 @@ describe("GET /health", () => {
   });
 
   it("lists operator-hidden settings and drops unknown keys", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {
+    const app = createApp(undefined, testServerInfo, {
       PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.adapters,instance.bogus",
     });
 
@@ -124,7 +117,7 @@ describe("GET /health", () => {
   });
 
   it("omits hiddenSettings entirely when nothing is hidden", async () => {
-    const app = createApp(undefined, testServerInfo, undefined, {});
+    const app = createApp(undefined, testServerInfo, {});
 
     const res = await request(app).get("/health");
 

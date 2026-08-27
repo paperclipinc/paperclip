@@ -1064,7 +1064,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // surfaces the typed `duplex_channel_lost` code before any provider
         // classification, so the CLI lane and the ACP lane report it alike.
         ? proc.errorCode
-        : loginMeta.requiresLogin
+        : loginMeta.requiresLogin || invalidCredential
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,

@@ -1,4 +1,4 @@
-import { open, rename, rm } from "node:fs/promises";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
