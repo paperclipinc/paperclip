@@ -539,7 +539,6 @@ function buildAcpAuthMissingChecks(input: {
  * success.
  */
 function buildAcpLoginProbeUnavailableCheck(
-  const callerControlsHost = ctx.callerControlsHost !== false;
   message: string,
   targetIsSandbox = false,
 ): AdapterEnvironmentCheck {
@@ -785,6 +784,7 @@ export async function testClaudeAcpEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "claude_engine_selected",
