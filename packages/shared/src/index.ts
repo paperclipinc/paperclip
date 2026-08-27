@@ -1646,6 +1646,22 @@ export {
   SMOKE_RUN_TRIGGERS,
 } from "./types/smoke-lab.js";
 
+export type {
+  CloudUpstreamConnectStartResponse,
+  CloudUpstreamActivationDecision,
+  CloudUpstreamActivationEntityType,
+  CloudUpstreamConnection,
+  CloudUpstreamConflict,
+  CloudUpstreamPreview,
+  CloudUpstreamRun,
+  CloudUpstreamRunEvent,
+  CloudUpstreamsState,
+  CloudUpstreamStep,
+  CloudUpstreamSummaryCount,
+  CloudUpstreamTarget,
+  CloudUpstreamWarning,
+} from "./types/cloud-upstream.js";
+
 export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
 
 export {
