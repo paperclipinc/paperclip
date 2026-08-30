@@ -435,6 +435,10 @@ export const queryKeys = {
     triage: (companyId: string, sourceKind: string, sourceId: string) =>
       ["decision-triage", companyId, sourceKind, sourceId] as const,
   },
+  decisionTraining: {
+    list: (companyId: string) => ["decision-training", companyId] as const,
+    detail: (id: string) => ["decision-training", "detail", id] as const,
+  },
   workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,

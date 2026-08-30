@@ -13,6 +13,7 @@ import type {
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
 import { environmentsApi } from "../api/environments";
 import { useFeatures } from "../hooks/useFeatures";
@@ -283,11 +284,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [pendingProposals, editAgentId],
   );
   const proposalReview = useProposalReview(selectedCompanyId, []);
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
 
   // Instance execution policy (general settings). When `executionMode` is
@@ -637,7 +634,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     try {
       return resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId: generalSettings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
         managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
         managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
@@ -652,7 +649,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
   }, [
     rawCurrentDefaultEnvironmentId,
-    instanceSettings?.defaultEnvironmentId,
+    generalSettings?.defaultEnvironmentId,
     environments,
     experimentalSettings?.enableManagedSandboxOnly,
   ]);
@@ -920,7 +917,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // honest diagnostic — silently probing the host instead would report
       // the exact false command-not-found failure this resolution exists to
       // fix. Agents with their own environment never need the settings.
-      let settings = instanceSettings;
+      let settings = generalSettings;
       let environmentList = environments;
       let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
       if (!rawCurrentDefaultEnvironmentId) {
@@ -932,24 +929,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // policy. A failure surfaces an honest error, not a silent host probe
         // that reports a false result.
         try {
-          const [resolvedSettings, resolvedEnvironments, resolvedExperimental] =
+          const [resolvedAccess, resolvedEnvironments] =
             await Promise.all([
               queryClient.ensureQueryData({
-                queryKey: queryKeys.instance.settings,
-                queryFn: () => instanceSettingsApi.get(),
+                queryKey: queryKeys.access.currentBoardAccess,
+                queryFn: () => accessApi.getCurrentBoardAccess(),
               }),
               queryClient.ensureQueryData({
                 queryKey: queryKeys.environments.list(selectedCompanyId),
                 queryFn: () => environmentsApi.list(selectedCompanyId),
               }),
-              queryClient.ensureQueryData({
-                queryKey: queryKeys.instance.experimentalSettings,
-                queryFn: () => instanceSettingsApi.getExperimental(),
-              }),
             ]);
-          settings = resolvedSettings;
+          const resolvedFeatures = resolvedAccess.capabilities.features;
+          settings = resolvedFeatures;
           environmentList = resolvedEnvironments;
-          managedSandboxOnly = resolvedExperimental?.enableManagedSandboxOnly === true;
+          managedSandboxOnly = resolvedFeatures?.enableManagedSandboxOnly === true;
         } catch {
           throw new Error(
             "Could not load environment settings to determine which environment to test in. Retry the test.",
