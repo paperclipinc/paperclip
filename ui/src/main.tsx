@@ -5,11 +5,14 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { SentryGate } from "./components/SentryGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
+import { initAnalytics } from "./analytics";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -18,8 +21,11 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
-import { initAnalytics } from "./analytics";
+import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import "@mdxeditor/editor/style.css";
+// Hosted deployment only; a no-op everywhere else. See ./analytics.
+initAnalytics();
+
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
@@ -29,14 +35,13 @@ initPluginBridge(React, ReactDOM);
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
 
-// Hosted deployment only; a no-op everywhere else. See ./analytics.
-initAnalytics();
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js");
-  });
-}
+// Parked SPA tabs never navigate, so beyond registering the worker this also
+// re-checks /sw.js on tab focus and hourly, and applies a discovered update
+// with one reload while the tab is hidden — otherwise an old worker and its
+// cached shell can outlive a deploy indefinitely.
+window.addEventListener("load", () => {
+  startServiceWorkerUpdates();
+});
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -58,32 +63,35 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <BrowserRouter>
-          <CompanyProvider>
-            <EditorAutocompleteProvider>
-              <ToastProvider>
-                <LiveUpdatesProvider>
-                  <TooltipProvider>
-                    <CompanyAwareBreadcrumbProvider>
-                      <SidebarProvider>
-                        <PanelProvider>
-                          <PluginLauncherProvider>
-                            <DialogProvider>
-                              <App />
-                            </DialogProvider>
-                          </PluginLauncherProvider>
-                        </PanelProvider>
-                      </SidebarProvider>
-                    </CompanyAwareBreadcrumbProvider>
-                  </TooltipProvider>
-                </LiveUpdatesProvider>
-              </ToastProvider>
-            </EditorAutocompleteProvider>
-          </CompanyProvider>
-        </BrowserRouter>
-      </ThemeProvider>
-    </QueryClientProvider>
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <SentryGate />
+        <ThemeProvider>
+          <BrowserRouter>
+            <CompanyProvider>
+              <EditorAutocompleteProvider>
+                <ToastProvider>
+                  <LiveUpdatesProvider>
+                    <TooltipProvider>
+                      <CompanyAwareBreadcrumbProvider>
+                        <SidebarProvider>
+                          <PanelProvider>
+                            <PluginLauncherProvider>
+                              <DialogProvider>
+                                <App />
+                              </DialogProvider>
+                            </PluginLauncherProvider>
+                          </PanelProvider>
+                        </SidebarProvider>
+                      </CompanyAwareBreadcrumbProvider>
+                    </TooltipProvider>
+                  </LiveUpdatesProvider>
+                </ToastProvider>
+              </EditorAutocompleteProvider>
+            </CompanyProvider>
+          </BrowserRouter>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </AppErrorBoundary>
   </StrictMode>
 );

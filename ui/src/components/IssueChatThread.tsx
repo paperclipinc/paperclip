@@ -44,6 +44,7 @@ import type {
   IssueWorkMode,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { findUIAdapter } from "../adapters/registry";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
@@ -71,14 +72,17 @@ import type {
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
+import { isLiveIssueRun } from "../lib/liveIssueIds";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import {
   formatTimelineWorkspaceLabel,
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
   type IssueTimelineWorkspace,
+  type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
+import { InlineBanner } from "@/components/InlineBanner";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -107,6 +111,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
+import type { TaskChatIssueBrief } from "./task-chat/TaskChatDescriptionBubble";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -145,10 +150,13 @@ import {
   SystemNotice,
   type SystemNoticeMetadataRow,
   type SystemNoticeMetadataSection,
+  type SystemNoticeProps,
+  type SystemNoticeTone,
 } from "./SystemNotice";
 import {
   buildSystemNoticeProps,
   mapCommentMetadataToSystemNoticeSections,
+  systemNoticeLabelForTone,
 } from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
@@ -180,6 +188,8 @@ import {
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
 import { SourceTrustBadge } from "./SourceTrustBadge";
+import { CommentAttributionChip } from "./CommentAttributionChip";
+import { resolveCommentAttribution } from "../lib/comment-attribution";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -230,6 +240,11 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
+  /**
+   * Current assignee. Agent comments from anyone else are cross-issue writes, so
+   * they carry a "for {user}" attribution chip (the open cross-task write design (attribution)).
+   */
+  issueAssigneeAgentId?: string | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   externalReferences?: MarkdownExternalReferenceMap;
   /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
@@ -425,6 +440,13 @@ interface IssueChatThreadProps {
   feedbackTermsUrl?: string | null;
   linkedRuns?: IssueChatLinkedRun[];
   timelineEvents?: IssueTimelineEvent[];
+  /**
+   * Work-mode switch history from the activity feed. Only the chat-style
+   * TaskChatThread consumes this to tag each agent reply with the mode its
+   * request ran under; this thread — the classic task view behind
+   * enableClassicTaskInterface — ignores it.
+   */
+  workModeChanges?: IssueWorkModeChange[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
@@ -451,8 +473,13 @@ interface IssueChatThreadProps {
     title?: string | null;
   } | null;
   assigneeUserId?: string | null;
+  /** Current assignee agent, used to mark cross-issue agent comments (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId?: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
+  /** Resume a paused assignee agent so runs can start again. */
+  onResumeAssignee?: () => Promise<void> | void;
+  resumeAssigneePending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -489,6 +516,19 @@ interface IssueChatThreadProps {
   autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
+  /**
+   * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
+   * the thread's scroll viewport so it scrolls away with the messages. Only
+   * the chat-style TaskChatThread consumes this; this thread ignores it — its
+   * header stays in the page flow.
+   */
+  threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble
+   * (PAP-375). Only the chat-style TaskChatThread consumes it; this thread
+   * ignores it — its description stays in the page header via InlineEditor.
+   */
+  issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -589,31 +629,57 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
   }
 }
 
-function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
+export function IssueAssigneePausedNotice({
+  agent,
+  onResume,
+  resuming,
+}: {
+  agent: Agent | null;
+  onResume?: () => Promise<void> | void;
+  resuming?: boolean;
+}) {
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
-      : agent.pauseReason === "system"
-        ? "It was paused by the system."
-        : // A custom pause reason (e.g. an auth-failure pause) is a human-readable
-          // sentence, not one of the canned "manual"/"budget"/"system" tokens, so
-          // surface it directly instead of the generic "paused manually" copy.
-          typeof agent.pauseReason === "string" &&
-            agent.pauseReason.trim().length > 0 &&
-            agent.pauseReason !== "manual"
-          ? agent.pauseReason
-          : "It was paused manually.";
+      : agent.pauseReason === "import"
+        ? "It arrived paused from a company import — imported agents stay parked until you resume them."
+        : agent.pauseReason === "system"
+          ? "It was paused by the system."
+          : // A custom pause reason (e.g. an auth-failure pause) is a human-readable
+            // sentence, not one of the canned "manual"/"budget"/"system" tokens, so
+            // surface it directly instead of the generic "paused manually" copy.
+            typeof agent.pauseReason === "string" &&
+              agent.pauseReason.trim().length > 0 &&
+              agent.pauseReason !== "manual"
+              ? agent.pauseReason
+              : "It was paused manually.";
+  // Budget pauses clear on their own when the budget resets; resuming by hand
+  // would fight the hard stop, so the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
 
   return (
-    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
-      <div className="flex items-start gap-2">
-        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
-        <p className="min-w-0 leading-5">
-          <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
-        </p>
-      </div>
+    <div data-testid="issue-assignee-paused-notice" className="mb-3">
+      <InlineBanner
+        tone="warning"
+        icon={PauseCircle}
+        compact
+        title={<><span className="font-medium">{agent.name}</span> is paused.</>}
+        actions={canResume ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onResume}
+            disabled={resuming}
+            data-testid="issue-assignee-paused-resume"
+          >
+            {resuming ? "Resuming…" : "Resume agent"}
+          </Button>
+        ) : undefined}
+      >
+        New runs will not start until the agent is resumed. {pauseDetail}
+      </InlineBanner>
     </div>
   );
 }
@@ -743,6 +809,18 @@ function formatAttachmentSize(bytes: number) {
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
   return typeof value === "string" ? value : value.toISOString();
+}
+
+/**
+ * ISO timestamp for display, or undefined when the value does not parse as a
+ * real date. Comment timestamps can arrive malformed (e.g. a server
+ * serialization bug turning Dates into `{}`); formatting must degrade to "no
+ * timestamp" instead of throwing mid-render (PAP-16607).
+ */
+function toValidIsoString(value: Date | string | number | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function loadDraft(draftKey: string): string {
@@ -948,6 +1026,15 @@ function IssueChatChainOfThought({
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
+  // Adapters whose backends overwhelm the one-line reasoning ticker declare
+  // a scrollable live reasoning view via their UI adapter module
+  // (transcriptPresentation.liveReasoningView); resolved through the registry
+  // so this component never branches on adapter identities. Every adapter
+  // without a declaration keeps the existing ticker rendering.
+  const adapterType = typeof custom.adapterType === "string" ? custom.adapterType : null;
+  const isVerboseStreamingBackend =
+    (adapterType ? findUIAdapter(adapterType)?.transcriptPresentation?.liveReasoningView : undefined) ===
+    "scrollLog";
   const isMessageRunning = message.role === "assistant" && message.status?.type === "running";
 
   const myIndex = useMemo(
@@ -1036,7 +1123,21 @@ function IssueChatChainOfThought({
       </button>
       {expanded && hasContent ? (
         <div className="space-y-1 py-1">
-          {isActive ? (
+          {isActive && isVerboseStreamingBackend ? (
+            <>
+              {allReasoningText ? <IssueChatVerboseLiveReasoningPart text={allReasoningText} /> : null}
+              {toolParts.map((tool) => (
+                <IssueChatToolPart
+                  key={tool.toolCallId}
+                  toolName={tool.toolName}
+                  args={tool.args}
+                  argsText={tool.argsText}
+                  result={tool.result}
+                  isError={false}
+                />
+              ))}
+            </>
+          ) : isActive ? (
             <>
               {allReasoningText ? <IssueChatReasoningPart text={allReasoningText} /> : null}
               {toolParts.length > 0 ? <IssueChatRollingToolPart toolParts={toolParts} /> : null}
@@ -1058,6 +1159,55 @@ function IssueChatChainOfThought({
           )}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Live reasoning for verbose streaming backends: the one-line
+// ticker cannot keep up with token-level delta volume, so show the full
+// reasoning in a scrollable box that auto-follows the newest line unless the
+// reader has scrolled up to review earlier thinking. All other adapters keep
+// the ticker (IssueChatReasoningPart below), which is unchanged.
+function IssueChatVerboseLiveReasoningPart({ text }: { text: string }) {
+  const lines = text.split("\n").filter((l) => l.trim());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
+  useEffect(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    if (pinnedToBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [text]);
+
+  if (lines.length <= 1) {
+    return <IssueChatReasoningPart text={text} />;
+  }
+
+  return (
+    <div className="flex gap-2 px-1">
+      <div className="flex flex-col items-center pt-0.5">
+        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+      </div>
+      <div
+        ref={scrollRef}
+        onScroll={() => {
+          const node = scrollRef.current;
+          if (!node) return;
+          pinnedToBottomRef.current =
+            node.scrollHeight - node.scrollTop - node.clientHeight < 24;
+        }}
+        className="min-w-0 flex-1 max-h-40 space-y-0.5 overflow-y-auto pr-1"
+      >
+        {lines.map((line, index) => (
+          <p
+            key={index}
+            className="whitespace-pre-wrap break-words text-(length:--text-compact) italic leading-5 text-muted-foreground/70"
+          >
+            {line}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1657,6 +1807,8 @@ function IssueChatAssistantMessage({
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
     runFinalizationActions = [],
+    userLabelMap,
+    issueAssigneeAgentId,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1673,6 +1825,12 @@ function IssueChatAssistantMessage({
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
   const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
+  const attribution = resolveCommentAttribution({
+    authorAgentId,
+    onBehalfOfUserId: typeof custom.onBehalfOfUserId === "string" ? custom.onBehalfOfUserId : null,
+    issueAssigneeAgentId,
+    resolveUserLabel: (userId) => userLabelMap?.get(userId),
+  });
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
@@ -1859,6 +2017,10 @@ function IssueChatAssistantMessage({
               )}
             </span>
             <span className="text-sm font-medium text-foreground">{authorName}</span>
+            {/* Reads as "Fable · for Dotta" beside the author name (the open cross-task write design (attribution)). */}
+            {attribution ? (
+              <CommentAttributionChip agentName={authorName} userName={attribution.userName} />
+            ) : null}
             <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
             {followUpRequested ? (
               <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
@@ -2170,7 +2332,7 @@ function IssueChatFeedbackButtons({
               <span className="font-medium text-foreground">Don't allow</span> to keep this vote
               and future votes local.
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>You can change this later in Settings &gt; General.</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
@@ -2371,6 +2533,10 @@ function isStaleSuccessfulRunHandoffNotice(input: {
   const currentHandoff = input.successfulRunHandoff ?? null;
   if (currentHandoff?.state === "resolved") return true;
   if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+  // A live continuation (running/queued run or queued wake) means an agent is
+  // already handling the issue — fold the warning until the issue is actually
+  // stuck again.
+  if (currentHandoff?.hasLiveContinuation) return true;
 
   const noticeSourceRunId = sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ?? input.runId ?? null;
   if (
@@ -2565,6 +2731,82 @@ function StaleDispositionWarningRow({
   );
 }
 
+// Tone-colored dot for the fully-collapsed compact notice row. Tone is never
+// conveyed by color alone — the adjacent title text names the notice.
+const COMPACT_TONE_DOT: Record<SystemNoticeTone, string> = {
+  neutral: "bg-muted-foreground/40",
+  info: "bg-sky-500 dark:bg-sky-400",
+  success: "bg-emerald-500 dark:bg-emerald-400",
+  warning: "bg-amber-500 dark:bg-amber-400",
+  danger: "bg-red-500 dark:bg-red-400",
+};
+
+// A system notice whose presentation opts into `density: "compact"` collapses to
+// a single quiet row — tone dot + title (+ author) + timestamp + chevron.
+// Expanding reveals the full SystemNotice card (body + details), so no
+// information is lost. Generalized from the StaleDispositionWarningRow precedent.
+function CompactSystemNoticeRow({
+  anchorId,
+  message,
+  tone,
+  title,
+  source,
+  noticeProps,
+  defaultOpen = false,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  tone: SystemNoticeTone;
+  title: string;
+  source?: SystemNoticeProps["source"];
+  noticeProps: SystemNoticeProps;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const detailsId = useId();
+
+  return (
+    <div id={anchorId} data-testid="compact-system-notice" className="group">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/5"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", COMPACT_TONE_DOT[tone])}
+              aria-hidden
+            />
+            <span className="truncate text-sm font-medium text-foreground/80">{title}</span>
+            {source ? (
+              <span className="truncate text-(length:--text-micro) text-muted-foreground">
+                · {source.label}
+              </span>
+            ) : null}
+            {/* Trailing meta never shrinks — keeps the timestamp on one line so the
+                collapsed row stays a single quiet line on narrow / mobile widths. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="compact-system-notice-time" className="whitespace-nowrap text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground/70", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="py-1">
+            <SystemNotice {...noticeProps} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -2617,7 +2859,7 @@ function SystemNoticeCommentRow({
         {bodyText}
       </MarkdownBody>
     ),
-    timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
+    timestamp: toValidIsoString(message.createdAt),
     source,
     runAgentId,
   });
@@ -2657,6 +2899,24 @@ function SystemNoticeCommentRow({
         message={message}
         metadata={commentMetadata}
         runAgentId={runAgentId}
+      />
+    );
+  }
+
+  // Compact presentation collapses the notice to a single quiet row. Notices
+  // without `density` (old comments / old data) keep today's full card.
+  if (presentation?.density === "compact") {
+    const tone = presentation.tone ?? "neutral";
+    const title = systemNoticeLabelForTone(tone, presentation.title);
+    return (
+      <CompactSystemNoticeRow
+        anchorId={anchorId}
+        message={message}
+        tone={tone}
+        title={title}
+        source={source}
+        noticeProps={props}
+        defaultOpen={Boolean(presentation.detailsDefaultOpen)}
       />
     );
   }
@@ -2779,7 +3039,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   }
 
   if (custom.kind === "interaction" && interaction) {
-    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+    if (
+      interaction.kind === "request_confirmation"
+      && interaction.status === "expired"
+      && !interaction.payload.secretProposal
+    ) {
       return (
         <ExpiredRequestConfirmationActivity
           message={message}
@@ -4213,6 +4477,7 @@ export function IssueChatThread({
   companyId,
   projectId,
   issueStatus,
+  issueAssigneeAgentId = null,
   agentMap,
   currentUserId,
   userLabelMap,
@@ -4265,6 +4530,8 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  onResumeAssignee,
+  resumeAssigneePending = false,
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
@@ -4287,9 +4554,10 @@ export function IssueChatThread({
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
     for (const run of liveRuns) {
+      if (!isLiveIssueRun(run, issueStatus)) continue;
       deduped.set(run.id, run);
     }
-    if (activeRun) {
+    if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
       deduped.set(activeRun.id, {
         id: activeRun.id,
         status: activeRun.status,
@@ -4320,7 +4588,7 @@ export function IssueChatThread({
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [activeRun, liveRuns]);
+  }, [activeRun, issueStatus, liveRuns]);
   const transcriptRuns = useMemo(() => {
     return resolveIssueChatTranscriptRuns({
       linkedRuns,
@@ -4338,9 +4606,19 @@ export function IssueChatThread({
     return ids;
   }, [displayLiveRuns]);
   const hasActiveRun = useMemo(
-    () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
-    [displayLiveRuns, activeRun],
+    () => displayLiveRuns.some((run) => run.status === "running"),
+    [displayLiveRuns],
   );
+  // Real-time view of the handoff: a run that starts after the issue payload
+  // was fetched must quiet the missing-disposition warnings without waiting
+  // for a refetch to update `hasLiveContinuation`.
+  const successfulRunHandoffWithLiveness = useMemo(() => {
+    if (!successfulRunHandoff || successfulRunHandoff.hasLiveContinuation) {
+      return successfulRunHandoff ?? null;
+    }
+    const liveNow = activeRunIds.size > 0 || Boolean(issueId && liveIssueIds?.has(issueId));
+    return liveNow ? { ...successfulRunHandoff, hasLiveContinuation: true } : successfulRunHandoff;
+  }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -4375,6 +4653,7 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        issueStatus,
       }),
     [
       comments,
@@ -4391,6 +4670,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      issueStatus,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
@@ -4818,7 +5098,8 @@ export function IssueChatThread({
       onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
       onUploadImage: stableOnUploadImage,
       issueStatus,
-      successfulRunHandoff,
+      issueAssigneeAgentId,
+      successfulRunHandoff: successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     }),
@@ -4846,7 +5127,8 @@ export function IssueChatThread({
       stableOnSubmitInteractionVerdicts,
       stableOnUploadImage,
       issueStatus,
-      successfulRunHandoff,
+      issueAssigneeAgentId,
+      successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
     ],
@@ -4940,6 +5222,7 @@ export function IssueChatThread({
                     <IssueRecoveryActionCard
                       action={recoveryAction}
                       agentMap={agentMap}
+                      scheduledRetry={scheduledRetry}
                       onResolve={onResolveRecoveryAction}
                       onReissueIsolated={onReissueIsolatedRecoveryAction}
                       reissuePending={reissueIsolatedRecoveryActionPending}
@@ -4989,7 +5272,7 @@ export function IssueChatThread({
                     allBlockers={blockedBy}
                     liveIssueIds={liveIssueIds}
                     blockerAttention={blockerAttention}
-                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoffWithLiveness}
                     scheduledRetry={scheduledRetry}
                     agentName={
                       successfulRunHandoff?.assigneeAgentId
@@ -4997,9 +5280,22 @@ export function IssueChatThread({
                         : null
                     }
                   />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
+                  <IssueAssigneePausedNotice
+                    agent={assignedAgent}
+                    onResume={onResumeAssignee}
+                    resuming={resumeAssigneePending}
+                  />
                 </div>
-              ) : null}
+              ) : (
+                // Read-only viewers still need to see why nothing is running.
+                <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssigneePausedNotice
+                    agent={assignedAgent}
+                    onResume={onResumeAssignee}
+                    resuming={resumeAssigneePending}
+                  />
+                </div>
+              )}
               {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (
