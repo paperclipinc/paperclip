@@ -1011,13 +1011,6 @@ describe("sandbox callback bridge", () => {
   it("returns a 502 for malformed host response files", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-malformed-response-"));
     cleanupDirs.push(rootDir);
-      // Hire skill (paperclip-create-agent): discovery + submit + issue linking
-      { method: "GET", path: "/llms/agent-configuration.txt" },
-      { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
-      { method: "GET", path: "/llms/agent-icons.txt" },
-      { method: "GET", path: "/api/companies/co-1/agent-configurations" },
-      { method: "POST", path: "/api/companies/co-1/agent-hires" },
-      { method: "POST", path: "/api/issues/issue-1/approvals" },
 
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
@@ -1072,11 +1065,6 @@ describe("sandbox callback bridge", () => {
     const response = await responsePromise;
     expect(response.status).toBe(502);
     await expect(response.json()).resolves.toMatchObject({
-      // The hire allowlist must not over-match: only the exact .txt discovery
-      // files, only agent-hires (not /agents), and no sub-resources beyond it.
-      { method: "GET", path: "/llms/agent-configuration" },
-      { method: "GET", path: "/llms/secrets.txt" },
-      { method: "POST", path: "/api/companies/co-1/agent-hires/ap-1" },
       error: expect.stringMatching(/JSON|Unexpected|Unterminated/i),
     });
   });

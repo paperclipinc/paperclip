@@ -16,7 +16,6 @@ import {
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   PAPERCLIP_CREATE_AGENT_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
-  resolvePaperclipDesiredSkillNames,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
