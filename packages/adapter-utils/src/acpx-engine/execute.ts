@@ -3623,12 +3623,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // ledger, because the inline teardown reads `prepared.*`, not the ledger, in
       // this phase.
       let capturedResult: AdapterExecutionResult | null = null;
-      // A deferred session-init error for the fallback path. The inner catch
-      // cannot throw it directly because the outer try-catch (which handles
-      // `createRuntime` failures) would swallow it. Instead the inner catch
-      // saves the error here, lets the normal settlement flow close the
-      // runtime, and `reproduceResult` throws it after settlement completed.
-      let deferredSessionInitError: AcpxSessionInitError | null = null;
       const emptyConsumed = createRunResourceLedger().takeForSettlement();
       // Build the `settle` startup result for a pre-turn failure. The step wrapper
       // already recorded the external result and ran the inline teardown; this
@@ -3926,15 +3920,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               childStderrTail,
             }),
           );
-          // Auto-selected (non-explicit) runs defer a throw so the adapter's
-          // execute() wrapper catches it and falls back to the proven CLI lane.
-          // The error cannot be thrown here because the outer try-catch (for
-          // createRuntime failures) would swallow it; instead we save the error
-          // and let the coordinator settle the runtime, then `reproduceResult`
-          // throws it after cleanup completed. Explicit engine=acp runs keep
-          // the terminal failed result (no silent lane switch).
+          // Auto-selected (non-explicit) runs throw so the adapter's execute()
+          // wrapper catches it and falls back to the proven CLI lane. Explicit
+          // engine=acp runs keep the terminal failed result (no silent lane switch).
           if (allowSessionInitLaneFallback(ctx)) {
-            deferredSessionInitError = new AcpxSessionInitError({
+            throw new AcpxSessionInitError({
               message: composedMessage,
               errorCode: classified.errorCode ?? "acpx_session_init_failed",
               errorMeta: classified.errorMeta,
@@ -4655,14 +4645,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (childStderrState) flushChildStderr(childStderrState);
         },
         reproduceResult: (): AdapterExecutionResult => {
-          // A deferred session-init error surfaces AFTER settlement closed the
-          // runtime. The coordinator settled first (bridges stopped, runtime
-          // closed, lease released), so re-throwing here is safe and the
-          // adapter's execute() wrapper sees the rejection it needs to fall
-          // back to the CLI lane.
-          if (deferredSessionInitError) {
-            throw deferredSessionInitError;
-          }
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
           }
