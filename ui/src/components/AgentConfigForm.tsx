@@ -264,7 +264,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
   const editAgentId = !isCreate ? props.agent.id : null;
