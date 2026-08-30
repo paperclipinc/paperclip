@@ -412,7 +412,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           processPid: heartbeatRuns.processPid,
           processGroupId: heartbeatRuns.processGroupId,
         })
-    await db.delete(plugins);
         .from(heartbeatRuns);
       const managedExecutionStillActive = runs.some(
         (run) =>

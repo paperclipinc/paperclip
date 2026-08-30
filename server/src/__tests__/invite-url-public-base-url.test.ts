@@ -24,6 +24,11 @@ function registerModuleMocks() {
       assertCurrentBoardKey: vi.fn(),
       revokeBoardApiKey: vi.fn(),
     }),
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({})),
+      getVisibility: vi.fn(async () => ({ companySurfaces: [] })),
+      getExperimental: vi.fn(async () => ({})),
+    }),
     deduplicateAgentName: vi.fn(),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),
