@@ -136,7 +136,6 @@ function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInpu
     span.setAttribute(A.execExitCode, input.exitCode);
   }
   setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
-                streamed: result.streamed,
   setFiniteNumberAttr(span, A.execWaitBeforeMs, input.waitBeforeMs);
   setFiniteNumberAttr(span, A.execSandboxMs, input.sandboxMs);
   // The transport time the host adds around the provider work: wall minus the

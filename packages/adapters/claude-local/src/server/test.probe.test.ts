@@ -12,6 +12,7 @@ const {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   probeResult,
+  claudeCliUnresolvable,
 } = vi.hoisted(() => {
   const probeResult: {
     value: { exitCode: number; stdout: string; stderr: string };
@@ -20,10 +21,16 @@ const {
     value: { exitCode: 1, stdout: "", stderr: "" },
     throwError: null,
   };
+  const claudeCliUnresolvable: { value: boolean } = { value: false };
   return {
     probeResult,
+    claudeCliUnresolvable,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
-    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
+    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async (command: string) => {
+      if (claudeCliUnresolvable.value && command === "claude") {
+        throw new Error("claude: command not found");
+      }
+    }),
     maybeRunSandboxInstallCommand: vi.fn(async () => null),
     runAdapterExecutionTargetProcess: vi.fn(async () => {
       if (probeResult.throwError) throw probeResult.throwError;

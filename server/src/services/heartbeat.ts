@@ -16775,6 +16775,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             authToken: authToken ?? undefined,
           });
         }
+        return adapterResult;
       };
 
       // Gap-2 self-heal (closes what #9950's fail-fast gate left open): the

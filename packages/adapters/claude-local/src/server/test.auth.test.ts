@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveClaudeAuthAdvice } from "./test.js";
+import { resolveClaudeAuthAdvice } from "./acp.js";
 import { resolveClaudeBillingType } from "./execute.js";
 
 describe("resolveClaudeAuthAdvice (CLI lane)", () => {
