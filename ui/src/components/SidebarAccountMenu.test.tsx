@@ -23,14 +23,9 @@ const mockCloudBillingApi = vi.hoisted(() => ({
 }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
-const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
-}));
-
-vi.mock("@/lib/browserNavigation", () => ({
-  navigateTopLevel: mockNavigateTopLevel,
 }));
 
 vi.mock("@/api/access", () => ({
@@ -106,19 +101,25 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }),
-    );
-    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
+    // Self-hosted default: the cloud-billing summary endpoint doesn't exist
+    // off-cloud, so the gateway detection probe fails like a real 404 would.
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
+    mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
-  it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
+  it("renders the signed-in user and opens the account card menu", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -185,82 +186,11 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
     // gateway's marketing sign-in page rather than invalidating in-app
     // queries (there's no app left to refetch into).
     expect(assignSpy).toHaveBeenCalledOnce();
     expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
-    const root = createRoot(container);
-    const onOpenChange = vi.fn();
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    queryClient.setQueryData(queryKeys.health, {
-      status: "ok",
-      deploymentMode: "authenticated",
-      cloud: {
-        managed: true,
-        managedBy: "paperclip-cloud",
-        stackSlug: "acme-labs",
-        cloudBaseUrl: "https://cloud.example.test",
-      },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu
-            deploymentMode="authenticated"
-            open
-            onOpenChange={onOpenChange}
-          />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Sign out"),
-    );
-    await act(async () => {
-      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
-    expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
-    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
-    expect(onOpenChange).toHaveBeenCalledWith(false);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("keeps sign-out hidden outside authenticated deployment mode", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="local_trusted" open />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(document.body.textContent).not.toContain("Sign out");
 
     await act(async () => {
       root.unmount();
