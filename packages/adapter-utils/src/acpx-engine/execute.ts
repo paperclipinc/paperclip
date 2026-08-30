@@ -3983,6 +3983,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         startupFailed = false;
         await emitPhase("ensure_session", ensureSessionPhaseStart, "ok");
       } catch (err) {
+        if (err instanceof AcpxSessionInitError) {
+          throw err;
+        }
         if (!buildRuntimeSettled) {
           // buildRuntime failed before it staged or bridged anything, so there is
           // nothing to settle here. The finally below ends the sandbox.startup
