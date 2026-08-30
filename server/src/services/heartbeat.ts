@@ -17432,11 +17432,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
+      const adapterRuntimeImageMismatchFailure = isAdapterRuntimeImageMismatchError(err) ? err : null;
+      const adapterSandboxProbeUnansweredFailure = isAdapterSandboxProbeUnansweredError(err)
+        ? err
+        : null;
       const failureErrorCode =
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
         ?? nativeRunnerErrorCode(err)
         ?? recordedResponsibleUserDenialCode
+        ?? adapterRuntimeImageMismatchFailure?.code
+        ?? adapterSandboxProbeUnansweredFailure?.code
+        ?? classifySandboxInfraFailure(message)
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
