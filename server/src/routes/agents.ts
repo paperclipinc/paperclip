@@ -1600,13 +1600,6 @@ export function agentRoutes(
     );
   }
 
-  /**
-   * Adapter validation for the paths that CHOOSE a harness for a new agent
-   * (hire + create), as opposed to the paths that operate on an existing one.
-   *
-   * A disabled adapter is one this instance cannot run — most often because a
-   * declarative registry (PAPERCLIP_ADAPTERS) curated it out, which
-   * reconcileAdapterAvailability turns into a disabled type at boot. Registered
   async function assertAgentDefaultEnvironmentSelection(
     companyId: string,
     environmentId: string | null | undefined,
