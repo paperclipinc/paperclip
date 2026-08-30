@@ -500,10 +500,9 @@ describe("IssueProperties", () => {
   });
 
   it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false, enableClassicTaskInterface: false } }),
+    );
     mockIssuesApi.listInteractions.mockResolvedValue([
       {
         kind: "request_confirmation",
@@ -565,10 +564,9 @@ describe("IssueProperties", () => {
       body: "Evidence body",
       latestRevisionId: "revision-evidence",
     } satisfies IssueDocument;
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false, enableClassicTaskInterface: false } }),
+    );
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
     mockIssuesApi.listDocuments.mockResolvedValue([planDocument, artifactDocument]);
     Element.prototype.scrollIntoView = vi.fn();
@@ -869,10 +867,9 @@ describe("IssueProperties", () => {
   it("exposes the classic-layout add sub-issue pill action", async () => {
     // The chat shell hosts the full tree in the center pane; the slim pill row
     // + its Add sub-task button only render in the classic layout (PAP-496).
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false, enableClassicTaskInterface: true } }),
+    );
     const onAddSubIssue = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue(),
@@ -1216,10 +1213,9 @@ describe("IssueProperties", () => {
   it("collapses long blocked-by and sub-task lists until the more button is clicked", async () => {
     // The sub-task pill row (with its collapse control) is classic-layout only
     // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false, enableClassicTaskInterface: true } }),
+    );
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
       id: `blocker-${index + 1}`,
       identifier: `BLOCK-${index + 1}`,

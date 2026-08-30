@@ -106,9 +106,9 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }),
+    );
     mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
   });
 
