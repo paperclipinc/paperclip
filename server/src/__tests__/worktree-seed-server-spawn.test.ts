@@ -52,7 +52,7 @@ function verifiedSeedResult() {
   return {
     backupSummary: "snapshot.sql",
     snapshotAt: "2026-08-19T00:00:00.000Z",
-    migrationRevision: "0223_test.sql",
+    migrationRevision: "0226_test.sql",
     pausedScheduledRoutines: 0,
     executionQuarantine: {
       disabledTimerHeartbeats: 0,
@@ -74,7 +74,7 @@ function verifiedSeedResult() {
       issueCount: 1,
       representativeCompanyId: "00000000-0000-4000-8000-000000000001",
       representativeIssueId: "00000000-0000-4000-8000-000000000002",
-      migrationRevision: "0223_test.sql",
+      migrationRevision: "0226_test.sql",
     },
   };
 }

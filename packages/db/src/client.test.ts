@@ -1412,7 +1412,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const connectionString = await createTempDatabase();
       await applyPendingMigrations(connectionString);
 
-      const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
+      const nativePersistenceHash = await migrationHash("0230_modern_pandemic.sql");
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       const companyId = "10000000-0000-4000-8000-000000000227";
       const agentId = "20000000-0000-4000-8000-000000000227";
