@@ -126,6 +126,10 @@ describe("CompanySettingsNav", () => {
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
+    queryClient.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     root.render(
       <QueryClientProvider client={queryClient}>
         <CompanySettingsNav />
