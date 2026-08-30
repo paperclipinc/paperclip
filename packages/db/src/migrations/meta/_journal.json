@@ -1389,13 +1389,6 @@
                   "breakpoints": true
             },
             {
-                  "idx": 199,
-                  "version": "7",
-                  "when": 1785170001001,
-                  "tag": "0199_drop_cloud_upstream_tables",
-                  "breakpoints": true
-            },
-            {
                   "idx": 200,
                   "version": "7",
                   "when": 1785175200000,
