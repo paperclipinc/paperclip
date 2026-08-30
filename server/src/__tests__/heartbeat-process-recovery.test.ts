@@ -1610,7 +1610,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const drain = await heartbeat.drainRunningRunsForShutdown(
         "SIGTERM",
         new Date("2026-08-04T00:06:01.000Z"),
-        [runId],
+        { runIds: [runId] },
       );
       expect(drain.interruptedRunIds).toEqual([runId]);
       expect(drain.retryRunIds).toHaveLength(1);
@@ -1762,7 +1762,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const drain = await heartbeat.drainRunningRunsForShutdown(
         "SIGTERM",
         new Date("2026-08-04T01:06:01.000Z"),
-        preparation.drainRunIds,
+        { runIds: preparation.drainRunIds },
       );
       expect(drain.interruptedRunIds).toEqual([acp.runId]);
       await waitForPidExit(acpChild.pid!);
