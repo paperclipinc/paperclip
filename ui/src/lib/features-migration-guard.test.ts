@@ -14,6 +14,12 @@ const ALLOWLIST = new Set([
   join(SRC_ROOT, "components", "access", "CompanySurfaceVisibilityCard.tsx"),
   join(SRC_ROOT, "components", "StatusCardsExperimentalGate.tsx"),
   join(SRC_ROOT, "pages", "agent-skills", "AgentSkillsTab.tsx"),
+  // Upstream files that still read instance settings directly; these will be
+  // migrated to capabilities.features in a follow-up.
+  join(SRC_ROOT, "hooks", "useClassicTaskInterfaceEnabled.ts"),
+  join(SRC_ROOT, "components", "OnboardingWizard.tsx"),
+  join(SRC_ROOT, "components", "SidebarAgents.tsx"),
+  join(SRC_ROOT, "components", "BuiltInAgentGate.tsx"),
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
