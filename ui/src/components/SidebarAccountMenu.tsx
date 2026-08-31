@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
-  CreditCard,
   LogOut,
   Megaphone,
   type LucideIcon,
@@ -12,9 +11,8 @@ import {
 import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
-import { cloudBillingApi } from "@/api/cloudBilling";
-import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
+import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -26,12 +24,6 @@ import { Badge } from "@/components/ui/badge";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
-// Cloud-only: feedback from managed tenants goes to the hosting company's
-// support inbox, not the upstream project's feedback form.
-const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
-// Cloud-only: the hosting layer's account page (plan and billing).
-// Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
-const CLOUD_ACCOUNT_PATH = "/account";
 const SOURCE_REPOSITORY_URL = "https://github.com/paperclipai/paperclip";
 const SOURCE_VERSION_RE = /\+\d+\.git\.([0-9a-f]{7,40})(?:\.dirty)?$/i;
 
@@ -50,8 +42,6 @@ interface MenuActionProps {
   onClick?: () => void;
   href?: string;
   external?: boolean;
-  // Same-tab full-page navigation for destinations outside the SPA router.
-  nativeAnchor?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -81,7 +71,7 @@ function sourceVersionSha(version: string): string | null {
   return sourceVersion?.[1] ?? null;
 }
 
-function MenuAction({ label, description, icon: Icon, onClick, href, external = false, nativeAnchor = false }: MenuActionProps) {
+function MenuAction({ label, description, icon: Icon, onClick, href, external = false }: MenuActionProps) {
   const className =
     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60";
 
@@ -101,14 +91,6 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
     if (external) {
       return (
         <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
-          {content}
-        </a>
-      );
-    }
-
-    if (nativeAnchor) {
-      return (
-        <a href={href} className={className} onClick={onClick}>
           {content}
         </a>
       );
@@ -136,7 +118,6 @@ export function SidebarAccountMenu({
   version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
@@ -146,53 +127,8 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
-  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
-  // instances have no /account page, so no entry. The `cloudBilling` instance
-  // flag is deliberately off on the hosted cloud today (it also re-enables a
-  // server-side 403 on tenant budget writes), so detect the cloud gateway the
-  // same way CloudTrialBanner does: a successful cloud-billing summary
-  // response only ever comes from behind the gateway. Same query key as the
-  // banner so the fetch (and its cache) is shared. On self-hosted instances
-  // the probe 404s, and a rejected query has `data === undefined` forever, so
-  // staleTime/gcTime: Infinity alone do NOT stop react-query from refetching
-  // it - the app's global default is refetchOnWindowFocus: true (main.tsx),
-  // which would otherwise re-hit the probe on every tab focus. Disable every
-  // refetch trigger explicitly so a self-hosted instance fetches this exactly
-  // once per page load, ever.
-  const summaryQuery = useQuery({
-    queryKey: queryKeys.cloudBilling.summary,
-    queryFn: () => cloudBillingApi.summary(),
-    retry: false,
-    retryOnMount: false,
-    staleTime: Infinity,
-    gcTime: Infinity,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
-  const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      // cloud: leave the SPA entirely; the gateway serves the marketing
-      // sign-in page. signedout=1 drives its "You've been signed out" note.
-      if (deploymentMode === "authenticated") {
-        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-        window.location.assign(`/auth/sign-in?signedout=1&next=${next}`);
-        return;
-      }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-    onError: () => {
-      // cloud: even if the sign-out call failed, leave the SPA: the gate will bounce a
-      // still-valid session straight back in, and a half-dead session must not
-      // strand the user on a broken app shell.
-      if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
@@ -210,6 +146,10 @@ export function SidebarAccountMenu({
   function closeNavigationChrome() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
+  }
+
+  function handleSignOut() {
+    signOutMutation.mutate();
   }
 
   return (
@@ -306,23 +246,13 @@ export function SidebarAccountMenu({
               />
               <MenuAction
                 label="Feedback"
-                description={cloudBilling ? "Email us. A human reads every message." : "Share feedback or report an issue."}
+                description="Share feedback or report an issue."
                 icon={Megaphone}
-                href={cloudBilling ? CLOUD_FEEDBACK_MAILTO : FEEDBACK_URL}
+                href={FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
-              {cloudBilling ? (
-                <MenuAction
-                  label="Plan & billing"
-                  description="Manage your plan and billing."
-                  icon={CreditCard}
-                  href={CLOUD_ACCOUNT_PATH}
-                  nativeAnchor
-                  onClick={closeNavigationChrome}
-                />
-              ) : null}
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -330,7 +260,7 @@ export function SidebarAccountMenu({
                     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
                     signOutMutation.isPending && "cursor-not-allowed opacity-60",
                   )}
-                  onClick={() => signOutMutation.mutate()}
+                  onClick={handleSignOut}
                   disabled={signOutMutation.isPending}
                 >
                   <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">

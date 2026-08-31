@@ -12,12 +12,6 @@ export interface AdapterAgent {
   name: string;
   adapterType: string | null;
   adapterConfig: unknown;
-  /**
-   * Agent permissions relevant to runtime asset provisioning. Optional so
-   * existing callers/tests remain valid; adapters read `canCreateAgents` to
-   * decide whether the create-agent skill must be mounted into the sandbox.
-   */
-  permissions?: { canCreateAgents?: boolean; [key: string]: unknown } | null;
 }
 
 export interface AdapterRuntime {
@@ -107,8 +101,23 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Provider-billed cost after prompt-cache discounts. Adapters should set
+   * this when they expose it separately; otherwise the server treats a
+   * provider-reported `costUsd` as the cache-adjusted billed amount.
+   */
+  cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  /**
+   * Each referenced (mentioned) project that failed to stage into the remote sandbox for this run,
+   * by `projectId`. The run continues without a failed project (per-project failure isolation); this
+   * field carries the failure back so the server counts it in the requested-vs-synced observability
+   * instead of losing it to a warning line. Each entry pairs the `projectId` with the failure
+   * `error`, so a reader of the run learns why the project dropped. Absent or empty on a local
+   * target, or when every staged referenced project succeeded.
+   */
+  referencedProjectStagingFailures?: Array<{ projectId: string; error: string }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {
@@ -150,6 +159,22 @@ export interface AdapterRuntimeMcpAccess {
   getServers(): AdapterRuntimeMcpServer[];
 }
 
+export type AdapterRuntimeToolDelivery = "native_mcp" | "environment" | "invocation_context";
+
+export interface AdapterRuntimeToolAccess {
+  version: 1;
+  /** Provider-neutral instructions shared by every delivery strategy. */
+  guidance: string;
+  mcpEndpoint: string;
+  rest: {
+    connectionsSearch: string;
+    connectionRequest: string;
+  };
+  bearerToken: string;
+  expiresAt: string;
+  tools: readonly ["connections_search", "connection_request"];
+}
+
 export interface AdapterRuntimeEvent {
   eventType: string;
   stream?: "system" | "stdout" | "stderr";
@@ -175,31 +200,28 @@ export interface AdapterExecutionContext {
     remoteExecution?: Record<string, unknown> | null;
   };
   runtimeMcp?: AdapterRuntimeMcpAccess;
+  runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   /**
-   * Persist a credential the runtime rotated mid-run, so the NEW value replaces
-   * the stored one for the next run.
-   *
-   * Needed by any provider whose credential is a refresh-token bundle rather
-   * than a static key. Codex is the live case: a ChatGPT-plan `auth.json`
-   * carries a single-use refresh token, and the CLI rotates it whenever the
-   * access token expires. Without this hook the rotated credential dies with
-   * the sandbox and the stored copy is invalid from the next run onward, so the
-   * feature would appear to work for an hour and then break permanently.
-   *
-   * `envKey` identifies which configured credential rotated, so the host can
-   * find the secret bound to it. Implementations MUST treat `value` as live
-   * credential material: never log it, never echo it into run output.
-   *
-   * Optional. An adapter must tolerate its absence (self-hosted callers rotate
-   * host files directly instead) and must never fail a run because it is unset.
+   * Reports that execution has crossed the adapter's dispatch boundary.
+   * Process-backed adapters normally report this through `onSpawn`; adapters
+   * without a local process should call this immediately before starting the
+   * remote operation.
    */
-  onCredentialRotated?: (input: { envKey: string; value: string }) => Promise<void>;
+  onDispatch?: () => void;
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * The injected OpenTelemetry startup trace context (tracer + root
+   * parent-context helper). The server passes the real, endpoint-gated
+   * implementation; when absent, the ACPX engine uses a no-op, so the whole
+   * span path stays inert. The type is an inline import so this module keeps no
+   * top-level dependency on the timing helper.
+   */
+  startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
 export interface AdapterModel {
@@ -225,14 +247,6 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
-  /**
-   * True when this check specifically reflects the PROVIDER rejecting the
-   * credential just tested (invalid/expired/revoked key or token), as
-   * opposed to an infra/transient failure or a generic "not logged in yet"
-   * prompt. Callers (e.g. the onboarding credential-connect card) use this
-   * to decide whether to hard-block instead of staying permissive.
-   */
-  authFailure?: boolean;
 }
 
 export type AdapterEnvironmentTestStatus = "pass" | "warn" | "fail";
@@ -311,25 +325,6 @@ export interface AdapterEnvironmentTestContext {
    * Surfaced in check messages so users see which environment the probe ran in.
    */
   environmentName?: string | null;
-  /**
-   * Whether the person reading this probe's result can reach the Paperclip
-   * host's shell and filesystem.
-   *
-   * Defaults to `true`, which is the single-operator install every adapter was
-   * written for: the host is the user's own machine, so "run `codex login`" or
-   * "run `claude login`" is advice they can act on, and a credential file
-   * sitting in `~/.codex` is theirs.
-   *
-   * Set to `false` for a hosted multi-tenant deployment, where BOTH halves of
-   * that assumption are wrong. The user has no shell on the host, so host-login
-   * advice is unfollowable and reads as a broken product; and any credential
-   * that does sit on the host belongs to the operator or another tenant, so
-   * reporting it as "you are authenticated" would be actively misleading.
-   * Adapters must then confine themselves to credentials the user can supply
-   * through Paperclip: an API key, or a subscription token they mint on their
-   * own machine and paste in.
-   */
-  callerControlsHost?: boolean;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";
@@ -456,6 +451,8 @@ export interface ServerAdapterModule {
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
+  /** How this adapter receives Paperclip's run-scoped control tools. */
+  runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
   modelProfiles?: AdapterModelProfileDefinition[];
@@ -528,26 +525,16 @@ export interface ServerAdapterModule {
   /**
    * Optional: describe how this adapter's runtime command should be launched
    * and provisioned in fresh remote environments such as sandboxes.
-   *
-   * `options.prebakedRuntime` is set when the run executes on a managed,
-   * pre-baked sandbox image whose runtime CLI is contractually complete (e.g. a
-   * plugin-backed Kubernetes sandbox behind locked egress). Adapters MUST NOT
-   * emit a network `installCommand` for those targets: the image either already
-   * carries the CLI or the run landed on the wrong image, and an install would
-   * hit a blocked egress and stall until timeout.
    */
-  getRuntimeCommandSpec?: (
-    config: Record<string, unknown>,
-    options?: AdapterRuntimeCommandSpecOptions,
-  ) => AdapterRuntimeCommandSpec | null;
-}
+  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
 
-export interface AdapterRuntimeCommandSpecOptions {
   /**
-   * The run executes on a managed, pre-baked sandbox image (plugin-backed
-   * provider). When true, no network runtime install may be emitted.
+   * Optional: declare the interactive sandbox login capability. The server uses
+   * it to drive the login flow and to project the safe panel fields to the user
+   * interface. An adapter with no interactive login (for example an
+   * API-key-only vendor) omits it. The capability data holds no secret.
    */
-  prebakedRuntime?: boolean;
+  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +614,21 @@ export interface CreateConfigValues {
   envBindings: Record<string, unknown>;
   url: string;
   bootstrapPrompt: string;
+  /**
+   * The non-secret stored-session claim from a completed Claude subscription
+   * login. The create form holds it after the login reaches the server `stored`
+   * state and sends it in the agent create request. The server consumes the
+   * claim to bind the fixed `CLAUDE_CODE_OAUTH_TOKEN`. It never carries a token.
+   */
+  claudeStoredSessionId?: string | null;
+  /**
+   * True when the create form binds the fixed `CLAUDE_CODE_OAUTH_TOKEN`
+   * reference to an existing stored owner login with no new login round trip.
+   * The form sets it after the owner clicks apply-existing. The server binds the
+   * fixed reference only for a user actor and only when a stored value exists. It
+   * never carries a token.
+   */
+  claudeApplyStoredLogin?: boolean;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
   workspaceBaseRef?: string;
@@ -654,63 +656,4 @@ export interface CreateConfigValues {
   paperclipApiUrl?: string;
   headersJson?: string;
   password?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Adapter credential setup — declarative UI descriptors for guided credential configuration
-// ---------------------------------------------------------------------------
-
-/**
- * A single credential option that an adapter accepts.
- *
- * Describes how to configure one environment variable (e.g., an API key or token),
- * with hints and optional setup commands/URLs to help users obtain and configure it.
- */
-export interface AdapterCredentialOption {
-  /** The environment variable name (e.g., "ANTHROPIC_API_KEY") */
-  envKey: string;
-  /** The kind of credential */
-  kind: "api_key" | "subscription_token";
-  /** Display label for the credential (e.g., "Anthropic API key") */
-  label: string;
-  /** Optional hint text explaining what the credential is for and how to use it */
-  hint?: string;
-  /** Optional command users can run to set up this credential (e.g., "claude setup-token") */
-  setupCommand?: string;
-  /** Optional URL where users can obtain/manage this credential (e.g., console URL) */
-  setupUrl?: string;
-  /** Optional placeholder text for the input field (e.g., "sk-ant-…") */
-  placeholder?: string;
-  /**
-   * Optional regex (as a string) identifying values that belong to this
-   * option, so the connect UI can auto-select the right option when a value is
-   * pasted — e.g. an Anthropic API key ("^sk-ant-api") vs a Claude subscription
-   * OAuth token ("^sk-ant-oat"). Prevents binding a value to the wrong envKey.
-   */
-  valuePattern?: string;
-  /**
-   * Render a multi-line, visible field instead of a single-line password box.
-   *
-   * For a credential that is a whole FILE rather than a key — Codex's
-   * `auth.json` is the live case — the password box is unusable in both
-   * directions: the user cannot see what they pasted to check it arrived
-   * whole, and a pretty-printed document collapses into one unreadable line.
-   * A file is also not shoulder-surfing-sensitive the way a short key is; the
-   * risk it carries is storage, not display.
-   *
-   * Values are still handled as credential material everywhere else: paste
-   * telemetry stays metadata-only and the value is never logged.
-   */
-  multiline?: boolean;
-}
-
-/**
- * A complete credential setup descriptor for an adapter.
- *
- * Declares all environment variables an adapter accepts and provides
- * UI-friendly guidance for each one.
- */
-export interface AdapterCredentialSetup {
-  /** The list of credential options this adapter accepts */
-  options: AdapterCredentialOption[];
 }

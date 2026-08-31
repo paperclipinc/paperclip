@@ -5,7 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
-import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -15,25 +14,27 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
-}));
-const mockCloudBillingApi = vi.hoisted(() => ({
-  summary: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: mockNavigateTopLevel,
 }));
 
-vi.mock("@/api/cloudBilling", () => ({
-  cloudBillingApi: mockCloudBillingApi,
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -74,22 +75,8 @@ async function flushReact() {
 
 describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
-  // cloud: sign-out on a cloud instance does a full-page navigation via
-  // window.location.assign, not a client-side transition. jsdom's
-  // window.location (and its .assign) is non-configurable, so replace the
-  // whole object with a stub to assert it, following the pattern in
-  // NewCompanyDialog.test.tsx.
-  let assignSpy: ReturnType<typeof vi.fn>;
-  let originalLocation: Location;
 
   beforeEach(() => {
-    assignSpy = vi.fn();
-    originalLocation = window.location;
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      writable: true,
-      value: { ...originalLocation, assign: assignSpy } as unknown as Location,
-    });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({
@@ -101,25 +88,19 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
-    // Self-hosted default: the cloud-billing summary endpoint doesn't exist
-    // off-cloud, so the gateway detection probe fails like a real 404 would.
-    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
-    mockAuthApi.signOut.mockResolvedValue(undefined);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
+    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
   });
 
   afterEach(() => {
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      writable: true,
-      value: originalLocation,
-    });
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
-  it("renders the signed-in user and opens the account card menu", async () => {
+  it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -186,11 +167,78 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
-    // gateway's marketing sign-in page rather than invalidating in-app
-    // queries (there's no app left to refetch into).
-    expect(assignSpy).toHaveBeenCalledOnce();
-    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
+    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
+    const root = createRoot(container);
+    const onOpenChange = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+      cloud: {
+        managed: true,
+        managedBy: "paperclip-cloud",
+        stackSlug: "acme-labs",
+        cloudBaseUrl: "https://cloud.example.test",
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu
+            deploymentMode="authenticated"
+            open
+            onOpenChange={onOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+    expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
+    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps sign-out hidden outside authenticated deployment mode", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" open />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("Sign out");
 
     await act(async () => {
       root.unmount();
@@ -239,128 +287,6 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
       "518fc71",
     );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  async function renderOpenMenu() {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="authenticated" open onOpenChange={() => {}} />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-    return root;
-  }
-
-  it("links Plan & billing to /account on a cloud instance, above Sign out", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: true } }));
-    const root = await renderOpenMenu();
-
-    const billing = document.body.querySelector('a[href="/account"]');
-    expect(billing).not.toBeNull();
-    expect(billing?.textContent).toContain("Plan & billing");
-    // Same-tab navigation out of the SPA (the account page is not an app route).
-    expect(billing?.getAttribute("target")).toBeNull();
-
-    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
-    const billingPos = menuText.indexOf("Plan & billing");
-    const signOutPos = menuText.indexOf("Sign out");
-    expect(billingPos).toBeGreaterThan(-1);
-    expect(signOutPos).toBeGreaterThan(-1);
-    expect(billingPos).toBeLessThan(signOutPos);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("points Feedback at the cloud support inbox on a cloud instance (never the upstream form)", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: true } }));
-    const root = await renderOpenMenu();
-
-    const feedback = document.body.querySelector('a[href^="mailto:support@paperclip.inc"]');
-    expect(feedback).not.toBeNull();
-    expect(feedback?.textContent).toContain("Feedback");
-    // The upstream project's feedback form must not appear for cloud tenants.
-    expect(document.body.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("hides the billing entry off-cloud (self-hosted default)", async () => {
-    const root = await renderOpenMenu();
-
-    expect(document.body.textContent).not.toContain("Plan & billing");
-    expect(document.body.textContent).toContain("Sign out");
-    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("shows the billing entry when the cloud-billing summary succeeds, even with the cloudBilling flag off", async () => {
-    // The `cloudBilling` instance flag stays off on the hosted cloud (it also
-    // gates a server-side 403), so detection must not depend on it: a
-    // successful summary response is proof enough that the gateway is there.
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false } }));
-    mockCloudBillingApi.summary.mockResolvedValue({ plan: "pro", status: "active", entitlements: {} });
-    const root = await renderOpenMenu();
-
-    const billing = document.body.querySelector('a[href="/account"]');
-    expect(billing).not.toBeNull();
-    expect(billing?.textContent).toContain("Plan & billing");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("hides the billing entry when both the flag and the summary probe are negative", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false } }));
-    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
-    const root = await renderOpenMenu();
-
-    expect(document.body.textContent).not.toContain("Plan & billing");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("never re-fetches the cloud-billing probe on window focus after it has errored (self-hosted)", async () => {
-    // Regression: an errored query has `data === undefined` forever, so
-    // staleTime/gcTime: Infinity alone don't stop a refetch - the app's
-    // global default is refetchOnWindowFocus: true (main.tsx). Off-cloud the
-    // probe 404s every time, so without an explicit override each window
-    // focus (e.g. alt-tabbing back to the app) re-hits it.
-    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
-    const root = await renderOpenMenu();
-
-    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
-
-    await act(async () => {
-      // react-query's default FocusManager listens for "visibilitychange" on
-      // `window` (not "focus"), and only a listener attached directly to the
-      // dispatch target fires regardless of the event's `bubbles` flag.
-      window.dispatchEvent(new Event("visibilitychange"));
-    });
-    await flushReact();
-
-    expect(mockCloudBillingApi.summary).toHaveBeenCalledOnce();
 
     await act(async () => {
       root.unmount();

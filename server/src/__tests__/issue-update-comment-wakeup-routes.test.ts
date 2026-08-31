@@ -8,6 +8,7 @@ const MENTIONED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -15,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  listReviewAttention: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -25,13 +27,20 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => ({
     canUser: vi.fn(async () => true),
@@ -103,7 +112,7 @@ vi.mock("../services/index.js", () => ({
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
@@ -190,7 +199,9 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes({
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+  } as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -225,10 +236,12 @@ describe("issue update comment wakeups", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -255,7 +268,10 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    // The route dispatches the wake after it sends the response, so wait for
+    // the fire-and-forget dispatch to settle. This keeps the wake inside this
+    // test and stops it from leaking into the next test as an extra call.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
@@ -513,6 +529,51 @@ describe("issue update comment wakeups", () => {
           wakeCommentId: "comment-3",
           wakeReason: "issue_commented",
           source: "issue.comment",
+        }),
+      }),
+    );
+  });
+
+  it("tags the wake when a board comment supersedes the last review interaction", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_review",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-review-path",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "one more review note",
+    });
+    mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([{
+      id: "interaction-review-path",
+      kind: "request_confirmation",
+      status: "expired",
+    }]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map([[
+      existing.id,
+      { state: "stalled", paths: [], reason: "review path consumed" },
+    ]]));
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: "one more review note" });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          reviewPathLost: true,
+          reviewPathConsumedRef: "interaction-review-path",
+          reviewPathInstruction: expect.stringContaining("Restore a reviewer"),
+        }),
+        contextSnapshot: expect.objectContaining({
+          reviewPathLost: true,
+          reviewPathConsumedRef: "interaction-review-path",
         }),
       }),
     );
