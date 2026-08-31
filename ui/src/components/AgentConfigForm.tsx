@@ -15,7 +15,7 @@ import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { environmentsApi } from "../api/environments";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
@@ -55,7 +55,6 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
-import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -264,7 +263,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
   const editAgentId = !isCreate ? props.agent.id : null;
@@ -305,7 +303,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
   // Reuses the same general-settings query the rest of the UI uses.
-  const { data: generalSettings } = useFeatures();
+  const { data: generalSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
 
   const { data: environments = [] } = useQuery<Environment[]>({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
@@ -460,7 +467,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
-  const credentialSetup = uiAdapter.credentialSetup;
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
     [adapterType],
@@ -470,44 +476,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
 
-  // Env editor state: single source of truth shared by the environment
-  // variables editor and the guided credential-connect card, so a bind from
-  // either surface persists through the same save path.
-  const currentEnv = isCreate
-    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
-
-  function updateEnv(env: Record<string, EnvBinding> | undefined) {
-    if (isCreate) {
-      set!({ envBindings: env ?? {}, envVars: "" });
-    } else {
-      mark("adapterConfig", "env", env);
-    }
-  }
-
-  function isEnvValueBound(binding: EnvBinding | undefined): boolean {
-    if (binding === undefined) return false;
-    if (typeof binding === "string") return binding.trim().length > 0;
-    if (binding.type === "plain") return binding.value.trim().length > 0;
-    return binding.type === "secret_ref" || binding.type === "user_secret_ref";
-  }
-
-  const boundEnvKeys = useMemo(() => {
-    if (!credentialSetup) return [];
-    return credentialSetup.options
-      .map((option) => option.envKey)
-      .filter((envKey) => isEnvValueBound(currentEnv[envKey]));
-  }, [credentialSetup, currentEnv]);
-
-  function handleCredentialBind(envKey: string, secretId: string) {
-    updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
-    // The newly created secret isn't in the company secrets list query cache
-    // yet, so without invalidating, SecretPicker would render this env row
-    // as "Missing secret (…)" until something else happens to refetch.
-    if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    }
-  }
   // Create mode holds the non-secret stored-session claim after a Claude
   // subscription login reaches the server `stored` state. The claim marks the
   // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
@@ -622,11 +590,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [currentDefaultEnvironmentId, environments],
   );
   const instanceDefaultEnvironmentId = useMemo(() => {
-    const environmentId = generalSettings?.defaultEnvironmentId ?? null;
+    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
     if (!environmentId) return "";
     const selected = environments.find((environment) => environment.id === environmentId) ?? null;
     return selected?.driver === "local" ? "" : environmentId;
-  }, [environments, generalSettings?.defaultEnvironmentId]);
+  }, [environments, instanceSettings?.defaultEnvironmentId]);
   const instanceDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],
@@ -1872,21 +1840,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {credentialSetup && selectedCompanyId && (
-                <AdapterCredentialConnect
-                  key={adapterType}
-                  companyId={selectedCompanyId}
-                  adapterType={adapterType}
-                  setup={credentialSetup}
-                  boundEnvKeys={boundEnvKeys}
-                  onBind={handleCredentialBind}
-                />
-              )}
-
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
-                  value={currentEnv}
                   value={
                     isCreate
                       ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
@@ -1898,7 +1854,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
                   }}
-                  onChange={updateEnv}
+                  onChange={(env) =>
+                    isCreate
+                      ? set!({ envBindings: env ?? {}, envVars: "" })
+                      : mark("adapterConfig", "env", env)
+                  }
                 />
               </Field>
 

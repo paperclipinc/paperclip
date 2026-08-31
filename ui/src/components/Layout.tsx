@@ -18,7 +18,6 @@ import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
-import { CloudTrialBanner } from "./CloudTrialBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
@@ -33,9 +32,6 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { useFeatures } from "../hooks/useFeatures";
-import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
@@ -145,10 +141,11 @@ export function Layout() {
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const matchedCompany = useMemo(
-    () => findCompanyByUrlSegment(companies, companyPrefix),
-    [companies, companyPrefix],
-  );
+  const matchedCompany = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
+  }, [companies, companyPrefix]);
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
@@ -204,7 +201,10 @@ export function Layout() {
     },
     refetchIntervalInBackground: true,
   });
-  const keyboardShortcutsEnabled = useFeatures().data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  }).data?.keyboardShortcuts === true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
@@ -219,9 +219,6 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    // In authenticated mode, CloudAccessGate has already routed users who
-    // cannot create a company (waiting page / no-access page), so anyone who
-    // reaches an empty companies list here is allowed to onboard.
     if (health?.deploymentMode === "authenticated") return;
     // Cloud provisions the single company for a stack, and POST /companies is a
     // 403 floor there — auto-opening the wizard could only dead-end.
@@ -230,7 +227,6 @@ export function Layout() {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding]);
   }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
 
   useEffect(() => {
@@ -248,7 +244,7 @@ export function Layout() {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
       return;
     }
 
@@ -289,7 +285,6 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
-    location.hash,
     navigate,
     pushToast,
     selectionSource,
@@ -599,7 +594,6 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <CloudTrialBanner />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button

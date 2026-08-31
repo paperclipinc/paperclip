@@ -73,7 +73,6 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
     "@playwright/test": "^1.62.1",
     "agentmail": "^0.5.14",
     "cross-env": "^10.1.0",

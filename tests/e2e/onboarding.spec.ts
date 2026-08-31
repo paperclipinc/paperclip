@@ -55,8 +55,6 @@ test.describe("Onboarding wizard", () => {
     await expect(
       page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("Name your company").fill(COMPANY_NAME);
-    await page.getByRole("button", { name: /^Next/ }).click();
     await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Continue/ }).click();
 

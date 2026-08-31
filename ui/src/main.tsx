@@ -19,7 +19,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
-import { initAnalytics } from "./analytics";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import "@mdxeditor/editor/style.css";
@@ -32,14 +31,6 @@ initPluginBridge(React, ReactDOM);
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
 
-// Hosted deployment only; a no-op everywhere else. See ./analytics.
-initAnalytics();
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js");
-  });
-}
 // Parked SPA tabs never navigate, so beyond registering the worker this also
 // re-checks /sw.js on tab focus and hourly, and applies a discovered update
 // with one reload while the tab is hidden — otherwise an old worker and its

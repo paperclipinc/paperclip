@@ -3,13 +3,7 @@ import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -62,7 +56,6 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
-  detectGeminiQuotaExhausted,
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
@@ -102,30 +95,6 @@ function buildGeminiHeadlessEnv(env: Record<string, string>): Record<string, str
   next.NO_BROWSER = "1";
   delete next.NO_COLOR;
   return next;
-}
-
-/**
- * The Gemini CLI's --sandbox flag asks the CLI to relaunch itself inside a
- * Docker or Podman container. A managed sandbox target already runs the CLI
- * inside an isolated pod with no container runtime, so the flag can only fail
- * there ("GEMINI_SANDBOX is true but failed to determine command for sandbox").
- * Suppress it and say so, rather than failing every run at startup.
- */
-export function resolveGeminiSandboxFlag(input: {
-  configuredSandbox: boolean;
-  usesManagedSandbox: boolean;
-}): { sandboxArg: string; suppressedReason: string | null } {
-  if (input.configuredSandbox && input.usesManagedSandbox) {
-    return {
-      sandboxArg: "--sandbox=none",
-      suppressedReason:
-        "Ignoring adapterConfig.sandbox: this run executes in a managed sandbox, which is isolated already and has no container runtime for the Gemini CLI sandbox to use.",
-    };
-  }
-  return {
-    sandboxArg: input.configuredSandbox ? "--sandbox" : "--sandbox=none",
-    suppressedReason: null,
-  };
 }
 
 function buildGeminiRuntimeEnv(env: Record<string, string>): Record<string, string> {
@@ -266,10 +235,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-  const sandboxFlag = resolveGeminiSandboxFlag({
-    configuredSandbox: asBoolean(config.sandbox, false),
-    usesManagedSandbox: adapterExecutionTargetUsesManagedHome(executionTarget),
-  });
+  const sandbox = asBoolean(config.sandbox, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -301,9 +267,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
@@ -358,10 +321,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (executionTargetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
-  if (sandboxFlag.suppressedReason) {
-    await onLog("stderr", `[paperclip] ${sandboxFlag.suppressedReason}\n`);
-  }
-  if (!hasExplicitApiKey && authToken) {
+  if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
   const runtimeEnv = buildGeminiRuntimeEnv(env);
@@ -628,7 +588,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
     args.push("--approval-mode", "yolo");
-    args.push(sandboxFlag.sandboxArg);
+    if (sandbox) {
+      args.push("--sandbox");
+    } else {
+      args.push("--sandbox=none");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     args.push("--prompt", prompt);
     return args;
@@ -696,35 +660,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
-    const quotaMeta = detectGeminiQuotaExhausted({
-      parsed: attempt.parsed.resultEvent,
-      stdout: attempt.proc.stdout,
-      stderr: attempt.proc.stderr,
-    });
     const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
-      const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
-        errorMessage: sandboxExecTimedOut
-          ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-          : `Timed out after ${timeoutSec}s`,
-        errorCode: sandboxExecTimedOut
-          ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE
-          : authMeta.requiresAuth
-            ? "gemini_auth_required"
-            : networkUnavailable
-              ? "gemini_network_unavailable"
-              : null,
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : networkUnavailable
+            ? "gemini_network_unavailable"
+            : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
 
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
     const structuredFailure = attempt.parsed.resultEvent
       ? describeGeminiFailure(attempt.parsed.resultEvent)
       : null;
@@ -781,8 +735,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "max_turns_exhausted"
         : failed && networkUnavailable
         ? "gemini_network_unavailable"
-        : failed && quotaMeta.exhausted
-        ? "gemini_quota_exhausted"
         : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,

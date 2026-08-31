@@ -4,24 +4,16 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
 
 let currentPathname = "/company/settings";
 const navigateMock = vi.hoisted(() => vi.fn());
 const pageTabBarMock = vi.hoisted(() => vi.fn());
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
-}));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: currentPathname, search: "", hash: "" }),
   useNavigate: () => navigateMock,
-}));
-
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/components/ui/tabs", () => ({
@@ -58,19 +50,6 @@ async function act(callback: () => void | Promise<void>) {
   await result;
 }
 
-async function asyncAct(callback: () => void | Promise<void>) {
-  await callback();
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
-async function flushReact() {
-  for (let i = 0; i < 3; i += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-}
-
 describe("CompanySettingsNav", () => {
   let container: HTMLDivElement;
 
@@ -78,9 +57,6 @@ describe("CompanySettingsNav", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     currentPathname = "/company/settings";
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ isInstanceAdmin: true }),
-    );
   });
 
   afterEach(() => {
@@ -134,19 +110,10 @@ describe("CompanySettingsNav", () => {
   it("renders the active tab and navigates when a different tab is selected", async () => {
     currentPathname = "/PAP/company/settings/members";
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    await asyncAct(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsNav />
-        </QueryClientProvider>,
-      );
 
     await act(async () => {
       renderNav(root);
     });
-    await flushReact();
 
     expect(container.textContent).toContain("members");
     expect(pageTabBarMock).toHaveBeenCalledWith(
@@ -247,40 +214,6 @@ describe("CompanySettingsNav", () => {
     expect(renderedValues).toContain("export");
 
     await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("filters tabs by exposed surfaces and admin status", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({
-        isInstanceAdmin: false,
-        exposedSurfaces: ["company.general", "company.secrets"],
-      }),
-    );
-    currentPathname = "/company/settings";
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    await asyncAct(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsNav />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    const rendered = pageTabBarMock.mock.calls.at(-1)?.[0] as {
-      items: Array<{ value: string }>;
-    };
-    expect(rendered.items.map((item) => item.value)).toEqual([
-      "general",
-      "secrets",
-      "instance-profile",
-    ]);
-
-    await asyncAct(async () => {
       root.unmount();
     });
   });

@@ -87,9 +87,6 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   // Step 4: adapter (claude_local default); heartbeat is intercepted.
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
-    // Step 1: company name.
-    await page.getByPlaceholder("Name your company").fill(COMPANY_NAME);
-    await page.getByRole("button", { name: /^Next/ }).click();
   // Step 5: review → Get started creates the first task and opens its
   // detail page.
   const getStarted = page.getByRole("button", { name: /Get started/ });
@@ -146,39 +143,6 @@ test.describe("First-task launch after onboarding wizard", () => {
     const seedRes = await page.request.post("/api/companies", {
       data: { name: `E2E-Seed-${Date.now()}` },
     });
-    await page.getByRole("button", { name: /^Next/ }).click();
-
-    // Step 4: adapter (claude_local default); heartbeat is intercepted.
-    // #261 gates "Give it a heartbeat" on a connected credential for the
-    // chosen adapter, so bind a throwaway Anthropic API key before clicking.
-    await page
-      .getByLabel("Anthropic API key value")
-      .fill("sk-ant-api03-e2efakecredential1234567890");
-    await page.getByRole("button", { name: "Connect" }).click();
-    await expect(
-      page.getByRole("button", { name: /Give it a heartbeat/ }),
-    ).toBeEnabled({ timeout: 15_000 });
-    await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
-
-    // Step 5: review → Get started creates the first task and opens dashboard.
-    const getStarted = page.getByRole("button", { name: /Get started/ });
-    await getStarted.waitFor({ timeout: 20_000 });
-    await getStarted.click();
-
-    await expect(page).toHaveURL(/\/dashboard$/, { timeout: 30_000 });
-
-    const companiesRes = await page.request.get("/api/companies");
-    expect(companiesRes.ok()).toBe(true);
-    const companies = await companiesRes.json();
-    const company = companies.find((candidate: { name: string }) => candidate.name === COMPANY_NAME);
-    expect(company).toBeTruthy();
-
-    const issuesRes = await page.request.get(`/api/companies/${company.id}/issues`);
-    expect(issuesRes.ok()).toBe(true);
-    const issues = await issuesRes.json();
-    const firstTask = issues.find((candidate: { title: string }) => candidate.title === FIRST_TASK_TITLE);
-    expect(firstTask).toBeTruthy();
-    await expect(page.getByText(FIRST_TASK_TITLE).first()).toBeVisible({ timeout: 15_000 });
     expect(seedRes.ok()).toBe(true);
 
     const companyName = `E2E-TypingIntro-Existing-${Date.now()}`;

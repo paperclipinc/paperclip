@@ -11,7 +11,7 @@ import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtI
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -25,16 +25,14 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
-import { AdapterCredentialConnect } from "../components/AdapterCredentialConnect";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { describeRunFailure, redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
+import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
@@ -125,7 +123,6 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -774,7 +771,9 @@ export function AgentDetail() {
   const { isMobile } = useSidebar();
   const routeAgentRef = agentId ?? "";
   const routeCompanyId = useMemo(() => {
-    return findCompanyByUrlSegment(companies, companyPrefix)?.id ?? null;
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
   }, [companies, companyPrefix]);
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
@@ -799,7 +798,11 @@ export function AgentDetail() {
     ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
     : "joined";
 
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: !!resolvedCompanyId,
+  });
   const builtInAgentsEnabled = experimentalSettings?.enableBuiltInAgents === true;
   const { data: builtInStates } = useQuery({
     queryKey: queryKeys.builtInAgents.list(resolvedCompanyId!),
@@ -1015,16 +1018,12 @@ export function AgentDetail() {
         windowKind: "calendar_month_utc",
       }),
     onSuccess: () => {
-      setActionError(null);
       if (!resolvedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
-    },
-    onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update the budget");
     },
   });
 
@@ -3292,48 +3291,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     return entry?.user?.name ?? entry?.user?.email ?? null;
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
-  // Instance execution policy (general settings). When `executionMode` is
-  // "kubernetes" a host-local `claude login` cannot authenticate sandboxed
-  // runs, so the login button is replaced with an inline credential connect.
-  const { data: generalSettings } = useFeatures();
-  const offerClaudeHostLogin = shouldOfferClaudeHostLogin(generalSettings?.executionMode);
-  const credentialSetup = useMemo(() => getUIAdapter(adapterType).credentialSetup, [adapterType]);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
-  const [credentialConnected, setCredentialConnected] = useState(false);
 
   useEffect(() => {
     setClaudeLoginResult(null);
-    setCredentialConnected(false);
   }, [run.id]);
-
-  const bindCredential = useMutation({
-    mutationFn: async ({ envKey, secretId }: { envKey: string; secretId: string }) => {
-      // Re-fetch right before patching so we merge into the freshest env config.
-      const detail = await agentsApi.get(run.agentId, run.companyId);
-      const adapterConfig = { ...((detail.adapterConfig ?? {}) as Record<string, unknown>) };
-      const env = { ...((adapterConfig.env ?? {}) as Record<string, unknown>) };
-      env[envKey] = { type: "secret_ref", secretId, version: "latest" };
-      await agentsApi.update(
-        run.agentId,
-        { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true },
-        run.companyId,
-      );
-    },
-    onSuccess: async () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(run.agentId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(run.companyId) });
-      // The agent may have been auto-paused by the auth failure; resuming is
-      // best-effort (a not-paused agent makes this a no-op or an error).
-      try {
-        await agentsApi.resume(run.agentId, run.companyId);
-      } catch {
-        // Agent was not paused.
-      }
-      setCredentialConnected(true);
-    },
-  });
 
   const cancelRun = useMutation({
     mutationFn: () => heartbeatsApi.cancel(run.id),
@@ -3577,71 +3540,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
-            {(() => {
-              const failure = describeRunFailure(run.errorCode);
-              if (failure) {
-                return (
-                  <div className="text-xs space-y-1">
-                    <div className="text-red-600 dark:text-red-400">{failure.message}</div>
-                    <div className="text-muted-foreground">{failure.action}</div>
-                    {!failure.internal && run.error && (
-                      <details className="text-muted-foreground">
-                        <summary className="cursor-pointer">Details</summary>
-                        <span className="break-all">
-                          {run.error}
-                          {run.errorCode && ` (${run.errorCode})`}
-                        </span>
-                      </details>
-                    )}
-                  </div>
-                );
-              }
-              return run.error ? (
-                <div className="text-xs">
-                  <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                  {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
-                </div>
-              ) : null;
-            })()}
-            {((run.errorCode === "claude_auth_required" && adapterType === "claude_local" && !offerClaudeHostLogin) ||
-              (run.errorCode === "codex_auth_required" && adapterType === "codex_local")) && (
-              credentialSetup ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    {adapterType === "codex_local"
-                      ? "The provider rejected this agent's OpenAI credential. Connect a valid API key to resume runs:"
-                      : "This instance runs agents in the Kubernetes sandbox, so a host-local Claude login cannot fix this. Connect a provider credential instead:"}
-                  </p>
-                  {/* Auth failed, so any existing binding is not working: always
-                      show the paste form instead of the "Connected" summary. */}
-                  <AdapterCredentialConnect
-                    companyId={run.companyId}
-                    adapterType={adapterType}
-                    setup={credentialSetup}
-                    boundEnvKeys={[]}
-                    onBind={(envKey, secretId) => bindCredential.mutate({ envKey, secretId })}
-                  />
-                  {bindCredential.isError && (
-                    <p className="text-xs text-destructive">
-                      {bindCredential.error instanceof Error
-                        ? bindCredential.error.message
-                        : "Failed to connect credential"}
-                    </p>
-                  )}
-                  {credentialConnected && (
-                    <p className="text-xs text-green-700 dark:text-green-300">
-                      Credential connected. Retry the run.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  This instance runs agents in the Kubernetes sandbox. Connect a provider credential
-                  in the agent's Configuration to fix authentication.
-                </p>
-              )
+            {run.error && (
+              <div className="text-xs">
+                <span className="text-red-600 dark:text-red-400">{run.error}</span>
+                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+              </div>
             )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && offerClaudeHostLogin && (
+            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
               <div className="space-y-2">
                 <Button
                   variant="outline"
@@ -4250,7 +4155,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     };
   }, [isLive, run.companyId, run.id, run.agentId]);
 
-  const censorUsernameInLogs = useFeatures().data?.censorUsernameInLogs === true;
+  const censorUsernameInLogs = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  }).data?.censorUsernameInLogs === true;
 
   const adapterInvokePayload = useMemo(() => {
     const evt = events.find((e) => e.eventType === "adapter.invoke");

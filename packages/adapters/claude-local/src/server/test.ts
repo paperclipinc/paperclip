@@ -14,15 +14,9 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
-  maybeRunSandboxInstallCommand,
-  prepareAdapterExecutionTargetRuntime,
-  describeAdapterExecutionTarget,
   runAdapterExecutionTargetProcess,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
-import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
-import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import {
   detectClaudeLoginRequired,
   isClaudeProviderQuotaError,
@@ -53,24 +47,6 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// Pure decision for the (non-Bedrock) auth advice check: given the adapter's
-// config env, is there a recognizable auth signal beyond ANTHROPIC_API_KEY
-// (handled by the caller) that we should surface to the operator? Extracted
-// so the CLAUDE_CODE_OAUTH_TOKEN detection contract can be unit tested
-// without exercising the full probe pipeline.
-export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
-  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
-  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
-    return {
-      code: "claude_subscription_token_detected",
-      level: "info",
-      message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
-    };
-  }
-  return null;
-}
-
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -96,7 +72,6 @@ export async function testEnvironment(
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -210,29 +185,6 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else {
-    const authAdvice = resolveClaudeAuthAdvice(env);
-    if (authAdvice) {
-      checks.push(authAdvice);
-    } else if (!callerControlsHost) {
-      // Hosted multi-tenant: "if Claude is logged in" refers to a host login
-      // the user cannot perform. Unlike Codex, there IS a real subscription
-      // route here, so name it rather than pushing them to an API key: the
-      // token is minted on their own machine and pasted in, which is exactly
-      // the thing they were looking for when they picked this adapter.
-      checks.push({
-        code: "claude_subscription_mode_possible",
-        level: "info",
-        message: "No Claude credentials are configured for this agent yet.",
-        hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
-      });
-    } else if (!targetIsRemote) {
-      checks.push({
-        code: "claude_subscription_mode_possible",
-        level: "info",
-        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
-      });
-    }
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
     (considerHostEnv && isNonEmpty(process.env.CLAUDE_CODE_OAUTH_TOKEN))
@@ -338,24 +290,6 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
-      const probeChecks = await runClaudeCredentialHelloProbe({
-        runId,
-        target,
-        command,
-        cwd,
-        env,
-        model,
-        effort,
-        chrome,
-        maxTurns,
-        dangerouslySkipPermissions,
-        extraArgs,
-        hasBedrock,
-        targetIsSandbox,
-        targetIsRemote,
-        helloProbeTimeoutSec,
-      });
-      checks.push(...probeChecks);
       // A local probe uses the trusted resolved executable and the
       // deny-by-default child env. A remote probe uses the caller command and
       // env, because the remote transport owns its own env sanitization.

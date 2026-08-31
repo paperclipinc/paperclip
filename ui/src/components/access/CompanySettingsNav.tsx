@@ -1,11 +1,9 @@
-import { useMemo } from "react";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
-import { useBoardCapabilities } from "@/hooks/useFeatures";
 
 const items = [
   { value: "general", label: "General", href: "/company/settings" },
@@ -102,24 +100,6 @@ export function CompanySettingsNav() {
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
   const activeTab = getCompanySettingsTab(location.pathname);
-  const { data: boardAccess } = useBoardCapabilities();
-  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
-  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
-  const cloudSyncEnabled = boardAccess?.capabilities.features.enableCloudSync === true;
-
-  const visibleItems = useMemo(
-    () =>
-      items.filter((item) => {
-        if (item.value === "general") return exposedSurfaces.has("company.general");
-        if (item.value === "cloud-upstream") return cloudSyncEnabled;
-        if (item.value === "members") return exposedSurfaces.has("company.members");
-        if (item.value === "invites") return exposedSurfaces.has("company.invites");
-        if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
-        if (item.value === "instance-profile") return true; // per-user, always visible
-        return isInstanceAdmin; // all remaining instance-* tabs
-      }),
-    [boardAccess, cloudSyncEnabled, isInstanceAdmin], // exposedSurfaces derives from boardAccess
-  );
   const visibleItems = items.filter((item) => {
     if (item.value === "import" && isCloud) return false;
     const hiddenKey = hiddenSettingKeyByTab[item.value];

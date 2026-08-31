@@ -12,13 +12,13 @@ import { Bot, Clock3, History, Loader2, RefreshCw, Sparkles } from "lucide-react
 
 import { agentsApi } from "@/api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { summarySlotsApi, type SummarySlotSelector } from "@/api/summarySlots";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { InlineBanner } from "@/components/InlineBanner";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
-import { useFeatures } from "@/hooks/useFeatures";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -149,8 +149,6 @@ export function SummarySlotCard({
     ? { companyId, scopeKind, scopeId, slotKey }
     : null;
 
-  const { data: features, isLoading: featuresLoading } = useFeatures();
-  const summariesEnabled = features?.enableSummaries === true;
   const experimentalQuery = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -249,7 +247,7 @@ export function SummarySlotCard({
   const generationFailed = slotQuery.data?.slot?.status === "failed";
   const canGenerateFirstSummary = summarizerState?.status === "ready";
 
-  if (featuresLoading || !summariesEnabled) return null;
+  if (experimentalQuery.isLoading || !summariesEnabled) return null;
 
   const startGeneration = () => {
     if (!selector || generateMutation.isPending) return;

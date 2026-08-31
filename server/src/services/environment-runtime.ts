@@ -57,8 +57,6 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
-import type { PluginStreamBus } from "./plugin-stream-bus.js";
 import type {
   ExecuteLogSink,
   PluginWorkerManager,
@@ -71,7 +69,6 @@ import {
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
-  resolvePluginExecuteBudget,
   resolvePluginSandboxProviderDriverById,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
@@ -342,55 +339,6 @@ export function buildSandboxCapabilityNarrowing(input: {
   return narrowing;
 }
 
-/** Channel name a plugin worker emits live exec output on for a given run. */
-export function envExecOutputChannel(runId: string): string {
-  return `env-exec-output:${runId}`;
-}
-
-/**
- * Bridge live stdout/stderr from a plugin worker back to an in-process
- * `onOutput` sink across the worker RPC boundary.
- *
- * The worker cannot be handed a callback (functions don't serialize over
- * JSON-RPC), so when the caller provides `onOutput` AND a `runId` AND a stream
- * bus is available we subscribe to the worker's output channel
- * (`env-exec-output:${runId}`, scoped to `companyId`) BEFORE running the RPC,
- * route each emitted `{ stream, text }` chunk to `onOutput`, and unsubscribe on
- * EVERY exit path (resolve or throw) so no subscription leaks. The `run`
- * callback is told whether streaming is active so it can set the serializable
- * `streamOutput` RPC flag; when streaming can't be set up we run with
- * `streaming=false` and the provider falls back to buffered-at-end output.
- */
-export async function withPluginExecOutputStream<T>(opts: {
-  streamBus?: PluginStreamBus;
-  pluginId: string;
-  companyId: string;
-  runId?: string | null;
-  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-  run: (streaming: boolean) => Promise<T>;
-}): Promise<T> {
-  const { streamBus, pluginId, companyId, runId, onOutput, run } = opts;
-  if (!streamBus || !onOutput || !runId) {
-    return await run(false);
-  }
-  const channel = envExecOutputChannel(runId);
-  const unsubscribe = streamBus.subscribe(pluginId, channel, companyId, (event) => {
-    const chunk = event as { stream?: unknown; text?: unknown } | null | undefined;
-    if (
-      chunk &&
-      typeof chunk.text === "string" &&
-      (chunk.stream === "stdout" || chunk.stream === "stderr")
-    ) {
-      void onOutput(chunk.stream, chunk.text);
-    }
-  });
-  try {
-    return await run(true);
-  } finally {
-    unsubscribe();
-  }
-}
-
 export function buildEnvironmentLeaseContext(input: {
   persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
 }) {
@@ -567,20 +515,6 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
-  // Optional live-output sink. When a driver executes in-process it can forward
-  // stdout/stderr chunks here as they arrive and set `streamed: true` on its
-  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
-  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
-  // a function cannot cross that boundary — so this sink is not delivered to the
-  // worker today and those providers fall back to buffered-at-end output. The
-  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
-  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-  // Run correlation id. For plugin-backed sandbox providers this is forwarded
-  // over the worker RPC boundary and used (with `onOutput`) to bridge live
-  // stdout/stderr from the worker back to `onOutput` via the plugin stream bus
-  // (see the `execute` impl below). Null/undefined -> no live streaming, the
-  // provider falls back to buffered-at-end output.
-  runId?: string | null;
   /**
    * Run this command outside the lease's persistent session. The run
    * orchestrator sets this on the workspace provision command, which runs before
@@ -922,9 +856,6 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
       version: resolvedVersion,
       provider: secret.provider,
       providerVersionRef: versionRow?.providerVersionRef ?? null,
-      valueFingerprint: versionRow
-        ? versionRow.fingerprintSha256 ?? versionRow.valueSha256
-        : null,
       outcome: versionRow ? "success" : "failure",
     });
   }
@@ -982,31 +913,10 @@ function buildReusableSandboxLeaseScope(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
-  // Mirrors the `sandboxProviderPlugin === true` gate that
-  // reusableSandboxLeaseScopeMatches uses for its strict adapterType-equality
-  // rule. Only plugin-backed sandbox leases resolve a per-run adapter/image
-  // through the plugin worker RPC, so only they may fall back to reading
-  // adapterType/image out of providerMetadata; a built-in provider's
-  // providerMetadata is not per-run-image-keyed the way the plugin pool is,
-  // so treating any stray adapterType/image key there as a positive match
-  // would be unfounded. Built-in callers omit this flag (default false),
-  // making the fallback inert for them today; it exists so the two functions
-  // stay symmetric if a built-in provider ever starts publishing those keys.
-  isPluginBackedLease?: boolean;
 }): Record<string, unknown> | null {
   if (!input.executionWorkspaceId || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
-  // Prefer the server's own per-run hint; fall back to the plugin's actually
-  // resolved adapter type when the server's hint is absent (e.g. a run whose
-  // adapterType wasn't threaded through). This is what keeps the persisted
-  // scope from ever being null for a plugin sandbox lease that DID resolve a
-  // concrete adapter/image: a null scope has no positive proof of which
-  // image the pod carries and can be matched by any run's reuse lookup.
-  const adapterType =
-    input.adapterType ??
-    (input.isPluginBackedLease ? readString(providerMetadata.adapterType) : null) ??
-    null;
-  const runtimeImage = input.isPluginBackedLease ? readString(providerMetadata.image) : null;
+  const adapterType = input.adapterType ?? null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
   const workspaceSentinel = isRecord(providerMetadata.workspaceSentinel)
     ? { ...providerMetadata.workspaceSentinel }
@@ -1027,7 +937,6 @@ function buildReusableSandboxLeaseScope(input: {
     ...(input.leaseFingerprint
       ? { leaseFingerprint: serializeLeaseFingerprint(input.leaseFingerprint) }
       : {}),
-    ...(runtimeImage ? { runtimeImage } : {}),
     ...(remoteCwd ? { remoteCwd } : {}),
     ...(workspaceSentinel ? { workspaceSentinel } : {}),
   };
@@ -1044,36 +953,17 @@ function reusableSandboxLeaseScopeMatches(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
-  environmentHasSecretRefs?: boolean;
 }): boolean {
   if (!input.executionWorkspaceId || !input.agentId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
-  const storedAdapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
-  // Plugin-backed sandbox leases pick a per-run runtime image keyed on the
-  // adapter type; a lease published (or resumed from before this fix) with
-  // adapterType null carries no positive proof of which image its pod is
-  // running. Treating null as a wildcard let ANY run reuse it, including one
-  // requesting a different harness (the production adapter_runtime_image_mismatch
-  // case this closes). Require a POSITIVE match instead: both sides must be
-  // set and equal, never null-on-either-side.
-  //
-  // Built-in (non-plugin) sandbox providers never publish adapterType in the
-  // scope at all (they are not per-run-image-keyed the way the plugin pool
-  // is), so their leases legitimately keep the permissive equality check:
-  // scoping the strict rule to `sandboxProviderPlugin === true` leaves that
-  // reuse path unaffected.
-  const isPluginBackedLease = input.lease.metadata?.sandboxProviderPlugin === true;
-  const adapterTypeMatches = isPluginBackedLease
-    ? storedAdapterType !== null && adapterType !== null && storedAdapterType === adapterType
-    : scope.adapterType === adapterType;
   const baseScopeMatches =
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
     scope.agentId === input.agentId &&
-    adapterTypeMatches &&
+    scope.adapterType === adapterType &&
     scope.provider === input.provider;
   if (!baseScopeMatches) return false;
 
@@ -1083,12 +973,6 @@ function reusableSandboxLeaseScopeMatches(input: {
     if (storedLeaseFingerprint) {
       return storedLeaseFingerprint === expectedLeaseFingerprint;
     }
-    // Legacy lease (created before value-aware lease fingerprints existed): it
-    // only carries the secret-blind runtimeFingerprint. For a secret-bearing
-    // environment we must NEVER fall through to the runtime-only match, or an
-    // in-place secret value change would be invisible and we'd serve a stale
-    // credential from the reused sandbox. Force a fresh, value-aware lease.
-    if (input.environmentHasSecretRefs) return false;
     if (!input.allowLegacyRuntimeFingerprint) return false;
   }
 
@@ -1798,18 +1682,14 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but that plugin is currently ${pluginProvider.resolved.plugin.status}.`,
           );
         }
-        // Check the wiring before the worker state. A server process with no
-        // plugin worker manager can never see a running worker, so reporting it
-        // as "worker is not running" sends debugging after a healthy worker
-        // instead of the missing dependency.
-        if (!pluginWorkerManager) {
-          throw new Error(
-            `Sandbox provider "${parsed.config.provider}" is installed, but sandbox plugin workers are unavailable in this server process.`,
-          );
-        }
         if (pluginProvider.state === "worker_unavailable") {
           throw new Error(
             `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
+          );
+        }
+        if (!pluginWorkerManager) {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed, but sandbox plugin workers are unavailable in this server process.`,
           );
         }
 
@@ -1877,13 +1757,6 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
-        // Hoisted out of the filter: whether this environment references any
-        // secrets gates the secret-blind legacy runtime fallback below. One DB
-        // read per acquire, never per candidate lease.
-        const environmentHasSecretRefs =
-          reusableCandidateLeases.length > 0
-            ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
-            : false;
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
             lease,
@@ -1895,7 +1768,6 @@ function createSandboxEnvironmentDriver(
             provider: parsed.config.provider,
             config: providerConfigForLease,
             leaseFingerprint,
-            environmentHasSecretRefs,
             allowLegacyRuntimeFingerprint:
               lease.status === "active" &&
               input.heartbeatRunId !== null &&
@@ -2022,7 +1894,6 @@ function createSandboxEnvironmentDriver(
               config: providerConfigForLease,
               leaseFingerprint,
               providerMetadata: sanitizedProviderMetadata,
-              isPluginBackedLease: true,
             })
           : null;
 
@@ -2149,13 +2020,6 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
-      // Hoisted out of the filter: whether this environment references any
-      // secrets gates the secret-blind legacy runtime fallback below. One DB
-      // read per acquire, never per candidate lease.
-      const environmentHasSecretRefs =
-        reusableCandidateLeases.length > 0
-          ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
-          : false;
       const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
         reusableSandboxLeaseScopeMatches({
           lease,
@@ -2167,7 +2031,6 @@ function createSandboxEnvironmentDriver(
           provider: parsed.config.provider,
           config: providerConfigForLease,
           leaseFingerprint,
-          environmentHasSecretRefs,
           allowLegacyRuntimeFingerprint:
             lease.status === "active" &&
             input.heartbeatRunId !== null &&
@@ -2607,47 +2470,6 @@ function createSandboxEnvironmentDriver(
             provider: providerKey,
           });
           const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-          const runId = input.runId ?? null;
-          // Bridge live output across the worker RPC boundary: subscribe to the
-          // worker's stream channel and forward chunks to input.onOutput, then
-          // ask the worker to stream (streamOutput flag) since the onOutput
-          // callback itself can't cross the boundary. Falls back to buffered
-          // output when onOutput/runId/streamBus are unavailable.
-          // Resolve BOTH budgets together so the plugin-side timeout always
-          // undercuts the host RPC timer by the overhead buffer (see
-          // resolvePluginExecuteBudget).
-          const execBudget = resolvePluginExecuteBudget({
-            requestedTimeoutMs: input.timeoutMs,
-            config: sanitizedConfig,
-          });
-          return await withPluginExecOutputStream({
-            streamBus: pluginWorkerManager.streamBus,
-            pluginId,
-            companyId: input.lease.companyId,
-            runId,
-            onOutput: input.onOutput,
-            run: (streaming) =>
-              pluginWorkerManager.call(pluginId, "environmentExecute", {
-                driverKey: providerKey,
-                companyId: input.lease.companyId,
-                environmentId: input.environment.id,
-                issueId: input.lease.issueId,
-                config: sanitizedConfig,
-                lease: {
-                  providerLeaseId: input.lease.providerLeaseId,
-                  metadata: input.lease.metadata ?? undefined,
-                  expiresAt: input.lease.expiresAt?.toISOString() ?? null,
-                },
-                command: input.command,
-                args: input.args,
-                cwd: input.cwd,
-                env: input.env,
-                stdin: input.stdin,
-                timeoutMs: execBudget.pluginTimeoutMs ?? input.timeoutMs,
-                runId,
-                ...(streaming ? { streamOutput: true } : {}),
-              }, execBudget.rpcTimeoutMs),
-          });
           return await pluginWorkerManager.call(pluginId, "environmentExecute", {
             driverKey: providerKey,
             companyId: input.lease.companyId,

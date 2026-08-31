@@ -56,8 +56,6 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "What is the name of your organization?" })).toBeVisible({ timeout: 15_000 });
 
-  await page.locator('input[placeholder="Name your company"]').fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
   await page.locator('input[placeholder="e.g. Northwind Labs"]').fill(companyName);
   await page.getByRole("button", { name: /^Continue/ }).click();
 
@@ -69,17 +67,6 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
 
   await page.getByRole("button", { name: /^Next/ }).click();
-
-  // #261 gates "Give it a heartbeat" on a connected credential for the
-  // chosen adapter, so bind a throwaway Anthropic API key before clicking.
-  await page
-    .getByLabel("Anthropic API key value")
-    .fill("sk-ant-api03-e2efakecredential1234567890");
-  await page.getByRole("button", { name: "Connect" }).click();
-  await expect(
-    page.getByRole("button", { name: /Give it a heartbeat/ }),
-  ).toBeEnabled({ timeout: 15_000 });
-  await page.getByRole("button", { name: /Give it a heartbeat/ }).click();
   await page.getByRole("button", { name: /^Connect$/ }).click();
 
   // The review step names the agent rather than the step.

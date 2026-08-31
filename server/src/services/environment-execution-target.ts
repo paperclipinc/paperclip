@@ -243,31 +243,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
-    // Disable the in-sandbox network-install shim ONLY for providers that
-    // explicitly declare their runtime images are pre-baked / contractually
-    // complete (adapter CLI already on PATH, run behind a locked egress) — the
-    // per-lease `runtimeImagePrebaked` capability signal. We must NOT key off the
-    // generic "plugin-backed" marker (`sandboxProviderPlugin`): a provider plugin
-    // that ships a GENERIC sandbox and legitimately relies on runtime
-    // installation would otherwise be wrongly marked pre-baked, dropping its
-    // install (Layer 3) and turning a provisionable run into a spurious
-    // `adapter_runtime_image_mismatch`. Such a plugin omits the flag and keeps
-    // the install path; built-in sandbox providers (e.g. e2b) never set it.
-    const prebakedRuntime = input.leaseMetadata?.runtimeImagePrebaked === true;
-
-    // Per-lease-runner cumulative counters for startup-step attribution (Open
-    // Q1). Closed over by the `runner.execute` seam below and read back as
-    // deltas by `measureStartupStep`.
-    let execCount = 0;
-    let providerExecMs = 0;
-    let providerGetMs = 0;
-    const accumulateProviderDurations = (metadata: Record<string, unknown> | undefined): void => {
-      if (!metadata) return;
-      const exec = metadata.durationMs;
-      const get = metadata.getDurationMs;
-      if (typeof exec === "number" && Number.isFinite(exec)) providerExecMs += exec;
-      if (typeof get === "number" && Number.isFinite(get)) providerGetMs += get;
-    };
     // The low-cardinality public provider family. A plugin-backed / operator-
     // defined key maps to `plugin`, so a raw unbounded key never rides a span.
     const providerFamily = normalizeProviderFamily(parsed.config.provider);
@@ -364,7 +339,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
-      prebakedRuntime,
       // Run-log streaming defaults ON for sandbox environments so agent CLI
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
@@ -388,45 +362,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // provider never permits concurrent sync operations.
             allowConcurrentSyncOperations: effectiveCapabilities?.concurrentSyncOperations === true,
             execute: async (commandInput) => {
-              execCount += 1;
-              const startedAt = new Date().toISOString();
-              const result = await input.environmentRuntime!.execute({
-                environment: input.environment as Environment,
-                lease: input.lease!,
-                command: commandInput.command,
-                args: commandInput.args,
-                cwd: commandInput.cwd ?? remoteCwd,
-                env: commandInput.env,
-                stdin: commandInput.stdin,
-                timeoutMs: commandInput.timeoutMs,
-                // Forward the live-output sink so a driver that streams can
-                // deliver chunks as they arrive. When the driver honors it, it
-                // sets `result.streamed` and we skip the buffered dump below to
-                // avoid logging the same output twice.
-                onOutput: commandInput.onOutput,
-                // Forward the run id so the plugin-backed sandbox driver can
-                // bridge worker output chunks back to onOutput over the worker
-                // RPC boundary (channel env-exec-output:${runId}).
-                runId: commandInput.runId,
-              });
-              accumulateProviderDurations(result.metadata);
-              // Only emit the buffered stdout/stderr when the driver did NOT
-              // already stream it live via onOutput. Legacy (non-streaming)
-              // drivers leave `streamed` unset, preserving the original dump.
-              if (!result.streamed) {
-                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-              }
-              return {
-                exitCode: result.exitCode,
-                signal: result.signal ?? null,
-                timedOut: result.timedOut,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                pid: null,
-                startedAt,
-                streamed: result.streamed,
-              };
               // Record true start and stop timestamps around the provider await,
               // so the exec span and the result carry a real wall time.
               const startedAtMs = Date.now();

@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { lazy, Suspense } from "react";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
@@ -59,7 +58,6 @@ import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
 import { CrossIssueCollaborationUxLab } from "./pages/CrossIssueCollaborationUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
-import { SurfaceGuard } from "./components/access/SurfaceGuard";
 import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
 import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
@@ -86,6 +84,7 @@ import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
 import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
+import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -99,8 +98,6 @@ import {
   onboardingStepForCompany,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
-import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
-import { findCompanyByUrlSegment } from "./lib/company-routes";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 import { useCloudInstance } from "./hooks/useCloudInstance";
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
@@ -121,34 +118,6 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
-      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
-      <Route
-        path="company/settings/members"
-        element={
-          <SurfaceGuard surface="company.members">
-            <CompanyAccess />
-          </SurfaceGuard>
-        }
-      />
-      <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route
-        path="company/settings/invites"
-        element={
-          <SurfaceGuard surface="company.invites">
-            <CompanyInvites />
-          </SurfaceGuard>
-        }
-      />
-      <Route path="company/export/*" element={<CompanyExport />} />
-      <Route path="company/import" element={<CompanyImport />} />
-      <Route
-        path="company/settings/secrets"
-        element={
-          <SurfaceGuard surface="company.secrets">
-            <Secrets />
-          </SurfaceGuard>
-        }
-      />
       <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
         <Route path="company/settings/members" element={<CompanyAccess />} />
@@ -410,7 +379,9 @@ function LegacySkillStudioRedirect() {
   if (loading) return null;
 
   const targetCompany =
-    findCompanyByUrlSegment(companies, companyPrefix) ??
+    (companyPrefix
+      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
+      : null) ??
     selectedCompany ??
     companies[0] ??
     null;
@@ -438,7 +409,9 @@ function LegacySettingsRedirect() {
   }
 
   const targetCompany =
-    findCompanyByUrlSegment(companies, companyPrefix) ??
+    (companyPrefix
+      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
+      : null) ??
     selectedCompany ??
     companies[0] ??
     null;
@@ -509,7 +482,6 @@ export function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
-  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
 
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
@@ -671,23 +643,11 @@ function NoCompaniesStartPage() {
   );
 }
 
-// cloud: the auth pages are served by the gateway (marketing /auth/*), never by
-// the SPA. Any client-side navigation to /auth becomes a full page load so the
-// gateway can route it. Keeps stray <Link to="/auth"> from rendering AuthPage.
-function CloudAuthRedirect() {
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const next = params.get("next");
-    window.location.replace(`/auth/sign-in${next ? `?next=${encodeURIComponent(next)}` : ""}`);
-  }, []);
-  return null;
-}
-
 export function App() {
   return (
     <>
       <Routes>
-        <Route path="auth" element={<CloudAuthRedirect />} />
+        <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
