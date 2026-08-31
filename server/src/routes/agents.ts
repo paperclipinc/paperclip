@@ -29,7 +29,6 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  isHeartbeatRunTerminalStatus,
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
@@ -44,7 +43,6 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
 import {
   agentService,
   agentInstructionsService,
@@ -178,7 +176,6 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
-import { claudeHostLoginUnavailableReason } from "../services/execution-allowlist.js";
 import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -866,11 +863,6 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
-        // Pin the Test lease to the agent's own adapter so the sandbox boots the
-        // harness image the Test will exec against (matching real agent runs). It
-        // also keeps the lease from being an adapter-less one, which a plugin that
-        // cannot prove a single-adapter environment now rejects.
-        adapterType: input.adapterType,
         // Re-check the company binding atomically at lease time. The route
         // guard already rejected a foreign environment, but the binding could
         // change between the guard check and the lease acquire. This closes
@@ -1631,8 +1623,6 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  function assertSelectableAdapterType(type: string | null | undefined): string {
-    const adapterType = assertKnownAdapterType(type);
   async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
     const adapterType = assertKnownAdapterType(type);
     if (adapterType === "paperclip_runner") {
@@ -2735,12 +2725,6 @@ export function agentRoutes(
           config: effectiveAdapterConfig,
           executionTarget,
           environmentName,
-          // A cloud tenant reaches this server through the gateway and has no
-          // shell on it, so adapters must not answer with host-login advice
-          // ("run `codex login`") or report a host credential file as theirs.
-          // Every other actor source is a local/self-hosted operator for whom
-          // the host genuinely is their own machine.
-          callerControlsHost: req.actor?.source !== "cloud_tenant",
         });
 
         const prefixChecks = [
@@ -3542,7 +3526,6 @@ export function agentRoutes(
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
@@ -3552,7 +3535,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
-    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -3560,12 +3543,6 @@ export function agentRoutes(
         hireInput.adapterType,
         rawHireAdapterConfig,
       ),
-    );
-    requestedAdapterConfig = await inheritCompanyCredentialEnv(
-      db,
-      companyId,
-      hireInput.adapterType,
-      requestedAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -3768,7 +3745,6 @@ export function agentRoutes(
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
@@ -3778,7 +3754,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const agentId = randomUUID();
-    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
       createInput.adapterType,
@@ -3786,12 +3762,6 @@ export function agentRoutes(
         createInput.adapterType,
         rawCreateAdapterConfig,
       ),
-    );
-    requestedAdapterConfig = await inheritCompanyCredentialEnv(
-      db,
-      companyId,
-      createInput.adapterType,
-      requestedAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -4212,11 +4182,6 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? (() => {
-        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
-        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
-      })()
     const nextAdapterType = hasOwn(patchData, "adapterType")
       ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
@@ -4838,16 +4803,6 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
-      return;
-    }
-
-    // `claude login` runs on the server host; when the instance forces all
-    // execution onto the Kubernetes sandbox, sandboxed runs can never see that
-    // host-local login state, so refuse before spawning anything.
-    const { executionMode } = await instanceSettings.getGeneral();
-    const hostLoginUnavailableReason = claudeHostLoginUnavailableReason(executionMode);
-    if (hostLoginUnavailableReason) {
-      res.status(409).json({ error: hostLoginUnavailableReason });
       return;
     }
 
@@ -5518,26 +5473,8 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const safeOffset = Number.isFinite(offset) ? offset : 0;
-
-    // A run gets its log handle when the runner opens the file, so any
-    // NON-TERMINAL run (queued, running in its first moments, or waiting on a
-    // scheduled retry) legitimately has none. That is an empty log, not a
-    // missing resource: the transcript poller only stops re-requesting after a
-    // 404 on a TERMINAL run, so 404ing this case made every non-terminal run
-    // 404 once per poll interval for its entire life. A terminal run with no
-    // handle never got one, so that case still 404s below and the client stops
-    // asking.
-    if (!run.logStore || !run.logRef) {
-      if (!isHeartbeatRunTerminalStatus(run.status)) {
-        res.set("Cache-Control", "no-cache, no-store");
-        res.json({ runId, store: null, logRef: null, content: "", nextOffset: safeOffset });
-        return;
-      }
-    }
-
     const result = await heartbeat.readLog(run, {
-      offset: safeOffset,
+      offset: Number.isFinite(offset) ? offset : 0,
       limitBytes,
     });
 

@@ -45,11 +45,6 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
-  configureLiveEventsTransport,
-  resolveLiveEventsRedisUrl,
-  resolveLiveEventsTransportMode,
-} from "./services/live-events.js";
-import {
   feedbackService,
   applyManagedEnvironments,
   attentionService,
@@ -714,6 +709,19 @@ export async function startServer(): Promise<StartedServer> {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  const databaseBackupMaxAgeHours = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
+      Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
+  );
+  const databaseBackupAlertFile =
+    process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
+    resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
+  const databaseBackupAlertFiles = [
+    databaseBackupAlertFile,
+    resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
+    resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
+  ];
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -798,6 +806,15 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
+    databaseBackupHealth: config.databaseBackupEnabled
+      ? {
+          enabled: config.databaseBackupEnabled,
+          backupDir: config.databaseBackupDir,
+          maxAgeHours: databaseBackupMaxAgeHours,
+          alertFile: databaseBackupAlertFile,
+          alertFiles: databaseBackupAlertFiles,
+        }
+      : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -848,15 +865,6 @@ export async function startServer(): Promise<StartedServer> {
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
-  });
-
-  const liveEventsTransportMode = resolveLiveEventsTransportMode();
-  void configureLiveEventsTransport({
-    mode: liveEventsTransportMode,
-    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
-    redisUrl: resolveLiveEventsRedisUrl(),
-  }).catch((err) => {
-    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
   });
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -1365,16 +1373,6 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "startup adapter login reaper sweep failed");
       });
 
-    const heartbeatMaxQueuedRunAgeMs = Math.max(
-      1,
-      Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
-    );
-
-    heartbeatSchedulerInterval = setInterval(() => {
-      // Async so the suppression checks below can honor the override-aware
-      // resolver (e.g. worktree run-execution opt-in). The gated work is still
-      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
-      void (async () => {
     // Run the setup-token login reaper once at startup, so a login sandbox lease
     // that outlived a server restart releases before timer ticks start.
     await setupTokenReaper
@@ -1535,11 +1533,10 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold for stuck "running"
-          // runs, bounded max-age for stuck "queued" runs) and make sure persisted queued
-          // work is still being driven forward.
+          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+          // persisted queued work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, maxQueuedAgeMs: heartbeatMaxQueuedRunAgeMs })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();

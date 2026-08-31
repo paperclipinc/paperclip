@@ -23,6 +23,7 @@ import { claudeConfigDir, parseClaudeStreamJson } from "@paperclipai/adapter-cla
 import { codexHomeDir, parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import {
+  DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   applyOperatorGeneralDefaults,
   instanceGeneralSettingsSchema,
@@ -46,7 +47,6 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
-import { parseInstanceSettingsOverrides, resolveGeneralSettings } from "./instance-settings.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
@@ -1976,12 +1976,6 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             })
             .then((rows) => rows[0] ?? null));
 
-        const storedGeneral = resolveGeneralSettings(currentInstanceSettings?.general);
-        const effectiveGeneral = resolveGeneralSettings(
-          currentInstanceSettings?.general,
-          parseInstanceSettingsOverrides().general,
-        );
-        if (currentInstanceSettings && effectiveGeneral.feedbackDataSharingPreference === "prompt") {
         // Operator setting defaults apply to the effective value: when the
         // operator supplies a feedback-sharing default, the preference is no
         // longer "prompt", so a stray answer must not persist over it.
@@ -1997,7 +1991,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             .set({
               general: {
                 ...currentGeneralRaw,
-                censorUsernameInLogs: storedGeneral.censorUsernameInLogs,
+                censorUsernameInLogs: currentGeneral.censorUsernameInLogs,
                 feedbackDataSharingPreference: nextSharingPreference,
               },
               updatedAt: now,

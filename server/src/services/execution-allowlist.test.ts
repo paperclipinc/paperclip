@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   KUBERNETES_PROVIDER_KEY,
-  claudeHostLoginUnavailableReason,
   evaluateExecutionAllowlist,
   type ExecutionEnvironmentCandidate,
 } from "./execution-allowlist.js";
@@ -86,17 +85,6 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
-  describe("claudeHostLoginUnavailableReason", () => {
-    it("returns a human-readable reason when execution is forced onto Kubernetes", () => {
-      const reason = claudeHostLoginUnavailableReason("kubernetes");
-      expect(reason).not.toBeNull();
-      expect(reason).toMatch(/Kubernetes sandbox/);
-      expect(reason).toMatch(/credential/i);
-    });
-
-    it("returns null when host login is allowed", () => {
-      expect(claudeHostLoginUnavailableReason("any")).toBeNull();
-      expect(claudeHostLoginUnavailableReason(undefined)).toBeNull();
   describe("managedSandboxOnly (deny local execution)", () => {
     const daytonaSandboxEnv: ExecutionEnvironmentCandidate = { driver: "sandbox", provider: "daytona" };
 

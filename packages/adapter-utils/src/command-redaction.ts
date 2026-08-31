@@ -57,27 +57,6 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_JWT_RE, redactedValue);
 }
 
-// A bare `Bearer <token>` (no `Authorization:` prefix) and a Google `AIza...`
-// API key are secret shapes that show up in free-form process stderr but are
-// not covered by the command-oriented rules above.
-const BARE_BEARER_TOKEN_RE = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
-const GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z_-]{16,}\b/g;
-
-/**
- * Redact secrets from free-form text (e.g. a child process stderr tail) before
- * it is surfaced in a tenant-facing, persisted message. Reuses the command
- * redactor (Authorization/Bearer headers, `api-key=`/`token=`/`authorization=`
- * assignments, `sk-*`/`gh*` keys, JWTs) and adds bare `Bearer <...>` tokens and
- * Google `AIza...` keys. The full unredacted text may still go to internal run
- * logs; this output must not.
- */
-export function redactSensitiveText(
-  text: string,
-  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
-): string {
-  return redactCommandText(text, redactedValue)
-    .replace(BARE_BEARER_TOKEN_RE, `$1${redactedValue}`)
-    .replace(GOOGLE_API_KEY_RE, redactedValue);
 // A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The
 // command redaction handles shell `KEY=value` syntax only. A sandbox diagnostic
 // can also carry a serialized JSON error, so the sanitizer must redact the JSON

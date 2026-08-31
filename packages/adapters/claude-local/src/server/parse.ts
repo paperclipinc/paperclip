@@ -7,23 +7,6 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
-// A credential was actually PRESENTED and the provider said it is invalid,
-// as opposed to a plain "you haven't signed in yet" prompt with no
-// credential in play. CLAUDE_AUTH_REQUIRED_RE intentionally also matches
-// this (the CLI's generic invalid-key message tells the user to run
-// `/login` regardless of root cause), so this narrower pattern exists to
-// let a caller upgrade that soft "please log in" bucket into a hard
-// rejection when the message specifically says the key/token is invalid.
-// `\b...\b` around the single-word alternative: detectClaudeLoginRequired
-// joins raw stdout/stderr wholesale into the searched text (see the
-// `messages` array below), so an unanchored bare "unauthorized" would also
-// match as a substring of unrelated incidental noise (e.g. a log line
-// mentioning "...?status=unauthorized_pending"). The multi-word phrases
-// don't need the same guard: an unrelated string coincidentally containing
-// "invalid api key" or "authentication required" verbatim is not a
-// realistic false-positive surface the way a single common word is.
-const CLAUDE_CREDENTIAL_REJECTED_RE = /(?:invalid\s+api\s+key|\bunauthorized\b|authentication\s+required)/i;
 // The legacy login-prompt markers. The Claude CLI prints these words when it
 // asks the user to log in. The detector matches them against any probe output
 // line, which includes the raw stdout and stderr. This scope is pre-existing.
@@ -43,12 +26,6 @@ const CLAUDE_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
-// A connected-but-rejected credential (expired OAuth token, revoked API key).
-// Distinct from CLAUDE_AUTH_REQUIRED_RE, which detects the CLI's interactive
-// "run /login" prompt; both resolve to errorCode "claude_auth_required" so the
-// heartbeat's permanent-auth pause covers them.
-const CLAUDE_INVALID_CREDENTIAL_RE =
-  /(?:failed\s+to\s+authenticate[\s\S]{0,200}?\b401\b|\b401\b[\s\S]{0,200}?failed\s+to\s+authenticate|invalid\s+bearer\s+token|oauth\s+(?:access\s+)?token\s+is\s+(?:invalid|expired|revoked)|invalid\s+x-api-key|authentication[\s_]error)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
@@ -230,9 +207,6 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
-}): { requiresLogin: boolean; loginUrl: string | null; credentialRejected: boolean } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
@@ -255,18 +229,9 @@ export function detectClaudeLoginRequired(input: {
     claudeResultIndicatesAuthFailure(parsed) &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
-  // Independent of requiresLogin: a message can say the credential is
-  // invalid without also matching the login-prompt wording (e.g. a raw
-  // 401/authentication_error payload), and detectClaudeLoginRequired is the
-  // one place that already has the full message text assembled.
-  const credentialRejected =
-    messages.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
-    isClaudeInvalidCredentialError({ parsed: input.parsed, stdout: input.stdout, stderr: input.stderr });
   return {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
-    credentialRejected,
   };
 }
 
@@ -301,51 +266,6 @@ export function isClaudeModelNotFoundError(input: {
     ...(parsed ? extractClaudeErrorMessages(parsed) : []),
   ];
   return messages.some((message) => CLAUDE_MODEL_NOT_FOUND_RE.test(message));
-}
-
-export function isClaudeInvalidCredentialError(input: {
-  parsed?: Record<string, unknown> | null;
-  stdout?: string | null;
-  stderr?: string | null;
-  errorMessage?: string | null;
-}): boolean {
-  const parsed = input.parsed ?? null;
-  const messages = [
-    input.errorMessage ?? "",
-    input.stdout ?? "",
-    input.stderr ?? "",
-    parsed ? asString(parsed.result, "") : "",
-    ...(parsed ? extractClaudeErrorMessages(parsed) : []),
-  ];
-  return messages.some((message) => CLAUDE_INVALID_CREDENTIAL_RE.test(message));
-}
-
-// The Claude CLI does NOT fail fast on an invalid credential: a 401 from the
-// provider is retried up to 10 times with exponential backoff (observed live,
-// CLI 2.1.215: `{"type":"system","subtype":"api_retry",...,"error_status":401,
-// "error":"authentication_failed"}` roughly every backoff step, ~100s+ total),
-// so a hello probe against a bad key exhausts any sane timeout before the CLI
-// ever prints its "Invalid API key" result. The retry events themselves are the
-// provider saying the credential is rejected, and they appear on stdout within
-// the first second, so a timed-out probe whose stream carries them is a
-// credential rejection, not an infra timeout.
-export function detectClaudeAuthRetryStorm(stdout: string | null | undefined): boolean {
-  if (!stdout) return false;
-  for (const line of stdout.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) continue;
-    let event: unknown;
-    try {
-      event = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (!event || typeof event !== "object") continue;
-    const record = event as Record<string, unknown>;
-    if (record.type !== "system" || record.subtype !== "api_retry") continue;
-    if (record.error_status === 401 || record.error === "authentication_failed") return true;
-  }
-  return false;
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {

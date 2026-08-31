@@ -54,8 +54,6 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
-import { forbidden, unprocessable } from "../errors.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -528,12 +526,7 @@ export async function resolveCloudTenantActor(
   const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
   const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
-  // Optional: the gateway URL slug this stack is served under. Surfaced as the
-  // stack company's slugAliases so the SPA can resolve /<slug>/... URLs the
-  // gateway proxies verbatim (post-checkout and account-page links use it).
-  const stackSlug = req.header("x-paperclip-cloud-stack-slug")?.trim() || undefined;
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
-  const companyId = cloudTenantCompanyId(stackId);
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
   const paperclipCompanyName = req
     .header("x-paperclip-cloud-paperclip-company-name")
@@ -584,30 +577,6 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  // The stack's company is created lazily through the standard onboarding
-  // wizard (POST /api/companies with the deterministic stack company id) —
-  // never fabricated here. Until it exists this actor simply has no
-  // membership in it; once it exists, this upsert keeps late-joining stack
-  // users (and role changes from the gateway) in sync on every request.
-  let stackCompanyExists = false;
-  try {
-    stackCompanyExists = await db
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows.length > 0);
-  } catch {
-    stackCompanyExists = false;
-  }
-
-  if (stackCompanyExists) {
-    const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    const membership = await db
-      .insert(companyMemberships)
-      .values({
-        companyId,
-        principalType: "user",
-        principalId: userId,
   if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
 
   if (shouldSync && paperclipCompanyName) {
@@ -646,54 +615,11 @@ export async function resolveCloudTenantActor(
         status: "active",
         membershipRole,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [
-          companyMemberships.companyId,
-          companyMemberships.principalType,
-          companyMemberships.principalId,
-        ],
-        set: {
-          status: "active",
-          membershipRole,
-          updatedAt: now,
-        },
-      })
-      .returning()
-      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-
-    await ensureHumanRoleDefaultGrants(db, {
+      },
+    })
+    .returning()
+    .then((rows) => rows[0] ?? {
       companyId,
-      principalId: userId,
-      membershipRole: membership.membershipRole,
-      grantedByUserId: userId,
-    });
-
-  }
-
-  // Fork feature (upstream lacks this): the actor's memberships are read
-  // back from ALL active company memberships for the user, not just the
-  // stack company, so tenant users retain access to any additional
-  // companies they belong to on this instance.
-  let memberships: Array<{ companyId: string; membershipRole: string | null; status: string }>;
-  try {
-    memberships = await db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      );
-  } catch {
-    const fallbackRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    memberships = [{ companyId, membershipRole: fallbackRole, status: "active" }];
       membershipRole,
       status: "active",
     }) : { companyId, membershipRole, status: "active" as const };
@@ -740,8 +666,6 @@ export async function resolveCloudTenantActor(
     userId,
     userName,
     userEmail,
-    companyIds: memberships.map((row) => row.companyId),
-    memberships,
     companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
     memberships: [
       {
@@ -758,30 +682,9 @@ export async function resolveCloudTenantActor(
     // there is no role row to clean up.
     isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
     source: "cloud_tenant",
-    cloudStack: { stackId, stackRole, ...(stackSlug ? { stackSlug } : {}) },
   };
 }
 
-export function resolveCloudTenantWsAuth(
-  headers: Record<string, string | string[] | undefined>,
-): { userId: string; companyId: string } | null {
-  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!expectedToken) return null;
-  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
-  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
-  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
-  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
-  if (!userId || !stackId) return null;
-  return { userId, companyId: cloudTenantCompanyId(stackId) };
-}
-
-function firstHeaderValue(value: string | string[] | undefined): string | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const trimmed = raw?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : null;
-}
-
-function requiredCloudHeader(req: Request, name: string): string {
 function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
