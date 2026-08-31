@@ -8,7 +8,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { companiesListQueryOptions } from "../api/companies-query";
+import { fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
@@ -23,6 +23,7 @@ const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
   "gemini_local",
+  "kimi_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -122,7 +123,6 @@ function isApprovedHumanJoinPayload(payload: unknown, showsAgentForm: boolean) {
 type AwaitingJoinApprovalPanelProps = {
   companyDisplayName: string;
   companyLogoUrl: string | null;
-  companyBrandColor: string | null;
   invitedByUserName: string | null;
   claimSecret?: string | null;
   claimApiKeyPath?: string | null;
@@ -132,19 +132,16 @@ type AwaitingJoinApprovalPanelProps = {
 function InviteCompanyLogo({
   companyDisplayName,
   companyLogoUrl,
-  companyBrandColor,
   className,
 }: {
   companyDisplayName: string;
   companyLogoUrl: string | null;
-  companyBrandColor: string | null;
   className?: string;
 }) {
   return (
     <CompanyPatternIcon
       companyName={companyDisplayName}
       logoUrl={companyLogoUrl}
-      brandColor={companyBrandColor}
       logoFit="contain"
       className={className}
     />
@@ -154,13 +151,12 @@ function InviteCompanyLogo({
 function AwaitingJoinApprovalPanel({
   companyDisplayName,
   companyLogoUrl,
-  companyBrandColor,
   invitedByUserName,
   claimSecret = null,
   claimApiKeyPath = null,
   onboardingTextUrl = null,
 }: AwaitingJoinApprovalPanelProps) {
-  const approverLabel = invitedByUserName ?? "A company admin";
+  const approverLabel = invitedByUserName ?? "An organization admin";
 
   return (
     <div className="min-h-screen bg-background px-6 py-12 text-foreground">
@@ -171,6 +167,7 @@ function AwaitingJoinApprovalPanel({
             companyLogoUrl={companyLogoUrl}
             companyBrandColor={companyBrandColor}
             className="h-12 w-12 border border-border rounded-none"
+            className="h-12 w-12 border border-zinc-800 rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
         </div>
@@ -184,6 +181,12 @@ function AwaitingJoinApprovalPanel({
           </div>
           <p className="text-sm text-muted-foreground">
             Ask them to visit <span className="text-foreground">Company Settings → Members</span> to approve your request.
+          <div className="border border-zinc-800 p-3">
+            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
+            <p className="text-sm text-zinc-200">Settings → Members</p>
+          </div>
+          <p className="text-sm text-zinc-400">
+            Ask them to visit <span className="text-zinc-200">Settings → Members</span> to approve your request.
           </p>
           <p className="text-xs text-muted-foreground">
             Refresh this page after you've been approved — you'll be redirected automatically.
@@ -248,11 +251,31 @@ export function InviteLandingPage() {
     retry: false,
   });
 
-  const companiesQuery = useQuery({
-    ...companiesListQueryOptions,
+  // Whose list this is, is no longer this page's problem: the entry is keyed by
+  // account, so another account's list is unreachable rather than merely
+  // distrusted. What is left for the gate below is narrower and still real — do
+  // we have an answer *yet*. Without it, a pending query reads as an empty list,
+  // which reads as "not a member", which auto-accepts an invite the customer may
+  // already hold.
+  //
+  // Hence `staleTime: 0` and a mount-scoped flag rather than `isSuccess`: a
+  // cached list is the right account's now, but it can be thirty seconds old, and
+  // acting on "not a member" is the direction that costs something.
+  //
+  // `local_trusted` has no accounts at all, so there is no identity to key on and
+  // nothing to check the list against; the gate stays open.
+  const companiesQuery = useCompanyListQuery({
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
+    staleTime: 0,
   });
-  const companyList = companiesQuery.data?.companies ?? [];
+  const membershipIsAccountScoped = healthQuery.data?.deploymentMode !== "local_trusted";
+  // No `sessionQuery.data` term: the query only fetches while a session exists, so
+  // the flag cannot be true without one, and if the session lapses the observer
+  // re-keys to the anonymous entry and holds no data to leak.
+  const membershipListIsCurrent = membershipIsAccountScoped
+    ? companiesQuery.isFetchedAfterMount
+    : true;
+  const companyList = membershipListIsCurrent ? companiesQuery.data?.companies ?? [] : [];
 
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
@@ -263,25 +286,25 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
+    if (!membershipListIsCurrent) return;
     const list = companiesQuery.data?.companies;
     if (!list || !inviteQuery.data?.companyId) return;
     if (list.some((c) => c.id === inviteQuery.data!.companyId)) {
       clearPendingInviteToken(token);
     }
-  }, [companiesQuery.data, inviteQuery.data, token]);
+  }, [companiesQuery.data, inviteQuery.data, membershipListIsCurrent, token]);
 
   const invite = inviteQuery.data;
   const isCheckingExistingMembership =
     Boolean(sessionQuery.data) &&
     Boolean(invite?.companyId) &&
-    companiesQuery.isLoading;
+    !membershipListIsCurrent;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
     companyList.some((company) => company.id === invite?.companyId);
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
-  const companyBrandColor = invite?.companyBrandColor?.trim() || null;
   const invitedByUserName = invite?.invitedByUserName?.trim() || null;
   const inviteMessage = invite?.inviteMessage?.trim() || null;
   const requestedHumanRole = formatHumanRole(invite?.humanRole);
@@ -359,10 +382,10 @@ export function InviteLandingPage() {
     mutationFn: async () => {
       if (!invite) throw new Error("Invite not found");
       if (isCheckingExistingMembership) {
-        throw new Error("Checking your company access. Try again in a moment.");
+        throw new Error("Checking your organization access. Try again in a moment.");
       }
       if (isCurrentMember) {
-        throw new Error("This account already belongs to the company.");
+        throw new Error("This account already belongs to the organization.");
       }
       if (invite.inviteType === "bootstrap_ceo" || invite.allowedJoinTypes !== "agent") {
         return accessApi.acceptInvite(token, { requestType: "human" });
@@ -427,7 +450,12 @@ export function InviteLandingPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
-      const { companies: freshCompanies } = await queryClient.fetchQuery(companiesListQueryOptions);
+      // Keyed to the account that just signed in — the helper resolves the
+      // identity past the invalidation above rather than trusting the session
+      // entry still sitting in the cache — and forced past whatever is cached
+      // for it. This replaces the hand-rolled cancel-and-refetch this PR
+      // originally carried, which #11488 made both unnecessary and weaker.
+      const { companies: freshCompanies } = await fetchCompanyListForCurrentAccount(queryClient);
 
       if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
@@ -471,7 +499,7 @@ export function InviteLandingPage() {
 
   const joinButtonLabel = useMemo(() => {
     if (!invite) return "Continue";
-    if (isCurrentMember) return "Open company";
+    if (isCurrentMember) return "Open organization";
     if (invite.inviteType === "bootstrap_ceo") return "Accept invite";
     if (showsAgentForm) return "Submit request";
     return sessionQuery.data ? "Accept invite" : "Continue";
@@ -507,7 +535,7 @@ export function InviteLandingPage() {
     inviteJoinRequestType === "human" &&
     isCurrentMember
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Opening company...</div>;
+    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Opening organization...</div>;
   }
 
   if (inviteJoinRequestStatus === "pending_approval" && !canCompleteAcceptedHumanInvite) {
@@ -515,7 +543,6 @@ export function InviteLandingPage() {
       <AwaitingJoinApprovalPanel
         companyDisplayName={companyDisplayName}
         companyLogoUrl={companyLogoUrl}
-        companyBrandColor={companyBrandColor}
         invitedByUserName={invitedByUserName}
       />
     );
@@ -572,8 +599,9 @@ export function InviteLandingPage() {
                 companyLogoUrl={companyLogoUrl}
                 companyBrandColor={companyBrandColor}
                 className="h-12 w-12 border border-border rounded-none"
+                className="h-12 w-12 border border-zinc-800 rounded-none"
               />
-              <h1 className="text-lg font-semibold">You joined the company</h1>
+              <h1 className="text-lg font-semibold">You joined the organization</h1>
             </div>
             <div className="mt-4">
               <Button asChild className="w-full rounded-none">
@@ -586,7 +614,6 @@ export function InviteLandingPage() {
         <AwaitingJoinApprovalPanel
           companyDisplayName={companyDisplayName}
           companyLogoUrl={companyLogoUrl}
-          companyBrandColor={companyBrandColor}
           invitedByUserName={invitedByUserName}
           claimSecret={claimSecret}
           claimApiKeyPath={claimApiKeyPath}
@@ -607,6 +634,7 @@ export function InviteLandingPage() {
                 companyLogoUrl={companyLogoUrl}
                 companyBrandColor={companyBrandColor}
                 className="h-16 w-16 rounded-none border border-border"
+                className="h-16 w-16 rounded-none border border-zinc-800"
               />
               <div className="min-w-0">
                 <p className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -629,6 +657,9 @@ export function InviteLandingPage() {
               <div className="border border-border p-3">
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Company</div>
                 <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Organization</div>
+                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
               </div>
               <div className="border border-border p-3">
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invited by</div>
@@ -638,6 +669,10 @@ export function InviteLandingPage() {
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Requested access</div>
                 <div className="mt-1 text-sm text-foreground">
                   {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Requested access</div>
+                <div className="mt-1 text-sm text-zinc-100">
+                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Organization access"}
                 </div>
               </div>
               <div className="border border-border p-3">
@@ -864,12 +899,12 @@ export function InviteLandingPage() {
                 <div>
                   <h2 className="text-lg font-semibold">
                     {isCurrentMember
-                      ? "Already in this company"
+                      ? "Already in this organization"
                       : shouldAutoAcceptHumanInvite
-                      ? "Completing company access"
+                      ? "Completing organization access"
                       : invite.inviteType === "bootstrap_ceo"
                         ? "Accept bootstrap invite"
-                        : "Accept company invite"}
+                        : "Accept organization invite"}
                   </h2>
                   <p className="mt-1 text-sm text-muted-foreground">
                     {shouldAutoAcceptHumanInvite

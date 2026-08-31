@@ -10,6 +10,8 @@ export type {
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
@@ -67,12 +69,18 @@ export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
   redactSensitiveText,
+  redactDiagnosticText,
 } from "./command-redaction.js";
 export {
   firstMeaningfulStderrLine,
   isBenignAdapterStderrLine,
 } from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
   RuntimeProgressSink,
@@ -105,6 +113,30 @@ export {
   SANDBOX_UNSCHEDULABLE_ERROR_CODE,
   classifySandboxInfraFailure,
 } from "./sandbox-infra-failure.js";
+export {
+  ADAPTER_LOGIN_PANEL_MODES,
+  ADAPTER_LOGIN_TIMEOUT_POLICIES,
+  ADAPTER_LOGIN_COMPLETION_CLAIMS,
+  assertValidAdapterLoginCapability,
+  validateAdapterLoginCapability,
+} from "./login-capability.js";
+export type {
+  AdapterLoginPanelMode,
+  AdapterLoginTimeoutPolicy,
+  AdapterLoginCompletionClaim,
+  AdapterLoginPrompt,
+  AdapterLoginCompletionContext,
+  AdapterLoginCapability,
+} from "./login-capability.js";
+export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
+export type {
+  LoginRunnerOutcome,
+  LoginRunnerResult,
+  LoginRunnerLog,
+  LoginRunnerLifecycleOptions,
+  LoginRunnerDisposable,
+  LoginRunnerRaceResult,
+} from "./login-runner-lifecycle.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

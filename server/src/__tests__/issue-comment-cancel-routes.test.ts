@@ -36,6 +36,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -123,7 +124,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
