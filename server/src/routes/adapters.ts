@@ -48,8 +48,6 @@ import type {
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
-import { assertBoard, assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
@@ -275,17 +273,9 @@ export function adapterRoutes(options: {
    */
   router.get("/adapters", async (_req, res) => {
     // Adapter inventory is needed by ordinary board members when creating or
-    // editing company agents, AND during onboarding — before the first company
-    // exists, when the actor has no membership to check. Gating this read on
-    // company membership 403'd exactly those users, which silently emptied the
-    // disabled-adapter set the picker filters on: the wizard then offered
-    // harnesses the instance had disabled (PAPERCLIP_ADAPTERS), and the first
-    // run died at lease time with "not in the configured adapter registry".
-    // The payload is instance-level inventory (types, labels, capabilities),
-    // never company data, so any authenticated board member may read it.
-    // Mutating adapter management routes below remain instance-admin only
-    // because they affect the whole server runtime.
-    assertBoard(_req);
+    // editing company agents. Mutating adapter management routes below remain
+    // instance-admin only because they affect the whole server runtime.
+    assertBoardOrgAccess(_req);
 
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(

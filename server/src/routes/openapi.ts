@@ -171,7 +171,6 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  patchInstanceVisibilitySettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
@@ -875,7 +874,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
-  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
@@ -1028,7 +1026,6 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
-  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -1248,36 +1245,6 @@ registry.registerPath({
       }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      serverInfo: z.object({
-        processStartedAt: z.string().datetime(),
-        git: z.union([
-          z.object({
-            available: z.literal(true),
-            fullSha: z.string(),
-            shortSha: z.string(),
-            branchName: z.string().nullable(),
-            subject: z.string(),
-            committedAt: z.string().datetime().nullable(),
-            localChanges: z.union([
-              z.object({
-                available: z.literal(true),
-                hasLocalChanges: z.boolean(),
-                stagedFileCount: z.number().int().nonnegative(),
-                unstagedFileCount: z.number().int().nonnegative(),
-                untrackedFileCount: z.number().int().nonnegative(),
-              }).strict(),
-              z.object({
-                available: z.literal(false),
-                unavailableReason: z.enum(["git_status_unavailable"]),
-              }).strict(),
-            ]),
-          }).strict(),
-          z.object({
-            available: z.literal(false),
-            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
-          }).strict(),
-        ]),
-      }).strict().optional(),
       databaseBackup: z.object({
         enabled: z.boolean(),
         status: z.enum(["ok", "warning"]),
@@ -4237,9 +4204,6 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/api/instance/settings/visibility",
-  tags: ["instance"],
-  summary: "Get instance visibility settings",
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
@@ -4247,12 +4211,6 @@ registry.registerPath({
 });
 
 registry.registerPath({
-  method: "patch",
-  path: "/api/instance/settings/visibility",
-  tags: ["instance"],
-  summary: "Update instance visibility settings",
-  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
   method: "post",
   path: "/api/instance/task-drain",
   tags: ["instance"],
@@ -6714,43 +6672,6 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/companies/{companyId}/activation",
-  tags: ["access"],
-  summary: "Get company activation status",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/companies/{companyId}/budgets/increment",
-  tags: ["costs"],
-  summary: "Increment company budget (cloud-internal)",
-  request: {
-    params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
-  },
-  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/budget-paused",
-  tags: ["costs"],
-  summary: "List companies with paused budgets (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/activation-signals",
-  tags: ["costs"],
-  summary: "List per-company activation signals for lifecycle-email gating (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────

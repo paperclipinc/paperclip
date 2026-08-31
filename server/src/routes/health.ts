@@ -298,6 +298,8 @@ export function healthRoutes(
     const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
 
     if (!exposeFullDetails) {
+      const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
+      const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
@@ -305,6 +307,8 @@ export function healthRoutes(
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
+        ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
+        ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
         // Token-authorized probe on an otherwise redacted response: the control
         // plane needs readiness without a board session, and nothing else about
@@ -330,6 +334,8 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      ...(databaseBackup ? { databaseBackup } : {}),
+      ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),

@@ -9,7 +9,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
-import { useFeatures } from "../hooks/useFeatures";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
@@ -35,7 +34,6 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const { data: experimentalSettings } = useFeatures();
   // Managed instances derive the task ID prefix from the company name, so a
   // rename here also renumbers the existing task IDs.
   const isCloudManaged = Boolean(useCloudInstance());
