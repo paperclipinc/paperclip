@@ -65,6 +65,11 @@ const mockAccessApi = vi.hoisted(() => ({
   listUserDirectory: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
 }));
@@ -131,6 +136,10 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/auth", () => ({
