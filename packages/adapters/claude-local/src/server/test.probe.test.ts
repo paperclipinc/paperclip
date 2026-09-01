@@ -12,6 +12,7 @@ const {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   probeResult,
+  claudeCliUnresolvable,
 } = vi.hoisted(() => {
   const probeResult: {
     value: { exitCode: number; stdout: string; stderr: string };
@@ -20,10 +21,25 @@ const {
     value: { exitCode: 1, stdout: "", stderr: "" },
     throwError: null,
   };
+  // Command-aware toggle used only by the ACP-pipeline "probe cannot run"
+  // test below: the ACP lane calls this resolvability check multiple times
+  // for DIFFERENT commands in one testEnvironment() call (engine
+  // resolution's own pre-check, testClaudeAcpEnvironment's ACP-server
+  // command check, and the new credential probe's `claude` CLI check) — a
+  // call-order-dependent mock would be fragile, so this rejects ONLY the
+  // `claude` binary check specifically when enabled, leaving every other
+  // command (including the CLI lane's own default `command: "claude"` in
+  // every other test in this file) on the default always-succeeds path.
+  const claudeCliUnresolvable: { value: boolean } = { value: false };
   return {
     probeResult,
+    claudeCliUnresolvable,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
-    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
+    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async (command: string) => {
+      if (claudeCliUnresolvable.value && command === "claude") {
+        throw new Error("command not found on PATH: claude");
+      }
+    }),
     maybeRunSandboxInstallCommand: vi.fn(async () => null),
     runAdapterExecutionTargetProcess: vi.fn(async () => {
       if (probeResult.throwError) throw probeResult.throwError;

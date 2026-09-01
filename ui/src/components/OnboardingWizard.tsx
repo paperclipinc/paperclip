@@ -2717,6 +2717,15 @@ function OnboardingWizardInner({
                             disabled={
                               adapterEnvLoading || unsetAnthropicLoading
                             }
+                            onClick={() => void handleUnsetAnthropicApiKey()}
+                          >
+                            {unsetAnthropicLoading
+                              ? "Retrying..."
+                              : "Unset ANTHROPIC_API_KEY"}
+                          </Button>
+                        </div>
+                      )}
+
                   {credentialSetup && createdCompanyId && (
                     <AdapterCredentialConnect
                       key={adapterType}
@@ -2728,15 +2737,6 @@ function OnboardingWizardInner({
                       externalError={credentialCardError}
                     />
                   )}
-
-                            onClick={() => void handleUnsetAnthropicApiKey()}
-                          >
-                            {unsetAnthropicLoading
-                              ? "Retrying..."
-                              : "Unset ANTHROPIC_API_KEY"}
-                          </Button>
-                        </div>
-                      )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--text-micro) space-y-1.5">
