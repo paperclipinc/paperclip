@@ -137,7 +137,7 @@ export const heartbeatsApi = {
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);
   },
-  async listInstanceSchedulerAgents(): Promise<Array<{ id: string; name: string }>> {
+  async listInstanceSchedulerAgents(): Promise<import("@paperclipai/shared").InstanceSchedulerHeartbeatAgent[]> {
     return api.get("/instance/scheduler-agents");
   },
 };
