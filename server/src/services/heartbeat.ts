@@ -20223,45 +20223,6 @@ export function heartbeatService(
             await postWorkspaceReadyComment({
               issuesSvc,
               issueId,
-              // Permanent setup failure (adapter not runnable in this environment):
-              // pause the agent so the heartbeat stops re-invoking it every interval
-              // (which otherwise produces a setup_failed retry storm), and surface the
-              // reason so it routes to a human to reconfigure the adapter.
-              if (
-                isNonRetryableAdapterSetupFailure(outerErr) &&
-                failedAgent.status !== "paused" &&
-                failedAgent.status !== "terminated"
-              ) {
-                const setupFailurePauseReason =
-                  `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
-                const setupFailurePauseWrite = await db
-                  .update(agents)
-                  .set({
-                    status: "paused",
-                    pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
-                    pausedAt: new Date(),
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(agents.id, failedAgent.id))
-                  .catch((pauseErr) => {
-                    logger.warn(
-                      { err: pauseErr, agentId: failedAgent.id, runId },
-                      "failed to pause agent after non-retryable setup failure",
-                    );
-                    return null;
-                  });
-                if (setupFailurePauseWrite !== null) {
-                  // Mirror manual pause: a paused agent must have no live runs, or
-                  // a just-enqueued retry can sit in "queued" forever since dequeue
-                  // skips paused agents. livenessRun is already terminal (the CAS
-                  // write above only succeeded because it left "running").
-                  await cancelActiveForAgentInternal(
-                    failedAgent.id,
-                    `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
-                    "agent_paused",
-                  );
-                }
-              }
               agentId: agent.id,
               runId: run.id,
               workspace: executionWorkspace,
@@ -22330,6 +22291,45 @@ export function heartbeatService(
             setupFailureAgent ??
             (await getAgent(run.agentId).catch(() => null));
           if (failedAgent) {
+            // Permanent setup failure (adapter not runnable in this environment):
+            // pause the agent so the heartbeat stops re-invoking it every interval
+            // (which otherwise produces a setup_failed retry storm), and surface the
+            // reason so it routes to a human to reconfigure the adapter.
+            if (
+              isNonRetryableAdapterSetupFailure(outerErr) &&
+              failedAgent.status !== "paused" &&
+              failedAgent.status !== "terminated"
+            ) {
+              const setupFailurePauseReason =
+                `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
+              const setupFailurePauseWrite = await db
+                .update(agents)
+                .set({
+                  status: "paused",
+                  pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
+                  pausedAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(agents.id, failedAgent.id))
+                .catch((pauseErr) => {
+                  logger.warn(
+                    { err: pauseErr, agentId: failedAgent.id, runId },
+                    "failed to pause agent after non-retryable setup failure",
+                  );
+                  return null;
+                });
+              if (setupFailurePauseWrite !== null) {
+                // Mirror manual pause: a paused agent must have no live runs, or
+                // a just-enqueued retry can sit in "queued" forever since dequeue
+                // skips paused agents. livenessRun is already terminal (the CAS
+                // write above only succeeded because it left "running").
+                await cancelActiveForAgentInternal(
+                  failedAgent.id,
+                  `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
+                  "agent_paused",
+                );
+              }
+            }
             await refreshContinuationSummaryForRun(
               livenessRun,
               failedAgent,
@@ -22922,7 +22922,6 @@ export function heartbeatService(
 
         const promotedReason =
           readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
-        status?: string | null;
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ??
           "automation";
