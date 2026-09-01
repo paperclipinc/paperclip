@@ -78,7 +78,6 @@ import { resolveEnvironmentExecutionTarget } from "../services/environment-execu
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
@@ -86,7 +85,6 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
-  listServerAdapters,
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -490,11 +488,6 @@ export function agentRoutes(
     release: (lease) => setupTokenLeaseManager.release(lease),
     releaseById: (leaseId) => setupTokenLeaseManager.releaseById(leaseId),
   };
-        // Pin the Test lease to the agent's own adapter so the sandbox boots the
-        // harness image the Test will exec against (matching real agent runs). It
-        // also keeps the lease from being an adapter-less one, which a plugin that
-        // cannot prove a single-adapter environment now rejects.
-        adapterType: input.adapterType,
 
   const setupTokenLoginService = new SetupTokenSessionService({
     factory: setupTokenLoginFactory,
