@@ -53,11 +53,6 @@ import type {
   JsonRpcNotification,
   WorkerHostCallContext,
   HostToWorkerMethodName,
-import {
-  createPluginStreamBus,
-  type PluginStreamBus,
-  type StreamEventType,
-} from "./plugin-stream-bus.js";
   HostToWorkerMethods,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -79,9 +74,6 @@ import { traceparentFromContextToken } from "../instrumentation.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
-const DEFAULT_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
-
 /**
  * Upper bound for the *default* RPC timeout path (15 minutes). Explicit
  * caller-supplied timeouts are not subject to this cap: execute-class RPCs such
@@ -91,25 +83,6 @@ const DEFAULT_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
  * Clamping those explicit budgets here killed long sandboxed runs mid-work.
  */
 const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
-
-/**
- * Resolve the hard upper bound for any plugin RPC timeout. Defaults to 15
- * minutes; operators whose sandbox executions legitimately need longer can
- * raise it via PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS (milliseconds). Callers
- * that derive plugin-side execution budgets (plugin-environment-driver) MUST
- * use this same cap so the plugin's graceful timeout path always fires before
- * the host-side timer rejects the call.
- */
-export function resolveMaxRpcTimeoutMs(
-  env: Record<string, string | undefined> = process.env,
-): number {
-  const raw = env.PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS;
-  if (raw != null && raw.trim().length > 0) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
-  }
-  return DEFAULT_MAX_RPC_TIMEOUT_MS;
-}
 
 /**
  * Maximum delay accepted by Node timers before Node clamps the timeout to 1ms.
@@ -459,18 +432,6 @@ export interface WorkerStartOptions {
    * calls — the plugin's configured companies. Seeded onto the handle at
    * creation, BEFORE the child process spawns, so a proactive plugin that
    * issues host calls during setup() (e.g. the chat gateway's one-shot
-
-  /**
-   * The stream bus this manager publishes worker `streams.*` notifications to.
-   *
-   * Every worker started by this manager forwards its `ctx.streams` open/emit/
-   * close notifications here, so any host code holding the manager (SSE bridge
-   * routes, the environment runtime's live-output bridge) can `subscribe` to a
-   * (pluginId, channel, companyId) tuple without threading a separate bus. The
-   * real factory always populates it; kept optional so hand-rolled test doubles
-   * of this interface don't have to provide one.
-   */
-  readonly streamBus?: PluginStreamBus;
    * `events.subscribe`, which runs while `startWorker` is still awaiting the
    * initialize response) is already authorized when those calls arrive. The set
    * can still be replaced at runtime via `setProactiveCompanyScopes` (e.g. on a
@@ -3368,7 +3329,7 @@ export function createPluginWorkerHandle(
       // Notifications have no response to settle on, so the invocation scope
       // is GC'd by TTL. Call-path invocations are registered without a TTL and
       // cleared on settlement, so they survive arbitrarily long call timeouts.
-      const invocation = invocationScope ? registerInvocation(invocationScope, resolveMaxRpcTimeoutMs()) : null;
+      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
@@ -3444,45 +3405,6 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
-
-  /**
-   * Stream bus that worker `streams.*` notifications are published to. When
-   * omitted, the manager creates its own in-memory bus. Exposed on the returned
-   * manager as `.streamBus` so host code (SSE bridge, environment runtime) can
-   * subscribe to worker-emitted channels.
-   */
-  streamBus?: PluginStreamBus;
-}
-
-/** Map a `streams.*` notification method to the SSE-style event type. */
-function streamEventTypeForMethod(method: string): StreamEventType {
-  if (method === "streams.open") return "open";
-  if (method === "streams.close") return "close";
-  return "message";
-}
-
-/**
- * Publish a worker `streams.*` notification onto the stream bus. The worker's
- * `ctx.streams` API sends `{ channel, companyId, event? }`; the bus fans it out
- * to subscribers of (pluginId, channel, companyId). Best-effort: a missing
- * channel/companyId is dropped rather than thrown.
- */
-function publishStreamNotification(
-  streamBus: PluginStreamBus,
-  pluginId: string,
-  method: string,
-  params: Record<string, unknown>,
-): void {
-  const channel = typeof params.channel === "string" ? params.channel : "";
-  const companyId = typeof params.companyId === "string" ? params.companyId : "";
-  if (!channel || !companyId) return;
-  streamBus.publish(
-    pluginId,
-    channel,
-    companyId,
-    params.event,
-    streamEventTypeForMethod(method),
-  );
   /**
    * The process-scoped aggregate ceiling for concurrent duplex channel routes,
    * across every worker in the process. The manager builds one shared slot
@@ -3572,10 +3494,8 @@ export function createPluginWorkerManager(
   const duplexRouteSlots = createDuplexRouteSlotController(
     managerOptions?.maxConcurrentDuplexRoutes,
   );
-  const streamBus = managerOptions?.streamBus ?? createPluginStreamBus();
 
   return {
-    streamBus,
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,

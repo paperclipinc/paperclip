@@ -188,20 +188,6 @@ const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, read
 };
 
 function capabilityIsVerified(
-  // Optional live-output sink. When a driver executes in-process it can forward
-  // stdout/stderr chunks here as they arrive and set `streamed: true` on its
-  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
-  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
-  // a function cannot cross that boundary — so this sink is not delivered to the
-  // worker today and those providers fall back to buffered-at-end output. The
-  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
-  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-  // Run correlation id. For plugin-backed sandbox providers this is forwarded
-  // over the worker RPC boundary and used (with `onOutput`) to bridge live
-  // stdout/stderr from the worker back to `onOutput` via the plugin stream bus
-  // (see the `execute` impl below). Null/undefined -> no live streaming, the
-  // provider falls back to buffered-at-end output.
-  runId?: string | null;
   key: SandboxCapabilityKey,
   verifiedMethods: ReadonlySet<string>,
 ): boolean {

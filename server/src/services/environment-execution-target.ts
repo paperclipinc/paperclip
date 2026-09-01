@@ -459,7 +459,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
               try {
                 // Classify the span outcome from the provider execution ONLY.
                 // The inner try/catch wraps just the provider await, so a thrown
-                streamed: result.streamed,
                 // provider execution marks the span failed. A later log-callback
                 // rejection sits outside this block and never flips a successful
                 // execution to failed.
