@@ -76,6 +76,10 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -112,6 +116,9 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],

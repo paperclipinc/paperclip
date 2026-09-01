@@ -13,7 +13,7 @@ import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { cloudBillingApi } from "@/api/cloudBilling";
-import { useFeatures } from "@/hooks/useFeatures";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
@@ -146,6 +146,24 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  // Cloud-only: expose the hosting layer's plan/billing page.
+  const summaryQuery = useQuery({
+    queryKey: queryKeys.cloudBilling.summary,
+    queryFn: () => cloudBillingApi.summary(),
+    retry: false,
+    retryOnMount: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 

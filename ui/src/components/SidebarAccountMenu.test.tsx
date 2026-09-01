@@ -106,13 +106,19 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-    });
-    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
+    // Self-hosted default: the cloud-billing summary endpoint doesn't exist
+    // off-cloud, so the gateway detection probe fails like a real 404 would.
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
+    mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
