@@ -20120,10 +20120,6 @@ export function heartbeatService(
         // Thrown adapter failures never reach the finalize chain above, so the
         // storm breaker also runs here for repeated identical failure codes.
         await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
-              ? sanitizedChunk.slice(
-                  sanitizedChunk.length - MAX_LIVE_LOG_CHUNK_BYTES,
-                )
-              : sanitizedChunk;
 
           publishLiveEvent({
             companyId: run.companyId,
