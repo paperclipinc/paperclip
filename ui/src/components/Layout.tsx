@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import { findCompanyByUrlSegment } from "@/lib/company-routes";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
@@ -33,9 +34,9 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { useFeatures } from "../hooks/useFeatures";
-import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -61,7 +62,17 @@ function getCompanyPathSegments(pathname: string, companyPrefix: string | undefi
   return segments.slice(1);
 }
 
-const RESERVED_APP_SUBPATHS = new Set(["browse", "connect", "review", "attention", "gateways", "advanced", "app"]);
+const RESERVED_APP_SUBPATHS = new Set([
+  "browse",
+  "connections",
+  "connect",
+  "vercel-connect",
+  "review",
+  "attention",
+  "gateways",
+  "advanced",
+  "app",
+]);
 
 function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
   const segments = pathname.split("/").filter(Boolean);
@@ -87,6 +98,8 @@ export function Layout() {
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
+  // Optional: Layout also renders in harnesses without a ToastProvider.
+  const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
     companies,
     loading: companiesLoading,
@@ -103,7 +116,11 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const { enabled: appsEnabled } = useAppsEnabled();
-  const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const isCompanySettingsRoute = [
+    "/company/settings",
+    "/company/export",
+    "/company/import",
+  ].some((settingsPath) => location.pathname.includes(settingsPath));
   const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
@@ -185,7 +202,10 @@ export function Layout() {
     },
     refetchIntervalInBackground: true,
   });
-  const keyboardShortcutsEnabled = useFeatures().data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  }).data?.keyboardShortcuts === true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
@@ -200,14 +220,15 @@ export function Layout() {
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
-    // In authenticated mode, CloudAccessGate has already routed users who
-    // cannot create a company (waiting page / no-access page), so anyone who
-    // reaches an empty companies list here is allowed to onboard.
+    if (health?.deploymentMode === "authenticated") return;
+    // Cloud provisions the single company for a stack, and POST /companies is a
+    // 403 floor there — auto-opening the wizard could only dead-end.
+    if (health?.cloud) return;
     if (companies.length === 0) {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding]);
+  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
@@ -225,6 +246,27 @@ export function Layout() {
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
       navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
+      return;
+    }
+
+    // Stale state (remembered paths, history, bookmarks, restored tabs)
+    // deposits users into archived companies long after archiving; a cold
+    // arrival bounces to an active company instead of dwelling there.
+    // Deliberate visits (the company is already the selection) stay put.
+    const bounce = resolveArchivedCompanyBounce({
+      matchedCompany,
+      selectedCompanyId,
+      companies,
+    });
+    if (bounce) {
+      pushToast?.({
+        title: `${matchedCompany.name} is archived`,
+        body: `Switched to ${bounce.name}.`,
+        tone: "info",
+        dedupeKey: `archived-company-bounce:${matchedCompany.id}`,
+      });
+      setSelectedCompanyId(bounce.id, { source: "route_sync" });
+      navigate(`/${bounce.issuePrefix}/dashboard`, { replace: true });
       return;
     }
 
@@ -246,6 +288,7 @@ export function Layout() {
     location.search,
     location.hash,
     navigate,
+    pushToast,
     selectionSource,
     selectedCompanyId,
     setSelectedCompanyId,
@@ -627,6 +670,20 @@ export function Layout() {
               id="main-content"
               ref={mainContentRef}
               tabIndex={-1}
+              // Publish the pinned-composer bottom offset to descendants
+              // (PAP-495): while the auto-hiding mobile nav is on screen, raise
+              // it to the nav height so a sticky composer clears the nav; drop
+              // it back to the safe-area dock when the nav hides. Desktop leaves
+              // the token at its :root default.
+              style={
+                isMobile
+                  ? ({
+                      "--tc-composer-bottom": mobileNavVisible
+                        ? "var(--sz-calc-14)"
+                        : "var(--sz-calc-8)",
+                    } as CSSProperties)
+                  : undefined
+              }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
                 // Reserve the scrollbar gutter on desktop so pages whose height

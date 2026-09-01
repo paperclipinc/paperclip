@@ -86,7 +86,7 @@ const CONNECTIONS: ToolConnection[] = [
     createdByUserId: null,
     createdAt: new Date("2026-06-01T00:00:00Z"),
     updatedAt: new Date("2026-06-01T00:00:00Z"),
-  } as ToolConnection,
+  } as unknown as ToolConnection,
   {
     id: "conn-slack",
     companyId: COMPANY,
@@ -108,7 +108,7 @@ const CONNECTIONS: ToolConnection[] = [
     createdByUserId: null,
     createdAt: new Date("2026-06-01T00:00:00Z"),
     updatedAt: new Date("2026-06-01T00:00:00Z"),
-  } as ToolConnection,
+  } as unknown as ToolConnection,
 ];
 
 const AGENTS = [
