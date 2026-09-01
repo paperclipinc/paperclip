@@ -160,13 +160,6 @@ function isBenignCodexStderrLine(line: string): boolean {
   return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
 }
 
-export function firstMeaningfulStderrLine(text: string): string {
-  const meaningful = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line && !isBenignCodexStderrLine(line));
-  return meaningful ?? firstNonEmptyLine(text);
-}
 
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },

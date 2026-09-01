@@ -21,7 +21,6 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
-  resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,

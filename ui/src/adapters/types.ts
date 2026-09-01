@@ -41,10 +41,10 @@ export interface AdapterConfigFieldsProps {
    * The form sets this from the instance managed-sandbox-only policy
    * (`enableManagedSandboxOnly`), and also while that policy is still loading,
    * so a stored path never flashes before the policy resolves.
-  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
-  credentialSetup?: AdapterCredentialSetup;
    */
   managedSandboxOnly?: boolean;
+  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
+  credentialSetup?: AdapterCredentialSetup;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {
@@ -52,6 +52,8 @@ export interface UIAdapterModule extends TranscriptParserSource {
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
+  credentialSetup?: AdapterCredentialSetup;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter

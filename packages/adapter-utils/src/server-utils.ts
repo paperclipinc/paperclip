@@ -23,7 +23,6 @@ export function buildRuntimeToolsEnv(
   if (!access) return {};
   return {
     PAPERCLIP_RUNTIME_TOOLS_MCP_URL: access.mcpEndpoint,
-  streamed?: boolean;
     PAPERCLIP_RUNTIME_TOOLS_TOKEN: access.bearerToken,
     PAPERCLIP_RUNTIME_TOOLS_EXPIRES_AT: access.expiresAt,
     PAPERCLIP_RUNTIME_TOOLS_CONNECTIONS_SEARCH_URL: access.rest.connectionsSearch,

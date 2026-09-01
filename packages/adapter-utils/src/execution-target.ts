@@ -129,15 +129,6 @@ export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspa
   remoteCwd: string;
   spec: SshRemoteExecutionSpec;
 }
-  /**
-   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
-   * provider) whose adapter CLI is contractually complete. When true, the
-   * runtime-install shim is disabled: a missing CLI means the run landed on the
-   * wrong runtime image (a different harness), so we fail fast with
-   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
-   * install that a locked/sovereign egress would block until timeout.
-   */
-  prebakedRuntime?: boolean | null;
 
 /**
  * Read-only snapshot of the effective execution capabilities for one
@@ -198,6 +189,15 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
     | null;
   /** Whether this environment is configured to reuse its provider lease. */
   readonly reusableLeaseConfigured?: boolean;
+  /**
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
+   */
+  prebakedRuntime?: boolean | null;
   /** Host-observed provenance for this exact sandbox acquisition. */
   readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
   shellCommand?: "bash" | "sh" | null;
@@ -2155,7 +2155,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       // keep polling. A `shutdownAck` can land in the same batch right after
       // an `exit` event; deliver it too, so this tick never drops an
       // already-fetched (and already-removed-from-disk) event.
-      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
       for (const event of events) {
         const parsed = JSON.parse(event.body) as {
           type?: string;
@@ -2334,7 +2334,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     if (stopReadingForShutdownAck) return;
     void (async () => {
       try {
-        const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+        const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
         if (stopReadingForShutdownAck) return;
         for (const event of events) {
           try {

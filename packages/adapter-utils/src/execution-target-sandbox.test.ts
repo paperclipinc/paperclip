@@ -6462,6 +6462,16 @@ interface EmbeddedCodec {
 // embeds this same codec source to send its one READY line, so this coverage
 // stays live for the active transport.
 describe("embedded sandbox gateway codec", () => {
+  const cleanupDirs: string[] = [];
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+  function createLocalSandboxRunner(): import("./command-managed-runtime.js").CommandManagedRuntimeRunner {
+    return { command: "node", args: [], env: {} } as unknown as import("./command-managed-runtime.js").CommandManagedRuntimeRunner;
+  }
   it("encodes the READY frame to the exact byte-for-byte wire format", () => {
     // `JSON.stringify` writes object keys in insertion order, so this pins the
     // exact key order the gateway writes: version, then type, then nonce. A

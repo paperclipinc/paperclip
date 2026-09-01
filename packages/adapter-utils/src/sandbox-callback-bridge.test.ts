@@ -1025,13 +1025,6 @@ describe("sandbox callback bridge", () => {
       runner,
       spec: {
         remoteCwd: remoteWorkspaceDir,
-      // Hire skill (paperclip-create-agent): discovery + submit + issue linking
-      { method: "GET", path: "/llms/agent-configuration.txt" },
-      { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
-      { method: "GET", path: "/llms/agent-icons.txt" },
-      { method: "GET", path: "/api/companies/co-1/agent-configurations" },
-      { method: "POST", path: "/api/companies/co-1/agent-hires" },
-      { method: "POST", path: "/api/issues/issue-1/approvals" },
         timeoutMs: 30_000,
       },
       adapterKey: "codex",
@@ -1086,11 +1079,6 @@ describe("sandbox callback bridge", () => {
       ".paperclip-runtime",
       "codex",
       "paperclip-bridge",
-      // The hire allowlist must not over-match: only the exact .txt discovery
-      // files, only agent-hires (not /agents), and no sub-resources beyond it.
-      { method: "GET", path: "/llms/agent-configuration" },
-      { method: "GET", path: "/llms/secrets.txt" },
-      { method: "POST", path: "/api/companies/co-1/agent-hires/ap-1" },
       "server",
     );
     await mkdir(remoteWorkspaceDir, { recursive: true });

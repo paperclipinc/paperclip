@@ -88,7 +88,6 @@ const sandboxTarget: AdapterExecutionTarget = {
       stdout: "",
       stderr: "",
       pid: null,
-  claudeCliUnresolvable.value = false;
       startedAt: new Date().toISOString(),
     }),
   },

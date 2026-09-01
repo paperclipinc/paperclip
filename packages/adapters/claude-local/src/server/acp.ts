@@ -33,7 +33,6 @@ import type {
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
-  asBoolean,
   asNumber,
   asString,
   asStringArray,
@@ -927,7 +926,6 @@ export async function testClaudeAcpEnvironment(
   // instead. Bedrock is excluded — its auth is AWS-credential-based, not
   // something this Anthropic API-key/token probe can validate.
   const configOauthToken = envConfig.CLAUDE_CODE_OAUTH_TOKEN;
-  const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
   const hasCredentialToProbe =
     !hasBedrock &&
     (isNonEmpty(configApiKey) ||

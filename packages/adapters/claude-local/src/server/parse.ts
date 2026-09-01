@@ -254,6 +254,7 @@ export function detectClaudeLoginRequired(input: {
   return {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    credentialRejected: tokenFailure,
   };
 }
 

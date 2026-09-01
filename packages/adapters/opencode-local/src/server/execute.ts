@@ -452,10 +452,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTarget?.kind === "remote") {
-      localSkillsDir = await buildOpenCodeSkillsDir(config, {
-        canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
-        managed: agentUsesManagedInstructions(agent),
-      });
+      localSkillsDir = await buildOpenCodeSkillsDir(config);
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
