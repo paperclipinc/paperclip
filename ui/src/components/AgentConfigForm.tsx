@@ -632,11 +632,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [currentDefaultEnvironmentId, environments],
   );
   const instanceDefaultEnvironmentId = useMemo(() => {
-    const environmentId = generalSettings?.defaultEnvironmentId ?? null;
+    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
     if (!environmentId) return "";
     const selected = environments.find((environment) => environment.id === environmentId) ?? null;
     return selected?.driver === "local" ? "" : environmentId;
-  }, [environments, generalSettings?.defaultEnvironmentId]);
+  }, [environments, instanceSettings?.defaultEnvironmentId]);
   const instanceDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],

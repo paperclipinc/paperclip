@@ -53,6 +53,16 @@ const mockSecretsApi = vi.hoisted(() => ({
   listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
