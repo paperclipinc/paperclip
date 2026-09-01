@@ -4,12 +4,21 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
+
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
 
 let currentPathname = "/company/settings";
 const navigateMock = vi.hoisted(() => vi.fn());
 const pageTabBarMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
+}));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: currentPathname, search: "", hash: "" }),
