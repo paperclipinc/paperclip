@@ -4818,4 +4818,3 @@ export function accessRoutes(
 
   return router;
 }
-      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
