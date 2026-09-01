@@ -5304,7 +5304,6 @@ async function listUnresolvedBlockerSummaries(
 ) {
   const ids = [...new Set(unresolvedBlockerIssueIds.filter(Boolean))];
   if (ids.length === 0) return [];
-      valueFingerprint: readNonEmptyString(record.valueFingerprint),
   return dbOrTx
     .select({
       id: issues.id,
