@@ -56,8 +56,18 @@ const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
 const mockSidebarState = vi.hoisted(() => ({
   isMobile: false,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../context/CompanyContext", () => ({

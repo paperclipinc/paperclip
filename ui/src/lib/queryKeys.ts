@@ -395,6 +395,7 @@ export const queryKeys = {
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
     visibilitySettings: ["instance", "visibility-settings"] as const,
+    schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
   },
   cloudBilling: {
     summary: ["cloud-billing", "summary"] as const,

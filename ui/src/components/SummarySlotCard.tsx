@@ -151,7 +151,7 @@ export function SummarySlotCard({
 
   const { data: features, isLoading: featuresLoading } = useFeatures();
   const summariesEnabled = features?.enableSummaries === true;
-  const builtInAgentsEnabled = experimentalQuery.data?.enableBuiltInAgents === true;
+  const builtInAgentsEnabled = features?.enableBuiltInAgents === true;
 
   const builtInAgentsQuery = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),

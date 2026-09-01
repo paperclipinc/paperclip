@@ -10,6 +10,7 @@ import type {
   InstanceSettings,
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import type { AdapterCredentialSetup, AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { AdapterLoginPanel } from "./AgentConfigForm";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
