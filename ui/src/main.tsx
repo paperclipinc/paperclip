@@ -27,11 +27,11 @@ import "./index.css";
 
 initPluginBridge(React, ReactDOM);
 
-// React 19.2 emits an unbounded stream of performance.measure() entries for its
-// DevTools performance tracks and never clears them; on a long-lived tab they
 // Hosted deployment only; a no-op everywhere else. See ./analytics.
 initAnalytics();
 
+// React 19.2 emits an unbounded stream of performance.measure() entries for its
+// DevTools performance tracks and never clears them; on a long-lived tab they
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
 
