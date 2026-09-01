@@ -56,6 +56,16 @@ import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/mod
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
 import { restoreOnboardingState } from "../lib/onboarding-state";
+import {
+  credentialFailureKey,
+  credentialRejectionMessage,
+  deriveCredentialConnected,
+  findCredentialAuthFailureCheck,
+  findMatchingCompanySecret,
+} from "../lib/credential-connected";
+import { secretsApi } from "../api/secrets";
+import { cloudCompaniesApi } from "../api/cloudCompanies";
+import { healthApi } from "../api/health";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
@@ -1440,6 +1450,75 @@ function OnboardingWizardInner({
     } finally {
       setAdapterEnvLoading(false);
     }
+  }
+
+  // Disable a rejected credential secret so it does not re-appear as
+  // "connected" on a page reload via the company-secrets fallback.
+  async function disableRejectedCredentialSecret(secretId: string, envKey: string) {
+    try {
+      await secretsApi.disable(secretId);
+      if (createdCompanyId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.secrets.list(createdCompanyId),
+        });
+      }
+    } catch (disableErr) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "[onboarding] failed to disable a rejected credential secret; it may remain active server-side until disabled manually",
+        envKey,
+        secretId,
+        disableErr,
+      );
+    }
+  }
+
+  // Guided BYOK credential connect (step 4): bind an env key to a freshly
+  // created company secret, then re-run the environment check with the
+  // binding applied. If the provider explicitly rejects the credential,
+  // undo the binding and disable the just-created secret.
+  async function handleCredentialBind(envKey: string, secretId: string) {
+    const failureKey = credentialFailureKey(adapterType, envKey);
+    const nextBindings = {
+      ...credentialBindings,
+      [envKey]: { type: "secret_ref" as const, secretId }
+    };
+    setCredentialBindings(nextBindings);
+    setAdapterEnvResult(null);
+    setCredentialProbeError(null);
+    setFailedCredentialEnvKeys((prev) => {
+      if (!prev.has(failureKey)) return prev;
+      const next = new Set(prev);
+      next.delete(failureKey);
+      return next;
+    });
+    if (createdCompanyId) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.secrets.list(createdCompanyId),
+      });
+    }
+    const result = await runAdapterEnvironmentTest(
+      mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
+    );
+    const rejection = findCredentialAuthFailureCheck(result);
+    if (!rejection) return;
+    // eslint-disable-next-line no-console
+    console.log(
+      "[onboarding] credential probe rejected the just-bound value for",
+      envKey,
+      rejection,
+    );
+    setCredentialBindings((prev) => {
+      const { [envKey]: _removed, ...rest } = prev;
+      return rest;
+    });
+    setFailedCredentialEnvKeys((prev) => {
+      const next = new Set(prev);
+      next.add(failureKey);
+      return next;
+    });
+    setCredentialProbeError(credentialRejectionMessage(rejection));
+    await disableRejectedCredentialSecret(secretId, envKey);
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
