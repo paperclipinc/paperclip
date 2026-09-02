@@ -449,6 +449,7 @@ describe("agent live run routes", () => {
       {
         id: "run-1",
         companyId: "company-1",
+        status: "running",
         logStore: "local_file",
         logRef: "logs/run-1.ndjson",
       },
