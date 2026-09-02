@@ -104,7 +104,15 @@ describe("actorMiddleware authenticated session profile", () => {
         from: (table: unknown) => ({
           where: () =>
             Promise.resolve(
-              table === companies ? [{ id: "paperclip-stack-alpha" }] : [],
+              table === companies
+                ? [{ id: "paperclip-stack-alpha" }]
+                : inserts
+                    .filter((i) => i.values.principalType === "user")
+                    .map((i) => ({
+                      companyId: i.values.companyId,
+                      membershipRole: i.values.membershipRole,
+                      status: i.values.status,
+                    })),
             ),
         }),
       })),
