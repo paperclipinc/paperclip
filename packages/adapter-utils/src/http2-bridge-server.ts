@@ -58,8 +58,8 @@ export const HTTP2_BRIDGE_ENABLE_PUSH = false;
  * body limit (`sandbox-callback-bridge.ts`) gives an accounting peak of eight
  * times that limit for one live forward. This bound is the per-route
  * in-flight-body budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 *
- * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 262,144
- * bytes = 8,388,608 bytes for one route.
+ * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 1,048,576
+ * bytes = 33,554,432 bytes for one route.
  *
  * Known aggregate behavior: this budget applies to one route only. The host
  * process admits up to `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in
