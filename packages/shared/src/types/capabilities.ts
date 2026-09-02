@@ -20,10 +20,12 @@ export interface PublicFeatureFlags {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableClassicTaskInterface: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
+  enableManagedSandboxOnly: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -76,10 +78,12 @@ export function derivePublicFeatureFlags(input: {
     enablePipelines: experimental.enablePipelines === true,
     enableCases: experimental.enableCases === true,
     enableConferenceRoomChat: experimental.enableConferenceRoomChat === true,
+    enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     enableTaskWatchdogs: experimental.enableTaskWatchdogs === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
     enableCloudSync: experimental.enableCloudSync === true,
+    enableManagedSandboxOnly: experimental.enableManagedSandboxOnly === true,
     enableExternalObjects: experimental.enableExternalObjects === true,
     enableSmokeLab: experimental.enableSmokeLab === true,
     enableBuiltInAgents: experimental.enableBuiltInAgents === true,
