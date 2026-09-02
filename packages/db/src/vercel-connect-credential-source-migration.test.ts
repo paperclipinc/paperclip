@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0233_living_dreaming_celestial.sql";
+const MIGRATION_FILE = "0236_living_dreaming_celestial.sql";
 const migrationSql = fs.readFileSync(new URL(`./migrations/${MIGRATION_FILE}`, import.meta.url), "utf8");
 const migrationHash = createHash("sha256").update(migrationSql).digest("hex");
 const cleanups: Array<() => Promise<void>> = [];

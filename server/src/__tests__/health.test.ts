@@ -55,6 +55,7 @@ function createApp(
       authReady: true,
       companyDeletionEnabled: true,
       serverInfo,
+      databaseBackupHealth,
       runtimeEnv,
     }),
   );
