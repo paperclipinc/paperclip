@@ -711,6 +711,9 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
    * command opens and reuses the session as before.
    */
   bypassSession?: boolean;
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+  runId?: string | null;
+  streamOutput?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -720,6 +723,7 @@ export interface PluginEnvironmentExecuteResult {
   stdout: string;
   stderr: string;
   metadata?: Record<string, unknown>;
+  streamed?: boolean;
 }
 
 /**
