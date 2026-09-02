@@ -150,16 +150,14 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    // authUsers, companies, companyMemberships, the role-default
-    // principalPermissionGrants, and the lazily initialized instance setting.
-    expect(inserts).toHaveLength(5);
+    // authUsers, companyMemberships, and the role-default
+    // principalPermissionGrants seeded in place of instance-admin elevation.
+    // The stack company itself is created lazily by onboarding, not here.
+    expect(inserts).toHaveLength(3);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
       emailVerified: true,
-    });
-    expect(inserts[1]?.values).toMatchObject({
-      name: "Purple Rain",
     });
   });
 
