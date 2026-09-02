@@ -73,6 +73,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  // Cloud upstream routes are fork-specific and not in the public OpenAPI document.
+  "cloud-upstreams.ts",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
