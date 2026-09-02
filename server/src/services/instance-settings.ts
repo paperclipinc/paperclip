@@ -342,6 +342,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
+      enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       enableSmokeLab: parsed.data.enableSmokeLab ?? false,
       enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
@@ -388,6 +389,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
+    enableCloudSync: false,
     enableExternalObjects: false,
     enableSmokeLab: false,
     enableBuiltInAgents: false,
@@ -564,7 +566,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toManagedInstanceSettings(await getOrCreateRow(), overrides),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
     update: async (
       patch: PatchInstanceSettings,
@@ -600,6 +602,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toExperimentalView(row.experimental);
     },
 
+    getVisibility: async (): Promise<InstanceVisibilitySettings> => {
+      const row = await getOrCreateRow();
+      return normalizeVisibilitySettings(row.visibility);
+    },
+
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
       const storedGeneral = normalizeGeneralSettings(current.general);
@@ -620,7 +627,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
@@ -639,7 +646,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     updateVisibility: async (patch: PatchInstanceVisibilitySettings): Promise<InstanceSettings> => {
@@ -661,7 +668,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toManagedInstanceSettings(updated ?? current, overrides);
+      return toInstanceSettings(updated ?? current);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

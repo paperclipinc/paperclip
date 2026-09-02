@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -911,7 +912,7 @@ export async function startServer(): Promise<StartedServer> {
     });
 
   void reconcileCloudUpstreamRunsOnStartup(db as any)
-    .then((result) => {
+    .then((result: { reconciled: number }) => {
       if (result.reconciled > 0) {
         logger.warn(
           { reconciled: result.reconciled },
@@ -919,7 +920,7 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
     })
-    .catch((err) => {
+    .catch((err: unknown) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
 
@@ -1540,7 +1541,7 @@ export async function startServer(): Promise<StartedServer> {
           // runs, bounded max-age for stuck "queued" runs) and make sure persisted queued
           // work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, maxQueuedAgeMs: heartbeatMaxQueuedRunAgeMs })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();

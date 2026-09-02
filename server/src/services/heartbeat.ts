@@ -447,6 +447,7 @@ import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
 import { computeCostUsdForRun } from "./kubecost-client.js";
 import { billedCostCents, parseMargin, parseComputeRatePerHour, resolveComputeUsd } from "./run-cost.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { loadConfig } from "../config.js";
 import {
   adapterConsumesInstructionsBundle,
   loadDefaultAgentInstructionsBundle,
@@ -10616,57 +10617,6 @@ export function heartbeatService(
       };
     }
 
-  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
-  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
-  // itself carries the precondition (status = 'queued') so a concurrent claim
-  // of the same row (another scheduler pass, or a manual resume flipping it to
-  // "running") between the SELECT and this UPDATE cannot be clobbered back to
-  // "cancelled". `updated: false` tells the caller the row had already moved
-  // on, so it must not touch the run's wakeup or append a lifecycle event.
-  async function setRunStatusIfQueued(
-    runId: string,
-    status: string,
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
-  ) {
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-      }
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(updated);
-      return { run: updated, updated: true as const };
-    }
-
-    const current = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-
-    return { run: current, updated: false as const };
-  }
-
     if (workspaceProjectId) {
       const managedWorkspace = await ensureManagedProjectWorkspace({
         companyId: agent.companyId,
@@ -10742,6 +10692,57 @@ export function heartbeatService(
       baseCwdFallback: false,
       materializationFailures: [],
     };
+  }
+
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: updated.id,
+          agentId: updated.agentId,
+          status: updated.status,
+          invocationSource: updated.invocationSource,
+          triggerDetail: updated.triggerDetail,
+          error: updated.error ?? null,
+          errorCode: updated.errorCode ?? null,
+          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
   }
 
   /**
@@ -13692,6 +13693,10 @@ export function heartbeatService(
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" &&
       transientRecovery?.errorFamily === "transient_upstream"
@@ -16749,8 +16754,9 @@ export function heartbeatService(
     return blocked;
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
     // Complete persisted native results before generic orphan recovery. The
@@ -17204,7 +17210,7 @@ export function heartbeatService(
         finishedAt: now,
         error: queueExpiredMessage,
       });
-      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+      await appendRunEvent(cancelledRun, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
@@ -19273,11 +19279,12 @@ export function heartbeatService(
           }
         }
         throw error;
+      }
       if (adapterConsumesInstructionsBundle(agent.adapterType)) {
         try {
           const ensured = await agentInstructionsService().ensureManagedInstructionsMaterialized(agent, {
             durableSnapshot: agent.managedInstructionsSnapshot ?? null,
-            loadDefaults: (role) =>
+            loadDefaults: (role: string) =>
               loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(role)),
           });
           if (ensured.snapshotToPersist) {
@@ -19297,7 +19304,7 @@ export function heartbeatService(
               },
               "re-materialized missing managed instructions bundle before run",
             );
-            await appendRunEvent(currentRun, seq++, {
+            await appendRunEvent(run, {
               eventType: "instructions.rematerialized",
               stream: "system",
               level: "warn",
@@ -19305,7 +19312,7 @@ export function heartbeatService(
               payload: { source: ensured.source, entryPath: ensured.entryPath },
             });
           }
-        } catch (err) {
+        } catch (err: unknown) {
           logger.warn(
             {
               companyId: agent.companyId,
@@ -19316,7 +19323,6 @@ export function heartbeatService(
             "failed to ensure managed instructions bundle; continuing without self-heal",
           );
         }
-      }
       }
       await workspaceOperationRecorder.attachExecutionWorkspaceId(
         persistedExecutionWorkspace?.id ?? null,
@@ -19558,39 +19564,6 @@ export function heartbeatService(
                   issueId,
                   expectedExecutionRunId: run.id,
                   currentExecutionRunId: lockedIssue?.executionRunId ?? null,
-          // Persist a credential the runtime rotated mid-run. Codex is the live
-          // case: a ChatGPT-plan auth.json carries a single-use refresh token
-          // that the CLI rotates whenever the access token expires, and the
-          // rotated copy dies with the sandbox. Without this the stored
-          // credential is invalid from the next run onward, so the plan route
-          // would work for about an hour and then break for good.
-          onCredentialRotated: async ({ envKey, value }) => {
-            try {
-              const bindings = await secretsSvc.listBindings(agent.companyId);
-              const binding = bindings.find(
-                (candidate) =>
-                  candidate.targetType === "agent" &&
-                  candidate.targetId === agent.id &&
-                  candidate.configPath === `env.${envKey}`,
-              );
-              if (!binding) return;
-              // Attributed to the agent, not a user: nobody typed this value,
-              // the runtime produced it. Keeps the secret's audit trail honest
-              // about who wrote each version.
-              await secretsSvc.rotate(binding.secretId, { value }, { agentId: agent.id });
-            } catch (err) {
-              // Never fail a run that already did the user's work over a
-              // bookkeeping write. A missed rotation surfaces later as an
-              // ordinary auth error, which is recoverable; a failed run is not.
-              // No value or fragment of it is ever logged.
-              await onLog(
-                "stdout",
-                `[paperclip] Could not store the refreshed ${envKey} credential: ${
-                  err instanceof Error ? err.message : String(err)
-                }\n`,
-              );
-            }
-          },
                 },
               },
             };
@@ -20096,9 +20069,10 @@ export function heartbeatService(
 
           const payloadChunk =
             sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
-        // Thrown adapter failures never reach the finalize chain above, so the
-        // storm breaker also runs here for repeated identical failure codes.
-        await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
+              ? sanitizedChunk.slice(
+                  sanitizedChunk.length - MAX_LIVE_LOG_CHUNK_BYTES,
+                )
+              : sanitizedChunk;
 
           publishLiveEvent({
             companyId: run.companyId,
@@ -21186,6 +21160,39 @@ export function heartbeatService(
                         startedAt: meta.startedAt,
                       });
                     },
+                    // Persist a credential the runtime rotated mid-run. Codex is the live
+                    // case: a ChatGPT-plan auth.json carries a single-use refresh token
+                    // that the CLI rotates whenever the access token expires, and the
+                    // rotated copy dies with the sandbox. Without this the stored
+                    // credential is invalid from the next run onward, so the plan route
+                    // would work for about an hour and then break for good.
+                    onCredentialRotated: async ({ envKey, value }: { envKey: string; value: string }) => {
+                      try {
+                        const bindings = await secretsSvc.listBindings(agent.companyId);
+                        const binding = bindings.find(
+                          (candidate) =>
+                            candidate.targetType === "agent" &&
+                            candidate.targetId === agent.id &&
+                            candidate.configPath === `env.${envKey}`,
+                        );
+                        if (!binding) return;
+                        // Attributed to the agent, not a user: nobody typed this value,
+                        // the runtime produced it. Keeps the secret's audit trail honest
+                        // about who wrote each version.
+                        await secretsSvc.rotate(binding.secretId, { value }, { agentId: agent.id });
+                      } catch (err: unknown) {
+                        // Never fail a run that already did the user's work over a
+                        // bookkeeping write. A missed rotation surfaces later as an
+                        // ordinary auth error, which is recoverable; a failed run is not.
+                        // No value or fragment of it is ever logged.
+                        await onLog(
+                          "stdout",
+                          `[paperclip] Could not store the refreshed ${envKey} credential: ${
+                            err instanceof Error ? err.message : String(err)
+                          }\n`,
+                        );
+                      }
+                    },
                     authToken: authToken ?? undefined,
                   }),
               );
@@ -21674,6 +21681,9 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
+          // Thrown adapter failures never reach the finalize chain above, so the
+          // storm breaker also runs here for repeated identical failure codes.
+          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;

@@ -592,14 +592,6 @@ export interface ServerAdapterModule {
     config: Record<string, unknown>,
     options?: AdapterRuntimeCommandSpecOptions,
   ) => AdapterRuntimeCommandSpec | null;
-}
-
-export interface AdapterRuntimeCommandSpecOptions {
-  /**
-   * The run executes on a managed, pre-baked sandbox image (plugin-backed
-   * provider). When true, no network runtime install may be emitted.
-   */
-  prebakedRuntime?: boolean;
 
   /**
    * Optional: declare the interactive sandbox login capability. The server uses
@@ -608,6 +600,14 @@ export interface AdapterRuntimeCommandSpecOptions {
    * API-key-only vendor) omits it. The capability data holds no secret.
    */
   loginCapability?: import("./login-capability.js").AdapterLoginCapability;
+}
+
+export interface AdapterRuntimeCommandSpecOptions {
+  /**
+   * The run executes on a managed, pre-baked sandbox image (plugin-backed
+   * provider). When true, no network runtime install may be emitted.
+   */
+  prebakedRuntime?: boolean;
 }
 
 // ---------------------------------------------------------------------------

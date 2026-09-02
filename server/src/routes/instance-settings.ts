@@ -22,7 +22,7 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;

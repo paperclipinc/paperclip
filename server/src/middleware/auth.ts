@@ -20,7 +20,6 @@ import {
   pickAvailableIssuePrefix,
   rekeyCompanyIssueIdentifiers,
 } from "../services/issue-prefix.js";
-import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -510,7 +509,6 @@ export function cloudActorHeaderSourceFromHeaders(
       const value = headers[name.toLowerCase()];
       return Array.isArray(value) ? value[0] : value;
     },
-    cloudStack: { stackId, stackRole, ...(stackSlug ? { stackSlug } : {}) },
   };
 }
 
