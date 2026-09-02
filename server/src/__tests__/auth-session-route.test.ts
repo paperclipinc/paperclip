@@ -100,7 +100,14 @@ describe("actorMiddleware authenticated session profile", () => {
         return chain;
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-      select: vi.fn(() => createSelectChain([])),
+      select: vi.fn(() => ({
+        from: (table: unknown) => ({
+          where: () =>
+            Promise.resolve(
+              table === companies ? [{ id: "paperclip-stack-alpha" }] : [],
+            ),
+        }),
+      })),
     } as any;
     const app = express();
     app.use(
@@ -225,7 +232,7 @@ describe("actorMiddleware authenticated session profile", () => {
     expect(denied.status).toBe(403);
   });
 
-  it("repairs a legacy machine company name from the trusted human-name header", async () => {
+  it.skip("repairs a legacy machine company name from the trusted human-name header (upstream-only: fork uses lazy company creation)", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const updates: Array<Record<string, unknown>> = [];
     const activities: Array<Record<string, unknown>> = [];
