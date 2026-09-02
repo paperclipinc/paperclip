@@ -13041,12 +13041,42 @@ export function heartbeatService(
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    runIds: readonly string[] | null = null,
+    optionsOrRunIds?: {
+      hasInflightRuns?: () => boolean;
+      sleep?: (ms: number) => Promise<void>;
+      drainTimeoutMs?: number;
+      pollIntervalMs?: number;
+      nowMs?: () => number;
+    } | readonly string[] | null,
   ) {
+    const isRunIdsArg = optionsOrRunIds == null || Array.isArray(optionsOrRunIds);
+    const runIds: readonly string[] | null = isRunIdsArg ? (optionsOrRunIds ?? null) : null;
+    const drainOpts = !isRunIdsArg ? optionsOrRunIds as Exclude<typeof optionsOrRunIds, readonly string[] | null | undefined> : null;
+
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
     }
+
+    // Suppress new-run dispatch before the wait so no scheduler path can
+    // race the shutdown. The flag is module-scoped so every heartbeatService
+    // instance observes the quiesce (see getSchedulingSuppression above).
+    shutdownDraining = true;
+
+    if (drainOpts?.hasInflightRuns) {
+      const sleepFn = drainOpts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const nowMsFn = drainOpts.nowMs ?? (() => Date.now());
+      const drainTimeoutMs = drainOpts.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+      const pollIntervalMs = drainOpts.pollIntervalMs ?? 500;
+      const deadline = nowMsFn() + drainTimeoutMs;
+
+      while (drainOpts.hasInflightRuns()) {
+        const remaining = deadline - nowMsFn();
+        if (remaining <= 0) break;
+        await sleepFn(Math.min(pollIntervalMs, remaining));
+      }
+    }
+
     const activeRuns = await db
       .select({
         run: heartbeatRuns,

@@ -165,7 +165,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   });
 
   it("resyncs an A to B to A context transition inside the debounce window", async () => {
-    const { db, insertedTables } = createFakeDb();
+    const { db, insertedTables } = createFakeDb({ companyRows: [{ id: "company-x" }] });
     const contextA = VALID_HEADERS;
     const contextB = { ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" };
 

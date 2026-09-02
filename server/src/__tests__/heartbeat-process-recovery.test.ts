@@ -3334,7 +3334,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
-    const heartbeat = heartbeatService(db);
+    // Simulate the worker mid-restart: the manager IS wired into this process,
+    // it just reports the worker as not running yet. That is the transient,
+    // self-healing condition this test is about. A process with no worker
+    // manager at all is a permanent wiring bug and reports a different error.
+    const restartingWorkerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: environmentRuntimeService(db, {
+        pluginWorkerManager: restartingWorkerManager,
+        pluginWorkerReadyTimeoutMs: 0,
+      }),
+    });
     await heartbeat.resumeQueuedRuns();
 
     const runs = await waitForValue(async () => {
@@ -4176,10 +4189,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // clobbers a run that is now legitimately executing (and cancels its
     // wakeup and appends a queue_expired event to a run no longer queued).
     //
-    // The queue-expiry backstop's own select is the SECOND `db.select` call
-    // inside reapOrphanedRuns (the first is the unconditional "running"
-    // activeRuns select at the top of the function, which returns empty here
-    // since nothing is running yet) -- so intercepting call #2 targets
+    // The queue-expiry backstop's own select is the FOURTH `db.select` call
+    // inside reapOrphanedRuns (1: retryableNativeProcesses, 2: cancellationRequests,
+    // 3: activeRuns, 4: expiredQueuedRuns -- the conditional monitorIssues select is
+    // skipped because activeRuns is empty) -- so intercepting call #4 targets
     // exactly the expiredQueuedRuns select and injects the race right after
     // it resolves, before the loop below reaches this run's cancellation.
     const originalSelect = db.select.bind(db);
@@ -4187,7 +4200,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const selectSpy = vi.spyOn(db, "select").mockImplementation((...args: unknown[]) => {
       selectCallCount += 1;
       const builder = (originalSelect as (...a: unknown[]) => object)(...args);
-      if (selectCallCount === 2) {
+      if (selectCallCount === 4) {
         return wrapQueryChainWithConcurrentSideEffect(builder, async () => {
           await db
             .update(heartbeatRuns)

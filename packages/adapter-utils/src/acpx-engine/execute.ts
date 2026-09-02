@@ -3371,10 +3371,10 @@ async function emitAcpxFailure(input: {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
   const message = messageOverride ?? rawMessage;
-  const classified = classifyError(err, phase);
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  const classified = classifyError(err, phase, childStderrTail);
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
@@ -4361,7 +4361,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             skipRemoteClose: false,
           };
           await emitPhase("ensure_session", ensureSessionPhaseStart, "failed");
-          const { classified, message } = await emitAcpxFailure({
+          const { classified, message, childStderrTail: stderrTail } = await emitAcpxFailure({
             ctx,
             prepared,
             err,
@@ -4377,18 +4377,39 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             // bytes never reach the run log or the acpx.error payload.
             ...(guardTripped ? { suppressChildStderrTail: true } : {}),
           });
+          // Redact secrets from the child stderr before surfacing it in any
+          // tenant-facing field (errorMessage, summary, or thrown error).
+          const redactedStderrTail = stderrTail ? redactSensitiveText(stderrTail) : stderrTail;
+          const diagnostics = describeErrorDiagnostics(err);
+          const composedMessage = composeSessionInitFailureMessage({
+            message,
+            causeMessage: diagnostics.causeMessage,
+            childStderrTail: redactedStderrTail,
+          });
+          // When the adapter allows a lane fallback for session-init failures,
+          // throw an AcpxSessionInitError instead of returning a terminal result
+          // so the calling adapter can fall back to its CLI lane.
+          if (allowSessionInitLaneFallback(ctx)) {
+            throw new AcpxSessionInitError({
+              message: composedMessage,
+              errorCode: classified.errorCode ?? "acpx_session_init_failed",
+              errorMeta: classified.errorMeta,
+              childStderrTail: redactedStderrTail,
+              cause: err,
+            });
+          }
           capturedResult = {
             exitCode: 1,
             signal: null,
             timedOut: false,
-            errorMessage: message,
+            errorMessage: composedMessage,
             ...classified,
             ...billingFields,
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
             clearSession,
             resultJson: { phase: "ensure_session" },
-            summary: message,
+            summary: composedMessage,
           };
           return settleFor("handshake", err);
         }
@@ -4433,6 +4454,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // buildRuntime failed before it staged or bridged anything, so there is
           // nothing to settle here. The finally below ends the sandbox.startup
           // span; let the failure propagate.
+          throw err;
+        }
+        // A session-init lane-fallback error has already been classified and
+        // logged; propagate it so the adapter can fall back to its CLI lane.
+        if (err instanceof AcpxSessionInitError) {
           throw err;
         }
         // The post-build runtime-creation window failed after buildRuntime returned
