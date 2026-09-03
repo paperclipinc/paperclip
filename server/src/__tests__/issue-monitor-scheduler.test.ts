@@ -443,7 +443,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       issueId,
       clearReason: "max_attempts_exhausted",
       maxAttempts: 1,
-      modelProfile: "cheap",
     });
 
     const activity = await db
@@ -486,7 +485,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(recoveryIssue).toMatchObject({
       parentId: issueId,
       priority: "high",
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      assigneeAdapterOverrides: null,
     });
     expect(["todo", "in_progress"]).toContain(recoveryIssue?.status);
   });
