@@ -15,7 +15,7 @@ import {
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
-  PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   resolvePaperclipDesiredSkillNames,
   renderPaperclipWakePrompt,

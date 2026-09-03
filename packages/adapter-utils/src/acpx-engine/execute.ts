@@ -3254,26 +3254,26 @@ function classifyError(
     ...(stackPreview ? { stackPreview } : {}),
     ...(phase ? { phase } : {}),
   };
-  // A host-generated handshake-guard error is classified by its type, never
-  // by message text, and runs before the message-driven heuristics below. A
-  // startup timeout or a duplex control-channel loss must report its own
-  // closed code, not the generic session-identity failure `phase ===
-  // "ensure_session"` would otherwise produce a few lines down.
-  if (isAcpxHandshakeTimeoutError(err)) {
+  // Only reclassify as connect-a-key when the error message carries a genuine
+  // auth-FAILURE signal (a 401/403, an invalid/expired credential, etc.), not a
+  // mere mention of "auth"/"credential" (which a backend outage also logs).
+  if (AUTH_FAILURE_RE.test(message)) {
     return {
-      errorCode: "acpx_handshake_timeout",
-      errorMeta: { category: "runtime", ...baseMeta },
+      errorCode: "acpx_auth_required",
+      errorMeta: { category: "auth", ...baseMeta },
     };
   }
-  if (isAcpxHandshakeTransportLostError(err)) {
-    return {
-      errorCode: "acpx_handshake_transport_lost",
-      errorMeta: { category: "runtime", ...baseMeta },
-    };
-  }
-  const lower = message.toLowerCase();
-  const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
-  if (authLike) {
+  // A session-init failure whose message is opaque (no ACP_* code, e.g. a
+  // JSON-RPC -32603 "Internal error") but whose child stderr shows a genuine
+  // auth rejection is an actionable connect-a-key case, not a generic init
+  // failure. A generic "api key"/"credential" mention alongside a non-auth
+  // terminal error (e.g. a 5xx backend outage) must NOT reclassify.
+  if (
+    phase === "ensure_session" &&
+    !acpCode &&
+    childStderrTail &&
+    AUTH_FAILURE_RE.test(childStderrTail)
+  ) {
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },
@@ -3354,10 +3354,8 @@ async function emitAcpxFailure(input: {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
   const rawMessage = err instanceof Error ? err.message : String(err);
   const message = messageOverride ?? rawMessage;
-  const classified = classifyError(err, phase);
-  const childStderrTail = suppressChildStderrTail
-    ? null
-    : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  const childStderrTail = await readChildStderrTail({ logPath: prepared.childStderrLogPath });
+  const classified = classifyError(err, phase, childStderrTail);
   if (childStderrTail) {
     await ctx.onLog(
       "stderr",
@@ -4450,66 +4448,54 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // agent turn runs after and is out of the span's scope.
         rootSpan.end(startupFailed);
       }
-      const configureSessionStart = now();
-      try {
-        await applySessionConfigOptions({
-          runtime,
-          handle: sessionHandle,
-          prepared,
-          onLog: ctx.onLog,
+    } catch (err) {
+      const { classified, message, childStderrTail } = await emitAcpxFailure({
+        ctx,
+        prepared,
+        err,
+        phase: "ensure_session",
+      });
+      const causeMessage =
+        typeof classified.errorMeta?.causeMessage === "string"
+          ? classified.errorMeta.causeMessage
+          : null;
+      // The composed message becomes the tenant-facing, persisted
+      // errorMessage/summary. The raw child stderr (and cause) can carry
+      // secrets (tokens, Authorization headers, api-key values), so redact
+      // before surfacing. The full unredacted tail still reached the internal
+      // run log and the acpx.error event above.
+      const composedMessage = redactSensitiveText(
+        composeSessionInitFailureMessage({
+          message,
+          causeMessage,
+          childStderrTail,
+        }),
+      );
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+      await cleanupRemoteBridges(prepared);
+      // Auto-selected (non-explicit) runs throw so the adapter's execute()
+      // wrapper catches it and falls back to the proven CLI lane. Explicit
+      // engine=acp runs keep the terminal failed result (no silent lane switch).
+      if (allowSessionInitLaneFallback(ctx)) {
+        throw new AcpxSessionInitError({
+          message: composedMessage,
+          errorCode: classified.errorCode ?? "acpx_session_init_failed",
+          errorMeta: classified.errorMeta,
+          childStderrTail,
+          cause: err,
         });
-        await emitPhase("configure_session", configureSessionStart, "ok");
-      } catch (err) {
-        // Record a direct close that drops the matching warm entry for the
-        // settlement `endSession` step. The settlement stops the bridges, discards
-        // the staged runtime, releases the staging lease, and flushes the child
-        // stderr on this exit path too.
-        runtimeSettlement = {
-          mode: "direct",
-          handle: sessionHandle,
-          reason: "paperclip config cleanup",
-          discardPersistentState: false,
-          dropWarmEntry: true,
-          recordCloseError: true,
-          cancelTurnReason: null,
-          skipRemoteClose: false,
-        };
-        await emitPhase("configure_session", configureSessionStart, "failed");
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "configure_session",
-        });
-        capturedResult = {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-          ...classified,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession,
-          resultJson: {
-            phase: "configure_session",
-            agent: prepared.acpxAgent,
-            requestedModel: prepared.requestedModel || null,
-            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-            fastMode: prepared.fastMode,
-          },
-          summary: message,
-        };
-        return settleFor("session_configuration", err);
       }
-      // Startup succeeded: seal the ledger (promotes the startup_rollback entries
-      // that survived to `per_run`) and hand the ready resources to the turn. The
-      // turn wrapper reads the run state through the shared closure locals in this
-      // phase, so the sealed view and the context are the contract carriers only.
       return {
-        kind: "ready",
-        resources: runResourceLedger.seal([]),
-        context: { sessionKey: prepared.sessionKey } as unknown as AcpRunContext,
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: composedMessage,
+        ...classified,
+        ...billingFields,
+        model: prepared.requestedModel || null,
+        clearSession,
+        resultJson: { phase: "ensure_session" },
+        summary: composedMessage,
       };
       };
       // The turn step: run the turn sequence and settle the runtime inline

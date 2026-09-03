@@ -576,15 +576,18 @@ export interface ServerAdapterModule {
    * carries the CLI or the run landed on the wrong image, and an install would
    * hit a blocked egress and stall until timeout.
    */
-  getRuntimeCommandSpec?: (config: Record<string, unknown>) => AdapterRuntimeCommandSpec | null;
+  getRuntimeCommandSpec?: (
+    config: Record<string, unknown>,
+    options?: AdapterRuntimeCommandSpecOptions,
+  ) => AdapterRuntimeCommandSpec | null;
+}
 
+export interface AdapterRuntimeCommandSpecOptions {
   /**
-   * Optional: declare the interactive sandbox login capability. The server uses
-   * it to drive the login flow and to project the safe panel fields to the user
-   * interface. An adapter with no interactive login (for example an
-   * API-key-only vendor) omits it. The capability data holds no secret.
+   * The run executes on a managed, pre-baked sandbox image (plugin-backed
+   * provider). When true, no network runtime install may be emitted.
    */
-  loginCapability?: import("./login-capability.js").AdapterLoginCapability;
+  prebakedRuntime?: boolean;
 }
 
 // ---------------------------------------------------------------------------

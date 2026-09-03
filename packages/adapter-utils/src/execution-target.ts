@@ -211,12 +211,14 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    */
   streamRunLogs?: boolean | null;
   /**
-   * The injected duplex observability recorder for this run. The host attaches
-   * it on the same seam as `runner`, so this live object stays on the host and
-   * never enters the sandbox environment. The bridge binds it to the fixed
-   * duplex observability surface. Absent means the safe no-op default.
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
    */
-  duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
+  prebakedRuntime?: boolean | null;
 }
 
 export type AdapterExecutionTarget =
@@ -2168,11 +2170,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const poll = async () => {
     if (stopping) return;
     try {
-      // Read every file this tick fetched before this loop decides whether to
-      // keep polling. A `shutdownAck` can land in the same batch right after
-      // an `exit` event; deliver it too, so this tick never drops an
-      // already-fetched (and already-removed-from-disk) event.
-      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      const { events, stoppedEarly } = await readRemoteJsonFiles({
+        client,
+        dir: eventsDir,
+        afterName: lastDeliveredEventName,
+      });
+      let midBatchFailure: string | null = null;
       for (const event of events) {
         let parsed: {
           type?: string;
@@ -2182,7 +2185,38 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           signal?: string | null;
           message?: string;
         };
-        deliverRemoteEvent(parsed);
+        try {
+          parsed = JSON.parse(event.body) as typeof parsed;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to parse ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        try {
+          deliverRemoteEvent(parsed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to deliver ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        // Only now that the event has actually been handed to the caller do
+        // we advance the watermark and attempt to remove the remote file. A
+        // throw above (parse or deliver) leaves both untouched, so the file
+        // is re-read from exactly this point on the next cycle and nothing
+        // already delivered is ever repeated.
+        lastDeliveredEventName = event.name;
+        const filePath = path.posix.join(eventsDir, event.name);
+        try {
+          await client.remove(filePath);
+        } catch (removeError) {
+          const removeMessage = removeError instanceof Error ? removeError.message : String(removeError);
+          await onLog(
+            "stderr",
+            `[paperclip] ACP process session bridge failed to remove processed event file ${event.name}; ` +
+              `relying on the delivery watermark to avoid re-sending it: ${removeMessage}\n`,
+          );
+        }
+        if (parsed.type === "exit" || parsed.type === "error") return;
       }
       if (midBatchFailure) {
         if (await logPollFailure(midBatchFailure)) return;
@@ -4622,9 +4656,84 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       client,
       queueDir,
       maxBodyBytes,
-      getRuntimeParentContext: input.getRuntimeParentContext,
-      runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
+      handleRequest: async (request) => {
+        const method = request.method.trim().toUpperCase() || "GET";
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
+          );
+        }
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(request.headers)) {
+          if (value.trim().length === 0) continue;
+          headers.set(key, value);
+        }
+        headers.set("authorization", `Bearer ${hostApiToken}`);
+        headers.set("x-paperclip-run-id", input.runId);
+        let response: Response;
+        try {
+          response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+            method,
+            headers,
+            ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+            signal: AbortSignal.timeout(30_000),
+          });
+        } catch (error) {
+          // Map fetch failures to a faithful status the in-sandbox agent can act
+          // on, instead of letting them surface as an opaque generic 502. A
+          // timeout in particular is ambiguous on a mutating call ("did my write
+          // land?"), so it must be distinguishable — otherwise the agent tends to
+          // confabulate an outcome.
+          const name = error instanceof Error ? error.name : "";
+          if (name === "TimeoutError" || name === "AbortError") {
+            return {
+              status: 504,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                error: "The Paperclip API did not respond within the 30s bridge timeout. The request may or may not have been applied; re-read state before retrying.",
+                code: "bridge_upstream_timeout",
+              }),
+            };
+          }
+          return {
+            status: 502,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: `Bridge could not reach the Paperclip API: ${error instanceof Error ? error.message : String(error)}`,
+              code: "bridge_upstream_unreachable",
+            }),
+          };
+        }
+        if (bridgeDebugEnabled) {
+          await onLog(
+            "stdout",
+            `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""} (url=${response.url || "-"} ct=${response.headers.get("content-type") ?? "-"} server=${response.headers.get("server") ?? "-"} xpb=${response.headers.get("x-powered-by") ?? "-"} redirected=${response.redirected})\n`,
+          );
+        }
+        let body: string;
+        try {
+          body = await readBridgeForwardResponseBody(response, maxBodyBytes);
+        } catch (error) {
+          // Oversized response body: surface a clear 413 (not a generic 502) so
+          // the agent knows the call succeeded server-side but the payload was
+          // too large to relay, rather than assuming the operation failed.
+          return {
+            status: 413,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              code: "bridge_response_too_large",
+              upstreamStatus: response.status,
+            }),
+          };
+        }
+        return {
+          status: response.status,
+          headers: buildBridgeResponseHeaders(response),
+          body,
+        };
+      },
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

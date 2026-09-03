@@ -44,19 +44,7 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
-  // The stop timestamp and the measured wall time of one execution. Both are
-  // optional and additive: a producer that does not measure them leaves them
-  // absent, so the many existing `RunProcessResult` producers stay unchanged.
-  // The sandbox runner sets them, so the exec span records a true wall time.
-  finishedAt?: string | null;
-  durationMs?: number | null;
-  // The typed error code of a transport-level failure, or absent when the
-  // process result carries no such code. It follows the same additive-optional
-  // convention as the timing fields: a producer that names no code leaves it
-  // absent, so the existing `RunProcessResult` producers stay unchanged. The
-  // run-disposition seam sets it to `duplex_channel_lost` when the sandbox
-  // duplex control channel died before a clean completion.
-  errorCode?: string | null;
+  streamed?: boolean;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 
