@@ -149,12 +149,8 @@ export function SummarySlotCard({
     ? { companyId, scopeKind, scopeId, slotKey }
     : null;
 
-  const experimentalQuery = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
-  const summariesEnabled = experimentalQuery.data?.enableSummaries === true;
-  const builtInAgentsEnabled = experimentalQuery.data?.enableBuiltInAgents === true;
+  const { data: features, isLoading: featuresLoading } = useFeatures();
+  const summariesEnabled = features?.enableSummaries === true;
 
   const builtInAgentsQuery = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),

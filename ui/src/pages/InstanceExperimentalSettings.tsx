@@ -175,6 +175,54 @@ export function InstanceExperimentalSettings() {
     },
   });
 
+  const previewMutation = useMutation({
+    mutationFn: async (lookbackHours: number) =>
+      instanceSettingsApi.previewIssueGraphLivenessAutoRecovery({ lookbackHours }),
+    onSuccess: (preview) => {
+      setActionError(null);
+      setPendingPreview(preview);
+      setPreviewDialogOpen(true);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to preview recovery tasks.");
+    },
+  });
+
+  const runRecoveryMutation = useMutation({
+    mutationFn: async (lookbackHours: number) =>
+      instanceSettingsApi.runIssueGraphLivenessAutoRecovery({ lookbackHours }),
+    onSuccess: async () => {
+      setActionError(null);
+      closeRecoveryPreview();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.health }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess }),
+      ]);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to create recovery tasks.");
+    },
+  });
+
+  useEffect(() => {
+    const next = experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours;
+    if (typeof next === "number") {
+      setLookbackHoursDraft(String(next));
+    }
+  }, [experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours]);
+
+  const autoRecoveryManaged =
+    experimentalQuery.data?.managedKeys?.enableIssueGraphLivenessAutoRecovery?.managed === true;
+
+  // If refreshed settings mark auto-recovery as managed while the preview
+  // dialog is open, close it so its confirmation actions cannot emit a PATCH.
+  useEffect(() => {
+    if (autoRecoveryManaged) {
+      closeRecoveryPreview();
+    }
+  }, [autoRecoveryManaged]);
+
   if (experimentalQuery.isLoading) {
     return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
   }

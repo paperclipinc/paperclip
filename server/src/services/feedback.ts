@@ -24,8 +24,6 @@ import { codexHomeDir, parseCodexJsonl } from "@paperclipai/adapter-codex-local/
 import { parseOpenCodeJsonl } from "@paperclipai/adapter-opencode-local/server";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
-  applyOperatorGeneralDefaults,
-  instanceGeneralSettingsSchema,
   type FeedbackTargetType,
   type FeedbackTraceBundle,
   type FeedbackTraceBundleCaptureStatus,
@@ -46,7 +44,7 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore } from "./run-log-store.js";
-import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { parseInstanceSettingsOverrides, resolveGeneralSettings } from "./instance-settings.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -153,12 +151,6 @@ function contentTypeForPath(filePath: string) {
   if (lower.endsWith(".json")) return "application/json";
   if (lower.endsWith(".md")) return "text/markdown; charset=utf-8";
   return "text/plain; charset=utf-8";
-}
-
-function normalizeInstanceGeneralSettings(raw: unknown) {
-  const parsed = instanceGeneralSettingsSchema.safeParse(raw ?? {});
-  if (parsed.success) return parsed.data;
-  return instanceGeneralSettingsSchema.parse({});
 }
 
 function buildIssuePath(identifier: string | null) {
@@ -1975,14 +1967,12 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             })
             .then((rows) => rows[0] ?? null));
 
-        // Operator setting defaults apply to the effective value: when the
-        // operator supplies a feedback-sharing default, the preference is no
-        // longer "prompt", so a stray answer must not persist over it.
-        const currentGeneral = applyOperatorGeneralDefaults(
-          normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
-          getOperatorSettingDefaults(),
+        const storedGeneral = resolveGeneralSettings(currentInstanceSettings?.general);
+        const effectiveGeneral = resolveGeneralSettings(
+          currentInstanceSettings?.general,
+          parseInstanceSettingsOverrides().general,
         );
-        if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+        if (currentInstanceSettings && effectiveGeneral.feedbackDataSharingPreference === "prompt") {
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
           await tx

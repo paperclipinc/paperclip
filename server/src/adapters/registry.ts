@@ -1,4 +1,9 @@
-import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
+import type {
+  AdapterModelProfileDefinition,
+  AdapterRuntimeCommandSpec,
+  AdapterRuntimeCommandSpecOptions,
+  ServerAdapterModule,
+} from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
