@@ -2,7 +2,6 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
-  asBoolean,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -29,7 +28,7 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 // A connected-but-rejected credential (expired OAuth token, revoked API key).
@@ -39,7 +38,7 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
 const CLAUDE_INVALID_CREDENTIAL_RE =
   /(?:failed\s+to\s+authenticate[\s\S]{0,200}?\b401\b|\b401\b[\s\S]{0,200}?failed\s+to\s+authenticate|invalid\s+bearer\s+token|oauth\s+(?:access\s+)?token\s+is\s+(?:invalid|expired|revoked)|invalid\s+x-api-key|authentication[\s_]error)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -186,35 +185,6 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
-// Collect the parsed terminal result fields that carry an auth failure. The
-// CLI writes the token-failure text to the result event, so the detector reads
-// the result string, the top-level error field, and the errors array. It never
-// reads the raw stdout, so an assistant event cannot inject a token marker.
-function collectClaudeTerminalText(parsed: Record<string, unknown>): string {
-  return [
-    asString(parsed.result, ""),
-    asString(parsed.error, ""),
-    ...extractClaudeErrorMessages(parsed),
-  ]
-    .map((field) => field.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-// Report whether the parsed terminal result marks the run as an auth failure.
-// The token-failure markers apply only to a failed run. A successful probe
-// whose answer text repeats an auth phrase does not classify as login required.
-function claudeResultIndicatesAuthFailure(parsed: Record<string, unknown>): boolean {
-  if (asBoolean(parsed.is_error, false)) return true;
-  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
-  if (subtype.startsWith("error")) return true;
-  const status =
-    asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
-  if (status === 401 || status === 403) return true;
-  if (asString(parsed.error, "").trim()) return true;
-  return extractClaudeErrorMessages(parsed).length > 0;
-}
-
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
@@ -226,15 +196,6 @@ export function detectClaudeLoginRequired(input: {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
-
-  // The token-failure markers match only against the parsed terminal fields of
-  // a failed run. The raw stdout is untrusted, so a model that prints a token
-  // phrase, or a successful run that repeats one, does not flip the classifier.
-  const tokenFailure =
-    parsed !== null &&
-    claudeResultIndicatesAuthFailure(parsed) &&
-    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
   const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
   // Independent of requiresLogin: a message can say the credential is
@@ -245,7 +206,7 @@ export function detectClaudeLoginRequired(input: {
     messages.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
     isClaudeInvalidCredentialError({ parsed: input.parsed, stdout: input.stdout, stderr: input.stderr });
   return {
-    requiresLogin: loginPrompt || tokenFailure,
+    requiresLogin,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
     credentialRejected,
   };
