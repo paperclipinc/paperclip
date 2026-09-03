@@ -1,5 +1,4 @@
-import { lazy, Suspense } from "react";
-import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
+import { useEffect } from "react";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
@@ -101,14 +100,8 @@ import {
   onboardingStepForCompany,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
-import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
-import { useCloudInstance } from "./hooks/useCloudInstance";
-import { cloudStackCreateUrl } from "./lib/cloudLinks";
-import { navigateTopLevel } from "@/lib/browserNavigation";
-
-const CompanyExport = lazy(() =>
-  import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
-);
+import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { findCompanyByUrlSegment } from "./lib/company-routes";
 
 function boardRoutes() {
   return (
@@ -121,37 +114,34 @@ function boardRoutes() {
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
-      <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
-      <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
-        <Route path="company/settings/members" element={<CompanyAccess />} />
-        <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      </Route>
-      {/* Invites moved into the Members page; the old URL redirects (and stays
-          gated so a hidden Invites surface never round-trips through it). */}
-      <Route element={<HiddenSettingsPageGate pageKey="company.invites" />}>
-        <Route
-          path="company/settings/invites"
-          element={<Navigate to="/company/settings/members?tab=invites" replace />}
-        />
-      </Route>
-      <Route element={<HiddenSettingsPageGate pageKey="company.export" />}>
-        <Route
-          path="company/export/*"
-          element={(
-            <Suspense fallback={<PaperclipLoading />}>
-              <CompanyExport />
-            </Suspense>
-          )}
-        />
-      </Route>
-      <Route element={<CloudManagedPageGate />}>
-        <Route element={<HiddenSettingsPageGate pageKey="company.import" />}>
-          <Route path="company/import" element={<CompanyImport />} />
-        </Route>
-      </Route>
-      <Route element={<HiddenSettingsPageGate pageKey="company.secrets" />}>
-        <Route path="company/settings/secrets" element={<Secrets />} />
-      </Route>
+      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
+      <Route
+        path="company/settings/members"
+        element={
+          <SurfaceGuard surface="company.members">
+            <CompanyAccess />
+          </SurfaceGuard>
+        }
+      />
+      <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
+      <Route
+        path="company/settings/invites"
+        element={
+          <SurfaceGuard surface="company.invites">
+            <CompanyInvites />
+          </SurfaceGuard>
+        }
+      />
+      <Route path="company/export/*" element={<CompanyExport />} />
+      <Route path="company/import" element={<CompanyImport />} />
+      <Route
+        path="company/settings/secrets"
+        element={
+          <SurfaceGuard surface="company.secrets">
+            <Secrets />
+          </SurfaceGuard>
+        }
+      />
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
@@ -488,6 +478,7 @@ export function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
+  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
 
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`

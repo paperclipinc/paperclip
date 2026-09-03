@@ -30,11 +30,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  startAdapterAuthSessionRequestSchema,
-  startClaudeSetupTokenSessionRequestSchema,
-  submitBrowserCodeRequestSchema,
-  toAccountHandle,
-  type AgentAdapterType,
+  isHeartbeatRunTerminalStatus,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -85,8 +81,6 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
-import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -1205,11 +1199,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
-        // Re-check the company binding atomically at lease time. The route
-        // guard already rejected a foreign environment, but the binding could
-        // change between the guard check and the lease acquire. This closes
-        // that check-to-lease race so a foreign sandbox never gets a lease.
-        assertCompanyBinding: true,
+        // Pin the Test lease to the agent's own adapter so the sandbox boots the
+        // harness image the Test will exec against (matching real agent runs). It
+        // also keeps the lease from being an adapter-less one, which a plugin that
+        // cannot prove a single-adapter environment now rejects.
+        adapterType: input.adapterType,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -1965,17 +1959,8 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
+  function assertSelectableAdapterType(type: string | null | undefined): string {
     const adapterType = assertKnownAdapterType(type);
-    if (adapterType === "paperclip_runner") {
-      const experimental = await instanceSettings.getExperimental();
-      if (experimental.enableNativeRunner !== true) {
-        throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
-          { code: "paperclip_runner_rollout_disabled" },
-        );
-      }
-    }
     const disabled = new Set(getDisabledAdapterTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
@@ -1986,74 +1971,6 @@ export function agentRoutes(
       `Adapter "${adapterType}" is not available on this instance. `
       + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
     );
-  }
-
-  async function assertFreshPaperclipRunnerProvider(
-    companyId: string,
-    adapterType: string,
-    adapterConfig: Record<string, unknown>,
-  ): Promise<void> {
-    if (adapterType !== "paperclip_runner") return;
-    let profile;
-    try {
-      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
-    } catch (error) {
-      if (error instanceof PaperclipRunnerProviderProfileError) {
-        throw unprocessable(error.message, { code: error.code });
-      }
-      throw error;
-    }
-    if (profile.provider === "claude_managed") {
-      await managedAgentProfileService(db).requireQualified(
-        companyId,
-        profile.managedProfileId,
-      );
-    } else if (profile.provider === "aws_agentcore") {
-      await remoteAgentProfileService(db).requireQualified(
-        companyId,
-        profile.agentCoreProfileId,
-        "aws_bedrock_agentcore_harness",
-      );
-    }
-  }
-
-  function resolvePaperclipRunnerAdapterTransition(input: {
-    previousAdapterType: string;
-    nextAdapterType: string;
-    previousAdapterConfig: Record<string, unknown>;
-    nextAdapterConfig: Record<string, unknown>;
-  }): Record<string, unknown> {
-    if (
-      input.nextAdapterType !== "paperclip_runner"
-      || input.previousAdapterType === input.nextAdapterType
-    ) {
-      return input.nextAdapterConfig;
-    }
-    if (input.previousAdapterType !== "codex_local") {
-      throw unprocessable(
-        `Cannot convert ${input.previousAdapterType} to Paperclip Runner while only the Codex provider is available.`,
-        { code: "paperclip_runner_adapter_conversion_unsupported" },
-      );
-    }
-    return {
-      ...input.nextAdapterConfig,
-      model:
-        asNonEmptyString(input.nextAdapterConfig.model)
-        ?? asNonEmptyString(input.previousAdapterConfig.model)
-        ?? DEFAULT_CODEX_LOCAL_MODEL,
-    };
-  }
-
-  function assertProviderTraceSettingTransition(
-    req: Request,
-    nextRuntimeConfig: unknown,
-    previousRuntimeConfig?: unknown,
-  ): void {
-    const previousRaw =
-      asRecord(asRecord(previousRuntimeConfig)?.debug)?.providerTrace === "raw";
-    const nextRaw =
-      asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
-    if (previousRaw !== nextRaw) assertInstanceAdmin(req);
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -3888,7 +3805,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
+    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
@@ -4113,7 +4030,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
       ...createInput
     } = req.body;
-    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
+    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
@@ -4556,8 +4473,11 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    const nextAdapterType = hasOwn(patchData, "adapterType")
-      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
+    const requestedAdapterType = hasOwn(patchData, "adapterType")
+      ? (() => {
+        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
+        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
+      })()
       : existing.adapterType;
     const requestedAdapterType = nextAdapterType === existing.adapterType
       ? nextAdapterType

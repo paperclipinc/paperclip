@@ -1,4 +1,5 @@
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -101,10 +102,8 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
   }
 
   const hostDir = path.dirname(hostAuthPath);
-  await mkdir(hostDir, { recursive: true });
-  const hostOutcome = await withDirectoryMergeLock(
-    hostDir,
-    async () => {
+  try {
+    return await withDirectoryMergeLock(hostDir, async () => {
       // Stage on the same filesystem as the host target so both the predicate read
       // and the final rename stay device-local (rename across devices is not
       // atomic and would fail with EXDEV).
@@ -116,9 +115,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
         await handle.writeFile(sandboxAuthBytes);
         await handle.close();
 
-        const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
-          errorLabel: "codex auth copy-back",
-        });
+        const decision = await decideExitCode(stagedTempPath, hostAuthPath);
         if (decision === USE_SOURCE_EXIT) {
           // Atomic same-directory swap; rename preserves the temp's 0600 mode.
           await rename(stagedTempPath, hostAuthPath);
@@ -140,46 +137,30 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
         await handle.close().catch(() => undefined);
         await rm(stagedTempPath, { force: true }).catch(() => undefined);
       }
-    },
-    env,
-  );
-
-  // Additive cache write. Independent of the host default overwrite above: it
-  // runs on its own directory lock, keys the slot by the real sandbox
-  // `account_id`, and can write a slot for a different identity than the host
-  // holds. It never touches the host default store. The off-switch (default on)
-  // makes this a no-op when disabled. Only a usable subscription credential has
-  // an identity to key; an api-key or unusable sandbox credential is skipped.
-  //
-  // The cache write is best-effort. The host copy-back above already finished
-  // and set `hostOutcome`, so a failure of this additive write must not replace
-  // that successful result. Catch the error, log it, and return `hostOutcome`.
-  // The cache stays a hint: the next teardown re-attempts the write.
-  if (resolveCacheEntryPath && isCodexAuthCacheEnabled(env)) {
-    try {
-      const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
-      if (sandboxAccountId) {
-        const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
-        await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log, env });
-      }
-    } catch (error) {
-      // Log only the errno code, never the error message. The message embeds the
-      // cache slot path, and the slot path embeds the raw `account_id`; the code
-      // (for example EACCES or ENOSPC) makes the failure diagnosable without a
-      // leak. Token bytes never reach the log.
-      const code = (error as NodeJS.ErrnoException | null)?.code ?? "unknown";
-      // The host copy-back above already finished and set `hostOutcome`. This
-      // diagnostic log is the last step, so a rejecting logger must not throw
-      // and turn that successful result into a failed copy-back. Guard the log:
-      // a rejection here is swallowed, and the function still returns
-      // `hostOutcome` below.
-      await Promise.resolve(
-        log(
-          `[paperclip] Codex auth cache: additive cache write failed (${code}); host copy-back result kept.`,
-        ),
-      ).catch(() => undefined);
+    });
+  } catch (error) {
+    // ENOENT anywhere in the locked host-side sequence means some part of the
+    // shared host store's path is missing: the lock `mkdir` when an ANCESTOR of
+    // the host directory is absent (the lock lives in a sibling of `hostDir`,
+    // so a missing ancestor fails lock acquisition before staging even runs),
+    // the staging `open` when the host directory itself is the missing leaf, or
+    // the writeFile/rename if the directory vanishes mid-sequence. All shapes
+    // mean the same thing: a shared codex home that never existed (e.g. a
+    // multi-tenant cloud server whose credentials live only in managed
+    // per-company homes) or one deleted between the caller's launch-time check
+    // and teardown. There is nothing to merge into, so treat it exactly like
+    // the absent-sandbox-auth branch above and keep the host. Deliberately NOT
+    // `mkdir`: creating the shared directory here would leak this run's
+    // credential into the store every other tenant's managed home is seeded
+    // from. The decision predicate never surfaces a coded ENOENT (it rewraps
+    // spawn failures into plain Errors), so every non-ENOENT failure stays
+    // fail-loud.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      await log(
+        "[paperclip] Codex auth copy-back: no shared host credential store (host codex home path is absent); nothing to merge into, host left untouched.",
+      );
+      return "kept-host";
     }
+    throw error;
   }
-
-  return hostOutcome;
 }

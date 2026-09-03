@@ -60,7 +60,10 @@ import {
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
-  resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
+  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
+  PAPERCLIP_COORDINATION_SKILL_KEY,
+  PARA_MEMORY_FILES_SKILL_KEY,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   OPENCODE_MISSING_CREDENTIAL_MESSAGE,
@@ -266,7 +269,11 @@ export async function buildOpenCodeSkillsDir(
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(
+    resolvePaperclipDesiredSkillNames(config, availableEntries, {
+      alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent(opts),
+    }),
+  );
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     if (isPaperclipSkillSourceMissing(entry)) continue;
@@ -335,7 +342,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries, {
+    alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent({
+      canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+      managed: agentUsesManagedInstructions(agent),
+    }),
+  });
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,
@@ -818,11 +830,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        // Forward the transport-level error code from the run-disposition seam.
-        // A lost duplex control channel surfaces the typed `duplex_channel_lost`
-        // code; every other result carries no code here.
-        errorCode: attempt.proc.errorCode ?? null,
+        errorMessage: failed ? fallbackErrorMessage : null,
+        ...(inferenceFailure
+          ? {
+              errorCode: inferenceFailureErrorCode(inferenceFailure.code),
+              errorFamily: inferenceRetry?.family ?? null,
+              errorMeta: {
+                inferenceErrorCode: inferenceFailure.code,
+                inferenceCause: inferenceFailure.cause,
+              },
+            }
+          : {}),
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,

@@ -1,4 +1,5 @@
-import { ChevronsUpDown, Plus, RefreshCw, Settings } from "lucide-react";
+import { ChevronsUpDown, Plus, PlusCircle, Settings } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { healthApi } from "@/api/health";
@@ -35,8 +36,8 @@ interface CompanySwitcherProps {
 
 export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanySwitcherProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
-    useCompany();
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
+  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const sidebarCompanies = companies.filter((company) => company.status !== "archived");
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;

@@ -49,7 +49,7 @@ import {
   COMPANY_SETTINGS_SURFACES,
   derivePublicFeatureFlags,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
+import type { BoardCapabilities, DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,

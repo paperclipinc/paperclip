@@ -170,7 +170,8 @@ function AwaitingJoinApprovalPanel({
           <InviteCompanyLogo
             companyDisplayName={companyDisplayName}
             companyLogoUrl={companyLogoUrl}
-            className="h-12 w-12 border border-zinc-800 rounded-none"
+            companyBrandColor={companyBrandColor}
+            className="h-12 w-12 border border-border rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
         </div>
@@ -178,12 +179,12 @@ function AwaitingJoinApprovalPanel({
           <p className="text-sm text-muted-foreground">
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
-          <div className="border border-zinc-800 p-3">
-            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
-            <p className="text-sm text-zinc-200">Settings → Members</p>
+          <div className="border border-border p-3">
+            <p className="text-xs text-muted-foreground mb-1">Approval page</p>
+            <p className="text-sm text-foreground">Company Settings → Members</p>
           </div>
-          <p className="text-sm text-zinc-400">
-            Ask them to visit <span className="text-zinc-200">Settings → Members</span> to approve your request.
+          <p className="text-sm text-muted-foreground">
+            Ask them to visit <span className="text-foreground">Company Settings → Members</span> to approve your request.
           </p>
           <p className="text-xs text-muted-foreground">
             Refresh this page after you've been approved — you'll be redirected automatically.
@@ -594,7 +595,8 @@ export function InviteLandingPage() {
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                className="h-12 w-12 border border-zinc-800 rounded-none"
+                companyBrandColor={companyBrandColor}
+                className="h-12 w-12 border border-border rounded-none"
               />
               <h1 className="text-lg font-semibold">You joined the organization</h1>
             </div>
@@ -627,7 +629,8 @@ export function InviteLandingPage() {
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                className="h-16 w-16 rounded-none border border-zinc-800"
+                companyBrandColor={companyBrandColor}
+                className="h-16 w-16 rounded-none border border-border"
               />
               <div className="min-w-0">
                 <p className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -647,18 +650,18 @@ export function InviteLandingPage() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Organization</div>
-                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Company</div>
+                <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
               </div>
               <div className="border border-border p-3">
                 <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invited by</div>
                 <div className="mt-1 text-sm text-foreground">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Requested access</div>
-                <div className="mt-1 text-sm text-zinc-100">
-                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Organization access"}
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Requested access</div>
+                <div className="mt-1 text-sm text-foreground">
+                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
               <div className="border border-border p-3">

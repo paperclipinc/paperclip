@@ -445,18 +445,16 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith(
-      {
-        id: "run-1",
-        companyId: "company-1",
-        logStore: "local_file",
-        logRef: "logs/run-1.ndjson",
-      },
-      {
-        offset: 12,
-        limitBytes: 64,
-      },
-    );
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      status: "running",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    }, {
+      offset: 12,
+      limitBytes: 64,
+    });
     expect(res.body).toEqual({
       runId: "run-1",
       store: "local_file",

@@ -175,8 +175,8 @@ describe("Sidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps the default sidebar edge borderless", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  it("links the top search icon to the search page without showing Search in Work nav", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
     const root = await renderSidebar();
 
     const sidebar = container.querySelector("aside");
@@ -231,8 +231,8 @@ describe("Sidebar", () => {
     });
   });
 
-  it("uses the simplified work navigation with one Agents destination", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+  it("streamlined (flag ON): keeps Task wording, top-level Projects link, no per-project collapsible", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
       enableIsolatedWorkspaces: false,
     } }));
     const root = await renderSidebar();
@@ -260,8 +260,8 @@ describe("Sidebar", () => {
     });
   });
 
-  it("keeps the simplified navigation while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+  it("defaults to streamlined navigation while experimental settings are loading", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
@@ -397,11 +397,8 @@ describe("Sidebar", () => {
     });
   });
 
-  it("groups and orders the streamlined Work and Org navigation", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enableApps: true,
-    });
+  it("shows Skills directly below Artifacts in Work", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
     const root = await renderSidebar();
 
     const sections = [...container.querySelectorAll("nav > div")];
@@ -466,8 +463,8 @@ describe("Sidebar", () => {
     });
   });
 
-  it("keeps Timeline out of the global navigation", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  it("places Timeline in the Company section", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
     const root = await renderSidebar();
 
     const sections = [...container.querySelectorAll("nav > div")];
@@ -537,9 +534,18 @@ describe("Sidebar", () => {
     });
   });
 
-  it("always shows Apps in the Org section", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
-    const root = await renderSidebar();
+  it("hides the Apps nav item unless experimental apps are enabled", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableApps: false } }));
+    const disabledRoot = await renderSidebar();
+
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.textContent === "Apps")).toBe(false);
+
+    flushSync(() => {
+      disabledRoot.unmount();
+    });
+
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableApps: true } }));
+    const enabledRoot = await renderSidebar();
 
     const links = [...container.querySelectorAll("a")];
     const link = links.find((anchor) => anchor.textContent === "Apps");
@@ -594,14 +600,75 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not render a global navigation collapse affordance", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  it("header toggle collapses an expanded sidebar (aria-expanded reflects state)", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    const root = await renderSidebar();
+
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("true");
+
+    flushSync(() => {
+      toggle?.click();
+    });
+    expect(mockSidebar.toggleCollapsed).toHaveBeenCalledTimes(1);
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the expand/collapse toggle while a secondary sidebar locks the rail", async () => {
+    // A secondary sidebar forces the rail; the user must not be able to expand
+    // the primary while it is shown (PAP-10694).
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    mockSidebar.collapseLocked = true;
     const root = await renderSidebar();
 
     expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="Keep sidebar expanded"]')).toBeNull();
+
+    mockSidebar.collapseLocked = false;
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the collapsed rail top bar to just the company logo (no clipped search/toggle)", async () => {
+    // In the narrow rail the search/toggle controls don't fit beside the logo and
+    // would overflow/clip, shoving the logo out of the icon column (PAP-10676), so
+    // they are dropped in the rail. Expansion stays reachable via hover-peek + Pin
+    // and Cmd/Ctrl+B. The full controls return as soon as the panel is expanded or
+    // peeking (covered by the other top-bar tests).
+    mockSidebar.collapsed = true;
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    const root = await renderSidebar();
+
+    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();
+    // The company menu (company switcher / logo) is still present in the rail.
     expect(container.textContent).toContain("Company menu");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("peek header shows a pin that promotes the peek to pinned-expanded", async () => {
+    mockSidebar.collapsed = true;
+    mockSidebar.peeking = true;
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    const root = await renderSidebar();
+
+    // The collapse toggle is replaced by the pin while peeking.
+    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
+    const pin = container.querySelector<HTMLButtonElement>('button[aria-label="Keep sidebar expanded"]');
+    expect(pin).not.toBeNull();
+
+    flushSync(() => {
+      pin?.click();
+    });
+    expect(mockSidebar.setCollapsed).toHaveBeenCalledWith(false);
 
     flushSync(() => {
       root.unmount();

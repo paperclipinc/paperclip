@@ -65,7 +65,11 @@ import {
   type LoginCommandKey,
 } from "./login-command.js";
 import { logger } from "../middleware/logger.js";
-import { traceparentFromContextToken } from "../instrumentation.js";
+import {
+  createPluginStreamBus,
+  type PluginStreamBus,
+  type StreamEventType,
+} from "./plugin-stream-bus.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -860,15 +864,16 @@ export interface PluginWorkerManager {
   ): Promise<HostToWorkerMethods[M][1]>;
 
   /**
-   * Open one live login pseudo-terminal route on a specific plugin worker
-   * See {@link PluginWorkerHandle.openLoginPtySession}.
+   * The stream bus this manager publishes worker `streams.*` notifications to.
    *
-   * @throws if the worker is not registered.
+   * Every worker started by this manager forwards its `ctx.streams` open/emit/
+   * close notifications here, so any host code holding the manager (SSE bridge
+   * routes, the environment runtime's live-output bridge) can `subscribe` to a
+   * (pluginId, channel, companyId) tuple without threading a separate bus. The
+   * real factory always populates it; kept optional so hand-rolled test doubles
+   * of this interface don't have to provide one.
    */
-  openLoginPtySession(
-    pluginId: string,
-    input: LoginPtyOpenInput,
-  ): Promise<LoginPtyHostSession>;
+  readonly streamBus?: PluginStreamBus;
 }
 
 // ---------------------------------------------------------------------------
@@ -3427,54 +3432,45 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+
   /**
-   * The process-scoped aggregate ceiling for concurrent duplex channel routes,
-   * across every worker in the process. The manager builds one shared slot
-   * controller from it and injects it into every worker handle, so one tenant can
-   * never exhaust the manager-wide resource. The manager validates it and falls
-   * back to {@link DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES} for an absent or an
-   * invalid value. It is not the per-agent `heartbeat.maxConcurrentRuns`, which
-   * stays upstream admission only.
+   * Stream bus that worker `streams.*` notifications are published to. When
+   * omitted, the manager creates its own in-memory bus. Exposed on the returned
+   * manager as `.streamBus` so host code (SSE bridge, environment runtime) can
+   * subscribe to worker-emitted channels.
    */
-  maxConcurrentDuplexRoutes?: number | null;
+  streamBus?: PluginStreamBus;
+}
+
+/** Map a `streams.*` notification method to the SSE-style event type. */
+function streamEventTypeForMethod(method: string): StreamEventType {
+  if (method === "streams.open") return "open";
+  if (method === "streams.close") return "close";
+  return "message";
 }
 
 /**
- * The default process-scoped aggregate ceiling for concurrent duplex channel
- * routes. It caps the manager-wide resource, not one agent's run budget. The host
- * reports an explicit route-busy outcome when the ceiling is full.
- *
- * Known aggregate behavior: this ceiling bounds route count only, not
- * retained bytes. Each HTTP/2 bridge route bounds its own retained body
- * bytes to 8,388,608 bytes (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in
- * `http2-bridge-server.ts`), so this route ceiling caps the process's
- * aggregate retained body bytes at 128 * 8,388,608 = 1,073,741,824 bytes
- * (1 GiB). This is accepted, known behavior, not a defect: the process
- * tracks no aggregate byte ledger across routes.
+ * Publish a worker `streams.*` notification onto the stream bus. The worker's
+ * `ctx.streams` API sends `{ channel, companyId, event? }`; the bus fans it out
+ * to subscribers of (pluginId, channel, companyId). Best-effort: a missing
+ * channel/companyId is dropped rather than thrown.
  */
-export const DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES = 128;
-
-/**
- * Build one process-scoped aggregate route-slot controller. The controller holds a
- * strictly positive integer ceiling and a live count. `tryAcquire` reserves one
- * slot only when a slot is free, so the count never passes the ceiling.
- */
-export function createDuplexRouteSlotController(maxRoutes?: number | null): DuplexRouteSlotController {
-  const ceiling =
-    typeof maxRoutes === "number" && Number.isInteger(maxRoutes) && maxRoutes > 0
-      ? maxRoutes
-      : DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES;
-  let active = 0;
-  return {
-    tryAcquire(): boolean {
-      if (active >= ceiling) return false;
-      active += 1;
-      return true;
-    },
-    release(): void {
-      if (active > 0) active -= 1;
-    },
-  };
+function publishStreamNotification(
+  streamBus: PluginStreamBus,
+  pluginId: string,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  const channel = typeof params.channel === "string" ? params.channel : "";
+  const companyId = typeof params.companyId === "string" ? params.companyId : "";
+  if (!channel || !companyId) return;
+  streamBus.publish(
+    pluginId,
+    channel,
+    companyId,
+    params.event,
+    streamEventTypeForMethod(method),
+  );
 }
 
 /**
@@ -3510,12 +3506,7 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
-  // The one shared, process-scoped aggregate route-slot controller. The manager
-  // injects it into every worker handle, so the duplex route ceiling counts every
-  // concurrent route across the process, not one agent's setting.
-  const duplexRouteSlots = createDuplexRouteSlotController(
-    managerOptions?.maxConcurrentDuplexRoutes,
-  );
+  const streamBus = managerOptions?.streamBus ?? createPluginStreamBus();
 
   return {
     streamBus,
@@ -3537,12 +3528,19 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, {
-        // Inject the shared process-scoped route-slot controller, unless the
-        // caller already supplied its own (a test may inject its own).
-        duplexRouteSlots,
+      // Fan worker `streams.*` notifications out to the manager's stream bus so
+      // host subscribers (SSE bridge, environment-runtime live output) receive
+      // them, while preserving any caller-supplied onStreamNotification.
+      const callerOnStreamNotification = options.onStreamNotification;
+      const workerStartOptions: WorkerStartOptions = {
         ...options,
-      });
+        onStreamNotification: (method, params) => {
+          publishStreamNotification(streamBus, pluginId, method, params);
+          callerOnStreamNotification?.(method, params);
+        },
+      };
+
+      const handle = createPluginWorkerHandle(pluginId, workerStartOptions);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding

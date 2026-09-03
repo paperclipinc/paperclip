@@ -29,12 +29,8 @@ vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
 
-vi.mock("@/lib/browserNavigation", () => ({
-  navigateTopLevel: mockNavigateTopLevel,
-}));
-
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/api/cloudBilling", () => ({
@@ -106,10 +102,11 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-    });
-    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { cloudBilling: false, enableIsolatedWorkspaces: false } }));
+    // Self-hosted default: the cloud-billing summary endpoint doesn't exist
+    // off-cloud, so the gateway detection probe fails like a real 404 would.
+    mockCloudBillingApi.summary.mockRejectedValue(new Error("not found"));
+    mockAuthApi.signOut.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -215,8 +212,11 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
-    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
+    // gateway's marketing sign-in page rather than invalidating in-app
+    // queries (there's no app left to refetch into).
+    expect(assignSpy).toHaveBeenCalledOnce();
+    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
 
     await act(async () => {
       root.unmount();

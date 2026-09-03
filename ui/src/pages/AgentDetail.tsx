@@ -22,14 +22,15 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { copyTextToClipboard } from "../lib/clipboard";
+import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { AdapterCredentialConnect } from "../components/AdapterCredentialConnect";
+import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
-import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
+import { describeRunFailure, redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
@@ -126,14 +127,7 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
-import {
-  AGENT_DETAIL_NAVIGATION,
-  agentDetailHref,
-  agentLegacyAuditSection,
-  agentScopedAuditHref,
-  parseAgentDetailView,
-  type AgentDetailView,
-} from "./agent-detail-navigation";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -997,6 +991,28 @@ export function AgentDetail() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Action failed");
+    },
+  });
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "agent",
+        scopeId: agent?.id ?? routeAgentRef,
+        amount,
+        windowKind: "calendar_month_utc",
+      }),
+    onSuccess: () => {
+      setActionError(null);
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to update the budget");
     },
   });
 

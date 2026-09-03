@@ -498,181 +498,104 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-/**
- * Build the checks that tell the user the probed target has no ready Claude
- * authentication. Every target gets the descriptive warn check, so
- * `summarizeStatus` never reports a pass without auth. Only a sandbox target
- * gets the neutral canonical `adapter_auth_missing` code, because only a
- * sandbox target can start an in-place login. The user interface reads the
- * canonical code to offer login and gates that affordance to sandbox targets.
- */
-function buildAcpAuthMissingChecks(input: {
-  targetIsSandbox: boolean;
-  loginUrl: string | null;
-}): AdapterEnvironmentCheck[] {
-  const checks: AdapterEnvironmentCheck[] = [
-    {
-      code: "claude_hello_probe_auth_required",
-      level: "warn",
-      message: "Claude ACP is available, but login is required.",
-      hint: buildClaudeLoginRequiredHint(input.loginUrl),
-    },
-  ];
-  if (input.targetIsSandbox) {
-    checks.push({
-      code: ADAPTER_AUTH_MISSING_CHECK_CODE,
-      level: "warn",
-      message: "This environment has no ready authentication for this adapter.",
-      hint: "Provide credentials for this adapter, or start login in the environment.",
-    });
+// ACP-lane mirror of the CLI-lane auth advice helper in test.ts: same
+// CLAUDE_CODE_OAUTH_TOKEN recognition contract, ACP-prefixed check code to
+// match this file's existing `claude_acp_*` naming.
+export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
+  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
+  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
+    return {
+      code: "claude_acp_subscription_token_detected",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+    };
   }
-  return checks;
+  return null;
 }
 
 /**
- * Build the check that tells the user a Claude login probe could not run on the
- * ACP path. The check is a warn, not an info, so `summarizeStatus` never
- * reports a pass. The check code is distinct from `adapter_auth_missing`, so the
- * user interface never shows the login affordance for a probe that could not
- * confirm the login state. A Test without available auth must not report a
- * success.
+ * Runs the shared CLI-binary hello probe (see hello-probe.ts) from the ACP
+ * lane. Permissive by design for anything that isn't a definitive provider
+ * rejection: if the `claude` CLI binary itself isn't resolvable in this
+ * environment, or the probe throws for an unrelated infra reason, that's
+ * the "check cannot run" case — surface a warning, never a hard error, and
+ * never claim the credential is invalid when we simply couldn't test it.
  */
-function buildAcpLoginProbeUnavailableCheck(
-  message: string,
-  targetIsSandbox = false,
-): AdapterEnvironmentCheck {
-  return {
-    code: "claude_acp_login_probe_unavailable",
-    level: "warn",
-    message,
-    hint: targetIsSandbox
-      ? "Verify that the environment can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane."
-      : "Verify that `claude` can run in this environment and retry the Test. Set engine=cli to use the Claude CLI lane.",
-  };
-}
-
-/**
- * Probe the stored Claude login for the probed target on the ACP path. The ACP
- * engine and the Claude CLI share the same stored Claude login, so the probe
- * runs the `claude` command with a short hello turn. The probe runs against any
- * target: a local host, an SSH remote, or a sandbox. On a local target the
- * probe builds the child env and the executable from the shared
- * deny-by-default builder, so a hostile caller value can neither select the
- * executable nor reach the child. On a remote target the caller passes the
- * prepared `env`, so the probe reads the managed `CLAUDE_CONFIG_DIR` the same
- * way the CLI lane does.
- *
- * When the probe reports that login is required, the function returns the
- * auth-required checks. Only a sandbox target also gets the canonical
- * `adapter_auth_missing` code, so the user interface offers login for sandbox
- * targets only.
- *
- * The function keeps two signals distinct. It returns the auth-required check
- * only when the probe ran and login is required. It returns a separate warn
- * check when the probe could not run, timed out, or did not complete. It never
- * maps "probe could not run" to a silent pass.
- */
-export async function probeClaudeAcpSandboxLogin(input: {
+async function runClaudeAcpCredentialProbe(input: {
   config: Record<string, unknown>;
-  target: AdapterExecutionTarget | null;
-  env?: Record<string, string>;
+  envConfig: Record<string, unknown>;
+  target: ReturnType<typeof readAdapterExecutionTarget>;
+  cwd: string;
+  targetIsRemote: boolean;
 }): Promise<AdapterEnvironmentCheck[]> {
-  const { config, target } = input;
-  const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
-
-  // The caller-derived env. On a local target the shared builder filters it to
-  // a deny-by-default allowlist. On a remote target the prepared env is used
-  // directly, because the remote transport owns its own env sanitization.
-  let callerEnv: Record<string, string>;
-  if (input.env) {
-    callerEnv = input.env;
-  } else {
-    const envConfig = parseObject(config.env);
-    callerEnv = {};
-    for (const [key, value] of Object.entries(envConfig)) {
-      if (typeof value === "string") callerEnv[key] = value;
-    }
+  const { config, envConfig, target, cwd, targetIsRemote } = input;
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") env[key] = value;
   }
-
-  let command: string;
-  let env: Record<string, string>;
-  let cwd: string;
-  if (targetIsRemote && target) {
-    command = "claude";
-    env = callerEnv;
-    cwd = target.kind === "remote" ? target.remoteCwd : process.cwd();
-  } else {
-    const built = await buildLocalAdapterTestProbeEnv({
-      callerEnv,
-      trustedEnv: process.env,
-    });
-    if (!built.command) {
-      return [buildAcpLoginProbeUnavailableCheck("Claude is not installed on the Paperclip host.")];
-    }
-    command = built.command;
-    env = built.env;
-    cwd = asString(config.cwd, process.cwd());
-  }
-
-  const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-  args.push(
-    ...buildClaudeProbePermissionArgs({
-      dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
-      targetIsRemote,
-      localProcessUid: process.getuid?.() ?? null,
-    }),
-  );
-  const timeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45));
-  const runId = `claude-acp-authprobe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  let probe: Awaited<ReturnType<typeof runAdapterExecutionTargetProcess>>;
+  // The probe needs the `claude` CLI itself, distinct from the
+  // `claude-agent-acp` server binary this lane otherwise resolves — the
+  // former is what actually talks to Anthropic for a "say hello" round
+  // trip, present in the runtime image regardless of engine choice.
+  const command = asString(config.command, "claude");
+  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
-    probe = await runAdapterExecutionTargetProcess(runId, target, command, args, {
-      cwd,
-      env,
-      timeoutSec,
-      graceSec: 5,
-      stdin: "Respond with hello.",
-      onLog: async () => {},
-    });
+    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
   } catch (err) {
-    // Keep the raw error out of the Test-result check and the server log. Log
-    // only the fixed context, the allowlisted classification, and a safe error
-    // class name.
-    logSandboxProbeDiagnostic("Claude ACP login probe could not run", "spawn_error", {
-      errorClass: classifyThrownErrorClass(err),
-    });
     return [
-      buildAcpLoginProbeUnavailableCheck(
-        targetIsSandbox
-          ? "The Claude login probe could not run in the sandbox."
-          : "The Claude login probe could not run.",
-        targetIsSandbox,
-      ),
+      {
+        code: "claude_acp_credential_probe_unavailable",
+        level: "warn",
+        message: "Could not run a live credential probe: the `claude` CLI is not resolvable in this environment.",
+        detail: err instanceof Error ? err.message : String(err),
+        hint: "Install the Claude CLI, or set command to a valid `claude` binary path, to enable live credential validation for ACP.",
+      },
     ];
   }
-  if (probe.timedOut) {
-    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe timed out.", targetIsSandbox)];
-  }
-  const parsedStream = parseClaudeStreamJson(probe.stdout);
-  const loginMeta = detectClaudeLoginRequired({
-    parsed: parsedStream.resultJson,
-    stdout: probe.stdout,
-    stderr: probe.stderr,
-  });
-  if (loginMeta.requiresLogin) {
-    return buildAcpAuthMissingChecks({ targetIsSandbox, loginUrl: loginMeta.loginUrl });
-  }
-  if ((probe.exitCode ?? 1) !== 0) {
-    // Keep the raw stderr and stdout out of the Test-result check and the
-    // server log. Log only the fixed context, the allowlisted classification,
-    // and the safe exit code.
-    logSandboxProbeDiagnostic("Claude ACP login probe did not complete", "nonzero_exit", {
-      exitCode: probe.exitCode ?? null,
+
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const extraArgs = (() => {
+    const fromExtraArgs = asStringArray(config.extraArgs);
+    if (fromExtraArgs.length > 0) return fromExtraArgs;
+    return asStringArray(config.args);
+  })();
+  const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45));
+
+  try {
+    return await runClaudeCredentialHelloProbe({
+      runId,
+      target,
+      command,
+      cwd,
+      env,
+      model: asString(config.model, "").trim(),
+      effort: asString(config.effort, "").trim(),
+      chrome: asBoolean(config.chrome, false),
+      maxTurns: asNumber(config.maxTurnsPerRun, 0),
+      dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
+      extraArgs,
+      hasBedrock: false,
+      targetIsSandbox,
+      targetIsRemote,
+      helloProbeTimeoutSec,
     });
-    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", targetIsSandbox)];
+  } catch (err) {
+    // A genuinely unexpected exception (the process runner itself throwing,
+    // not a classified provider outcome — every branch inside
+    // runClaudeCredentialHelloProbe already resolves to a check). Treat as
+    // infra, not a rejection.
+    return [
+      {
+        code: "claude_acp_credential_probe_failed",
+        level: "warn",
+        message: "The live credential probe could not run.",
+        detail: err instanceof Error ? err.message : String(err),
+        hint: "This is usually a transient/infra issue, not a rejected credential. Retry the check.",
+      },
+    ];
   }
-  return [];
 }
 
 export async function testClaudeAcpEnvironment(
@@ -682,7 +605,7 @@ export async function testClaudeAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "claude_engine_selected",
@@ -780,25 +703,51 @@ export async function testClaudeAcpEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else if (
-    isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN) ||
-    (considerHostEnv && isNonEmpty(process.env.CLAUDE_CODE_OAUTH_TOKEN))
-  ) {
-    const source = isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN)
-      ? "configured environment variables"
-      : "server environment";
-    checks.push({
-      code: "claude_oauth_token_configured",
-      level: "info",
-      message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set. Claude ACP will authenticate with the configured subscription token; no stored login is needed on the execution target.",
-      detail: `Detected in ${source}.`,
-    });
-  } else if (!targetIsRemote) {
-    checks.push({
-      code: "claude_acp_subscription_mode_possible",
-      level: "info",
-      message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
+  } else {
+    const authAdvice = resolveClaudeAuthAdvice(envConfig);
+    if (authAdvice) {
+      checks.push(authAdvice);
+    } else if (!callerControlsHost) {
+      // ACP-lane mirror of the CLI-lane branch in test.ts: name the token
+      // route, which the user can actually complete from their own machine.
+      checks.push({
+        code: "claude_acp_subscription_mode_possible",
+        level: "info",
+        message: "No Claude credentials are configured for this agent yet.",
+        hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
+      });
+    } else if (!targetIsRemote) {
+      checks.push({
+        code: "claude_acp_subscription_mode_possible",
+        level: "info",
+        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
+      });
+    }
+  }
+
+  // ACP has no protocol-level credential-validation step of its own — unlike
+  // the CLI lane, testClaudeAcpEnvironment above only ever emits static
+  // presence checks, so a rejected BYOK key would otherwise sail through as
+  // "Connected" with no error anywhere (the exact staging bug this closes).
+  // When a credential is actually configured, borrow the CLI lane's live
+  // "say hello" probe (hello-probe.ts) to get a real provider verdict
+  // instead. Bedrock is excluded — its auth is AWS-credential-based, not
+  // something this Anthropic API-key/token probe can validate.
+  const configOauthToken = envConfig.CLAUDE_CODE_OAUTH_TOKEN;
+  const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
+  const hasCredentialToProbe =
+    !hasBedrock &&
+    (isNonEmpty(configApiKey) ||
+      isNonEmpty(hostApiKey) ||
+      isNonEmpty(configOauthToken) ||
+      isNonEmpty(hostOauthToken));
+  if (hasCredentialToProbe) {
+    const probeChecks = await runClaudeAcpCredentialProbe({
+      config,
+      envConfig,
+      target,
+      cwd,
+      targetIsRemote,
     });
     checks.push(...probeChecks);
   }

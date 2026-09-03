@@ -1067,13 +1067,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
-      const errorCode = proc.errorCode
-        // Forward the transport-level error code from the run-disposition seam
-        // first, even on the unparsed path. A lost duplex control channel
-        // surfaces the typed `duplex_channel_lost` code before any provider
-        // classification, so the CLI lane and the ACP lane report it alike.
-        ? proc.errorCode
-        : loginMeta.requiresLogin
+      const errorCode = loginMeta.requiresLogin || invalidCredential
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1222,12 +1216,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: rawErrorMessage,
         })
       : null;
-    const resolvedErrorCode = proc.errorCode
-      // Forward the transport-level error code from the run-disposition seam
-      // first. A lost duplex control channel surfaces the typed
-      // `duplex_channel_lost` code before any provider classification.
-      ? proc.errorCode
-      : loginMeta.requiresLogin
+    const resolvedErrorCode = loginMeta.requiresLogin || invalidCredential
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,

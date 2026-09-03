@@ -490,8 +490,9 @@ describe("IssueProperties", () => {
         },
       ],
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: false } }),
+    );
   });
 
   afterEach(() => {
@@ -894,7 +895,10 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("always shows watchdog setup controls", async () => {
+  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -2488,8 +2492,9 @@ describe("IssueProperties", () => {
   }
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -2554,8 +2559,9 @@ describe("IssueProperties", () => {
   });
 
   it("updates cached issue detail when saving a watchdog", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
       instructions: "Watch the deploy",
@@ -2608,8 +2614,9 @@ describe("IssueProperties", () => {
   });
 
   it("renders an existing watchdog and removes it via the API", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
     const issue = createIssue({ watchdog: createWatchdogSummary() });
@@ -2649,8 +2656,9 @@ describe("IssueProperties", () => {
   });
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
     const root = renderProperties(container, {
@@ -2687,8 +2695,9 @@ describe("IssueProperties", () => {
   });
 
   it("links to the generated watchdog task when one exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableTaskWatchdogs: true } }),
+    );
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {
       issue: createIssue({ watchdog: createWatchdogSummary({ watchdogIssueId: "issue-wd" }) }),

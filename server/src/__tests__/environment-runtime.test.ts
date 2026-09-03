@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
@@ -316,7 +316,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     };
   }
 
-  async function seedReusablePluginSandboxLease(adapterType: string | null = null) {
+  async function seedReusablePluginSandboxLease(
+    seedInput: { scopedAdapterType?: string | null } = {},
+  ) {
+    const scopedAdapterType = seedInput.scopedAdapterType ?? null;
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -420,11 +423,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType,
+          adapterType: scopedAdapterType,
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType,
+            adapterType: scopedAdapterType,
             config: providerConfig,
           }),
         },
@@ -4946,14 +4949,181 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  // Seed a reusable plugin sandbox lease that a worker created under an earlier
-  // capability set. The worker restarts and no longer advertises the lifecycle
-  // methods. The lease lifecycle paths must verify the live worker before they
-  // dispatch a lifecycle RPC, so the runtime fails closed instead of a doomed
-  // dispatch.
-  async function seedStaleLifecycleReusableLease(
-    leasePolicy: "reuse_by_environment" | "retain_on_failure" = "reuse_by_environment",
-  ) {
+  it("throws a worker-not-running error once the readiness deadline is exhausted", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Never Running Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.never-running-sandbox-provider",
+      packageName: "@acme/never-running-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.never-running-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Never Running Sandbox Provider",
+        description: "Test plugin worker that never comes online before the readiness deadline",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const workerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 25,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    await expect(
+      runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/worker is not running/);
+    // Confirms the loop actually polled repeatedly across the deadline window
+    // instead of giving up after a single check.
+    expect(workerManager.isRunning.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps polling across a longer worker restart window and succeeds once the handle registers late", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Registered Late Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.registered-late-sandbox-provider",
+      packageName: "@acme/registered-late-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.registered-late-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Registered Late Sandbox Provider",
+        description: "Test plugin worker handle that stays unregistered/starting for most of the readiness window",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // Simulates a worker process restart: the handle is absent (or "starting")
+    // for most of the readiness window and only reports running with several
+    // checks left before the deadline. A larger attempt count than the
+    // existing "waits briefly" sanity test, to prove the loop is bound by the
+    // deadline rather than by a small fixed number of attempts.
+    const readyAfterChecks = 8;
+    let checks = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => {
+        if (id !== pluginId) return false;
+        checks += 1;
+        return checks >= readyAfterChecks;
+      }),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-registered-late",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 200,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-registered-late");
+    expect(checks).toBe(readyAfterChecks);
+  });
+
+  it("extends plugin-backed sandbox lease RPC timeouts from provider config", async () => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -5195,6 +5365,45 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       providerType: "local_fs",
       createdAt: new Date(),
       updatedAt: new Date(),
+    });
+    const staleLease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "stale-plugin-lease",
+      metadata: {
+        agentId,
+        driver: "sandbox",
+        pluginId,
+        pluginKey: "acme.fake-sandbox-provider",
+        sandboxProviderPlugin: true,
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          // A concrete, matching adapter type on both the stored scope and
+          // the acquireRunLease call below: null is never a wildcard match
+          // for plugin-backed leases (see reusableSandboxLeaseScopeMatches),
+          // so this resume-then-fallback exercise needs a genuine positive
+          // match to reach the resume RPC at all.
+          adapterType: "codex_local",
+          provider: "fake-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "fake-plugin",
+            adapterType: "codex_local",
+            config: providerConfig,
+          }),
+        },
+      },
     });
 
     const workerManager = {
@@ -5785,57 +5994,27 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       },
     });
 
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      call: vi.fn(async (_pluginId: string, method: string) => {
-        if (method === "environmentAcquireLease") {
-          return {
-            providerLeaseId: "fresh-plugin-lease",
-            metadata: {
-              provider: "fake-plugin",
-              image: "fake:test",
-              timeoutMs: 1234,
-              reuseLease: true,
-              remoteCwd: "/workspace",
-            },
-          };
-        }
-        throw new Error(`Unexpected plugin method: ${method}`);
-      }),
-      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const acquired = await runtimeWithPlugin.acquireRunLease({
-      companyId,
-      environment,
-      issueId: null,
-      agentId,
-      heartbeatRunId: runId,
-      persistedExecutionWorkspace: {
-        id: executionWorkspaceId,
-        mode: "shared_workspace",
-      },
-    });
-
-    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
-    expect(acquired.lease.leasePolicy).toBe("ephemeral");
-    expect(workerManager.call).toHaveBeenCalledTimes(1);
-    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    expect(second.lease.providerLeaseId).toBe("lease-rotated-provider-key");
     expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentResumeLease",
       expect.anything(),
       expect.anything(),
     );
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({
+      providerLeaseId: "lease-resolved-provider-key",
+    }), 31234);
+    await expect(environmentService(db).getLeaseById(first.lease.id)).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+      failureReason: "lease_fingerprint_mismatch",
+    });
+    const firstMetadata = JSON.stringify(first.lease.metadata);
+    expect(firstMetadata).not.toContain("resolved-provider-key");
+    expect(firstMetadata).not.toContain("rotated-provider-key");
   });
 
-  it("fails closed and does not resume when the worker does not verify the reuse methods", async () => {
-    // The provider declares `reusableLeases: true`, but its worker advertises
-    // neither `environmentResumeLease` nor `environmentReleaseLease`. The runtime
-    // must not resume or reuse the lease, because it cannot dispatch a resume or
-    // a release the worker does not serve. It acquires a fresh ephemeral lease
-    // and leaves the old reusable lease untouched.
+  it("does not resume released reusable plugin sandbox leases after an in-place secret value change under the same version", async () => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const apiSecret = await secretService(db).create(companyId, {
@@ -5852,7 +6031,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     };
     const environment = {
       ...baseEnvironment,
-      name: "Unverified-worker Plugin Sandbox",
+      name: "In-place Secure Plugin Sandbox",
       driver: "sandbox",
       config: providerConfig,
     };
@@ -5870,17 +6049,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
     await db.insert(plugins).values({
       id: pluginId,
-      pluginKey: "acme.unverified-worker-sandbox-provider",
-      packageName: "@acme/unverified-worker-sandbox-provider",
+      pluginKey: "acme.inplace-sandbox-provider",
+      packageName: "@acme/inplace-sandbox-provider",
       version: "1.0.0",
       apiVersion: 1,
       categories: ["automation"],
       manifestJson: {
-        id: "acme.unverified-worker-sandbox-provider",
+        id: "acme.inplace-sandbox-provider",
         apiVersion: 1,
         version: "1.0.0",
-        displayName: "Unverified-worker Sandbox Provider",
-        description: "Test provider that declares reusable leases but whose worker lacks the reuse methods",
+        displayName: "In-place Sandbox Provider",
+        description: "Test schema-driven provider",
         author: "Paperclip",
         categories: ["automation"],
         capabilities: ["environment.drivers.register"],
@@ -5889,8 +6068,757 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           {
             driverKey: "secure-plugin",
             kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `lease-${params.config.apiKey}`,
+            metadata: {
+              provider: "secure-plugin",
+              template: params.config.template,
+              apiKey: params.config.apiKey,
+              timeoutMs: params.config.timeoutMs,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentResumeLease") {
+          // If the lease fingerprint fails to detect the value change, the runtime
+          // would resume this stale sandbox. Return it so the negative assertions
+          // below fail loudly instead of falling back to acquire.
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "secure-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentReleaseLease" || method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const first = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+    await runtimeWithPlugin.releaseRunLeases(runId);
+
+    // Simulate an in-place re-encryption: the credential material changes but the
+    // secret keeps the SAME version number (no rotate, latestVersion is unchanged).
+    const [versionBefore] = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    expect(versionBefore).toBeDefined();
+    const sameVersionNumber = versionBefore.version;
+    await db
+      .update(companySecretVersions)
+      .set({
+        fingerprintSha256: `sha256:in-place-${randomUUID()}`,
+        valueSha256: `sha256:in-place-${randomUUID()}`,
+      })
+      .where(
+        and(
+          eq(companySecretVersions.secretId, apiSecret.id),
+          eq(companySecretVersions.version, sameVersionNumber),
+        ),
+      );
+    const versionRowsAfter = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, apiSecret.id));
+    // Proves the change was in place: still exactly one version, same number, and
+    // the providerVersionRef (the other lease discriminator) did not move.
+    expect(versionRowsAfter).toHaveLength(1);
+    expect(versionRowsAfter[0].version).toBe(sameVersionNumber);
+    expect(versionRowsAfter[0].providerVersionRef).toBe(versionBefore.providerVersionRef);
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const second = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: nextRunId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The stale sandbox must not be resumed; it must be destroyed and replaced.
+    expect(second.lease.id).not.toBe(first.lease.id);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({
+      providerLeaseId: "lease-resolved-provider-key",
+    }), 31234);
+    await expect(environmentService(db).getLeaseById(first.lease.id)).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+      failureReason: "lease_fingerprint_mismatch",
+    });
+    // The lease metadata must never carry the raw credential value.
+    const firstMetadata = JSON.stringify(first.lease.metadata);
+    expect(firstMetadata).not.toContain("resolved-provider-key");
+  });
+
+  it("does not resume a legacy secret-blind reusable sandbox lease for a secret-bearing environment even on the same active run", async () => {
+    // A LEGACY lease was created before value-aware lease fingerprints existed:
+    // its metadata carries only the secret-blind runtimeFingerprint (no
+    // leaseFingerprint). On a same-run active resume, `allowLegacyRuntimeFingerprint`
+    // would normally let the runtime fallback match it. But the environment
+    // references a secret, so the fallback is blind to any in-place value change
+    // and must be refused — forcing a fresh, value-aware lease.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const apiSecret = await secretService(db).create(companyId, {
+      name: `legacy-plugin-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "resolved-provider-key",
+    });
+    const providerConfig = {
+      provider: "secure-plugin",
+      template: "base",
+      apiKey: apiSecret.id,
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Legacy Secure Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await secretService(db).createBinding({
+      companyId,
+      secretId: apiSecret.id,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.legacy-sandbox-provider",
+      packageName: "@acme/legacy-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.legacy-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Legacy Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "secure-plugin",
+            kind: "sandbox_provider",
+            displayName: "Secure Sandbox",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                template: { type: "string" },
+                apiKey: { type: "string", format: "secret-ref" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // Seed a LEGACY reusable lease on the SAME active run: only a secret-blind
+    // runtimeFingerprint, no leaseFingerprint.
+    const legacyLease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "secure-plugin",
+      providerLeaseId: "legacy-secure-lease",
+      metadata: {
+        agentId,
+        driver: "sandbox",
+        pluginId,
+        pluginKey: "acme.legacy-sandbox-provider",
+        sandboxProviderPlugin: true,
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: apiSecret.id,
+        timeoutMs: 1234,
+        reuseLease: true,
+        remoteCwd: "/workspace",
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          adapterType: null,
+          provider: "secure-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "secure-plugin",
+            adapterType: null,
+            config: providerConfig,
+          }),
+          remoteCwd: "/workspace",
+        },
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentResumeLease") {
+          // If the secret gate regresses and the legacy lease is resumed, return
+          // it so the negative assertions below fail loudly.
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "secure-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: `lease-${params.config.apiKey}`,
+            metadata: {
+              provider: "secure-plugin",
+              template: params.config.template,
+              apiKey: params.config.apiKey,
+              timeoutMs: params.config.timeoutMs,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        if (method === "environmentReleaseLease" || method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The legacy secret-blind lease must NOT be resumed; a fresh, value-aware
+    // lease is acquired instead. The runtime resolves the secret ref before the
+    // worker call, so the fresh provider lease id reflects the resolved value.
+    expect(acquired.lease.providerLeaseId).toBe("lease-resolved-provider-key");
+    expect(acquired.lease.providerLeaseId).not.toBe("legacy-secure-lease");
+    expect(acquired.lease.id).not.toBe(legacyLease.id);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The fresh lease carries a value-aware leaseFingerprint (the whole point).
+    expect(acquired.lease.metadata?.reusableSandboxLease).toMatchObject({
+      leaseFingerprint: expect.objectContaining({
+        category: "lease",
+        fingerprint: expect.stringMatching(/^v1:sha256:[a-f0-9]{64}$/),
+      }),
+    });
+  });
+
+  it("resumes a legacy secret-blind reusable sandbox lease via the runtime fallback when the environment has no secret refs", async () => {
+    // Contrast to the secret-bearing case: with no secret refs, a legacy lease
+    // (runtimeFingerprint, no leaseFingerprint) on the same active run may still
+    // be resumed through the runtime fallback.
+    //
+    // The lease is scoped to a concrete adapter type (matched by the run's
+    // adapterType) so it satisfies the plugin-backed positive-match rule
+    // (reusableSandboxLeaseScopeMatches requires storedAdapterType and the run's
+    // adapterType to both be set and equal for a plugin-backed lease). A
+    // null-scope plugin lease is deliberately NOT reused; that case is covered by
+    // "does not reuse a plugin-backed sandbox lease when both the stored scope
+    // and the run's adapter type are null". This test isolates the secret-blind
+    // legacy runtime-fingerprint fallback, which sits behind that adapter gate.
+    const scopedAdapterType = "claude_local";
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, params: any) => {
+        if (method === "environmentResumeLease") {
+          return {
+            providerLeaseId: params.providerLeaseId,
+            metadata: {
+              provider: "fake-plugin",
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              resumed: true,
+            },
+          };
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+      adapterType: scopedAdapterType,
+    });
+
+    // The legacy lease is resumed via the runtime fallback (no fresh acquire).
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.objectContaining({ providerLeaseId: "reusable-plugin-lease" }),
+      expect.anything(),
+    );
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The resumed lease keeps the legacy provider lease id (persisted as a fresh
+    // row, so the runtime lease id may differ).
+    expect(acquired.lease.providerLeaseId).toBe("reusable-plugin-lease");
+  });
+
+  it("preserves active reusable sandbox leases held by another running run", async () => {
+    const { pluginId, companyId, agentId, environment, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease();
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nextRunId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status: "running",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: nextRunId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(workerManager.call).toHaveBeenCalledOnce();
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
+      agentId,
+      executionWorkspaceId,
+      runId: nextRunId,
+    }), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+      cleanupStatus: null,
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease whose stored scope has a null adapter type when the run requests one", async () => {
+    // Gap-1 regression: a lease pooled with scope.adapterType null must never
+    // be matched by ANY run (null is never a wildcard). Re-acquiring on the
+    // SAME run/heartbeatRunId (the self-heal shape) must still go through
+    // environmentAcquireLease for a fresh lease rather than resuming the
+    // null-scoped one.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: null });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-claude",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      adapterType: "claude_local",
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease scoped to a concrete adapter type when the run requests none", async () => {
+    // Symmetric gap-1 case: a lease scoped to a real adapter must not be
+    // handed to a run whose adapterType is null/absent either.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: "claude_local" });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-null-adapter",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-null-adapter");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease when both the stored scope and the run's adapter type are null", async () => {
+    // The core gap-1 case: null must never be treated as a wildcard, even
+    // when it happens to match null-for-null. A null-scoped plugin lease is
+    // ambiguous about which runtime image it actually carries, so no run
+    // (including another null-adapterType one) may resume it; it always
+    // falls through to a fresh environmentAcquireLease.
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: null });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-both-null",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-both-null");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("does not reuse a plugin-backed sandbox lease scoped to a different concrete adapter type", async () => {
+    // Concrete-vs-concrete case: both sides are non-null, but different
+    // harnesses. A run requesting claude_local must never resume a lease
+    // scoped to gemini_local, even though neither side is null (the null
+    // cases above prove null is never a wildcard; this proves two distinct
+    // concrete values are also never treated as equal).
+    const { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease({ scopedAdapterType: "gemini_local" });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease-claude-vs-gemini",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      adapterType: "claude_local",
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease-claude-vs-gemini");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "active",
+    });
+  });
+
+  it("persists the plugin's resolved adapter type and image into the reusable lease scope when the server has no per-run hint", async () => {
+    // Gap-1 (second layer, matching plugin.ts's onEnvironmentAcquireLease
+    // change): when the server's own adapterType hint is absent, the scope
+    // must fall back to whatever the plugin actually resolved and returned
+    // in the lease metadata, so the scope is never null even though a
+    // concrete image WAS provisioned.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox With Fallback",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.reusable-sandbox-provider-fallback",
+      packageName: "@acme/reusable-sandbox-provider-fallback",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.reusable-sandbox-provider-fallback",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Reusable Sandbox Provider Fallback",
+        description: "Test provider exercising the adapterType metadata fallback",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
             displayName: "Fake Plugin",
-            sandboxCapabilities: { reusableLeases: true },
+            supportsReusableLeases: true,
             configSchema: {
               type: "object",
               properties: {
@@ -5922,13 +6850,130 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       projectId,
       mode: "shared_workspace",
       strategyType: "project_primary",
-      name: "Unverified-worker workspace",
+      name: "Reusable workspace",
       status: "active",
       providerType: "local_fs",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    const existingLease = await environmentService(db).acquireLease({
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "resolved-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+              // The plugin's own resolution: no per-run hint came from the
+              // server (acquireRunLease is called below without adapterType),
+              // but the plugin still resolved a concrete adapter/image (e.g.
+              // the environment's configured default).
+              adapterType: "codex_local",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("resolved-plugin-lease");
+    expect(acquired.lease.metadata?.reusableSandboxLease).toMatchObject({
+      adapterType: "codex_local",
+      runtimeImage: "fake:test",
+    });
+  });
+
+  it("does not retain or resume plugin-backed sandbox leases unless the provider opts in", async () => {
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Non-reusable Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.non-reusable-sandbox-provider",
+      packageName: "@acme/non-reusable-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.non-reusable-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Non-reusable Sandbox Provider",
+        description: "Test provider without reusable lease support",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Non-reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await environmentService(db).acquireLease({
       companyId,
       environmentId: environment.id,
       executionWorkspaceId,
@@ -6250,260 +7295,41 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("resolves effective capabilities from the lease's exact plugin, not an earlier plugin that shares the driver key", async () => {
-    // The helper seeds the plugin that owns the lease. Pin it to `pluginId`
-    // through the lease metadata and give it a lower-priority sibling.
-    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+  it("reports a missing plugin worker manager as a wiring failure, not a stopped worker", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const runtimeWithoutWorkerManager = environmentRuntimeService(db);
 
-    // Rewrite the owner plugin so it DENIES reusable leases through the nested
-    // capability declaration.
-    await db
-      .update(plugins)
-      .set({
-        manifestJson: {
-          id: "acme.reusable-sandbox-provider",
-          apiVersion: 1,
-          version: "1.0.0",
-          displayName: "Reusable Sandbox Provider",
-          description: "Owner plugin that denies reusable leases",
-          author: "Paperclip",
-          categories: ["automation"],
-          capabilities: ["environment.drivers.register"],
-          entrypoints: { worker: "dist/worker.js" },
-          environmentDrivers: [
-            {
-              driverKey: "fake-plugin",
-              kind: "sandbox_provider",
-              displayName: "Fake Plugin",
-              sandboxCapabilities: { reusableLeases: false },
-              configSchema: { type: "object", properties: {} },
-            },
-          ],
-        },
-        updatedAt: new Date(),
-      } as any)
-      .where(eq(plugins.id, pluginId));
-
-    // Install an EARLIER plugin that shares the driver key and grants reusable
-    // leases. It is not ready and never acquired this lease. A resolver keyed by
-    // driver key alone would read this declaration and grant a capability the
-    // owner plugin denied.
-    const collidingPluginId = randomUUID();
-    await db.insert(plugins).values({
-      id: collidingPluginId,
-      pluginKey: "acme.colliding-sandbox-provider",
-      packageName: "@acme/colliding-sandbox-provider",
-      version: "1.0.0",
-      apiVersion: 1,
-      categories: ["automation"],
-      manifestJson: {
-        id: "acme.colliding-sandbox-provider",
-        apiVersion: 1,
-        version: "1.0.0",
-        displayName: "Colliding Sandbox Provider",
-        description: "Earlier plugin that shares the driver key",
-        author: "Paperclip",
-        categories: ["automation"],
-        capabilities: ["environment.drivers.register"],
-        entrypoints: { worker: "dist/worker.js" },
-        environmentDrivers: [
-          {
-            driverKey: "fake-plugin",
-            kind: "sandbox_provider",
-            displayName: "Fake Plugin",
-            supportsReusableLeases: true,
-            configSchema: { type: "object", properties: {} },
-          },
-        ],
-      },
-      status: "installed",
-      installOrder: 0,
-      updatedAt: new Date(),
-    } as any);
-
-    // The owner worker verifies the reuse verbs and the sync verbs, so every
-    // capability is verified. Only the owner's declaration can narrow one.
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      call: vi.fn(),
-      getWorker: vi.fn((id: string) =>
-        id === pluginId
-          ? {
-              supportedMethods: [
-                "environmentResumeLease",
-                "environmentReleaseLease",
-                "environmentSyncIn",
-                "environmentSyncOut",
-              ],
-            }
-          : undefined,
-      ),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    expect(reusableLease.metadata?.pluginId).toBe(pluginId);
-
-    const effective = await runtimeWithPlugin.resolveCapabilities({
-      environment,
-      lease: reusableLease,
-    });
-
-    // The runtime read the owner plugin's declaration, so it denies reusable
-    // leases even though the earlier plugin grants them.
-    expect(effective?.reusableLeases).toBe(false);
-    // The owner plugin does not restrict native sync, and its worker verifies
-    // the sync verbs, so those stay granted. This proves the resolver read the
-    // owner declaration and did not fail every capability closed.
-    expect(effective?.nativeSyncIn).toBe(true);
-    expect(effective?.nativeSyncOut).toBe(true);
+    await expect(
+      runtimeWithoutWorkerManager.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/sandbox plugin workers are unavailable in this server process/);
   });
 
-  it("fails every effective capability closed when the pinned plugin id is absent from the registry", async () => {
-    // The lease pins a plugin id, but that plugin record is gone. A stale worker
-    // entry still advertises every method. The runtime must not read the stale
-    // methods; it must fail closed because the exact-plugin identity is gone.
-    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
-    await db.delete(plugins).where(eq(plugins.id, pluginId));
-
-    const workerManager = {
-      isRunning: vi.fn(() => true),
+  it("still reports a stopped worker as a stopped worker when the manager is wired", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const offlineWorkerManager = {
+      isRunning: vi.fn(() => false),
       call: vi.fn(),
-      getWorker: vi.fn(() => ({
-        supportedMethods: [
-          "environmentResumeLease",
-          "environmentReleaseLease",
-          "environmentExecute",
-          "environmentSyncIn",
-          "environmentSyncOut",
-        ],
-      })),
     } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const effective = await runtimeWithPlugin.resolveCapabilities({
-      environment,
-      lease: reusableLease,
+    const runtimeWithOfflineWorker = environmentRuntimeService(db, {
+      pluginWorkerManager: offlineWorkerManager,
+      pluginWorkerReadyTimeoutMs: 0,
     });
 
-    for (const key of SANDBOX_CAPABILITY_KEYS) {
-      expect(effective?.[key]).toBe(false);
-    }
-  });
-
-  it("fails every effective capability closed when the pinned plugin no longer declares this provider key", async () => {
-    // The pinned plugin still exists, but it no longer declares a
-    // `sandbox_provider` driver with this key (here it changed the driver kind).
-    // A running worker still advertises every method. The runtime must fail
-    // closed because the exact-plugin declaration is gone.
-    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
-    await db
-      .update(plugins)
-      .set({
-        manifestJson: {
-          id: "acme.reusable-sandbox-provider",
-          apiVersion: 1,
-          version: "1.0.0",
-          displayName: "Reusable Sandbox Provider",
-          description: "Owner plugin that no longer declares the provider key",
-          author: "Paperclip",
-          categories: ["automation"],
-          capabilities: ["environment.drivers.register"],
-          entrypoints: { worker: "dist/worker.js" },
-          environmentDrivers: [
-            {
-              driverKey: "fake-plugin",
-              // The key exists, but the kind is now a plain environment driver,
-              // not a sandbox provider. The by-id resolver fails closed.
-              kind: "environment_driver",
-              displayName: "Fake Plugin",
-              configSchema: { type: "object", properties: {} },
-            },
-          ],
-        },
-        updatedAt: new Date(),
-      } as any)
-      .where(eq(plugins.id, pluginId));
-
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      call: vi.fn(),
-      getWorker: vi.fn(() => ({
-        supportedMethods: [
-          "environmentResumeLease",
-          "environmentReleaseLease",
-          "environmentExecute",
-          "environmentSyncIn",
-          "environmentSyncOut",
-        ],
-      })),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const effective = await runtimeWithPlugin.resolveCapabilities({
-      environment,
-      lease: reusableLease,
-    });
-
-    for (const key of SANDBOX_CAPABILITY_KEYS) {
-      expect(effective?.[key]).toBe(false);
-    }
-  });
-
-  it("defers to verified worker discovery for a valid pinned plugin that omits sandboxCapabilities", async () => {
-    // A valid, identified plugin whose manifest declares no `sandboxCapabilities`
-    // and no legacy reuse flag. Its worker verifies the sync verbs. An omitted
-    // declaration is NOT an identity failure: the runtime defers to the verified
-    // baseline, so native sync stays granted while unverified capabilities stay
-    // false.
-    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
-    await db
-      .update(plugins)
-      .set({
-        manifestJson: {
-          id: "acme.reusable-sandbox-provider",
-          apiVersion: 1,
-          version: "1.0.0",
-          displayName: "Reusable Sandbox Provider",
-          description: "Owner plugin that omits the capability declaration",
-          author: "Paperclip",
-          categories: ["automation"],
-          capabilities: ["environment.drivers.register"],
-          entrypoints: { worker: "dist/worker.js" },
-          environmentDrivers: [
-            {
-              driverKey: "fake-plugin",
-              kind: "sandbox_provider",
-              displayName: "Fake Plugin",
-              configSchema: { type: "object", properties: {} },
-            },
-          ],
-        },
-        updatedAt: new Date(),
-      } as any)
-      .where(eq(plugins.id, pluginId));
-
-    const workerManager = {
-      isRunning: vi.fn((id: string) => id === pluginId),
-      call: vi.fn(),
-      getWorker: vi.fn((id: string) =>
-        id === pluginId
-          ? { supportedMethods: ["environmentSyncIn", "environmentSyncOut"] }
-          : undefined,
-      ),
-    } as unknown as PluginWorkerManager;
-    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
-
-    const effective = await runtimeWithPlugin.resolveCapabilities({
-      environment,
-      lease: reusableLease,
-    });
-
-    // The worker verified the sync verbs and the omitted declaration adds no
-    // restriction, so native sync stays granted.
-    expect(effective?.nativeSyncIn).toBe(true);
-    expect(effective?.nativeSyncOut).toBe(true);
-    // The worker did not verify the reuse verbs, so reusable leases stay false.
-    expect(effective?.reusableLeases).toBe(false);
+    await expect(
+      runtimeWithOfflineWorker.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/its worker is not running/);
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {

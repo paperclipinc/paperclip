@@ -98,7 +98,7 @@ const initLine =
 
 afterEach(() => {
   vi.clearAllMocks();
-  probeResult.throwError = null;
+  claudeCliUnresolvable.value = false;
 });
 
 describe("claude sandbox hello probe diagnostics", () => {

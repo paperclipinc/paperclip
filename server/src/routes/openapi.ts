@@ -172,7 +172,8 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  startTaskDrainRequestSchema,
+  patchInstanceVisibilitySettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -1253,38 +1254,36 @@ registry.registerPath({
       }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      databaseBackup: z.object({
-        enabled: z.boolean(),
-        status: z.enum(["ok", "warning"]),
-        backupDir: z.string().optional(),
-        maxAgeHours: z.number().optional(),
-        latestBackup: z.object({
-          name: z.string(),
-          path: z.string(),
-          mtime: z.string().datetime(),
-          ageHours: z.number(),
-          sizeBytes: z.number(),
-        }).nullable().optional(),
-        lastFailure: z.object({
-          path: z.string(),
-          mtime: z.string().datetime(),
-          message: z.string(),
-        }).nullable().optional(),
-        warnings: z.array(z.object({
-          code: z.enum([
-            "database_backup_check_failed",
-            "database_backup_last_failure",
-            "database_backup_missing",
-            "database_backup_stale",
-          ]),
-          message: z.string(),
-        })),
-      }).optional(),
-      warnings: z.array(z.object({
-        code: z.string(),
-        message: z.string(),
-      })).optional(),
-      serverInfo: healthServerInfoSchema.optional(),
+      serverInfo: z.object({
+        processStartedAt: z.string().datetime(),
+        git: z.union([
+          z.object({
+            available: z.literal(true),
+            fullSha: z.string(),
+            shortSha: z.string(),
+            branchName: z.string().nullable(),
+            subject: z.string(),
+            committedAt: z.string().datetime().nullable(),
+            localChanges: z.union([
+              z.object({
+                available: z.literal(true),
+                hasLocalChanges: z.boolean(),
+                stagedFileCount: z.number().int().nonnegative(),
+                unstagedFileCount: z.number().int().nonnegative(),
+                untrackedFileCount: z.number().int().nonnegative(),
+              }).strict(),
+              z.object({
+                available: z.literal(false),
+                unavailableReason: z.enum(["git_status_unavailable"]),
+              }).strict(),
+            ]),
+          }).strict(),
+          z.object({
+            available: z.literal(false),
+            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+          }).strict(),
+        ]),
+      }).strict().optional(),
     })),
     // The database-unreachable body still carries version and commit so
     // deployment tooling can verify the running build during an outage;
@@ -4215,27 +4214,19 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/api/instance/task-drain",
+  path: "/api/instance/settings/visibility",
   tags: ["instance"],
-  summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+  summary: "Get instance visibility settings",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
 registry.registerPath({
-  method: "post",
-  path: "/api/instance/task-drain",
+  method: "patch",
+  path: "/api/instance/settings/visibility",
   tags: ["instance"],
-  summary: "Start a task drain, so new run admission holds until active runs finish",
-  request: { body: jsonBody(startTaskDrainRequestSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "delete",
-  path: "/api/instance/task-drain",
-  tags: ["instance"],
-  summary: "End a task drain and restore run admission",
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  summary: "Update instance visibility settings",
+  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────

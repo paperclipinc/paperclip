@@ -4,8 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
-import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
+import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -91,8 +90,7 @@ import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
-import { staticUiCacheControl } from "./static-ui-cache.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./services/plugin-loader.js";
 import {
@@ -735,8 +733,23 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast, with must-revalidate overrides for index.html and
-      // sw.js (see staticUiCacheControl for why those two).
+      // reasonably fast. Override for `index.html` specifically — it is
+      // served by this middleware for `/` and `/index.html`, and it must
+      // never outlive the asset hashes it points at.
+      // The HTML shell MUST go through the branded fallback below, which injects
+      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
+      // script reads. Serving the RAW index.html here (Express's default
+      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
+      // bypasses that injection -> no theme meta -> the script defaults to dark ->
+      // a dark->light flash on first paint until a branded route loads. So disable
+      // directory-index serving AND route an explicit `/index.html` to the fallback.
+      app.get("/index.html", (_req, res) => {
+        res
+          .status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(readBrandedStaticIndexHtml(uiDist));
+      });
       app.use(
         express.static(uiDist, {
           index: false,

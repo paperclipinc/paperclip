@@ -238,7 +238,6 @@ function makeInstanceSettings({
       enableExperimentalFileViewer: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
-      autoRestartDevServerWhenIdle: false,
     },
   });
 }

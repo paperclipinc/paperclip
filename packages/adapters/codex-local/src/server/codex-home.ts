@@ -663,25 +663,11 @@ export async function seedManagedCodexHome(
 
   await fs.mkdir(targetHome, { recursive: true });
 
-  // A regular-file auth.json in the target home is one of two very different
-  // things. The device-login promotion writes the company credential as a
-  // regular file, and that file is the durable outcome of an interactive login,
-  // so it must survive re-seeding. Everything else — an apikey-mode file left by
-  // a previous run, a stale pre-symlink copy of the shared credential (#5028),
-  // or an unreadable payload — is residue, and removing it lets the chatgpt-mode
-  // symlink be restored (ensureSymlink would otherwise replace it and Codex
-  // would keep authenticating with the stale key).
-  //
-  // The discriminator is identity-anchored, like the promotion and the cache
-  // vend: keep the file only when it holds a usable subscription identity that
-  // the shared source does not also hold. A same-identity regular file is the
-  // #5028 stale copy — the symlink serves the same account with live, rotating
-  // tokens, so it is strictly better. A different-identity (or source-less)
-  // subscription file is the promoted company credential; on a server with no
-  // shared login there is nothing to symlink at all, and deleting it would
-  // silently sign the company out right after a successful device login.
-  let keepPromotedAuth = false;
-  if (!apiKey && seedFromShared) {
+  // If a previous run wrote an apikey-mode auth.json (regular file) and this
+  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
+  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
+  // authenticating with the stale key after it is removed from configuration.
+  if (!apiKey && !authJson && seedFromShared) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
@@ -734,13 +720,17 @@ export async function seedManagedCodexHome(
   }
 
   if (seedFromShared) {
-    for (const name of SYMLINKED_SHARED_FILES) {
-      // The kept promoted credential is authoritative for this home; the shared
-      // symlink would silently swap the account back to the host login.
-      if (name === "auth.json" && keepPromotedAuth) continue;
-      const source = path.join(sourceHome, name);
-      if (!(await pathExists(source))) continue;
-      await ensureSymlink(path.join(targetHome, name), source);
+    // A user-supplied credential is the whole point of the hosted path, so the
+    // shared host auth.json must NOT be symlinked in on top of it: on a hosted
+    // install that file is the operator's, and on any install the symlink would
+    // make the user's own credential unreachable. Static config is still
+    // shared either way; only auth is theirs.
+    if (!authJson) {
+      for (const name of SYMLINKED_SHARED_FILES) {
+        const source = path.join(sourceHome, name);
+        if (!(await pathExists(source))) continue;
+        await ensureSymlink(path.join(targetHome, name), source);
+      }
     }
 
     for (const name of COPIED_SHARED_FILES) {

@@ -209,6 +209,40 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+    mockInstanceSettingsService.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
+    mockInstanceSettingsService.updateVisibility.mockResolvedValue({
+      id: "instance-settings-1",
+      visibility: { companySurfaces: ["company.general", "company.members"] },
+    });
+    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
+      lookbackHours: 24,
+      cutoff: "2026-04-26T12:00:00.000Z",
+      generatedAt: "2026-04-27T12:00:00.000Z",
+      findings: 1,
+      recoverableFindings: 1,
+      skippedOutsideLookback: 0,
+      items: [],
+    });
+    mockHeartbeatService.reconcileIssueGraphLiveness.mockResolvedValue({
+      findings: 1,
+      autoRecoveryEnabled: true,
+      lookbackHours: 24,
+      cutoff: "2026-04-26T12:00:00.000Z",
+      escalationsCreated: 1,
+      existingEscalations: 0,
+      skipped: 0,
+      skippedAutoRecoveryDisabled: 0,
+      skippedOutsideLookback: 0,
+      escalationIssueIds: ["issue-2"],
+    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
       driver: "local",
@@ -534,7 +568,25 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
+  it("allows local board users to update task watchdog controls", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableTaskWatchdogs: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableTaskWatchdogs: true,
+    });
+  });
+
+  it("rejects non-admin board users from reading or updating experimental settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",

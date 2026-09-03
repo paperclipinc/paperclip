@@ -24,6 +24,15 @@ describe("restoreOnboardingState", () => {
     expect(restoreOnboardingState(saved, companies)?.companyName).toBe("Draft");
   });
 
+  it("never restores credential bindings, even for an owned company", () => {
+    const saved = {
+      step: 4,
+      createdCompanyId: "company-new",
+      credentialBindings: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "s1" } },
+    };
+    expect(restoreOnboardingState(saved, companies)).not.toHaveProperty("credentialBindings");
+  });
+
   it("discards a company id against an empty (settled) companies list", () => {
     // Per the CONTRACT in the JSDoc, callers must only invoke this once
     // companies have settled. An empty settled list legitimately means the

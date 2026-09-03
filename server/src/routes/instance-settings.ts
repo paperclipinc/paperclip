@@ -4,7 +4,7 @@ import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
-  startTaskDrainRequestSchema,
+  patchInstanceVisibilitySettingsSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
@@ -289,10 +289,53 @@ export function instanceSettingsRoutes(db: Db) {
     },
   );
 
-  router.get("/instance/task-drain", async (req, res) => {
-    assertBoardOrgAccess(req);
-    res.json(heartbeat.getTaskDrainStatus());
+  router.get("/instance/settings/visibility", async (req, res) => {
+    // Admin-only read: non-admins receive the exposed surfaces via the
+    // /cli-auth/me capabilities payload, never the raw policy.
+    assertCanManageInstanceSettings(req);
+    res.json(await svc.getVisibility());
   });
+
+  router.patch(
+    "/instance/settings/visibility",
+    validate(patchInstanceVisibilitySettingsSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const updated = await svc.updateVisibility(req.body);
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.visibility_updated",
+            entityType: "instance_settings",
+            entityId: updated.id,
+            details: {
+              visibility: updated.visibility,
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json(updated.visibility);
+    },
+  );
+
+  router.post(
+    "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
+    validate(issueGraphLivenessAutoRecoveryRequestSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      res.json(await heartbeat.buildIssueGraphLivenessAutoRecoveryPreview({
+        lookbackHours: req.body.lookbackHours,
+      }));
+    },
+  );
 
   router.post(
     "/instance/task-drain",

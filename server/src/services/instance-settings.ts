@@ -355,6 +355,13 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enablePaperclipDeveloperMode: parsed.data.enablePaperclipDeveloperMode ?? false,
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
+      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
+      cloudBilling:
+        process.env.PAPERCLIP_CLOUD_BILLING === "true" ||
+        (parsed.data.cloudBilling ?? false),
+      cloudTrialBanner:
+        process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true" ||
+        (parsed.data.cloudTrialBanner ?? false),
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
@@ -392,6 +399,9 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
     autoRestartDevServerWhenIdle: false,
+    enableIssueGraphLivenessAutoRecovery: false,
+    cloudBilling: process.env.PAPERCLIP_CLOUD_BILLING === "true",
+    cloudTrialBanner: process.env.PAPERCLIP_CLOUD_TRIAL_BANNER === "true",
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
@@ -505,18 +515,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return managedConfig ? { ...experimental, managedKeys } : experimental;
   }
 
-  function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
-    return {
-      id: row.id,
-      defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-      general: toGeneralView(row.general),
-      experimental: toExperimentalView(row.experimental),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    } as InstanceSettings;
+  function toManagedInstanceSettings(
+    row: typeof instanceSettings.$inferSelect,
+    ov: InstanceSettingsOverrides,
+  ): InstanceSettings {
+    const base = toInstanceSettings(row, ov);
+    if (!managedConfig) return base;
+    const { experimental, managedKeys } = applyManagedExperimentalOverlay(base.experimental, managedConfig);
+    return { ...base, experimental: { ...experimental, managedKeys } } as InstanceSettings;
   }
-  async function getOrCreateRow(runner: InstanceSettingsWriteDb = db) {
-    const existing = await runner
+
+  async function getOrCreateRow() {
+    const existing = await db
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -583,7 +593,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return toGeneralView(row.general);
+      return resolveGeneralSettings(row.general, overrides.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
@@ -598,15 +608,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const storedGeneral = normalizeGeneralSettings(current.general);
-      // A full-GET echo carries the overlaid operator value for a field the
-      // user never chose; stripping it keeps the overlay strictly read-time,
-      // so changing or unsetting the variable later still takes effect.
-      const nextGeneral = stripOperatorGeneralEchoes(
-        storedGeneral,
-        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
-        operatorDefaults,
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.general),
       );
+      const nextGeneral = normalizeGeneralSettings({
+        ...normalizeGeneralSettings(current.general),
+        ...effectivePatch,
+      });
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
