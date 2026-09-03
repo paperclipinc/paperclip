@@ -120,6 +120,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableTaskWatchdogs: {
+    title: "Task Watchdogs",
+    description:
+      "Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableClassicTaskInterface: {
     title: "Classic Task Interface",
     description:
@@ -147,6 +155,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Status Cards",
     description:
       "Enable the experimental shared status-card board, update engine, and gated API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableCloudSync: {
+    title: "Cloud Sync",
+    description:
+      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
