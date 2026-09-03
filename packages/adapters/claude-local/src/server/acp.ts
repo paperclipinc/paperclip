@@ -17,7 +17,9 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
@@ -41,11 +43,24 @@ import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
+  prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
+import {
+  buildAdapterTestTargetCheck,
+  buildClaudeLoginRequiredHint,
+  classifyThrownErrorClass,
+  logSandboxProbeDiagnostic,
+} from "./probe-diagnostics.js";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
+import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
+import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.12.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type ClaudeExecutionEngine = "cli" | "acp";
 
@@ -185,7 +200,8 @@ export function resolveClaudeAcpBillingIdentity(
  * asset, materialize it into an in-sandbox config dir (copying the sandbox's own
  * `$HOME/.claude` credentials in), then repoint `CLAUDE_CONFIG_DIR` onto that
  * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
- * none — mirroring the CLI is the contract), so no teardown hook.
+ * none — mirroring the CLI is the contract). The teardown hook therefore only
+ * syncs the sandbox workspace back to the host; it does not touch credentials.
  *
  * An explicit `CLAUDE_CONFIG_DIR` (user-managed) is honored only if it can reach
  * the remote sandbox; a host-only path cannot, so we do NOT forward it verbatim
@@ -197,6 +213,19 @@ async function prepareClaudeRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog, executionTarget } = input;
+  // Fail-open workspace sync-back for every exit path (mirrors the Claude CLI
+  // lane's restore-hook finally and the Codex ACP seam's teardown). Claude has no
+  // credential copy-back, so the teardown only syncs the sandbox workspace back to
+  // the host. A restore miss is logged and never fails the run.
+  const registerWorkspaceSyncBack = (
+    stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Claude ACP teardown workspace restore failed",
+    });
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
@@ -232,7 +261,7 @@ async function prepareClaudeRemoteManagedHome(
         "stdout",
         `[paperclip] Remapped operator CLAUDE_CONFIG_DIR from host path ${explicitClaudeConfigDir} onto the in-sandbox workspace path ${remappedConfigDir} for the remote ACP run.\n`,
       );
-      return { stagedRuntime };
+      return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
     }
     await onLog(
       "stderr",
@@ -270,7 +299,7 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-  return { stagedRuntime };
+  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
@@ -288,6 +317,36 @@ function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExe
   };
 }
 
+/**
+ * The generic error code the shared acpx engine emits when a run fails because
+ * the agent has no ready authentication. The shared engine stays vendor-neutral,
+ * so it keeps this generic code. See `adapter-utils/acpx-engine/execute.ts`.
+ */
+const ACPX_AUTH_REQUIRED_ERROR_CODE = "acpx_auth_required";
+
+/**
+ * The Claude-specific error code the user interface reads to show the Claude
+ * login affordance on a run. The Claude CLI lane already emits this code. See
+ * `execute.ts` and the user interface gate in `ui/src/pages/AgentDetail.tsx`.
+ */
+const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
+
+/**
+ * Translate the generic acpx auth-required code into the Claude-specific code at
+ * the claude-local boundary. The shared acpx engine reports the generic
+ * `acpx_auth_required` code for every adapter. The user interface run gate reads
+ * the Claude-specific `claude_auth_required` code, the same code the Claude CLI
+ * lane emits. Without this translation the default ACP run never shows the login
+ * prompt. The function changes only the error code and keeps every other field,
+ * so the error message and the error metadata stay intact.
+ */
+export function mapClaudeAcpAuthErrorCode(
+  result: AdapterExecutionResult,
+): AdapterExecutionResult {
+  if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
+  return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -297,10 +356,11 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       currentExecutor = createAcpxEngineExecutor(withClaudeAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config),
     });
+    return mapClaudeAcpAuthErrorCode(result);
   };
 }
 
@@ -554,6 +614,12 @@ export async function testClaudeAcpEnvironment(
     hint: "Set engine=cli to use the existing Claude Code CLI lane.",
   });
 
+  // Always name the target the Test probed, so a pass result never hides which
+  // target it checked. A local probe reports the fixed host label.
+  checks.push(
+    buildAdapterTestTargetCheck({ targetIsRemote, environmentName: ctx.environmentName }),
+  );
+
   if (targetIsRemote) {
     checks.push({
       code: "claude_acp_remote_target",
@@ -618,6 +684,9 @@ export async function testClaudeAcpEnvironment(
     (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
   const configApiKey = envConfig.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
+  const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
+  const hostAuthToken = considerHostEnv ? process.env.ANTHROPIC_AUTH_TOKEN : undefined;
+  const hostConfigDir = considerHostEnv ? process.env.CLAUDE_CONFIG_DIR : undefined;
   if (hasBedrock) {
     checks.push({
       code: "claude_acp_bedrock_auth",
@@ -681,6 +750,73 @@ export async function testClaudeAcpEnvironment(
       targetIsRemote,
     });
     checks.push(...probeChecks);
+  }
+
+  // Run a real hello probe for every target when Bedrock and a config API key
+  // are both absent. A local target inherits the host environment, so the real
+  // ACP run authenticates with a host ANTHROPIC_API_KEY. The probe seeds the
+  // same host key below when the config sets none, so the probe uses the
+  // credential the real run receives and does not report a false auth-required.
+  // A remote target does not inherit the host env, so considerHostEnv is false
+  // and the probe never reads the host key. The CLI lane already probes every
+  // target; the ACP lane now matches it, so a local or SSH target no longer
+  // reports a pass without a credential check. Prepare the sandbox the same way
+  // the CLI lane does — install the Claude CLI when it is absent and materialize
+  // the managed CLAUDE_CONFIG_DIR. The preparation is a no-op for a local or SSH
+  // target. The probe returns the canonical adapter_auth_missing signal only for
+  // a sandbox target, and a distinct warn check when the probe cannot run. The
+  // user interface reads the canonical signal to offer login on the sandbox ACP
+  // path.
+  if (!hasBedrock && !isNonEmpty(configApiKey)) {
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    // Seed the host ANTHROPIC_API_KEY when the config sets no key, so the probe
+    // env matches the credential the real local run inherits from the host.
+    if (isNonEmpty(hostApiKey) && !isNonEmpty(probeEnv.ANTHROPIC_API_KEY)) {
+      probeEnv.ANTHROPIC_API_KEY = hostApiKey.trim();
+    }
+    // Seed the host CLAUDE_CODE_OAUTH_TOKEN the same way. A local ACP run
+    // inherits a host subscription OAuth token, so the probe must receive the
+    // same token. Without this seed a valid host OAuth-token setup reports a
+    // false claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostOauthToken) && !isNonEmpty(probeEnv.CLAUDE_CODE_OAUTH_TOKEN)) {
+      probeEnv.CLAUDE_CODE_OAUTH_TOKEN = hostOauthToken.trim();
+    }
+    // Seed the host ANTHROPIC_AUTH_TOKEN the same way. A local ACP run inherits
+    // a host bearer auth token, so the probe must receive the same token.
+    // Without this seed a valid host ANTHROPIC_AUTH_TOKEN setup reports a false
+    // claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostAuthToken) && !isNonEmpty(probeEnv.ANTHROPIC_AUTH_TOKEN)) {
+      probeEnv.ANTHROPIC_AUTH_TOKEN = hostAuthToken.trim();
+    }
+    // Seed the host CLAUDE_CONFIG_DIR the same way. A local ACP run reads the
+    // stored Claude login from the host CLAUDE_CONFIG_DIR, so the probe must
+    // read the same stored login. Without this seed a valid host stored login
+    // reports a false claude_hello_probe_auth_required and fails the Test lane.
+    if (isNonEmpty(hostConfigDir) && !isNonEmpty(probeEnv.CLAUDE_CONFIG_DIR)) {
+      probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
+    }
+    const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    checks.push(
+      ...(await prepareSandboxClaudeProbeRuntime({
+        runId,
+        target,
+        cwd,
+        companyId: ctx.companyId,
+        env: probeEnv,
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: "claude",
+        targetIsRemote,
+        targetIsSandbox,
+        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+      })),
+    );
+    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
+    if (canProbe) {
+      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+    }
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

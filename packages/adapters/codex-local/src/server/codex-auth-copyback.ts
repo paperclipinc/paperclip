@@ -1,27 +1,24 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { open, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
-
-const execFile = promisify(execFileCallback);
+import {
+  isCodexAuthCacheEnabled,
+  readSubscriptionAccountId,
+  writeCodexAuthCacheEntry,
+} from "./codex-auth-cache.js";
+import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
 
 // The outbound copy-back reuses the exact same direction-agnostic decision
-// predicate the inbound restore runs (`codex-auth-merge-decision.cjs`). The
-// predicate answers one question — "should the caller replace `destination`
-// with `source`?" — purely by argument order (first = source, second =
-// destination). For the copy-back the sandbox credential is the `source` and
-// the shared host credential is the `destination`, so exit 10 (use source)
-// means "install the sandbox copy onto the host" and exit 20 (keep destination)
-// means "leave the host copy untouched". The predicate only ever reads the two
-// files and exits with a code; it never prints token bytes.
-const DECISION_SCRIPT_PATH = fileURLToPath(
-  new URL("./codex-auth-merge-decision.cjs", import.meta.url),
-);
-const USE_SOURCE_EXIT = 10;
-const KEEP_DESTINATION_EXIT = 20;
+// predicate the inbound restore runs, through the shared `decideCodexAuthMerge`
+// entry point. The predicate answers one question — "should the caller replace
+// `destination` with `source`?" — purely by argument order (first = source,
+// second = destination). For the copy-back the sandbox credential is the
+// `source` and the shared host credential is the `destination`, so exit 10 (use
+// source) means "install the sandbox copy onto the host" and exit 20 (keep
+// destination) means "leave the host copy untouched". The predicate only ever
+// reads the two files and exits with a code; it never prints token bytes.
 
 /** Outcome of a copy-back attempt. No token material is ever surfaced. */
 export type CopyBackCodexAuthOutcome = "copied" | "kept-host";
@@ -41,35 +38,19 @@ export interface CopyBackCodexAuthInput {
   hostAuthPath: string;
   /** Non-leaking progress sink: receives decision/outcome lines only. */
   log: (line: string) => void | Promise<void>;
-}
-
-async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
-  try {
-    await execFile("node", [DECISION_SCRIPT_PATH, sourcePath, destinationPath]);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === USE_SOURCE_EXIT || code === KEEP_DESTINATION_EXIT) {
-      return code;
-    }
-    // A non-numeric `code` (e.g. "ENOENT" when node is not on PATH) or any exit
-    // code other than 10/20 is a hard failure — fail loud so a broken predicate
-    // is never mistaken for a "keep host" decision.
-    const detail =
-      typeof code === "string"
-        ? `node could not be executed (${code})`
-        : typeof code === "number"
-        ? `unexpected predicate exit code ${code}`
-        : error instanceof Error
-        ? error.message
-        : String(error);
-    throw new Error(`codex auth copy-back decision predicate failed: ${detail}`);
-  }
-
-  // Reached only when `execFile` resolved — i.e. the predicate exited 0. The
-  // predicate always exits 10 or 20, so a clean exit 0 is unexpected; throw
-  // directly here, outside the try/catch, so this already self-explanatory
-  // message is not re-wrapped by the catch's "...failed:" prefix.
-  throw new Error("codex auth copy-back decision predicate exited 0 (expected 10 or 20)");
+  /**
+   * Resolves and ensures the per-identity cache slot path for a sandbox
+   * `account_id`. When this is provided AND the cache off-switch is on, the
+   * copy-back also writes the fresher, usable subscription credential into its
+   * per-identity cache slot as a second, additive write, keyed by the real
+   * `account_id`. This is independent of the host default overwrite: it can
+   * write a cache slot for a different identity than the host holds (matrix rows
+   * 1b, 3), and it never touches the host default store. When absent, no cache
+   * write happens.
+   */
+  resolveCacheEntryPath?: (accountId: string) => Promise<string>;
+  /** Environment for the cache off-switch read. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -99,7 +80,7 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
  * Never logs token bytes — only the decision outcome.
  */
 export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<CopyBackCodexAuthOutcome> {
-  const { readSandboxAuth, hostAuthPath, log } = input;
+  const { readSandboxAuth, hostAuthPath, log, resolveCacheEntryPath, env } = input;
 
   // Read first (outside the lock) — a read never mutates the host, so there is
   // nothing to serialize yet. A genuinely absent sandbox `auth.json` (ENOENT —

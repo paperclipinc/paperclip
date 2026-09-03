@@ -1,17 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronLeft,
-  Clock3,
-  CloudUpload,
   Cpu,
+  Download,
   FlaskConical,
   KeyRound,
-  MailPlus,
   MonitorCog,
   Puzzle,
-  Settings,
   Shield,
   SlidersHorizontal,
+  Upload,
   UserRoundPen,
   Users,
 } from "lucide-react";
@@ -20,14 +17,16 @@ import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { useBoardCapabilities } from "@/hooks/useFeatures";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
-import { Link, NavLink } from "@/lib/router";
+import { NavLink } from "@/lib/router";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
-import { useSidebar } from "@/context/SidebarContext";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -42,8 +41,13 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { selectedCompanyId } = useCompany();
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
+  const showPlugins = showPage("instance.plugins");
+  // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
+  // nav entry is hidden rather than dead-ending. Export stays available.
+  const isCloud = Boolean(useCloudInstance());
   const { slots: companySettingsPluginSlots } = usePluginSlots({
     slotTypes: ["companySettingsPage"],
     companyId: selectedCompanyId,
@@ -73,44 +77,25 @@ export function CompanySettingsSidebar() {
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
+    // The listing only feeds the per-plugin subtree below; skip it when the
+    // operator hides the Plugins surface.
+    enabled: showPlugins,
   });
   const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
-    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
-      <div className="flex flex-col gap-1 px-3 py-3 shrink-0">
-        <Link
-          to="/dashboard"
-          onClick={() => {
-            if (isMobile) setSidebarOpen(false);
-          }}
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-        >
-          <ChevronLeft className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{selectedCompany?.name ?? "Company"}</span>
-        </Link>
-        <div className="flex items-center gap-2 px-2 py-1">
-          <Settings className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">
-            Company Settings
-          </span>
-        </div>
-      </div>
-
+    <ContextualSidebarFrame surface="settings" title="Settings" icon={SlidersHorizontal}>
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          Company settings
-        </div>
         <div className="flex flex-col gap-0.5">
           {exposedSurfaces.has("company.general") ? (
             <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           ) : null}
           {showCloudUpstream ? (
             <SidebarNavItem
-              to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
-              icon={CloudUpload}
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
+              label="Profile"
+              icon={UserRoundPen}
               end
             />
           ) : null}
@@ -222,6 +207,6 @@ export function CompanySettingsSidebar() {
           </>
         ) : null}
       </nav>
-    </aside>
+    </ContextualSidebarFrame>
   );
 }

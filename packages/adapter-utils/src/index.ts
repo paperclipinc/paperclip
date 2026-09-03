@@ -10,6 +10,8 @@ export type {
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
@@ -23,8 +25,6 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
-  AdapterModelProfileKey,
-  AdapterModelProfileDefinition,
   HireApprovedPayload,
   HireApprovedHookResult,
   ConfigFieldOption,
@@ -37,6 +37,10 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,
+  PaperclipQuestion,
+  PaperclipQuestionOption,
+  PaperclipQuestionResponse,
+  PaperclipQuestionSet,
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
@@ -73,6 +77,11 @@ export {
   isBenignAdapterStderrLine,
 } from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
+export {
+  buildAdapterEnvConfig,
+  parseEnvBindings,
+  parseEnvVars,
+} from "./env-bindings.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
   RuntimeProgressSink,

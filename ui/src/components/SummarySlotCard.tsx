@@ -155,7 +155,7 @@ export function SummarySlotCard({
   const builtInAgentsQuery = useQuery({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),
     queryFn: () => builtInAgentsApi.list(companyId!),
-    enabled: Boolean(companyId && summariesEnabled),
+    enabled: Boolean(companyId && summariesEnabled && builtInAgentsEnabled),
     retry: false,
   });
 

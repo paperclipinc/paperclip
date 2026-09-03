@@ -12,11 +12,46 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
+import {
+  MAX_ISSUE_PREFIX_ATTEMPTS,
+  deriveIssuePrefixBase,
+  isIssuePrefixConflict,
+  issuePrefixSuffixForAttempt,
+  pickAvailableIssuePrefix,
+  rekeyCompanyIssueIdentifiers,
+} from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
+const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
+
+function cloudTenantWriteDebounceFor(db: Db) {
+  let debounce = cloudTenantWriteDebounces.get(db);
+  if (!debounce) {
+    debounce = new Map();
+    cloudTenantWriteDebounces.set(db, debounce);
+  }
+  return debounce;
+}
+
+function pruneCloudTenantWriteDebounce(
+  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
+  nowMs: number,
+) {
+  for (const [subject, entry] of debounce) {
+    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
+  }
+  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
+    const oldestSubject = debounce.keys().next().value;
+    if (!oldestSubject) break;
+    debounce.delete(oldestSubject);
+  }
+}
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
@@ -28,6 +63,20 @@ function hashToken(token: string) {
 
 function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+function invalidAgentTokenMessage(token: string) {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
+      return "Expired agent token; obtain fresh credentials and retry";
+    }
+  } catch {
+    // Malformed and incorrectly signed tokens share the generic failure below.
+  }
+  return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -77,6 +126,28 @@ async function loadResponsibleUserMemberships(
       ),
   ]);
   return user ? memberships : [];
+}
+
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -139,6 +210,8 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -157,7 +230,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
-    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+    const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+
+    // Public MCP gateway protocol requests carry a pcgw_* bearer that is
+    // validated by the gateway service itself. Do not interpret that bearer as
+    // a board key or agent JWT here: doing so rejects the MCP handshake before
+    // the protocol route can verify its run-scoped credential. Keep this bypass
+    // restricted to the unguessable public gateway path; all /api routes retain
+    // the normal actor authentication path below.
+    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    if (!hasBearerCredentials) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
@@ -186,20 +273,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
-            db
-              .select({
-                companyId: companyMemberships.companyId,
-                membershipRole: companyMemberships.membershipRole,
-                status: companyMemberships.status,
-              })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
+            loadActiveUserCompanyMemberships(db, userId),
           ]);
           req.actor = {
             type: "board",
@@ -222,9 +296,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const token = authHeader.slice("bearer ".length).trim();
+    const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
-      next();
+      next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
       return;
     }
 
@@ -260,7 +334,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next();
+        next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
 
@@ -271,12 +345,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
         return;
       }
 
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+      if (agentRecord.status === "terminated") {
+        next(unauthorized("Agent is terminated and cannot authenticate"));
+        return;
+      }
+      if (agentRecord.status === "pending_approval") {
+        next(unauthorized("Agent is pending approval and cannot authenticate"));
         return;
       }
 
@@ -338,8 +416,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(eq(agents.id, key.agentId))
       .then((rows) => rows[0] ?? null);
 
-    if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
+    if (!agentRecord || agentRecord.companyId !== key.companyId) {
+      next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
+      return;
+    }
+    if (agentRecord.status === "terminated") {
+      next(unauthorized("Agent is terminated and cannot authenticate"));
+      return;
+    }
+    if (agentRecord.status === "pending_approval") {
+      next(unauthorized("Agent is pending approval and cannot authenticate"));
       return;
     }
 
@@ -378,22 +464,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 }
 
 /**
- * Whether this instance is managed by a Paperclip Cloud control plane.
- * When the tenant server token is configured, the control plane owns the
- * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted the
- * `instance_admin` DB role. The only elevation a cloud tenant can carry is
- * computed per request at the trusted-header boundary (owner stack role +
- * the `enableOwnerInstanceAdmin` flag) and floored by code on
- * platform-owned surfaces. Surfaces that assume a self-hosted operator
- * will claim the instance (e.g. the first-admin bootstrap gate) should
- * treat a cloud-managed instance as already set up.
- */
-export function isCloudManagedInstance(): boolean {
-  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
-}
-
-/**
  * Whether the trusted-header actor being resolved should carry computed
  * instance-admin elevation: only the stack `owner` role elevates, and only
  * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
@@ -418,7 +488,33 @@ async function resolveOwnerInstanceAdmin(
   }
 }
 
-export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+/**
+ * Minimal header accessor `resolveCloudTenantActor` needs. Express `Request`
+ * satisfies it directly; websocket upgrade paths adapt a raw
+ * `IncomingMessage` with {@link cloudActorHeaderSourceFromHeaders} since
+ * trusted-header authentication must work identically for upgrades — a
+ * cloud-proxied browser has no local Better Auth session to fall back on.
+ */
+export interface CloudActorHeaderSource {
+  header(name: string): string | undefined;
+}
+
+/** Adapts a raw header map (e.g. `IncomingMessage.headers`) to {@link CloudActorHeaderSource}. */
+export function cloudActorHeaderSourceFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): CloudActorHeaderSource {
+  return {
+    header(name: string) {
+      const value = headers[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    },
+  };
+}
+
+export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -436,8 +532,20 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const companyId = cloudTenantCompanyId(stackId);
   const now = new Date();
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
+  const cloudTenantWriteDebounce = cloudTenantWriteDebounceFor(db);
+  pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, now.getTime());
+  const previousSync = cloudTenantWriteDebounce.get(userId);
+  const shouldSync = previousSync?.fingerprint !== syncFingerprint
+    || previousSync.syncedAt <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
+    companyId,
+    membershipRole,
+    status: "active",
+  };
 
-  await db
+  if (shouldSync) await db
     .insert(authUsers)
     .values({
       id: userId,
