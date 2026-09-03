@@ -54,9 +54,11 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
+  enableTaskWatchdogs: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
+  enableCloudSync: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
   enableSmokeLab: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),
@@ -69,6 +71,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePaperclipDeveloperMode: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
+  cloudBilling: z.boolean().default(false),
+  cloudTrialBanner: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableOwnerInstanceAdmin: z.boolean().default(false),
@@ -136,6 +140,18 @@ export type PatchInstanceExperimentalSettings = Partial<
 >;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
+
+export const instanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES))
+    .default([...COMPANY_SETTINGS_SURFACES]),
+}).strict();
+
+export const patchInstanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
+}).strict();
+
+export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
+export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
 
 export const instanceSettingsSchema = z.object({
   id: z.string().guid(),

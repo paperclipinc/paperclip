@@ -66,9 +66,11 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableTaskWatchdogs: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
+  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -88,6 +90,8 @@ export interface InstanceExperimentalSettings {
    */
   enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
+  cloudBilling: boolean;
+  cloudTrialBanner: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
