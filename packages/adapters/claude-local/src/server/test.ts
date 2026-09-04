@@ -20,8 +20,14 @@ import {
   resolveAdapterExecutionTargetCwd,
   resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
-import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCommandLooksLike,
+  minimumClaudeCliVersionForModel,
+  readClaudeCommandVersion,
+} from "./cli-capabilities.js";
+import { isBedrockModelId } from "./models.js";
+import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
@@ -41,6 +47,14 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function localExecutablesMatch(
+  trustedCommand: string | null,
+  runtimeCommand: string | null,
+): boolean {
+  if (!trustedCommand || !runtimeCommand) return false;
+  return trustedCommand === runtimeCommand;
 }
 
 // Pure decision for the (non-Bedrock) auth advice check: given the adapter's

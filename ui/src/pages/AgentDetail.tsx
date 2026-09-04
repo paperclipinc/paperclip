@@ -60,7 +60,6 @@ import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
-import { PageTabBar } from "../components/PageTabBar";
 import { AuditFeed } from "./audit/AuditFeed";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -329,7 +328,7 @@ export function restoreAgentConfigHistoryEntry(
   return true;
 }
 
-export { agentDetailHref, agentScopedAuditHref, parseAgentDetailView };
+export { agentDetailHref, agentScopedAuditHref, parseAgentDetailView } from "./agent-detail-navigation";
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
   if (!usage) return 0;

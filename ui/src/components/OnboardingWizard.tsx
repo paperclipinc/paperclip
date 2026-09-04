@@ -1,33 +1,38 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { MotionConfig, motion } from "motion/react";
 import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestResult
+  AdapterEnvironmentTestResult,
+  AgentRole,
+  ClaudeOAuthTokenStatusResponse,
+  Environment,
+  InstanceSettings,
 } from "@paperclipai/shared";
-import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AdapterLoginPanel } from "./AgentConfigForm";
+import { secretsApi } from "../api/secrets";
+import { Label } from "./ui/label";
+import { Input } from "./ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
-import { ApiError } from "@/api/client";
-import { restoreOnboardingState } from "@/lib/onboarding-state";
-import { trackStep } from "@/telemetry";
-import {
-  credentialFailureKey,
-  credentialRejectionMessage,
-  deriveCredentialConnected,
-  findCredentialAuthFailureCheck,
-  findMatchingCompanySecret,
-} from "@/lib/credential-connected";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { ApiError } from "../api/client";
 import { companiesApi } from "../api/companies";
-import { cloudCompaniesApi } from "../api/cloudCompanies";
-import { healthApi } from "../api/health";
+import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
-import { secretsApi } from "../api/secrets";
+import { environmentsApi } from "../api/environments";
+import { instanceSettingsApi } from "../api/instanceSettings";
+import {
+  resolveAdapterTestEnvironmentId,
+  resolveLocalDefaultEnvironmentId,
+  resolveManagedSandboxEnvironmentId,
+} from "../lib/adapter-test-environment";
 import { queryKeys } from "../lib/queryKeys";
 import { Dialog, DialogPortal } from "@/components/ui/dialog";
 import {
@@ -78,8 +83,24 @@ import {
 } from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
-import { AgentCapsule } from "./AgentCapsule";
-import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
+import { PillGuy } from "./onboarding/PillGuy";
+import { SleepingZs } from "./onboarding/SleepingZs";
+import {
+  AGENT_ARC_WIZARD_STEPS,
+  ONBOARDING_STEP_LABELS,
+  ONBOARDING_WIZARD_STEPS,
+  Stepper,
+  agentArcStepFor,
+  onboardingStepPositionFor,
+} from "./onboarding/Stepper";
+import { AgentPreview } from "./onboarding/AgentPreview";
+import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { CredentialModeLink } from "./onboarding/CredentialModeLink";
+import { ApiKeyField, ConnectInputCanvas } from "./onboarding/ConnectInputCanvas";
+import { FooterNav } from "./onboarding/FooterNav";
+import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
+import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
+import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -104,50 +125,19 @@ const MISSION_PROMPT_CHIPS = [
   "Launch a marketplace"
 ];
 
-type CredentialBinding = { type: "secret_ref"; secretId: string };
+// First-run onboarding stays on the proven direct adapters even when an
+// instance administrator has opted into Paperclip Runner elsewhere. The
+// experimental flag only exposes the runner in explicit agent configuration.
+const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
+  "process",
+  "http",
+  "paperclip_runner",
+]);
 
-/**
- * Merges guided-credential-connect bindings into a base adapter config's
- * `env`, scoped to the *current* adapter's credential-setup envKeys.
- *
- * `credentialBindings` accumulates across the whole wizard session (a user
- * can pick claude_local, bind ANTHROPIC_API_KEY, then switch to
- * gemini_local) — without filtering, a binding collected under a
- * previously-selected adapter would leak into the config of whichever
- * adapter the user ends up hiring. Only entries whose envKey appears in the
- * current adapter's `credentialSetup` options survive the merge.
- *
- * Also merges on top of `baseConfig.env` (rather than replacing it) so
- * unrelated env entries already produced by `buildAdapterConfig` — notably
- * the `forceUnsetAnthropicApiKey` plain-value marker — survive alongside
- * the bindings. If there's nothing to merge (no matching bindings and no
- * base env), `env` is omitted entirely to preserve the existing
- * regression-guarded "no env key when nothing is bound" behavior.
- */
-function mergeCredentialBindings(
-  baseConfig: Record<string, unknown>,
-  bindings: Record<string, CredentialBinding>,
-  setup: AdapterCredentialSetup | undefined
-): Record<string, unknown> {
-  const allowedEnvKeys = new Set((setup?.options ?? []).map((option) => option.envKey));
-  const filteredBindings = Object.fromEntries(
-    Object.entries(bindings).filter(([envKey]) => allowedEnvKeys.has(envKey))
-  );
-  const baseEnv =
-    typeof baseConfig.env === "object" &&
-    baseConfig.env !== null &&
-    !Array.isArray(baseConfig.env)
-      ? (baseConfig.env as Record<string, unknown>)
-      : undefined;
-
-  if (Object.keys(filteredBindings).length === 0 && !baseEnv) {
-    return baseConfig;
-  }
-
-  return {
-    ...baseConfig,
-    env: { ...(baseEnv ?? {}), ...filteredBindings }
-  };
+function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+  return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
+    ? savedAdapterType
+    : "claude_local";
 }
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
@@ -159,12 +149,205 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-// Skill (by key) that teaches the governance-aware agent-hiring flow. Attached to
-// the onboarding CEO so it can fulfil its seed task of hiring the first engineer.
-const ONBOARDING_CEO_SKILL_KEY = "paperclip-create-agent";
-const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
+/**
+ * True when an adapter-test result blocks a hire. A `fail` status always
+ * blocks. A `warn` or a `pass` status blocks too when a check reports
+ * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
+ * working authentication, so it cannot run. A `warn` with no such check
+ * still lets the hire proceed. The wizard widened the gate for missing
+ * authentication only, not for every other warning.
+ */
+function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
+  if (result.status === "fail") return true;
+  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
+}
+
+/** True when `value` is a plain object, so callers can spread it as env config. */
+function isEnvRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const ANTHROPIC_API_KEY_ENV_KEY = "ANTHROPIC_API_KEY";
+
+/**
+ * True when the adapter configuration carries a non-empty ANTHROPIC_API_KEY.
+ * The server rejects that key together with the fixed Claude login binding
+ * (see `assertClaudeOAuthBindingInvariant` in `server/src/services/secrets.ts`).
+ * This checks the built configuration first, so onboarding never sends a
+ * hire the server would reject.
+ */
+function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boolean {
+  if (!isEnvRecord(config.env)) return false;
+  const binding = config.env[ANTHROPIC_API_KEY_ENV_KEY];
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (!isEnvRecord(binding)) return false;
+  if (binding.type === "plain") {
+    return typeof binding.value === "string" && binding.value.trim().length > 0;
+  }
+  return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+}
+
+/**
+ * Full-colour brand marks for the sources this step offers.
+ *
+ * The registry's own icons are monochrome, drawn to sit in dense config UI
+ * where a row of saturated logos would be noise. This step is the opposite
+ * case: two large tiles carrying the whole choice, where the brand is the
+ * fastest thing to recognise.
+ *
+ * Keyed by adapter type with a fallback, so the row stays registry-driven. An
+ * adapter with no brand file here still renders — with its registry icon —
+ * rather than a gap where a tile should be.
+ */
+const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
+  claude_local: "/brands/claude-color.svg",
+};
+
+/**
+ * What the connect step calls each source.
+ *
+ * Deliberately not the display registry's label, which ten other surfaces read.
+ * This step asks which *provider* you are signing in with — the panel under the
+ * row says "Sign in to Anthropic" and "Sign in to OpenAI" — while the agent
+ * config screens name the tool that runs ("Codex CLI was not found on this
+ * host"). One rename in the registry would make that message say OpenAI, which
+ * is vaguer, not clearer.
+ *
+ * It is a tension worth naming rather than hiding: DESIGN.md asks for one name
+ * per concept, and this is two names for one adapter. The concepts are
+ * different — vendor here, tool there — but if the product decides otherwise,
+ * this map is the thing to delete.
+ */
+const MODEL_SOURCE_NAMES: Record<string, string> = {
+  claude_local: "Claude",
+  codex_local: "OpenAI",
+};
+
+/**
+ * OpenAI's blossom, inline rather than served from `/brands`.
+ *
+ * The supplied asset is a white fill, which was fine while this row only ever
+ * sat on a dark tile. It follows the reader's system setting now, and white on
+ * the light tile is invisible. Inlining lets the path take
+ * `currentColor` and be legible in both, which an `<img>` cannot do.
+ */
+function OpenAiBlossom({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 716 716" className={className} fill="none" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M508.749 317.399C516.777 287.314 508.991 253.884 485.389 230.282C461.788 206.681 428.36 198.895 398.273 206.923C376.231 184.928 343.39 174.956 311.148 183.596C278.906 192.234 255.45 217.292 247.36 247.361C217.291 255.451 192.233 278.91 183.595 311.149C174.957 343.391 184.927 376.232 206.924 398.274C198.896 428.359 206.683 461.789 230.284 485.391C253.885 508.992 287.313 516.779 317.401 508.75C339.442 530.745 372.286 540.717 404.525 532.079C436.767 523.441 460.223 498.384 468.313 468.315C498.383 460.224 523.44 436.766 532.078 404.526C540.716 372.285 530.747 339.443 508.749 317.402V317.399ZM470.899 244.776C486.892 260.77 493.488 282.601 490.687 303.412L415.577 260.046C412.411 258.218 408.509 258.218 405.345 260.046L317.401 310.82V277.526C317.401 275.191 318.652 273.005 320.676 271.837L387.644 233.174C414.178 218.353 448.346 222.223 470.901 244.776H470.899ZM357.837 311.144L398.275 334.491V381.185L357.837 404.532L317.398 381.185V334.491L357.837 311.144ZM264.776 269.693C265.207 239.305 285.644 211.649 316.453 203.393C338.3 197.54 360.505 202.744 377.127 215.573L302.014 258.937C298.848 260.764 296.898 264.144 296.898 267.798V369.346L268.065 352.699C266.043 351.531 264.776 349.353 264.776 347.017V269.691V269.693ZM203.391 316.454C209.244 294.608 224.854 277.978 244.276 269.999V356.73C244.276 360.384 246.226 363.763 249.392 365.591L337.337 416.365L308.503 433.013C306.481 434.181 303.961 434.188 301.939 433.02L234.971 394.357C208.868 378.789 195.138 347.261 203.391 316.454ZM244.775 470.9C228.781 454.906 222.186 433.075 224.986 412.264L300.096 455.63C303.263 457.457 307.164 457.457 310.328 455.63L398.273 404.856V438.149C398.273 440.485 397.022 442.671 394.997 443.839L328.029 482.502C301.495 497.322 267.327 493.452 244.772 470.9H244.775ZM450.897 445.982C450.466 476.371 430.029 504.027 399.22 512.283C377.373 518.136 355.168 512.932 338.547 500.102L413.659 456.738C416.826 454.911 418.775 451.532 418.775 447.877V346.329L447.609 362.977C449.631 364.145 450.897 366.323 450.897 368.659V445.985V445.982ZM512.282 399.221C506.429 421.068 490.819 437.697 471.397 445.676V358.946C471.397 355.292 469.448 351.912 466.281 350.085L378.336 299.311L407.17 282.663C409.192 281.495 411.712 281.487 413.734 282.655L480.702 321.318C506.805 336.887 520.536 368.415 512.282 399.221Z"
+      />
+    </svg>
+  );
+}
+
+const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: string }>> = {
+  codex_local: OpenAiBlossom,
+};
+
+/**
+ * The environment variable each source reads its key from.
+ *
+ * Named rather than described in the field above it, because the customer knows
+ * which key they are holding and does not know where this step will put it. The
+ * mapping already existed in this file as prose inside the environment-check
+ * hint; this is the same knowledge, in a form the key field can use.
+ */
+const API_KEY_ENV_KEYS: Record<string, string> = {
+  claude_local: ANTHROPIC_API_KEY_ENV_KEY,
+  codex_local: "OPENAI_API_KEY",
+};
+
+function apiKeyEnvKeyFor(adapterType: string): string {
+  return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+function ModelSourceMark({
+  type,
+  Fallback,
+}: {
+  type: string;
+  Fallback: ComponentType<{ className?: string }>;
+}) {
+  const Inline = MODEL_SOURCE_INLINE_MARKS[type];
+  if (Inline) return <Inline className="size-full" />;
+  const brand = MODEL_SOURCE_BRAND_MARKS[type];
+  if (!brand) return <Fallback className="size-full" />;
+  return <img src={brand} alt="" className="size-full" />;
+}
+
+// Exported so tests write/read the exact key the component uses, instead of
+// duplicating the literal and silently drifting from it if it's ever renamed.
+export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+const DEFAULT_TASK_TITLE = "Paperclip onboarding";
+const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
+understand what the user wants and turn it into a concrete plan — not to
+start building yet.
+
+A greeting has already been posted to the user on your behalf, so don't
+re-introduce yourself — go straight to the questions.
+
+This is a user-facing chat. Everything you post here is read by the user, so
+keep your messages terse and written for them. Only surface things meant for
+the user: the questions, the plan, the team, next-step options, and short
+status ("Got your answers — here's the plan."). Never narrate how you work.
+Don't post your internal steps or thinking into the chat — no "let me probe
+the schema", "schema learned", "building the questions payload", "orienting
+myself with the API", or similar play-by-play of your API/tool calls. Do that
+work silently and post only the result.
+
+Work in this order:
+
+1. Ask a few focused, clarifying questions. Use an ask_user_questions interaction to settle on one concrete goal to tackle first— scope, priorities, constraints, and what "done" looks like. Don't guess; ask.
+
+2. Propose one plan. Once you understand the goal, write a short approach plan to the \`plan\` document. At the bottom, list the agents you'd hire (with their roles) and any follow-up tasks you'd create. Then present the whole thing as a SINGLE request_checkbox_confirmation that targets the \`plan\` document, with each proposed hire and follow-up task as its own checkable option, checked by default. Give each option a stable id you can act on later. Do NOT use suggest_tasks or a separate request_confirmation — one checkbox card is the plan and its approval. In the card's message keep the summary to a line or two and point the user to the full write-up in the plan on the right sidebar (it opens to the Plan there automatically) — don't paste the whole plan into the card, and never say the write-up is "above" or "in the plan doc above"; it lives in the right sidebar.
+
+3. Wait for approval. Don't hire anyone or create work until the user approves the plan. They can uncheck anything they don't want before approving, and unchecking simply drops it. If they ask for changes, revise the plan document and re-confirm.
+
+4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
+
+Propose, don't decide. Keep it conversational.`;
+/**
+ * The onboarding draft in `localStorage`, via a browser that is allowed to say
+ * no.
+ *
+ * Storage access throws outright where a browser denies it — Safari's private
+ * mode, a blocked third-party context — and every call site here sits in a
+ * render, an effect, or a close handler, so an escaping exception takes down
+ * something the customer was using. Losing the ability to resume onboarding is
+ * a far smaller failure than the wizard tearing down mid-answer, or refusing
+ * to close.
+ *
+ * Routed through one object on purpose. Guarding these one at a time is how
+ * three of the four call sites ended up unguarded while the fourth looked
+ * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
+ * all have the same failure and want the same answer.
+ */
+const onboardingDraftStorage = {
+  read(): string | null {
+    try {
+      return window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(value: string): void {
+    try {
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
+    } catch {
+      // Storage unavailable: the draft is simply not resumable this session.
+    }
+  },
+  clear(): void {
+    try {
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Nothing to do. A draft that cannot be cleared is re-rejected on the
+      // next load by the same ownership check that rejected it here.
+    }
+  },
+};
 
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
@@ -173,47 +356,146 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
  * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
  * very first render, so it must never mount before the restored draft is
- * final — otherwise every field locks to its default and the draft is lost
+ * final, otherwise every field locks to its default and the draft is lost
  * for good. restoreOnboardingState requires the SETTLED companies list (see
  * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  const { companies, loading: companiesLoading } = useCompany();
+  // Deliberately does not call `useCompany()`. The list it exposes is the
+  // shared cache, which is what this gate must not trust - see below.
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
   const rawBlob = useMemo(() => {
-    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    const raw = onboardingDraftStorage.read();
     if (!raw) return undefined;
     try {
       return JSON.parse(raw) as unknown;
     } catch {
-      return null; // malformed: treated as stale below, same as before
+      return null; // malformed: treated as stale below
     }
   }, []);
+  // The ownership gate is closed after the initial validation succeeds, or
+  // when no validation is needed. A later company-list invalidation is
+  // ordinary background work. If it unmounted the inner wizard then, all of
+  // its live useState values would be reconstructed from `rawBlob` above —
+  // the value from page load, not the draft the customer just typed — and a
+  // successful organization submission would appear to do nothing.
+  //
+  // A failed validation must remain retryable. A later successful fetch needs
+  // to remount the wizard with the now-authorized draft, rather than keeping
+  // the defaults it showed while ownership was unknown.
+  const [initialDraftValidationComplete, setInitialDraftValidationComplete] = useState(
+    rawBlob === undefined || rawBlob === null,
+  );
+
+  // Whether this account owns the company the draft names is an authorization
+  // question, and the answer has to be about the account asking now.
+  //
+  // The shared company cache could not answer it at all: one entry for every
+  // account, served for thirty seconds after a switch with no loading state and
+  // no error, so a check that trusted "not loading, no error" handed one
+  // account's draft to the next. The entry is keyed by account now, and that
+  // trap is gone with it.
+  //
+  // What survives is smaller and still worth a request. A cached list is the
+  // right account's but can be thirty seconds old, so a company created moments
+  // ago in another tab is missing from it — and missing reads as "you do not own
+  // this", which deletes the draft rather than withholding it. So this still
+  // asks for a list fetched for this mount.
+  const companiesQuery = useCompanyListQuery({
+    staleTime: 0,
+    // Only a *parseable* saved draft poses the question. Without one there is
+    // nothing to authorize, and this must not add a request to every wizard
+    // mount - nor make the cleanup of unreadable junk wait on an endpoint that
+    // has no bearing on whether it is junk.
+    enabled: rawBlob !== undefined && rawBlob !== null,
+  });
+
+  // Decidable only with a list that succeeded, actually arrived, and that the
+  // server was willing to give us.
+  //
+  // Whose list it is stopped being a question here: the entry is keyed by
+  // account, so the previous account's list is unreachable rather than merely
+  // rejected. What the checks still answer is whether there is an answer at all,
+  // and the reason that matters is the *destructive* branch below — an
+  // undecidable draft is withheld and recoverable, but a draft judged
+  // not-yours is deleted.
+  //
+  // `isSuccess`: React Query keeps the last good `data` through a failed
+  // refetch, and a retained list is not evidence about now.
+  //
+  // `staleTime: 0` on the query, still: a cached list is the right account's but
+  // can be thirty seconds old, and a company created moments ago in another tab
+  // would be missing from it — which reads as "this draft belongs to a company
+  // you do not own" and deletes it.
+  //
+  // `unauthorized`: the query folds 401 and 403 into
+  // `{ companies: [], unauthorized: true }` rather than throwing, so an auth
+  // blip arrives as a *successful* fetch of an empty list and would otherwise
+  // read as "this account owns nothing" and delete the draft.
+  const ownershipDecidable =
+    companiesQuery.isSuccess &&
+    companiesQuery.data !== undefined &&
+    !companiesQuery.data.unauthorized;
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
-    // Companies not settled yet: restoreOnboardingState must not be called
-    // (see its CONTRACT). Not stale, just not decidable yet.
-    if (companiesLoading) return { saved: null, staleStateDetected: false };
+    // Unreadable, so junk regardless of who owns what. Judged before the
+    // ownership check rather than after it, so clearing it does not wait on a
+    // company request that cannot change the answer.
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
-    const restored = restoreOnboardingState(rawBlob, companies);
+    // Not decidable yet, or not decidable at all. Either way: restore nothing,
+    // delete nothing. A draft withheld is recoverable on the next load; a
+    // draft deleted, or one handed to the wrong account, is not.
+    if (!ownershipDecidable) return { saved: null, staleStateDetected: false };
+    const restored = restoreOnboardingState(rawBlob, companiesQuery.data!.companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, companiesLoading, companies]);
+  }, [rawBlob, ownershipDecidable, companiesQuery.data]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
   useEffect(() => {
-    if (staleStateDetected) {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-    }
+    if (!staleStateDetected) return;
+    onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists but companies haven't settled yet: wait rather than
-  // mount the inner wizard with a premature (and unrecoverable) guess.
-  if (rawBlob !== undefined && companiesLoading) {
+  // A saved blob exists and its *initial* verification fetch is still in
+  // flight: wait, rather than mount the inner wizard with a premature and
+  // unrecoverable guess at the draft. Its ~20 `useState(saved?.x ?? default)`
+  // initializers only read `saved` once. After that first mount this is a
+  // background refetch, which must not tear down the customer's live state.
+  //
+  // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
+  // holds retained data, so a refetch over a warm cache would mount the wizard
+  // while ownership was still undecidable - and with the wizard open, the
+  // persist effect would overwrite the customer's own draft with defaults
+  // before the answer arrived. `isFetching` covers the refetch too.
+  //
+  // While in flight, not on failure. The companies query sets `retry: false`,
+  // so a failed fetch stays failed; and with no companies the dashboard offers
+  // a "Get Started" button wired to onboarding, which a gate that returned null
+  // here would make do nothing at all.
+  //
+  // Mounting does not cost the draft. The persist effect that would overwrite
+  // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
+  // wizard writes nothing. If the wizard is open the customer is onboarding
+  // right now, which supersedes the draft anyway.
+  const waitForInitialDraftValidation =
+    !initialDraftValidationComplete && rawBlob !== undefined && companiesQuery.isFetching;
+
+  useEffect(() => {
+    if (
+      !initialDraftValidationComplete &&
+      ownershipDecidable &&
+      !companiesQuery.isFetching
+    ) {
+      setInitialDraftValidationComplete(true);
+    }
+  }, [initialDraftValidationComplete, ownershipDecidable, companiesQuery.isFetching]);
+
+  if (waitForInitialDraftValidation) {
     return null;
   }
 
@@ -295,40 +577,12 @@ function OnboardingWizardInner({
   const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
 
-  // Cloud UI telemetry: record wizard step transitions (step number + time
-  // spent on the previous step; never any field content). trackStep is a
-  // no-op off-cloud, so this costs nothing in plain installs.
-  const stepTelemetryRef = useRef<{ step: Step; at: number } | null>(null);
-  useEffect(() => {
-    if (!effectiveOnboardingOpen) {
-      stepTelemetryRef.current = null;
-      return;
-    }
-    const prev = stepTelemetryRef.current;
-    if (prev?.step === step) return;
-    trackStep("onboarding", step, prev?.step, prev ? Date.now() - prev.at : undefined);
-    stepTelemetryRef.current = { step, at: Date.now() };
-  }, [effectiveOnboardingOpen, step]);
-
   // "Grow existing" questionnaire fields
   const [growWorkflows, setGrowWorkflows] = useState((saved?.growWorkflows as string) ?? "");
   const [growPainPoints, setGrowPainPoints] = useState((saved?.growPainPoints as string) ?? "");
   const [growAutomate, setGrowAutomate] = useState((saved?.growAutomate as string) ?? "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // True only while `error` holds the additional-company plan-gate message
-  // (the 402 upgrade_required case). Lets the error banner offer an
-  // actionable "Subscribe" link (to /account) instead of a dead end (mirrors
-  // NewCompanyDialog's inline upgrade prompt). Always reset at the top of
-  // handleConfirmMission, the only place that sets it true, so it can never
-  // linger onto an unrelated later error.
-  const [companyUpgradeRequired, setCompanyUpgradeRequired] = useState(false);
-  // True only while `error` holds the additional-company slot-required message
-  // (the 402 slot_required case: an active subscriber must buy another company
-  // slot before this one is created, confirm-first billing). Lets the error
-  // banner offer an "Add a company slot" link instead of a dead end. Reset at
-  // the top of handleConfirmMission alongside companyUpgradeRequired.
-  const [companySlotRequired, setCompanySlotRequired] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
 
@@ -406,26 +660,48 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
-  // Session-only: never restored from localStorage. A restored binding names a
-  // secret id that can belong to another company, which the server rejects.
-  const [credentialBindings, setCredentialBindings] = useState<
-    Record<string, { type: "secret_ref"; secretId: string }>
-  >({});
-  // envKeys whose most recent post-bind live probe came back with the
-  // provider explicitly rejecting the credential (see
-  // findCredentialAuthFailureCheck). Cleared for an envKey the moment a
-  // fresh bind attempt starts for it; excludes that envKey from
-  // deriveCredentialConnected regardless of session bindings or the
-  // (possibly still-present) server-side secret.
-  const [failedCredentialEnvKeys, setFailedCredentialEnvKeys] = useState<
-    Set<string>
-  >(new Set());
-  // Plain-language copy for the most recent rejection, shown on the
-  // credential-connect card. Never the raw provider/CLI message — see
-  // credentialRejectionMessage.
-  const [credentialProbeError, setCredentialProbeError] = useState<
-    string | null
-  >(null);
+  /**
+   * Whether the connect step is asking for a subscription sign-in or an API key.
+   *
+   * Restored from the draft like everything else on this step: someone who
+   * picked keys, left, and came back should not be handed a sign-in panel they
+   * already said no to.
+   */
+  const [credentialMode, setCredentialMode] = useState<CredentialMode>(
+    (saved?.credentialMode as CredentialMode) ?? "subscription",
+  );
+  /**
+   * Whether Connect has been pressed for the current source.
+   *
+   * The step's footer button is what starts the sign-in now, so this is the
+   * whole of the difference between the card being absent and the card running:
+   * the panel is mounted with `autoStart` the moment this is true, and it
+   * cancels back to false. Deliberately not in the draft — a login is a live
+   * server session with a deadline on it, and restoring a wizard an hour later
+   * into "connecting" would be describing a session that is long gone.
+   */
+  const [loginStarted, setLoginStarted] = useState(false);
+  /**
+   * Whether that sign-in reached its success state.
+   *
+   * Only the displayed-code login ever sits here to be read: the browser-code
+   * login advances the step from its own success, so nothing gets the chance
+   * to render this. It exists because OpenAI's login finishes in another tab,
+   * with nothing to type back — so the step has to wait, and the footer button
+   * is where the waiting shows.
+   */
+  const [loginConnected, setLoginConnected] = useState(false);
+  /**
+   * The key itself, held only for as long as the wizard is open. It is written
+   * into the adapter config at hire time and never into the draft — a draft is
+   * `localStorage`, and a provider key does not belong there.
+   */
+  const [apiKey, setApiKey] = useState("");
+  // The owner's stored Claude subscription login, read right before the hire
+  // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
+  // so nothing else reads this state yet.
+  const [claudeOAuthStatus, setClaudeOAuthStatus] =
+    useState<ClaudeOAuthTokenStatusResponse | null>(null);
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
@@ -648,29 +924,20 @@ function OnboardingWizardInner({
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
-  // When onboarding skips the naming step (initialStep >= 2: an existing/auto-
-  // created company entered via the /<prefix>/onboarding route), the company
-  // already has a name. Backfill it so the mission header, the "Confirm mission"
-  // guard, and the review checklist reflect the real name instead of a blank.
-  // We never prefill on the initialStep 1 rename path — there the user names it
-  // fresh.
+  // Backfill the name too, for the same company and the same reason.
+  //
+  // `companyName` is otherwise only ever typed on step 1, so a company that
+  // enters the wizard further along has none. That is a dead end rather than a
+  // cosmetic gap: the mission step prints the name in its own copy, and both
+  // ways forward from that step - the button and the Enter key - require
+  // `companyName.trim()`. An existing company opened on the mission step could
+  // not leave it. Nothing reached that state until the dashboard started
+  // opening agentless companies there.
   useEffect(() => {
-    if (!effectiveOnboardingOpen || initialStep < 2 || companyName || !createdCompanyId) {
-      return;
-    }
+    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
     const company = companies.find((c) => c.id === createdCompanyId);
-    if (company?.name) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, initialStep, companyName, createdCompanyId, companies]);
-
-  // credentialBindings is company-scoped even though it isn't persisted: if
-  // createdCompanyId changes while the wizard stays mounted (an in-SPA company
-  // switch, no page reload), a binding collected under the previous company
-  // must not read as "connected" for the new one.
-  useEffect(() => {
-    setCredentialBindings({});
-    setFailedCredentialEnvKeys(new Set());
-    setCredentialProbeError(null);
-  }, [createdCompanyId]);
+    if (company) setCompanyName(company.name);
+  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
@@ -709,32 +976,6 @@ function OnboardingWizardInner({
     // Models are picked on step 4 (Connect a model).
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
   });
-  // Server-side truth for "is a credential connected". Company scoped, so a
-  // secret from another company cannot appear here.
-  const { data: companySecrets } = useQuery({
-    // Shared with Secrets.tsx's identical list call so both share one cache
-    // entry instead of the wizard keeping its own ad hoc copy.
-    queryKey: createdCompanyId
-      ? queryKeys.secrets.list(createdCompanyId)
-      : ["secrets", "__disabled__"],
-    queryFn: () => secretsApi.list(createdCompanyId as string),
-    enabled: Boolean(createdCompanyId),
-    staleTime: 0,
-  });
-  // Cloud (authenticated) mode: the native POST /api/companies collection-create
-  // is blocked by the hosting gateway (409 use_cloud_company_create). Creating an
-  // ADDITIONAL company in cloud must go through the gateway's POST
-  // /api/cloud/companies, which provisions a separate control-plane tenant on its
-  // own stack and returns a URL to navigate to. So the wizard's inline
-  // create-then-goal-then-hire flow (which assumes one stack) cannot run in cloud:
-  // when the user starts a brand-new company, we hand off to the cloud endpoint and
-  // full-page navigate to the new tenant, where its own first-run wizard takes over.
-  const { data: health } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => healthApi.get(),
-    staleTime: 5 * 60 * 1000,
-  });
-  const isCloud = health?.deploymentMode === "authenticated";
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
 
@@ -870,31 +1111,6 @@ function OnboardingWizardInner({
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
-  const credentialSetup = getUIAdapter(adapterType)?.credentialSetup;
-  // Gate activation on a connected credential: if the adapter advertises
-  // credential options, the user must bind at least one before we let them
-  // bring the agent to life (otherwise its heartbeat runs fail auth forever).
-  const requiresCredential = Boolean(credentialSetup && credentialSetup.options.length > 0);
-  const credentialConnected =
-    !requiresCredential ||
-    deriveCredentialConnected(
-      credentialSetup,
-      companySecrets,
-      credentialBindings,
-      adapterType,
-      failedCredentialEnvKeys,
-    );
-  // Scope the credential card's error banner to the CURRENT adapter: only
-  // show it when one of this adapter's own credential options is the one
-  // that was rejected, so switching to an unrelated adapter never carries
-  // over a stale message.
-  const credentialCardError =
-    credentialProbeError &&
-    (credentialSetup?.options ?? []).some((option) =>
-      failedCredentialEnvKeys.has(credentialFailureKey(adapterType, option.envKey)),
-    )
-      ? credentialProbeError
-      : null;
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
@@ -913,11 +1129,137 @@ function OnboardingWizardInner({
     };
   }, [disabledTypes]);
 
+  /**
+   * A source chosen from the visible row. Read off the row rather than off
+   * `adapterType` alone, because a restored draft can name an adapter this step
+   * no longer offers — a selection the customer cannot see.
+   */
+  const sourceSelected =
+    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+
+  /**
+   * Whether the connect step may advance.
+   *
+   * One predicate, because there are two ways to advance and they drifted. The
+   * button's condition and Cmd+Enter's were written out separately, so when the
+   * button gained `sourceSelected` and `adapterEnvLoading` the keyboard kept the
+   * older, shorter list — and hired against a source the row had never shown.
+   * The same defect the button was just fixed for, one path over.
+   *
+   * `loading` is deliberately not here. The keyboard handler returns on it
+   * before reaching any step, for a reason particular to keystrokes: a second
+   * Enter re-enters a handler whose guard is state the first has not written
+   * yet. That check belongs at the top of the handler, not per-step.
+   *
+   * Anything that gates this step belongs in here, so the next one is added
+   * once rather than twice.
+   */
+  const connectStepReady =
+    sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
+
+  /**
+   * Whether this step has a sign-in to do before it can hire.
+   *
+   * The same four conditions the card itself renders on, named once so the
+   * footer button and the card cannot disagree about whether a login is
+   * happening. When it is false — an API key, a source already signed in on the
+   * sandbox, no sandbox to sign in against — Connect goes straight to the hire,
+   * exactly as it did before.
+   */
+  const connectStepNeedsLogin = Boolean(
+    credentialMode !== "api" &&
+      showAdapterLoginPanel &&
+      createdCompanyId &&
+      resolvedLoginEnvironmentId,
+  );
+
+  /**
+   * Whether the source's login ends by taking a code back from the customer.
+   *
+   * This is what splits the two waits, and it is a real difference rather than
+   * a cosmetic one. The browser-code login finishes here, in the field on the
+   * card, so the button is busy and says so. The displayed-code login finishes
+   * somewhere else entirely — another tab, possibly another device — so the
+   * button is not busy, it is waiting, and a spinner would be claiming work
+   * this screen is not doing.
+   */
+  const loginSubmitsBrowserCode =
+    adapterCaps.login?.panelMode === "submitted_browser_code";
+
+  // Connect is pressed, the login is running, and it has not succeeded yet.
+  const connectStepLoggingIn =
+    connectStepNeedsLogin && loginStarted && !loginConnected;
+
+  /**
+   * What the step's primary action does, for both the button and Cmd+Enter.
+   *
+   * One function rather than the condition written twice. The keyboard path
+   * has drifted from the button here before — the comment on its `step === 4`
+   * branch is about exactly that — and the gap it left was a hire that skipped
+   * a check. This one would be worse: Cmd+Enter would hire before the sign-in
+   * it is meant to start, against a source with no credential.
+   */
+  function handleConnectStepPrimary() {
+    if (connectStepNeedsLogin && !loginStarted) {
+      setLoginStarted(true);
+      return;
+    }
+    void handleGiveHeartbeat();
+  }
+
+  /**
+   * When the input canvas is open: exactly when a source has been chosen.
+   *
+   * The card is the answer to the tile that was just pressed, so an untouched
+   * row leaves nothing under it — a sign-in bar offered before the question was
+   * answered says the step already knows which provider is meant, which it does
+   * not.
+   *
+   * This used to open for a pending sign-in as well, `|| showAdapterLoginPanel`,
+   * so that a restored draft naming an adapter this step no longer offers still
+   * had something to press. That reasoning came from when the row arrived with a
+   * selection already made and an invisible one was a dead end. It is not one
+   * now: the row is a question, an unofferable saved adapter simply leaves it
+   * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
+   * still decides what goes *inside* the canvas — only not whether it exists.
+   */
+  /**
+   * The one thing that can be wrong here before anything is pressed: there is
+   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
+   * on arrival rather than after a press that goes nowhere.
+   *
+   * Its two neighbours in the old canvas are not worth the same. "Checking this
+   * source's credentials…" narrated a request nothing was waiting on, and "this
+   * source is already signed in" answered a question the customer had not asked
+   * yet — both were written for a canvas that opened on selection, and the
+   * press is what opens it now.
+   */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+
+  /**
+   * Open once there is something in it: a key field, a sign-in that has been
+   * started, or the news that no sign-in is possible.
+   *
+   * It no longer opens on selection alone. The card is the sign-in itself now,
+   * and a sign-in starts when Connect is pressed — so between picking a tile
+   * and pressing the button there is nothing to put here, and the step is the
+   * question and the button, which is what the design draws.
+   */
+  const canvasOpen =
+    sourceSelected &&
+    (credentialMode === "api" || loginStarted || connectStepHasNoSandbox);
+
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
   // grid hides it, so without this snap the wizard would silently keep an
   // invisible selection and create an agent that can never acquire a lease.
   useEffect(() => {
+    // Not until the registry has loaded. External adapter types are only
+    // registered once the adapters query resolves, so before that a saved
+    // external adapter is indistinguishable from a disabled one - and snapping
+    // would replace the customer's choice with a built-in and persist it.
+    if (!adapterRegistryLoaded) return;
     const visible = [...recommendedAdapters, ...moreAdapters].filter(
       (a) => !a.comingSoon,
     );
@@ -925,6 +1267,13 @@ function OnboardingWizardInner({
     if (visible.some((a) => a.type === adapterType)) return;
     const next = visible[0].type as AdapterType;
     setAdapterType(next);
+    // The snap is not a choice. It replaces a name the customer can no longer
+    // see with the first one they can, which is the right thing to hold — but
+    // holding it *as chosen* would put a filled tile and an open sign-in panel
+    // on a step nobody has answered, and re-create by the back door exactly the
+    // preselection this step was changed to stop doing. The saved answer was
+    // unofferable, so the question is open again.
+    setSourcePicked(false);
     if (next === "codex_local") return;
     if (next === "opencode_local") {
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
@@ -939,7 +1288,7 @@ function OnboardingWizardInner({
       return;
     }
     setModel("");
-  }, [recommendedAdapters, moreAdapters, adapterType]);
+  }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
@@ -970,6 +1319,16 @@ function OnboardingWizardInner({
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
+
+  // A login belongs to one source in one credential mode. Switching either
+  // means the card on screen is answering a question nobody asked any more, so
+  // the step goes back to offering Connect. The panel is keyed on the adapter
+  // as well, so it unmounts on the same change and releases its server session
+  // on the way out.
+  useEffect(() => {
+    setLoginStarted(false);
+    setLoginConnected(false);
+  }, [adapterType, credentialMode]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -1028,7 +1387,6 @@ function OnboardingWizardInner({
     setGrowAutomate("");
     setLoading(false);
     setError(null);
-    setCompanyUpgradeRequired(false);
     setCompanyName("");
     setCompanyGoal("");
     setMissionPath(null);
@@ -1380,28 +1738,16 @@ function OnboardingWizardInner({
         createdCompanyId,
         adapterType,
         {
-          adapterConfig:
-            adapterConfigOverride ??
-            mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup)
+          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          environmentId,
         }
       );
       setAdapterEnvResult(result);
       adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
       return result;
     } catch (err) {
-      // The server's raw message can be an internal implementation detail
-      // (e.g. "Secret must belong to same company") that must never render
-      // verbatim — log it for support, show the operator a plain sentence.
-      // This check "cannot run" case stays permissive by design: it does
-      // not touch credentialBindings, so a prior successful bind still
-      // reads as connected.
-      // eslint-disable-next-line no-console
-      console.log(
-        "[onboarding] adapter environment test request failed:",
-        err instanceof Error ? err.message : err,
-      );
       setAdapterEnvError(
-        "We could not run the adapter check right now. You can continue and retry the test later."
+        err instanceof Error ? err.message : "Adapter environment test failed"
       );
       return null;
     } finally {
@@ -1409,158 +1755,72 @@ function OnboardingWizardInner({
     }
   }
 
-  // Best-effort: disable a secret whose bound value was just rejected by the
-  // provider. Without this, the secret stays "active" server-side and, on a
-  // fresh mount (page reload), deriveCredentialConnected's company-secrets
-  // fallback would match it by name and silently re-open the heartbeat gate
-  // — the in-session failedCredentialEnvKeys marker that blocks it here
-  // does not survive a reload. A failure to disable is logged, not thrown:
-  // the in-session gate still holds for the current session either way, and
-  // AdapterCredentialConnect's existing 409-name-collision retry (the "-2"
-  // suffix) already tolerates the name staying taken by an old secret
-  // regardless of its status.
-  async function disableRejectedCredentialSecret(secretId: string, envKey: string) {
-    try {
-      await secretsApi.disable(secretId);
-      if (createdCompanyId) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.secrets.list(createdCompanyId),
-        });
-      }
-    } catch (disableErr) {
-      // eslint-disable-next-line no-console
-      console.log(
-        "[onboarding] failed to disable a rejected credential secret; it may remain active server-side until disabled manually",
-        envKey,
-        secretId,
-        disableErr,
-      );
-    }
-  }
-
-  // Guided BYOK credential connect (step 4): bind an env key to a freshly
-  // created company secret, then re-run the environment check with the
-  // fresh binding included (passed explicitly rather than relying on
-  // credentialBindings state, which wouldn't have re-rendered yet).
-  //
-  // If the live probe comes back with the provider explicitly rejecting the
-  // credential (checks[].authFailure, classified server-side where the
-  // actual provider response is visible): undo the binding and disable the
-  // just-created secret so deriveCredentialConnected reads it as NOT
-  // connected — both in this session AND after a reload — and the
-  // heartbeat gate cannot open on its strength; show a plain-language error
-  // on the card. AdapterCredentialConnect's existing 409-name-collision
-  // retry (the "-2" suffix) absorbs a re-paste regardless of the disabled
-  // secret's continued (inactive) existence. Any other outcome (pass, or a
-  // non-auth warn/fail) keeps the existing permissive behavior — this is
-  // what onboarding did before this fix and must keep working for
-  // transient/infra probe failures.
-  async function handleCredentialBind(envKey: string, secretId: string) {
-    const failureKey = credentialFailureKey(adapterType, envKey);
-    const nextBindings = {
-      ...credentialBindings,
-      [envKey]: { type: "secret_ref" as const, secretId }
-    };
-    setCredentialBindings(nextBindings);
-    setAdapterEnvResult(null);
-    setCredentialProbeError(null);
-    setFailedCredentialEnvKeys((prev) => {
-      if (!prev.has(failureKey)) return prev;
-      const next = new Set(prev);
-      next.delete(failureKey);
-      return next;
-    });
-    if (createdCompanyId) {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.secrets.list(createdCompanyId),
-      });
-    }
-    const result = await runAdapterEnvironmentTest(
-      mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
-    );
-    const rejection = findCredentialAuthFailureCheck(result);
-    if (!rejection) return;
-    // eslint-disable-next-line no-console
-    console.log(
-      "[onboarding] credential probe rejected the just-bound value for",
-      envKey,
-      rejection,
-    );
-    setCredentialBindings((prev) => {
-      const { [envKey]: _removed, ...rest } = prev;
-      return rest;
-    });
-    setFailedCredentialEnvKeys((prev) => {
-      const next = new Set(prev);
-      next.add(failureKey);
-      return next;
-    });
-    setCredentialProbeError(credentialRejectionMessage(rejection));
-    await disableRejectedCredentialSecret(secretId, envKey);
-  }
-
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
   // goal, then advance to naming the team lead. Guarded so revisiting the
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      // The company already exists (auto-created in cloud_tenant mode, or carried
-      // in from the "add another agent" entry point). Naming + goal were handled
-      // on entry, so just advance to creating the team lead.
-      setStep(3);
-      return;
-    }
-    if (isCloud && companies.length > 0) {
-      // Cloud, and the user already has a stack company: creating an ADDITIONAL
-      // company must go through the gateway's POST /api/cloud/companies, which
-      // provisions a separate control-plane tenant on its own stack and returns
-      // a URL. Hard-navigate to it (a client-side navigate would not trigger the
-      // gateway to inject the new company's stack); the new tenant's own first-run
-      // wizard then handles naming + goal + lead agent. The FIRST company instead
-      // falls through to companiesApi.create below (PR A makes the server create
-      // the stack company for the cloud tenant).
+      // An existing company needs its mission written, not just skipped past.
+      // This branch used to advance without saving anything, which was
+      // harmless while nothing sent an existing company to the mission step -
+      // a company reached step 2 only by creating itself on step 1, one line
+      // below. The dashboard now opens an agentless company here, so the
+      // customer types a mission and presses "Confirm mission". Advancing
+      // without writing it would leave the company with no mission at all,
+      // which is the state this whole change exists to remove.
+      //
+      // A goal already in hand means update it, not skip the write. It used
+      // to mean skip, which was safe only while the field could not hold an
+      // unsaved change: the id was set by *writing* the mission, so arriving
+      // here with one meant nothing had been typed since. Hydration breaks
+      // that - the id now also arrives from the company's existing goal, with
+      // the customer's edits sitting in the field beside it - and skipping
+      // would discard exactly the answer this step asked for.
       setLoading(true);
       setError(null);
-      setCompanyUpgradeRequired(false);
-      setCompanySlotRequired(false);
       try {
-        const created = await cloudCompaniesApi.create({ name: companyName.trim() });
-        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-        window.location.assign(created.url);
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 402) {
-          // Three outcomes share the 402: the trial plan gate (upgrade_required),
-          // an active subscriber who must buy another company slot first
-          // (slot_required, confirm-first billing), and a failed per-company
-          // billing update for an already-paying user (billing_update_failed).
-          const body = err.body as { error?: string; limit?: number } | null;
-          const code = body?.error;
-          if (code === "slot_required") {
-            setCompanySlotRequired(true);
-            const limit = body?.limit;
-            setError(
-              limit != null
-                ? `Your subscription covers ${limit} ${
-                    limit === 1 ? "company" : "companies"
-                  }. Add another company slot to create this one.`
-                : "Your subscription does not cover another company yet. Add a company slot to create this one.",
-            );
-          } else {
-            const upgradeRequired = code !== "billing_update_failed";
-            setCompanyUpgradeRequired(upgradeRequired);
-            setError(
-              code === "billing_update_failed"
-                ? "We could not update your billing for the new company. No company was created and you have not been charged. Try again or contact support."
-                : "Your trial includes one company. Subscribe to add more; each company is 10 euro per month.",
-            );
-          }
-        } else if (err instanceof ApiError && err.status === 409) {
-          setError("You have reached the fair use company limit. Contact us to raise it.");
-        } else {
-          setError(
-            err instanceof Error ? err.message : "Failed to create company",
-          );
+        // The company may already have a mission this step could not see.
+        // `useCompanyMission` fails open, so a goal lookup that exhausted its
+        // retries sends a company that has one here anyway. Adding a second
+        // company-level goal would leave two, and the earlier one would keep
+        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
+        //
+        // So read once more before writing, and update rather than add. The
+        // customer just answered the question on a step that asked it, so
+        // their answer is the mission. A read that fails still writes: an
+        // unwritten mission is the failure this whole change exists to remove.
+        let existingGoalId: string | null = createdCompanyGoalId;
+        try {
+          const goals = await queryClient.fetchQuery({
+            queryKey: queryKeys.goals.list(createdCompanyId),
+            queryFn: () => goalsApi.list(createdCompanyId)
+          });
+          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
+        } catch {
+          // Still cannot tell. Fall through and write.
         }
+
+        const plan = planMissionPersistence({
+          goalInput: companyGoal,
+          existingGoalId,
+        });
+        if (plan.kind === "skip") {
+          setStep(3);
+          return;
+        }
+        const goal =
+          plan.kind === "update"
+            ? await goalsApi.update(plan.goalId, plan.payload)
+            : await goalsApi.create(createdCompanyId, plan.payload);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(createdCompanyId)
+        });
+        if (!stillTheSameCompany(createdCompanyId)) return;
+        setCreatedCompanyGoalId(goal.id);
+        setStep(3);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save the mission");
+      } finally {
         setLoading(false);
       }
       return;
@@ -1604,15 +1864,7 @@ function OnboardingWizardInner({
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        // Another owner/admin finished setting this workspace up first.
-        queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-        setError(
-          "This workspace was already set up by a teammate. Close this wizard to jump into the company.",
-        );
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to create company");
-      }
+      setError(err instanceof Error ? err.message : "Failed to create organization");
     } finally {
       setLoading(false);
     }
@@ -1695,43 +1947,6 @@ function OnboardingWizardInner({
     setLoading(true);
     setError(null);
     try {
-      // The heartbeat gate (credentialConnected) can read "connected"
-      // purely off deriveCredentialConnected's company-secrets fallback —
-      // e.g. right after a page reload, before the user has bound anything
-      // THIS session. That fallback proves an active secret exists, but it
-      // never puts anything into credentialBindings. Left alone, the probe
-      // below and the hire payload would both run through
-      // mergeCredentialBindings with an EMPTY bindings map: the probe would
-      // only ever see the soft "please log in" case (no authFailure, since
-      // no credential is present to reject) and the hire would create an
-      // agent with no credential binding at all — exactly the "first run
-      // fails after onboarding" bug this whole fix exists for, just via a
-      // different path (a valid key on a fresh reload gets the same
-      // treatment as a rejected one). Materialize the match into an actual
-      // binding — reusing the exact name-matching logic
-      // deriveCredentialConnected uses, via findMatchingCompanySecret — so
-      // the probe actually tests it and the hire payload actually carries
-      // it. Also persist it to credentialBindings state so later renders
-      // (and the rejection-handling branch below) see it too.
-      let materializedBindings = credentialBindings;
-      let justMaterializedBinding = false;
-      if (requiresCredential && credentialSetup) {
-        const alreadyBoundThisSession = credentialSetup.options.some((option) =>
-          Boolean(credentialBindings[option.envKey]),
-        );
-        if (!alreadyBoundThisSession) {
-          const match = findMatchingCompanySecret(credentialSetup, companySecrets, adapterType);
-          if (match) {
-            materializedBindings = {
-              ...credentialBindings,
-              [match.envKey]: { type: "secret_ref" as const, secretId: match.secretId },
-            };
-            justMaterializedBinding = true;
-            setCredentialBindings(materializedBindings);
-          }
-        }
-      }
-
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!isValidOpenCodeModelId(selectedModelId)) {
@@ -1815,76 +2030,32 @@ function OnboardingWizardInner({
         : baseAdapterConfig;
 
       if (isLocalAdapter) {
-        // If we just materialized a binding above, the cached adapterEnvResult
-        // (if any) was necessarily produced before that binding existed — it
-        // could only have seen the soft "please log in" case, never a real
-        // pass/fail for this credential. Force a fresh probe against
-        // materializedBindings rather than trusting the stale cache.
-        const envConfigForProbe = mergeCredentialBindings(
-          buildAdapterConfig(),
-          materializedBindings,
-          credentialSetup
-        );
-        const result = justMaterializedBinding
-          ? await runAdapterEnvironmentTest(envConfigForProbe)
-          : adapterEnvResult ?? (await runAdapterEnvironmentTest(envConfigForProbe));
+        // A cached result is reusable only when it tested the same
+        // configuration the hire below sends, and only when it does not
+        // block the hire — see blocksAgentCreate. With the "Test now" card
+        // gone, this button is the only way to re-probe. Reusing a stale
+        // blocking result, or a result from a config that did not carry the
+        // stored login, would lock out a customer who has since fixed the
+        // problem or signed in.
+        const cachedUsable =
+          adapterEnvResult &&
+          adapterEnvResultAppliedStoredLoginRef.current === shouldApplyStoredClaudeLogin &&
+          !blocksAgentCreate(adapterEnvResult)
+            ? adapterEnvResult
+            : null;
+        const result =
+          cachedUsable ??
+          (await runAdapterEnvironmentTest(hireAdapterConfig, shouldApplyStoredClaudeLogin));
         if (!result) return;
-        // Defense in depth: normally a rejected credential never gets this
-        // far because handleCredentialBind already undid the binding and
-        // disabled the secret. This still catches drift — e.g. the disable
-        // call above failed and the gate re-opened off a stale active
-        // secret after a reload, the key was rotated bad after a successful
-        // bind, or (the case this fresh-probe-forcing fix above closes) the
-        // gate opened purely from an orphaned active company secret this
-        // session never bound. Never hire against a credential the fresh
-        // probe just told us the provider rejected.
-        const rejection = findCredentialAuthFailureCheck(result);
-        if (rejection) {
-          // eslint-disable-next-line no-console
-          console.log(
-            "[onboarding] refusing to hire: the fresh environment probe reports the bound credential was rejected",
-            rejection,
+        // Block the hire on a failed environment test. Also block it on a
+        // pass or a warn result that reports missing authentication — the
+        // agent cannot run without one of those.
+        if (blocksAgentCreate(result)) {
+          setError(
+            result.status === "fail"
+              ? "The environment test failed. Fix the reported checks before you hire this agent."
+              : "No working authentication was found. Fix the reported checks before you hire this agent.",
           );
-          const adapterEnvKeys = (credentialSetup?.options ?? []).map((option) => option.envKey);
-          const boundEnvKeysForAdapter = adapterEnvKeys.filter((envKey) =>
-            Boolean(materializedBindings[envKey]),
-          );
-          // Disable only the ones we have a secretId for (a live or
-          // just-materialized session binding, including the one we may
-          // have just materialized above). A gate that's STILL open purely
-          // via an orphaned active secret with no matching binding at all
-          // would mean findMatchingCompanySecret found nothing to
-          // materialize in the first place, so there is nothing left
-          // un-disabled here.
-          await Promise.all(
-            boundEnvKeysForAdapter.map((envKey) => {
-              const binding = materializedBindings[envKey];
-              return binding
-                ? disableRejectedCredentialSecret(binding.secretId, envKey)
-                : Promise.resolve();
-            }),
-          );
-          if (boundEnvKeysForAdapter.length > 0) {
-            setCredentialBindings((prev) => {
-              const next = { ...prev };
-              for (const envKey of boundEnvKeysForAdapter) delete next[envKey];
-              return next;
-            });
-          }
-          // Mark EVERY envKey this adapter advertises as failed, not just
-          // the ones with a live session binding, so the gate closes for
-          // the rest of this session even in the orphaned-secret case above
-          // (a later reload could still re-open it until that secret is
-          // disabled some other way — see the report's concerns section).
-          setFailedCredentialEnvKeys((prev) => {
-            const next = new Set(prev);
-            for (const envKey of adapterEnvKeys) {
-              next.add(credentialFailureKey(adapterType, envKey));
-            }
-            return next;
-          });
-          setCredentialProbeError(credentialRejectionMessage(rejection));
-          setError(credentialRejectionMessage(rejection));
           return;
         }
       }
@@ -1900,13 +2071,9 @@ function OnboardingWizardInner({
         name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
         role: agentRole,
         adapterType,
-        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), materializedBindings, credentialSetup),
-        runtimeConfig: buildNewAgentRuntimeConfig(),
-        // The onboarding CEO's seed task is to hire the first engineer. Attach the
-        // create-agent skill so its run session exposes the governance-aware hiring
-        // flow (POST /api/companies/:id/agent-hires); without it the agent does not
-        // know the sanctioned route and hits "Route not allowed" on guessed ones.
-        desiredSkills: [ONBOARDING_CEO_SKILL_KEY],
+        adapterConfig: hireAdapterConfig,
+        ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
+        runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
         await approvalsApi.approve(
@@ -2036,7 +2203,20 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && credentialConnected) handleGiveHeartbeat();
+      // `connectStepReady`, the same predicate the step's button uses. Spelling
+      // the condition out here again is what let this path hire against a
+      // source the tile row had never shown, after the button was gated and
+      // this was not.
+      // Also gated on `connectStepLoggingIn`, the way the button is: a sign-in
+      // that is already running has nothing for this to do, and re-entering it
+      // would start a second server session.
+      else if (
+        step === 4 &&
+        agentName.trim() &&
+        connectStepReady &&
+        !connectStepLoggingIn
+      )
+        handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -2098,16 +2278,19 @@ function OnboardingWizardInner({
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" data-surface="onboarding" onKeyDown={handleKeyDown}>
-          {/* Close button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
-          </button>
+        {/* A deliberate hook for "the wizard mounted".
 
+            The tests that assert it opens used to prove it by finding any text
+            in the document — which, with the front door mocked to null in that
+            suite, was only ever the close button's screen-reader label. Removing
+            the button took the proof with it, and those tests would have gone on
+            passing indefinitely if it had stayed. A named anchor says what they
+            mean rather than depending on whatever happens to render. */}
+        <div
+          data-testid="onboarding-wizard"
+          className="fixed inset-0 z-50 flex"
+          onKeyDown={handleKeyDown}
+        >
           {/* Step 0: Front Door — full-screen choice */}
           {step === 0 && (
             <div className="w-full flex flex-col overflow-y-auto">
@@ -2150,7 +2333,7 @@ function OnboardingWizardInner({
                 // tiles stretch and the name field sits under a question far
                 // narrower than itself.
                 isAgentArcStep || step === 1
-                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-(--sz-68px) sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-(--sz-64px) sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -2390,7 +2573,7 @@ function OnboardingWizardInner({
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Name your company"
+                      placeholder="e.g. Northwind Labs"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -2619,7 +2802,7 @@ function OnboardingWizardInner({
                     <Input
                       id="onboarding-agent-name"
                       className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
-                      placeholder="e.g. Chief of staff, Designer, Ron..."
+                      placeholder="e.g. Chief of staff"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -2650,7 +2833,18 @@ function OnboardingWizardInner({
                       label="Model source"
                       sources={recommendedAdapters.map((opt) => ({
                         id: opt.type,
-                        label: opt.label,
+                        // The vendor name where this step has one, the registry's
+                        // tool name where it does not. `MODEL_SOURCE_NAMES` was
+                        // added with the reasoning above it and then never read,
+                        // so the row went on showing "Claude Code" and "Codex"
+                        // — the tool names — under a heading asking which
+                        // provider you are signing in to.
+                        //
+                        // The fallback is what keeps the row rendering if the
+                        // registry ever marks a third adapter `recommended`:
+                        // an unnamed source gets its tool name rather than
+                        // nothing.
+                        label: MODEL_SOURCE_NAMES[opt.type] ?? opt.label,
                         icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
                       }))}
                       mode={credentialMode}
@@ -2717,17 +2911,36 @@ function OnboardingWizardInner({
                     ) : showAdapterLoginPanel &&
                       createdCompanyId &&
                       resolvedLoginEnvironmentId ? (
-                      /* Shows as soon as the cheap auth signal reports no ready
-                         credential, well before any adapter environment test
-                         runs. Reuses the same panel the agent configuration
-                         form shows after a test — see AdapterLoginPanel in
-                         AgentConfigForm.tsx. No "Use saved login" control: the
-                         hire step already applies a stored login on its own. */
+                      /* The same panel the agent configuration form shows after
+                         a test — see AdapterLoginPanel in AgentConfigForm.tsx —
+                         in the connect step's chrome and driven by the step's
+                         own footer button. `autoStart` is that button: mounting
+                         only happens once Connect is pressed, so the press has
+                         already been taken by the time the panel exists.
+
+                         No "Use saved login" control: the hire step already
+                         applies a stored login on its own. */
                       <AdapterLoginPanel
                         key={`${adapterType}:${resolvedLoginEnvironmentId}`}
                         companyId={createdCompanyId}
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
+                        chrome="onboarding"
+                        autoStart
+                        onCancel={() => setLoginStarted(false)}
+                        onConnected={() => {
+                          setLoginConnected(true);
+                          // The browser-code login ends here, on this screen,
+                          // so the step moves on by itself — there is no
+                          // success state to sit on, and one would be a screen
+                          // whose only content is that you may continue.
+                          //
+                          // The displayed-code login does not: it is still
+                          // running in another tab when this fires, and the
+                          // customer's attention is there. It waits for the
+                          // press, which is what the enabled Next is for.
+                          if (loginSubmitsBrowserCode) void handleGiveHeartbeat();
+                        }}
                         onStored={() => {
                           queryClient.invalidateQueries({
                             queryKey: queryKeys.agents.authSignal(
@@ -2739,140 +2952,37 @@ function OnboardingWizardInner({
                         }}
                       />
                     ) : (
-                      /* No panel to show, and the two reasons for that are not
-                         the same news. Saying either is better than an empty
-                         card — the canvas is open because a source is selected,
-                         and a blank one reads as something that failed to load —
-                         but they must not be conflated: telling someone with no
-                         sandbox that they are "already signed in" on it is
-                         false, and it hides the one thing actually blocking
-                         them. */
+                      /* The canvas only opens without a panel for one reason
+                         now — `connectStepHasNoSandbox` — and it is the reason
+                         worth saying out loud, because it is the one that makes
+                         Connect a dead press.
+
+                         Its two former neighbours are gone with the canvas that
+                         opened on selection: "already signed in" reassured
+                         against a question nobody had asked, and "checking…"
+                         narrated a request the customer was not waiting on.
+                         Neither survives a canvas that opens on a press. */
                       <p className="text-xs text-muted-foreground">
-                        {authSignalUndecided
-                          ? "Checking this source's credentials…"
-                          : canShowAdapterLogin
-                            ? "This source is already signed in on the managed sandbox."
-                            : "No managed sandbox is available to sign in against yet."}
+                        No managed sandbox is available to sign in against yet.
                       </p>
                     )}
                   </ConnectInputCanvas>
 
                   {/* Conditional adapter fields */}
-                  {isLocalAdapter && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="text-xs text-muted-foreground mb-1 block">
-                          Model
-                        </label>
-                        <Popover
-                          open={modelOpen}
-                          onOpenChange={(next) => {
-                            setModelOpen(next);
-                            if (!next) setModelSearch("");
-                          }}
-                        >
-                          <PopoverTrigger asChild>
-                            <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-                              <span
-                                className={cn(
-                                  !model && "text-muted-foreground"
-                                )}
-                              >
-                                {selectedModel
-                                  ? selectedModel.label
-                                  : model ||
-                                    (adapterType === "opencode_local"
-                                      ? "Select model (required)"
-                                      : "Default")}
-                              </span>
-                              <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            className="w-(--radix-popover-trigger-width) p-1"
-                            align="start"
-                          >
-                            <input
-                              className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
-                              value={modelSearch}
-                              onChange={(e) => setModelSearch(e.target.value)}
-                              autoFocus
-                            />
-                            {adapterType !== "opencode_local" && (
-                              <button
-                                className={cn(
-                                  "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                  !model && "bg-accent"
-                                )}
-                                onClick={() => {
-                                  setModel("");
-                                  setModelOpen(false);
-                                }}
-                              >
-                                Default
-                              </button>
-                            )}
-                            <div className="max-h-(--sz-240px) overflow-y-auto">
-                              {groupedModels.map((group) => (
-                                <div
-                                  key={group.provider}
-                                  className="mb-1 last:mb-0"
-                                >
-                                  {adapterType === "opencode_local" && (
-                                    <div className="px-2 py-1 text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                                      {group.provider} ({group.entries.length})
-                                    </div>
-                                  )}
-                                  {group.entries.map((m) => (
-                                    <button
-                                      key={m.id}
-                                      className={cn(
-                                        "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                                        m.id === model && "bg-accent"
-                                      )}
-                                      onClick={() => {
-                                        setModel(m.id);
-                                        setModelOpen(false);
-                                      }}
-                                    >
-                                      <span
-                                        className="block w-full text-left truncate"
-                                        title={m.id}
-                                      >
-                                        {adapterType === "opencode_local"
-                                          ? extractModelName(m.id)
-                                          : m.label}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              ))}
-                            </div>
-                            {filteredModels.length === 0 && (
-                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No models discovered.
-                              </p>
-                            )}
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-                    </div>
-                  )}
+                  {/* No model picker. Every adapter this step offers resolves
+                      its own default (see buildAdapterConfig), so the picker
+                      asked the customer to choose a model before they had any
+                      way to judge one — and the agent's model is changeable
+                      later, where its work gives the choice meaning. */}
 
-                  {credentialSetup && createdCompanyId && (
-                    <AdapterCredentialConnect
-                      key={adapterType}
-                      companyId={createdCompanyId}
-                      adapterType={adapterType}
-                      setup={credentialSetup}
-                      boundEnvKeys={Object.keys(credentialBindings)}
-                      onBind={handleCredentialBind}
-                      externalError={credentialCardError}
-                    />
-                  )}
-
-                  {isLocalAdapter && (
+                  {/* The environment check runs without being shown: Connect
+                      probes the adapter before hiring (see handleGiveHeartbeat)
+                      and blocks the hire on a fail. The idle card — probe
+                      explainer plus a "Test now" button — is gone from this
+                      step, so this block renders only when a probe has actually
+                      found something: the checks the blocking error tells the
+                      customer to fix have to be visible somewhere. */}
+                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
@@ -2880,27 +2990,24 @@ function OnboardingWizardInner({
                         </div>
                       )}
 
-                      {adapterEnvResult && adapterEnvResult.status === "pass" ? (
-                        <>
-                          <div className="flex items-center gap-2 rounded-md border border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10 px-3 py-2 text-xs text-green-700 dark:text-green-300 animate-in fade-in slide-in-from-bottom-1 duration-300">
-                            <Check className="h-3.5 w-3.5 shrink-0" />
+                      {adapterEnvResult &&
+                      adapterEnvResult.status === "pass" ? (
+                        <div className="space-y-2 animate-in fade-in slide-in-from-bottom-1 duration-300">
+                          {/* Use the shared status-chip helper with the done
+                              status hue, so the pass banner derives its fill,
+                              text, and border from the design tokens in both
+                              modes instead of raw color values. */}
+                          <div
+                            className="status-chip flex items-center gap-2 rounded-md border px-2.5 py-2 text-(length:--text-micro)"
+                            style={{ "--sc": "var(--status-task-done)" } as CSSProperties}
+                          >
+                            <Check className="size-3.5 shrink-0" />
                             <span className="font-medium">Passed</span>
                           </div>
-                          {adapterEnvResult.checks.some(
-                            (check) => check.level === "warn"
-                          ) && (
-                            <div className="rounded-md border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-2.5 py-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300 space-y-1">
-                              {adapterEnvResult.checks
-                                .filter((check) => check.level === "warn")
-                                .map((check, idx) => (
-                                  <AdapterEnvironmentCheckRow
-                                    key={`${check.code}-${idx}`}
-                                    check={check}
-                                  />
-                                ))}
-                            </div>
-                          )}
-                        </>
+                          {/* Show the checks on a pass too, so the target and the
+                              auth signals stay visible before the hire. */}
+                          <AdapterEnvironmentResult result={adapterEnvResult} />
+                        </div>
                       ) : adapterEnvResult ? (
                         <AdapterEnvironmentResult result={adapterEnvResult} />
                       ) : null}
@@ -3023,36 +3130,7 @@ function OnboardingWizardInner({
               {/* Error */}
               {visibleError && (
                 <div className="mt-3">
-                  <p className="text-xs text-destructive">
-                    {visibleError}
-                    {companyUpgradeRequired && (
-                      <>
-                        {" "}
-                        {/* Explicit non-destructive color: the surrounding error
-                            paragraph is text-destructive, but this is a normal
-                            navigation link, not a danger action (mirrors
-                            NewCompanyDialog's muted-not-red Subscribe link). */}
-                        <a href="/account" className="font-medium text-foreground underline">
-                          Subscribe
-                        </a>
-                      </>
-                    )}
-                    {companySlotRequired && (
-                      <>
-                        {" "}
-                        {/* Same non-destructive link treatment: buying another
-                            company slot is a normal navigation, not a danger
-                            action (mirrors NewCompanyDialog's slot-required
-                            prompt). */}
-                        <a
-                          href="/subscribe?add=company"
-                          className="font-medium text-foreground underline"
-                        >
-                          Add a company slot
-                        </a>
-                      </>
-                    )}
-                  </p>
+                  <p className="text-xs text-destructive">{visibleError}</p>
                 </div>
               )}
 
@@ -3083,16 +3161,37 @@ function OnboardingWizardInner({
                       ? "Continue"
                       : step === 5
                         ? "Get started"
-                        : "Next"
+                        : step === 4
+                          ? // "Connect" is the step's own verb, and it is what
+                            // starts the sign-in rather than what follows it.
+                            //
+                            // It becomes "Next" for the displayed-code login
+                            // once that is running: at that point the sign-in
+                            // is happening somewhere else, the button is not
+                            // the thing doing it, and offering to "Connect" a
+                            // second time would read as a retry.
+                            connectStepLoggingIn && !loginSubmitsBrowserCode
+                            ? "Next"
+                            : "Connect"
+                          : "Next"
                   }
                   loadingLabel={
                     step === 1
                       ? "Creating..."
                       : step === 4
-                        ? "Connecting..."
+                        ? "Connecting"
                         : "Launching..."
                   }
-                  loading={step === 3 ? false : loading}
+                  // The browser-code login is finished on this screen, so the
+                  // button is genuinely busy for its duration and shows it. The
+                  // displayed-code login is not — see `loginSubmitsBrowserCode`
+                  // — so it stays a still, disabled Next instead of spinning
+                  // against work happening in another tab.
+                  loading={
+                    step === 3
+                      ? false
+                      : loading || (connectStepLoggingIn && loginSubmitsBrowserCode)
+                  }
                   primaryDisabled={
                     step === 1
                       ? !companyName.trim() || loading
@@ -3105,7 +3204,11 @@ function OnboardingWizardInner({
                             // it, and be hired against whatever the draft
                             // happened to carry. See `connectStepReady`, which
                             // Cmd+Enter asks as well.
-                            !connectStepReady || loading
+                            !connectStepReady ||
+                            loading ||
+                            // A sign-in is running and has not landed. Nothing
+                            // to press until it does.
+                            connectStepLoggingIn
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
@@ -3113,7 +3216,10 @@ function OnboardingWizardInner({
                       if (skipsMissionStep) void handleCreateCompany();
                       else setStep(2);
                     } else if (step === 3) setStep(4);
-                    else if (step === 4) handleGiveHeartbeat();
+                    // One button, two jobs — start the sign-in, or hire — and
+                    // Cmd+Enter has to do the same thing. See
+                    // `handleConnectStepPrimary`.
+                    else if (step === 4) handleConnectStepPrimary();
                     else handleLaunchToDashboard();
                   }}
                 />
@@ -3123,7 +3229,7 @@ function OnboardingWizardInner({
               {!isAgentArcStep && step !== 1 && (
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && (
+                  {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -3139,7 +3245,7 @@ function OnboardingWizardInner({
                   {step === 2 && (
                     <Button
                       size="sm"
-                      disabled={(!companyName.trim() && !createdCompanyId) || !companyGoal.trim() || loading}
+                      disabled={!companyName.trim() || !companyGoal.trim() || loading}
                       onClick={handleConfirmMission}
                     >
                       {loading ? (
@@ -3167,7 +3273,7 @@ function OnboardingWizardInner({
                         !agentName.trim() ||
                         loading ||
                         adapterEnvLoading ||
-                        (requiresCredential && !credentialConnected)
+                        missionUnresolvedForHire
                       }
                       onClick={handleGiveHeartbeat}
                     >
@@ -3244,38 +3350,28 @@ function AdapterEnvironmentResult({
       </div>
       <div className="mt-1.5 space-y-1">
         {result.checks.map((check, idx) => (
-          <AdapterEnvironmentCheckRow
+          <div
             key={`${check.code}-${idx}`}
-            check={check}
-          />
+            className="leading-relaxed break-words"
+          >
+            <span className="font-medium uppercase tracking-wide opacity-80">
+              {check.level}
+            </span>
+            <span className="mx-1 opacity-60">·</span>
+            <span>{check.message}</span>
+            {check.detail && (
+              <span className="block opacity-75 break-all">
+                ({check.detail})
+              </span>
+            )}
+            {check.hint && (
+              <span className="block opacity-90 break-words">
+                Hint: {check.hint}
+              </span>
+            )}
+          </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function AdapterEnvironmentCheckRow({
-  check
-}: {
-  check: AdapterEnvironmentCheck;
-}) {
-  return (
-    <div className="leading-relaxed break-words">
-      <span className="font-medium uppercase tracking-wide opacity-80">
-        {check.level}
-      </span>
-      <span className="mx-1 opacity-60">·</span>
-      <span>{check.message}</span>
-      {check.detail && (
-        <span className="block opacity-75 break-all">
-          ({check.detail})
-        </span>
-      )}
-      {check.hint && (
-        <span className="block opacity-90 break-words">
-          Hint: {check.hint}
-        </span>
-      )}
     </div>
   );
 }

@@ -219,13 +219,15 @@ async function prepareClaudeRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] =>
-    createWorkspaceRestoreTeardown({
+  ): AcpxRemoteManagedHomeResult["teardown"] => {
+    const restore = createWorkspaceRestoreTeardown({
       stagedRuntime,
       onLog,
       startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
       failurePrefix: "[paperclip] Claude ACP teardown workspace restore failed",
     });
+    return async () => { await restore(); };
+  };
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
@@ -598,6 +600,24 @@ async function runClaudeAcpCredentialProbe(input: {
   }
 }
 
+/**
+ * Exported compatibility wrapper over the internal credential probe, preserved
+ * for the existing test suite (`acp.auth.test.ts`). Adapts the legacy
+ * `{ config, target, env? }` call-site to the refactored
+ * `runClaudeAcpCredentialProbe` interface.
+ */
+export async function probeClaudeAcpSandboxLogin(input: {
+  config: Record<string, unknown>;
+  target: AdapterExecutionTarget | null;
+  env?: Record<string, string>;
+}): Promise<AdapterEnvironmentCheck[]> {
+  const { config, target } = input;
+  const envConfig: Record<string, unknown> = input.env ?? parseObject(config.env);
+  const targetIsRemote = target?.kind === "remote";
+  const cwd = asString(config.cwd, process.cwd());
+  return runClaudeAcpCredentialProbe({ config, envConfig, target, cwd, targetIsRemote });
+}
+
 export async function testClaudeAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -605,6 +625,7 @@ export async function testClaudeAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
@@ -734,7 +755,6 @@ export async function testClaudeAcpEnvironment(
   // instead. Bedrock is excluded — its auth is AWS-credential-based, not
   // something this Anthropic API-key/token probe can validate.
   const configOauthToken = envConfig.CLAUDE_CODE_OAUTH_TOKEN;
-  const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
   const hasCredentialToProbe =
     !hasBedrock &&
     (isNonEmpty(configApiKey) ||
@@ -815,7 +835,7 @@ export async function testClaudeAcpEnvironment(
     );
     const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
     if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+      checks.push(...(await runClaudeAcpCredentialProbe({ config, envConfig: probeEnv, target, cwd, targetIsRemote })));
     }
   }
 

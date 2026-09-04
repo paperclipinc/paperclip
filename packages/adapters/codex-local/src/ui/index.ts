@@ -5,3 +5,4 @@ export { buildCodexLocalConfig, buildPaperclipRunnerConfig } from "./build-confi
 // to show the login affordance. The source file has no runtime dependencies, so
 // this re-export stays safe for the browser bundle.
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "../server/auth-check.js";
+export { codexLocalCredentialSetup } from "./credential-setup.js";
