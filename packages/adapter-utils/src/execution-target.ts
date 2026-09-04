@@ -43,8 +43,51 @@ import { SANDBOX_EXEC_TIMEOUT_ERROR_CODE } from "./sandbox-exec-timeout.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
+import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
+import type { RuntimeSpanRunner, StartupSpanContext } from "./acpx-engine/startup-timing.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
+
+/**
+ * Read-only effective capability snapshot for a sandbox execution target.
+ * Resolved from the provider declaration, the verified worker methods, and
+ * narrowing. Attached to the target on the host seam.
+ */
+export interface EffectiveExecutionCapabilities {
+  reusableLeases?: boolean;
+  nativeSyncIn?: boolean;
+  nativeSyncOut?: boolean;
+  persistentProcessSessions?: boolean;
+  independentControlCommands?: boolean;
+  incrementalSessionOutput?: boolean;
+  concurrentSyncOperations?: boolean;
+  duplexCommandStream?: boolean;
+  runnerWebSocketIngress?: boolean;
+}
+
+export interface EffectiveSandboxCapabilities extends EffectiveExecutionCapabilities {}
+
+/**
+ * Log a marker for a successful issue comment POST so the caller can recover
+ * the comment id for attribution. Returns `null` when the request is not a
+ * successful issue-comment POST.
+ */
+export function postedIssueCommentLogMarker(
+  method: string,
+  requestPath: string,
+  status: number,
+  body: string,
+): string | null {
+  if (method !== "POST" || status < 200 || status >= 300) return null;
+  if (!/\/comments$/.test(requestPath)) return null;
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.id === "string") return `comment id: ${parsed.id}\n`;
+  } catch {
+    // not JSON
+  }
+  return null;
+}
 
 export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
 
