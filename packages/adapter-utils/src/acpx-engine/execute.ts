@@ -30,6 +30,7 @@ import {
   type PreparedAdapterExecutionTargetRuntime,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import type { WorkspaceRestoreOutcome } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,

@@ -671,6 +671,7 @@ export async function seedManagedCodexHome(
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
+      let keepPromotedAuth = false;
       const targetBytes = await fs.readFile(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {

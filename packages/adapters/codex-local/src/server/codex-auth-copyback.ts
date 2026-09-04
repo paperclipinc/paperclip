@@ -10,6 +10,12 @@ import {
 } from "./codex-auth-cache.js";
 import { USE_SOURCE_EXIT, decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
 
+async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
+  return decideCodexAuthMerge(sourcePath, destinationPath, {
+    errorLabel: "codex auth copy-back",
+  });
+}
+
 // The outbound copy-back reuses the exact same direction-agnostic decision
 // predicate the inbound restore runs, through the shared `decideCodexAuthMerge`
 // entry point. The predicate answers one question — "should the caller replace

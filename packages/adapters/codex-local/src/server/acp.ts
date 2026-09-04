@@ -241,12 +241,14 @@ async function prepareCodexRemoteManagedHome(
     // loudly as refresh_token_reused on the next host Codex use (re-auth
     // recovers) — never silent host-credential corruption, so it must not
     // mask the run result.
-    teardown: createWorkspaceRestoreTeardown({
-      stagedRuntime,
-      onLog,
-      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
-      failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
-    }),
+    teardown: async () => {
+      await createWorkspaceRestoreTeardown({
+        stagedRuntime,
+        onLog,
+        startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+        failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+      })();
+    },
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
     // re-stage, idle eviction) — never on a clean turn that keeps the runtime
@@ -506,7 +508,7 @@ export async function testCodexAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
 
   checks.push({
     code: "codex_engine_selected",

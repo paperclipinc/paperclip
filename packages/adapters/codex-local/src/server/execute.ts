@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  firstMeaningfulStderrLine,
   inferOpenAiCompatibleBiller,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -139,11 +138,14 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-// The benign-banner filter this adapter used to carry privately now lives in
-// adapter-utils, so every adapter that derives a fallback run error from stderr
-// shares one list. Re-exported here because callers (and the adapter's own
-// regression suite) import it from this module.
-export { firstMeaningfulStderrLine };
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
 
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
@@ -729,17 +731,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
-    configuredAuthJson: configuredCodexAuthJson,
+    effectiveCodexHome,
+    target: executionTarget,
+    cwd,
+    onLog,
   });
-  if (credentialReadiness.managed && !credentialReadiness.ready) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Configure a per-agent OPENAI_API_KEY, or supply a ChatGPT-plan credential ` +
-        `(CODEX_AUTH_JSON) minted with \`codex login\` on your own machine. On a ` +
-        `self-hosted install, signing in to Codex on the host also works.`,
-    );
-  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
