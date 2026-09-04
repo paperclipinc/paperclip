@@ -33,7 +33,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { healthApi } from "@/api/health";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
@@ -231,10 +230,6 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     companies: sidebarCompanies,
     userId: currentUserId,
   });
-
-  // cloud: same cached health query CloudAccessGate populates, read here so
-  // sign-out can tell whether to leave the SPA for the gateway sign-in page.
-  const healthQuery = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get(), staleTime: 60_000 });
 
   const stacks = stacksQuery.data?.stacks ?? [];
   const currentStack = isCloud
