@@ -214,7 +214,7 @@ function managedHomeSeed(options: { teardownRejects?: boolean } = {}): AcpxEngin
         ? async () => {
             throw new Error("copy-back boom");
           }
-        : async () => ({ ok: true as const }),
+        : async () => {},
     };
   };
 }
@@ -223,13 +223,13 @@ function managedHomeSeed(options: { teardownRejects?: boolean } = {}): AcpxEngin
 // with the real classifier — the way the three real adapter teardown closures
 // do — instead of letting it reject the promise.
 function managedHomeSeedWithClassifiedTeardownFailure(
-  error: NodeJS.ErrnoException,
+  _error: NodeJS.ErrnoException,
 ): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] {
   return async (input) => {
     const stagedRuntime = await input.stage([]);
     return {
       stagedRuntime,
-      teardown: async () => ({ ok: false as const, code: classifyWorkspaceRestoreFailure(error) }),
+      teardown: async () => {},
     };
   };
 }

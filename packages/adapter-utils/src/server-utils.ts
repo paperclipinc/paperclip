@@ -45,6 +45,9 @@ export interface RunProcessResult {
   pid: number | null;
   startedAt: string | null;
   streamed?: boolean;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  errorCode?: string | null;
   terminalResultCleanup?: TerminalResultCleanupEvidence | null;
 }
 
