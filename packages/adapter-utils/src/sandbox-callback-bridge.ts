@@ -1,4 +1,6 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import http2 from "node:http2";
+import type { Duplex } from "node:stream";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1280,4 +1282,157 @@ server.listen(port, host, async () => {
   await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
   await fs.rename(tempReadyFile, readyFile);
 });`;
+}
+
+export function compareBridgeTokensConstantTime(
+  expected: string,
+  received: string | null | undefined,
+): boolean {
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const receivedBytes = Buffer.from(typeof received === "string" ? received : "", "utf8");
+  if (expectedBytes.length !== receivedBytes.length) return false;
+  return timingSafeEqual(expectedBytes, receivedBytes);
+}
+
+const SANDBOX_HTTP2_GATEWAY_DEFAULT_AUTHORITY = "bridge.internal";
+
+/** One local request the gateway forwards as one HTTP/2 stream. */
+export interface SandboxHttp2BridgeGatewayRequest {
+  method: string;
+  path: string;
+  query: string;
+  headers: Record<string, string>;
+  body: Buffer;
+  receivedToken: string | null | undefined;
+}
+
+/** The response one forwarded HTTP/2 stream carried back. */
+export interface SandboxHttp2BridgeGatewayResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+export interface SandboxHttp2BridgeGateway {
+  forwardRequest(
+    request: SandboxHttp2BridgeGatewayRequest,
+  ): Promise<SandboxHttp2BridgeGatewayResponse>;
+  close(): Promise<void>;
+}
+
+export interface CreateSandboxHttp2BridgeGatewayOptions {
+  bridgeToken: string;
+  createConnection: () => Duplex;
+  authority?: string;
+  headerAllowlist?: readonly string[];
+  onGoaway?: (record: { lastStreamId: number; errorCode: number }) => void;
+}
+
+function forwardOneHttp2Request(
+  session: http2.ClientHttp2Session,
+  request: {
+    bridgeToken: string;
+    method: string;
+    path: string;
+    query: string;
+    headers: Record<string, string>;
+    body: Buffer;
+  },
+): Promise<SandboxHttp2BridgeGatewayResponse> {
+  return new Promise((resolve, reject) => {
+    const query = request.query.trim();
+    const pathWithQuery =
+      query.length === 0 ? request.path : `${request.path}${query.startsWith("?") ? query : `?${query}`}`;
+    const requestHeaders: http2.OutgoingHttpHeaders = {
+      ":method": request.method,
+      ":path": pathWithQuery,
+      authorization: `Bearer ${request.bridgeToken}`,
+      ...request.headers,
+    };
+    let stream: http2.ClientHttp2Stream;
+    try {
+      stream = session.request(requestHeaders, { endStream: request.body.length === 0 });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let responseHeaders: Record<string, string> = {};
+    let status = 502;
+    let settled = false;
+    const settle = (run: () => void) => {
+      if (settled) return;
+      settled = true;
+      run();
+    };
+    stream.on("response", (headers) => {
+      const rawStatus = headers[":status"];
+      status = typeof rawStatus === "number" ? rawStatus : Number(rawStatus) || 502;
+      responseHeaders = {};
+      for (const [key, value] of Object.entries(headers)) {
+        if (key.startsWith(":") || value == null) continue;
+        responseHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+      }
+    });
+    stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+    stream.once("end", () => settle(() => resolve({ status, headers: responseHeaders, body: Buffer.concat(chunks) })));
+    stream.once("error", (error) =>
+      settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+    );
+    stream.once("aborted", () => settle(() => reject(new Error("Bridge HTTP/2 stream aborted."))));
+    if (request.body.length > 0) {
+      stream.end(request.body);
+    } else if (!stream.writableEnded) {
+      stream.end();
+    }
+  });
+}
+
+export function createSandboxHttp2BridgeGateway(
+  options: CreateSandboxHttp2BridgeGatewayOptions,
+): SandboxHttp2BridgeGateway {
+  const authority = options.authority?.trim() || SANDBOX_HTTP2_GATEWAY_DEFAULT_AUTHORITY;
+  const headerAllowlist = options.headerAllowlist ?? DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST;
+  const session = http2.connect(`http://${authority}`, {
+    createConnection: options.createConnection,
+  });
+  session.on("error", () => undefined);
+  session.on("goaway", (errorCode: number, lastStreamId: number) => {
+    options.onGoaway?.({ lastStreamId, errorCode });
+  });
+
+  return {
+    forwardRequest(request: SandboxHttp2BridgeGatewayRequest): Promise<SandboxHttp2BridgeGatewayResponse> {
+      if (!compareBridgeTokensConstantTime(options.bridgeToken, request.receivedToken)) {
+        return Promise.reject(new Error("Invalid bridge token."));
+      }
+      return forwardOneHttp2Request(session, {
+        bridgeToken: options.bridgeToken,
+        method: request.method,
+        path: request.path,
+        query: request.query,
+        headers: sanitizeSandboxCallbackBridgeHeaders(request.headers, headerAllowlist),
+        body: request.body,
+      });
+    },
+    close(): Promise<void> {
+      return new Promise((resolve) => {
+        if (session.closed || session.destroyed) {
+          resolve();
+          return;
+        }
+        session.close(() => resolve());
+      });
+    },
+  };
+}
+
+const DUPLEX_GATEWAY_CODEC_SOURCE = `const DUPLEX_FRAME_VERSION = 2;
+
+function encodeDuplexFrame(frame) {
+  return JSON.stringify(frame) + "\\n";
+}`;
+
+export function getSandboxDuplexGatewayCodecSource(): string {
+  return DUPLEX_GATEWAY_CODEC_SOURCE;
 }

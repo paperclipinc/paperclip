@@ -126,12 +126,24 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /**
+   * Read-only effective capability snapshot for this sandbox target. The host
+   * resolves it from the provider declaration, the verified worker methods, and
+   * narrowing, then attaches it here. Absent when no snapshot was resolved.
+   */
+  readonly effectiveCapabilities?: EffectiveExecutionCapabilities | null;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
   remoteCwd: string;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
+  /** Host-only provider operation. It is never serialized into the sandbox. */
+  getRunnerIngressEndpoint?: (input: {
+    leaseId: string;
+    port: number;
+    path: string;
+  }) => Promise<RunnerIngressEndpoint>;
   /**
    * Sandbox-backed adapter runs stream the agent CLI's stdout/stderr
    * incrementally via a log-tail loop beside the callback bridge instead of
@@ -1601,6 +1613,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   env: Record<string, string> | (() => Promise<Record<string, string>>);
   timeoutSec?: number | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  runtimeSpan?: RuntimeSpanRunner;
+  streamOutputViaSession?: boolean;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
@@ -1950,7 +1965,7 @@ socket.on("close", () => {
 `;
 }
 
-function getProcessSessionRemoteSource(): string {
+export function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean }): string {
   return `import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";

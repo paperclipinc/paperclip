@@ -2480,6 +2480,9 @@ export {
   paperclipQuestionSetPayloadSchema,
   stalledReviewDecisionSchema,
   type StalledReviewDecision,
+  connectionIntentPhaseSchema,
+  connectionIntentPayloadSchema,
+  connectionIntentResultSchema,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

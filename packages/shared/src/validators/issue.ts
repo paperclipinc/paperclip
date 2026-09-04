@@ -1291,3 +1291,21 @@ export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),
 }).strict();
 export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
+export const connectionIntentPhaseSchema = z.enum(["requested", "authorizing", "needs_retry"]);
+export const connectionIntentPayloadSchema = z.object({
+  version: z.literal(1),
+  serviceSlug: z.string(),
+  serviceName: z.string(),
+  serviceLogoUrl: z.string().nullable().optional(),
+  serviceDarkLogoUrl: z.string().nullable().optional(),
+  requestingAgentId: z.string(),
+  requestingAgentName: z.string(),
+  phase: connectionIntentPhaseSchema,
+});
+export const connectionIntentResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+  connectionId: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+  supersededByInteractionId: z.string().nullable().optional(),
+});

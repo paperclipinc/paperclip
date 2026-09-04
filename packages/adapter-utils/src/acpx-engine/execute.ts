@@ -86,6 +86,13 @@ import {
 } from "./constants.js";
 import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
+import type {
+  LaunchEnvironment,
+  LaunchEnvironmentContribution,
+  SessionFingerprintIdentity,
+  SessionKeyIdentity,
+} from "./run-contracts.js";
+import { resolveReferencedSourceIgnore, type ReferencedSourceIgnoreResolution } from "../sandbox-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -427,6 +434,130 @@ function stableJson(value: unknown): string {
 
 function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
+}
+
+export function buildSessionFingerprint(identity: SessionFingerprintIdentity): string {
+  return shortHash(identity);
+}
+
+export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: string): string {
+  return `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
+}
+
+const ACPX_INHERITED_HOST_ENV_KEYS = new Set([
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USER",
+  "USERNAME",
+  "LOGNAME",
+  "SHELL",
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+]);
+
+const ACPX_INHERITED_PROVIDER_ENV_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  codex: new Set([
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+  ]),
+  claude: new Set([
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+  ]),
+  pi: new Set(["OPENROUTER_API_KEY"]),
+  gemini: new Set([
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_GENAI_USE_GCA",
+  ]),
+  kimi: new Set([
+    "KIMI_API_KEY",
+    "MOONSHOT_API_KEY",
+    "KIMI_MODEL_NAME",
+    "KIMI_MODEL_API_KEY",
+    "KIMI_MODEL_BASE_URL",
+    "KIMI_MODEL_PROVIDER_TYPE",
+    "KIMI_CODE_HOME",
+  ]),
+  grok: new Set(["XAI_API_KEY"]),
+};
+
+export function projectAcpxInheritedHostEnvironment(
+  inheritedEnv: NodeJS.ProcessEnv,
+  acpxAgent: string,
+  inheritHostEnvironment: boolean,
+): Record<string, string> {
+  if (!inheritHostEnvironment) return {};
+
+  const providerKeys = ACPX_INHERITED_PROVIDER_ENV_KEYS[acpxAgent];
+  const projected: Record<string, string> = {};
+  for (const [key, value] of Object.entries(inheritedEnv)) {
+    if (typeof value !== "string") continue;
+    const normalizedKey = key.toUpperCase();
+    const allowed =
+      ACPX_INHERITED_HOST_ENV_KEYS.has(normalizedKey) ||
+      /^LC_[A-Z0-9_]{1,32}$/.test(normalizedKey) ||
+      providerKeys?.has(normalizedKey) === true;
+    if (allowed) projected[key] = value;
+  }
+  return projected;
+}
+
+export function finalizeLaunchEnvironment(
+  baseEnv: Record<string, string>,
+  contributions: readonly LaunchEnvironmentContribution[],
+  options: {
+    acpxAgent: string;
+    inheritHostEnvironment: boolean;
+    inheritedEnv?: NodeJS.ProcessEnv;
+    platform?: typeof process.platform;
+  },
+): LaunchEnvironment {
+  for (const contribution of contributions) {
+    Object.assign(baseEnv, contribution.env);
+  }
+  const env = Object.freeze(
+    resolveRuntimeEnv(baseEnv),
+  );
+  return { env } as unknown as LaunchEnvironment;
 }
 
 // Directory names the staging path never ships for a referenced project (heavy
@@ -1331,14 +1462,9 @@ async function stageAcpRemoteRuntime(input: {
 // set and the affected steps omit the fields entirely. Reader closures are
 // passed — not the runner — so `measureStartupStep` stays runner-agnostic.
 function buildStartupStepMetrics(
-  runner: CommandManagedRuntimeRunner | undefined,
+  _runner: CommandManagedRuntimeRunner | undefined,
 ): StartupStepMeasureOptions {
-  if (!runner) return {};
-  return {
-    ...(runner.execCount ? { roundTrips: () => runner.execCount!() } : {}),
-    ...(runner.providerExecMs ? { providerExecMs: () => runner.providerExecMs!() } : {}),
-    ...(runner.providerGetMs ? { providerGetMs: () => runner.providerGetMs!() } : {}),
-  };
+  return {};
 }
 
 async function buildRuntime(input: {
@@ -1376,9 +1502,20 @@ async function buildRuntime(input: {
   const additionalSourceRecords = (
     Array.isArray(realizationContext.additional) ? realizationContext.additional : []
   ).map((entry) => parseObject(entry));
-  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
+  const additionalSourceCandidates = additionalSourceRecords
     .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
     .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  const additionalSourcesWithIgnore = await Promise.all(
+    additionalSourceCandidates.map(async (entry) => ({
+      ...entry,
+      ignoreResolution: await resolveReferencedSourceIgnore(entry.localPath),
+    })),
+  );
+  const additionalSources: SandboxAdditionalSource[] = additionalSourcesWithIgnore.map((entry) => ({
+    localPath: entry.localPath,
+    projectId: entry.projectId,
+    ignoreResolution: entry.ignoreResolution,
+  }));
   // Stable identity of the referenced-project set for the session fingerprint.
   // The staged-runtime cache reuses already-staged referenced-project trees on a
   // compatible resume, so the fingerprint must change when the set OR a project's

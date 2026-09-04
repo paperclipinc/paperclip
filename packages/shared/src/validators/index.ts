@@ -512,6 +512,9 @@ export {
   paperclipQuestionSetPayloadSchema,
   stalledReviewDecisionSchema,
   type StalledReviewDecision,
+  connectionIntentPhaseSchema,
+  connectionIntentPayloadSchema,
+  connectionIntentResultSchema,
 } from "./issue.js";
 
 export {
