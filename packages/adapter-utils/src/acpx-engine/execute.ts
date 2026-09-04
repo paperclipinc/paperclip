@@ -85,6 +85,7 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
+import type { SettlementDispositionReport } from "./run-coordinator.js";
 import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 import type {
   LaunchEnvironment,
@@ -333,6 +334,12 @@ export interface AcpxEngineExecutorOptions {
   prepareRemoteManagedHome?: (
     input: AcpxRemoteManagedHomeContext,
   ) => Promise<AcpxRemoteManagedHomeResult>;
+  /**
+   * Settlement disposition callback: receives the finalized settlement
+   * disposition report at the end of each run. Optional; tests inject it to
+   * capture the report.
+   */
+  onSettlementDisposition?: (report: SettlementDispositionReport) => void;
 }
 
 interface AcpxPreparedRuntime {
@@ -3138,9 +3145,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             return established;
           }, {
             ...prepared.stepMetrics,
-            extra: () => ({
-              ...(createRuntimeMs !== undefined ? { createRuntimeMs } : {}),
-              ...(ensureSessionMs !== undefined ? { ensureSessionMs } : {}),
+            spanWallTimes: () => ({
+              ...(createRuntimeMs !== undefined ? { createRuntime: createRuntimeMs } : {}),
+              ...(ensureSessionMs !== undefined ? { ensureSession: ensureSessionMs } : {}),
             }),
           });
         } catch (err) {
@@ -3168,8 +3175,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             return established;
           }, {
             ...prepared.stepMetrics,
-            extra: () => ({
-              ...(retryEnsureSessionMs !== undefined ? { ensureSessionMs: retryEnsureSessionMs } : {}),
+            spanWallTimes: () => ({
+              ...(retryEnsureSessionMs !== undefined ? { ensureSession: retryEnsureSessionMs } : {}),
             }),
           });
         }
