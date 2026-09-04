@@ -108,4 +108,13 @@ describe("evaluateExecutionAllowlist", () => {
       expect(isExecutionForcedToKubernetes({})).toBe(false);
     });
   });
+
+  describe("isLocalExecutionDenied helper", () => {
+    it("reflects the policy", async () => {
+      const { isLocalExecutionDenied } = await import("./execution-allowlist.js");
+      expect(isLocalExecutionDenied({ managedSandboxOnly: true })).toBe(true);
+      expect(isLocalExecutionDenied({ managedSandboxOnly: false })).toBe(false);
+      expect(isLocalExecutionDenied({})).toBe(false);
+    });
+  });
 });

@@ -1,16 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
-import { resolveCloudTenantActor } from "./auth.js";
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
 
 type SeededMembership = { companyId: string; membershipRole: string; status: string };
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
-// select().from(instanceSettings).where().then() read the owner-elevation flag
-// resolution performs through instanceSettingsService. The chain is awaitable so
+// select().from(table).where() reads: instanceSettings for the owner-elevation
+// flag resolution through instanceSettingsService, and companyMemberships for
+// the user's own membership rows (rows configurable via membershipQueryRows,
+// where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
 function createFakeDb(options?: {
   membershipRow?: SeededMembership;
@@ -169,6 +172,21 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor).toBeNull();
+  });
+
+  it("resolves identically from a raw upgrade-request header map via the shim", async () => {
+    // Websocket upgrades hand us IncomingMessage.headers (lowercased keys,
+    // possibly string[] values), not an Express Request. The shim must feed
+    // resolveCloudTenantActor the same way Express header() does.
+    const { db } = createFakeDb();
+    const rawHeaders: Record<string, string | string[] | undefined> = {};
+    for (const [k, v] of Object.entries(VALID_HEADERS)) rawHeaders[k.toLowerCase()] = v;
+    rawHeaders["x-paperclip-cloud-user-name"] = ["Cloud Owner", "ignored-duplicate"];
+    const actor = await resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders(rawHeaders));
+    expect(actor).not.toBeNull();
+    expect(actor!.userId).toBe("user-123");
+    expect(actor!.userName).toBe("Cloud Owner");
+    expect(actor!.companyIds).toHaveLength(1);
   });
 
   it("maps a non-owner stack role through to the membership without elevating", async () => {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -642,8 +643,11 @@ export function shouldReplaceStoredCodexAuth(current: string, candidate: string)
  * `auth.json` from the shared source home (so ChatGPT-subscription credentials
  * stay live and single-use refresh tokens are not copied), copies the static
  * shared config files, and — when an API key is supplied — writes an API-key
- * `auth.json` instead. Used both for the default company home and for the
- * per-agent home set by the server isolation guard.
+ * `auth.json` instead. A promoted device-login credential — a regular-file
+ * `auth.json` holding a subscription identity the shared source does not hold —
+ * is kept authoritative: it is neither removed nor replaced by the shared
+ * symlink. Used both for the default company home and for the per-agent home
+ * set by the server isolation guard.
  */
 export async function seedManagedCodexHome(
   targetHome: string,
@@ -667,7 +671,52 @@ export async function seedManagedCodexHome(
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      await fs.rm(authPath, { force: true });
+      let keepPromotedAuth = false;
+      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
+      if (targetIdentity) {
+        // Any source read failure — absent or unreadable — keeps the usable
+        // target file. The alternative, removal plus the existence-only
+        // symlink pass below, links the home to a source this process just
+        // failed to read, and every downstream reader (the probe seeding, the
+        // sandbox stage sync, the CLI itself) runs with the same access, so
+        // that home is unusable in every scenario. Keeping the target is
+        // better or equal in each case: a promoted credential keeps working,
+        // and even a stale same-identity copy (#5028) can still work, while
+        // the unreadable symlink cannot. A transient read failure also
+        // self-corrects — the next seed with a readable source heals a
+        // same-identity copy into the symlink — whereas removing the promoted
+        // credential is irreversible. The #5028 heal therefore applies
+        // exactly when the source is readable and the identities match.
+        let sourceReadErrorCode: string | null = null;
+        const sourceBytes = await fs
+          .readFile(path.join(sourceHome, "auth.json"))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              sourceReadErrorCode = error.code ?? "unknown";
+            }
+            return null;
+          });
+        const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
+        keepPromotedAuth = sourceIdentity !== targetIdentity;
+        if (keepPromotedAuth && sourceReadErrorCode) {
+          // Deferred heal, made visible: seeding runs before every probe and
+          // every execute, so the next call with a readable source applies
+          // the same-identity symlink heal this call could not decide.
+          await onLog(
+            "stdout",
+            `[paperclip] Keeping the existing subscription auth.json in Codex home "${targetHome}" (shared source read failed: ${sourceReadErrorCode}); the next seed with a readable source reconciles it.\n`,
+          );
+        }
+      }
+      if (keepPromotedAuth) {
+        await onLog(
+          "stdout",
+          `[paperclip] Keeping the promoted subscription auth.json in Codex home "${targetHome}".\n`,
+        );
+      } else {
+        await fs.rm(authPath, { force: true });
+      }
     }
   }
 

@@ -4,10 +4,6 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
-export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
-export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
-export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
-
 export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
@@ -47,13 +43,31 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  /**
+   * Exposes the experimental Paperclip Runner adapter for new selections.
+   * Existing native runs ignore later flag changes so they remain recoverable.
+   */
+  enableNativeRunner: boolean;
+  /**
+   * Hide the local environment and run all agents in the platform-managed
+   * sandbox environment. Run selection refuses local while this is on.
+   */
+  enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
+  /**
+   * Use the streamlined shell, navigation, and contextual-sidebar experience.
+   * Missing legacy values default on; the retired left-navigation preference
+   * remains separate so an old opt-out cannot disable the broader UI.
+   */
+  enableStreamlinedUi: boolean;
+  /** @deprecated Compatibility key only. Apps is always enabled. */
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableTaskWatchdogs: boolean;
+  enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
@@ -66,8 +80,16 @@ export interface InstanceExperimentalSettings {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /** Shows internal Paperclip maintainer tools and observability links. */
+  enablePaperclipDeveloperMode: boolean;
+  /**
+   * Instructs agents to write user-interaction content (confirmations,
+   * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
+   * Technical English with brief decision context. Prompt-side only; no
+   * behavior change outside interaction wording.
+   */
+  enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
-  enableIssueGraphLivenessAutoRecovery: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
@@ -80,6 +102,18 @@ export interface InstanceExperimentalSettings {
    * instances, which have no trusted cloud tenant path.
    */
   enableOwnerInstanceAdmin: boolean;
+  /**
+   * Kill switch for the sandbox duplex command-stream bridge. Default off. The
+   * host reads this per run before it selects the callback bridge transport.
+   * Off forces the file bridge for every run with no manifest change and no
+   * redeploy.
+   */
+  enableSandboxDuplexBridge: boolean;
+  /**
+   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
+   * enableNativeRunner and this value has no runtime effect.
+   */
+  enableRunnerPreviewIngress: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
@@ -97,7 +131,6 @@ export interface InstanceExperimentalSettings {
    * from another instance fail closed.
    */
   worktreeRunExecutionActivationInstanceId: string | null;
-  issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
 /**
@@ -150,35 +183,4 @@ export interface InstanceSettings {
   visibility: InstanceVisibilitySettings;
   createdAt: Date;
   updatedAt: Date;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreviewItem {
-  issueId: string;
-  identifier: string | null;
-  title: string;
-  state: string;
-  severity: string;
-  reason: string;
-  recoveryIssueId: string;
-  recoveryIdentifier: string | null;
-  recoveryTitle: string | null;
-  recommendedOwnerAgentId: string | null;
-  incidentKey: string;
-  latestDependencyUpdatedAt: string;
-  dependencyPath: Array<{
-    issueId: string;
-    identifier: string | null;
-    title: string;
-    status: string;
-  }>;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreview {
-  lookbackHours: number;
-  cutoff: string;
-  generatedAt: string;
-  findings: number;
-  recoverableFindings: number;
-  skippedOutsideLookback: number;
-  items: IssueGraphLivenessAutoRecoveryPreviewItem[];
 }

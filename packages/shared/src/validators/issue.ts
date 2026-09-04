@@ -26,7 +26,6 @@ import {
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
-  MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -171,7 +170,6 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
-    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -1284,3 +1282,30 @@ export const restoreIssueDocumentRevisionSchema = z.object({});
 export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<typeof restoreIssueDocumentRevisionSchema>;
+
+// Fork backward-compatible aliases for upstream-renamed schemas
+export const skipIssueThreadInteractionSchema = respondIssueThreadInteractionSchema;
+export type SkipIssueThreadInteraction = RespondIssueThreadInteraction;
+export const paperclipQuestionSetPayloadSchema = askUserQuestionsPayloadSchema;
+export const stalledReviewDecisionSchema = z.object({
+  action: z.enum(["approve", "request_changes", "send_back"]),
+}).strict();
+export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
+export const connectionIntentPhaseSchema = z.enum(["requested", "authorizing", "needs_retry"]);
+export const connectionIntentPayloadSchema = z.object({
+  version: z.literal(1),
+  serviceSlug: z.string(),
+  serviceName: z.string(),
+  serviceLogoUrl: z.string().nullable().optional(),
+  serviceDarkLogoUrl: z.string().nullable().optional(),
+  requestingAgentId: z.string(),
+  requestingAgentName: z.string(),
+  phase: connectionIntentPhaseSchema,
+});
+export const connectionIntentResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+  connectionId: z.string().nullable().optional(),
+  reason: z.string().nullable().optional(),
+  supersededByInteractionId: z.string().nullable().optional(),
+});

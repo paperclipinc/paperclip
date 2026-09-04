@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -21,13 +18,26 @@ import {
   prepareAdapterExecutionTargetRuntime,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
-  adapterExecutionTargetUsesManagedHome,
+  resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
-import { claudeCommandLooksLike } from "./cli-capabilities.js";
-import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCommandLooksLike,
+  minimumClaudeCliVersionForModel,
+  readClaudeCommandVersion,
+} from "./cli-capabilities.js";
+import { isBedrockModelId } from "./models.js";
+import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed, prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import {
+  buildAdapterTestTargetCheck,
+  buildClaudeLoginRequiredHint,
+  logSandboxProbeDiagnostic,
+} from "./probe-diagnostics.js";
+import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -37,6 +47,14 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function localExecutablesMatch(
+  trustedCommand: string | null,
+  runtimeCommand: string | null,
+): boolean {
+  if (!trustedCommand || !runtimeCommand) return false;
+  return trustedCommand === runtimeCommand;
 }
 
 // Pure decision for the (non-Bedrock) auth advice check: given the adapter's
@@ -85,18 +103,13 @@ export async function testEnvironment(
   const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
-  const targetLabel = targetIsRemote
-    ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
-    : null;
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  if (targetLabel) {
-    checks.push({
-      code: "claude_environment_target",
-      level: "info",
-      message: `Probing inside environment: ${targetLabel}`,
-    });
-  }
+  // Always name the target the Test probed, so a pass result never hides which
+  // target it checked. A local probe reports the fixed host label.
+  checks.push(
+    buildAdapterTestTargetCheck({ targetIsRemote, environmentName: ctx.environmentName }),
+  );
 
   try {
     await ensureAdapterExecutionTargetDirectory(runId, target, cwd, {
@@ -123,80 +136,40 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const installCheck = await maybeRunSandboxInstallCommand({
-    runId,
-    target,
-    adapterKey: "claude",
-    installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-    env,
-  });
-  if (installCheck) checks.push(installCheck);
-  const hasExplicitClaudeConfigDir = isNonEmpty(env.CLAUDE_CONFIG_DIR);
-  if (targetIsRemote && adapterExecutionTargetUsesManagedHome(target) && !hasExplicitClaudeConfigDir) {
-    let tempWorkspaceDir: string | null = null;
-    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
-    try {
-      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, ctx.companyId);
-      const managedRemoteCwd = target?.kind === "remote" ? target.remoteCwd : cwd;
-      tempWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"));
-      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
-        runId,
-        target,
-        adapterKey: "claude",
-        workspaceLocalDir: tempWorkspaceDir,
-        workspaceRemoteDir: managedRemoteCwd,
-        timeoutSec: Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
-        assets: [
-          {
-            key: "config-seed",
-            localDir: seedDir,
-            followSymlinks: true,
-          },
-        ],
-      });
-      const runtimeRootDir =
-        preparedRuntime.runtimeRootDir ?? path.posix.join(managedRemoteCwd, ".paperclip-runtime", "claude");
-      const remoteClaudeConfigSeedDir =
-        preparedRuntime.assetDirs["config-seed"] ?? path.posix.join(runtimeRootDir, "config-seed");
-      const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
-      env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-      await materializeRemoteClaudeConfig({
-        runId,
-        target,
-        remoteClaudeConfigDir,
-        remoteClaudeConfigSeedDir,
-        options: {
-          cwd,
-          env,
-          timeoutSec: Math.max(15, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
-          graceSec: 5,
-          onLog: async () => {},
-        },
-      });
-      checks.push({
-        code: "claude_managed_config_dir",
-        level: "info",
-        message: "Sandbox probe is using Paperclip-managed Claude config materialization.",
-        detail: remoteClaudeConfigDir,
-      });
-    } catch (err) {
-      checks.push({
-        code: "claude_managed_config_dir_failed",
-        level: "error",
-        message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
-      if (tempWorkspaceDir) {
-        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }
-  }
+  // For a local probe, resolve the trusted `claude` executable and a
+  // deny-by-default child env from the shared builder, so a hostile caller
+  // value can neither select the executable nor reach the child. A remote
+  // target keeps the caller command and env; the remote transport owns its own
+  // env sanitization.
+  const localProbe = targetIsRemote
+    ? null
+    : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
+  checks.push(
+    ...(await prepareSandboxClaudeProbeRuntime({
+      runId,
+      target,
+      cwd,
+      companyId: ctx.companyId,
+      env,
+      installCommand: SANDBOX_INSTALL_COMMAND,
+      detectCommand: command,
+      targetIsRemote,
+      targetIsSandbox,
+      helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+    })),
+  );
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  let localRuntimeCommand: string | null = null;
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+    if (!targetIsRemote) {
+      localRuntimeCommand = await resolveAdapterExecutionTargetCommandForLogs(
+        command,
+        target,
+        cwd,
+        runtimeEnv,
+      );
+    }
     checks.push({
       code: "claude_command_resolvable",
       level: "info",
@@ -282,7 +255,62 @@ export async function testEnvironment(
         check.code !== "claude_command_unresolvable" &&
         check.code !== "claude_managed_config_dir_failed",
     );
-  if (canRunProbe) {
+  let configuredModelIsCompatible = true;
+  const configuredModel = asString(config.model, "").trim();
+  const minimumCliVersion =
+    claudeCommandLooksLike(command, "claude") &&
+    (!hasBedrock || isBedrockModelId(configuredModel))
+    ? minimumClaudeCliVersionForModel(configuredModel)
+    : null;
+  const versionProbeCommand = localProbe?.command ?? (targetIsRemote ? command : null);
+  const versionProbeMatchesRuntime = targetIsRemote || localExecutablesMatch(
+    localProbe?.command ?? null,
+    localRuntimeCommand,
+  );
+  if (
+    canRunProbe &&
+    minimumCliVersion &&
+    versionProbeCommand &&
+    !versionProbeMatchesRuntime
+  ) {
+    configuredModelIsCompatible = false;
+    checks.push({
+      code: "claude_cli_version_probe_mismatch",
+      level: "warn",
+      message:
+        "Skipped Fable 5.1 readiness probing because the runtime PATH selects a different Claude executable than the trusted local Test probe.",
+      hint:
+        "Ensure the runtime-selected Claude Code is 2.1.251 or newer. Execution will verify that exact executable before launch.",
+    });
+  } else if (canRunProbe && minimumCliVersion && versionProbeCommand) {
+    const versionProbeEnv = localProbe?.env ?? env;
+    const detectedCliVersion = await readClaudeCommandVersion({
+      runId,
+      command: versionProbeCommand,
+      target,
+      cwd,
+      env: versionProbeEnv,
+      timeoutSec: 45,
+      graceSec: 5,
+    });
+    if (
+      !detectedCliVersion ||
+      !claudeCliVersionAtLeast(detectedCliVersion, minimumCliVersion)
+    ) {
+      configuredModelIsCompatible = false;
+      checks.push({
+        code: "claude_cli_version_incompatible",
+        level: "error",
+        message: `Claude Fable 5.1 requires Claude Code ${minimumCliVersion} or newer on the CLI lane.`,
+        detail: detectedCliVersion
+          ? `Detected Claude Code ${detectedCliVersion}.`
+          : "Could not determine the installed Claude Code version.",
+        hint: "Upgrade Claude Code or restore the default ACP lane, then retry the Test.",
+      });
+    }
+  }
+
+  if (canRunProbe && configuredModelIsCompatible) {
     if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
@@ -291,8 +319,17 @@ export async function testEnvironment(
         detail: command,
         hint: "Use the `claude` CLI command to run the automatic login and installation probe.",
       });
+    } else if (localProbe && !localProbe.command) {
+      // The trusted server PATH holds no `claude`, so the local probe cannot
+      // run. Report a warn, never a silent pass.
+      checks.push({
+        code: "claude_hello_probe_skipped_unresolved_command",
+        level: "warn",
+        message: "Skipped the Claude hello probe because `claude` is not installed on the Paperclip host.",
+        hint: "Install the `claude` CLI on the Paperclip host, then retry the Test.",
+      });
     } else {
-      const model = asString(config.model, "").trim();
+      const model = configuredModel;
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
       const maxTurns = asNumber(config.maxTurnsPerRun, 0);

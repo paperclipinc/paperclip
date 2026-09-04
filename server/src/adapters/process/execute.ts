@@ -10,6 +10,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
   buildInvocationEnvForLogs,
@@ -28,6 +29,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v !== "string") continue;

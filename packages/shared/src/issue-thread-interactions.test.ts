@@ -1,14 +1,39 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
+  legacyIssueThreadInteractionResolverPolicyAlias,
+  normalizeIssueThreadInteractionResolverPolicy,
+} from "./constants.js";
+import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  askUserQuestionsPayloadSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestItemVerdictsResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("defines canonical resolver policies and normalizes compatibility aliases", () => {
+    expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
+      "anyone",
+      "not_creator",
+      "human_only",
+    ]);
+    expect(ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES).toEqual([
+      "board_or_agents",
+      "board_only",
+    ]);
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_or_agents")).toBe("anyone");
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_only")).toBe("human_only");
+    expect(normalizeIssueThreadInteractionResolverPolicy("not_creator")).toBe("not_creator");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("anyone")).toBe("board_or_agents");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("not_creator")).toBeNull();
+  });
+
   it("parses request_confirmation payloads with default no-wake continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
@@ -186,6 +211,23 @@ describe("issue thread interaction schemas", () => {
       expirationReason: "superseded_by_comment",
       commentId: "11111111-1111-4111-8111-111111111111",
     });
+  });
+
+  it("retains canonical runner question sets without narrowing their public bounds", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "deployment-color",
+          prompt: "Which deployment color should the runner use?",
+          selectionMode: "single",
+          options: [{ id: "blue", label: "Blue" }],
+        }],
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {
