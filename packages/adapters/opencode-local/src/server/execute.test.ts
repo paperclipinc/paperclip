@@ -1,110 +1,107 @@
-import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 
-import { buildOpenCodeSkillsDir, ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, runAdapterExecutionTargetProcess: vi.fn() };
+});
 
-describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
-  const cleanupDirs: string[] = [];
+import { ensureRemoteOpenCodeModelConfiguredAndAvailable, execute } from "./execute.js";
+import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 
-  afterEach(async () => {
-    while (cleanupDirs.length > 0) {
-      const dir = cleanupDirs.pop();
-      if (!dir) continue;
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
+
+async function createSkillDir(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), `# ${name}\n`, "utf8");
+  return skillDir;
+}
+
+function probeResult(overrides: Record<string, unknown>) {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+    pid: 123,
+    startedAt: new Date().toISOString(),
+    ...overrides,
+  } as never;
+}
+
+describe("OpenCode local skill injection", () => {
+  it("injects runtime skills into the configured child HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-configured-home-"));
+    const processHome = path.join(root, "process-home");
+    const configuredHome = path.join(root, "configured-home");
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "opencode");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = processHome;
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValueOnce(probeResult({
+      stdout: JSON.stringify({
+        type: "text",
+        sessionID: "session-configured-home",
+        part: { text: "done" },
+      }),
+    }));
+
+    try {
+      const result = await execute({
+        runId: "run-configured-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "OpenCode Coder",
+          adapterType: "opencode_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "openai/gpt-5",
+          env: {
+            HOME: configuredHome,
+            OPENCODE_ALLOW_ALL_MODELS: "1",
+          },
+          paperclipRuntimeSkills: [{
+            key: "paperclipai/paperclip/paperclip",
+            runtimeName: "paperclip",
+            source: skillSource,
+          }],
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const installedSkill = path.join(configuredHome, ".claude", "skills", "paperclip");
+      expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
+      await expect(fs.lstat(path.join(processHome, ".claude", "skills", "paperclip"))).rejects.toThrow();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
     }
-  });
-
-  async function makeConfigWithSkills() {
-    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skilltest-"));
-    cleanupDirs.push(root);
-    const createAgentSource = path.join(root, "paperclip-create-agent");
-    const coordinationSource = path.join(root, "paperclip");
-    const memorySource = path.join(root, "para-memory-files");
-    await mkdir(createAgentSource, { recursive: true });
-    await mkdir(coordinationSource, { recursive: true });
-    await mkdir(memorySource, { recursive: true });
-    // Runtime skills are configured directly on the adapter config so the helper
-    // resolves them without touching the packaged skills directory.
-    return {
-      paperclipRuntimeSkills: [
-        {
-          key: "paperclipai/paperclip/paperclip-create-agent",
-          runtimeName: "paperclip-create-agent",
-          source: createAgentSource,
-        },
-        {
-          key: "paperclipai/paperclip/paperclip",
-          runtimeName: "paperclip",
-          source: coordinationSource,
-        },
-        {
-          key: "paperclipai/paperclip/para-memory-files",
-          runtimeName: "para-memory-files",
-          source: memorySource,
-        },
-      ],
-    } as Record<string, unknown>;
-  }
-
-  it("includes the paperclip-create-agent skill when the agent can hire", async () => {
-    const config = await makeConfigWithSkills();
-    const dir = await buildOpenCodeSkillsDir(config, { canCreateAgents: true });
-    cleanupDirs.push(path.dirname(dir));
-    const entries = await readdir(dir);
-    expect(entries).toContain("paperclip-create-agent");
-  });
-
-  it("excludes the paperclip-create-agent skill when the agent cannot hire", async () => {
-    const config = await makeConfigWithSkills();
-    const dir = await buildOpenCodeSkillsDir(config, { canCreateAgents: false });
-    cleanupDirs.push(path.dirname(dir));
-    const entries = await readdir(dir);
-    expect(entries).not.toContain("paperclip-create-agent");
-  });
-
-  // Managed agents run instruction bundles (ceo/AGENTS.md, HEARTBEAT.md) that
-  // MANDATE the coordination (`paperclip`) and memory (`para-memory-files`)
-  // skills. Those skills are never in a managed agent's explicit desiredSkills,
-  // so they must be force-included whenever the agent is managed.
-  it("includes coordination + memory + create-agent skills for a managed agent that can hire", async () => {
-    const config = await makeConfigWithSkills();
-    const dir = await buildOpenCodeSkillsDir(config, {
-      canCreateAgents: true,
-      managed: true,
-    });
-    cleanupDirs.push(path.dirname(dir));
-    const entries = await readdir(dir);
-    expect(entries).toContain("paperclip");
-    expect(entries).toContain("para-memory-files");
-    expect(entries).toContain("paperclip-create-agent");
-  });
-
-  it("includes coordination + memory but NOT create-agent for a managed agent that cannot hire", async () => {
-    const config = await makeConfigWithSkills();
-    const dir = await buildOpenCodeSkillsDir(config, {
-      canCreateAgents: false,
-      managed: true,
-    });
-    cleanupDirs.push(path.dirname(dir));
-    const entries = await readdir(dir);
-    expect(entries).toContain("paperclip");
-    expect(entries).toContain("para-memory-files");
-    expect(entries).not.toContain("paperclip-create-agent");
-  });
-
-  it("does NOT force coordination/memory skills on a non-managed (BYO) agent", async () => {
-    const config = await makeConfigWithSkills();
-    const dir = await buildOpenCodeSkillsDir(config, {
-      canCreateAgents: false,
-      managed: false,
-    });
-    cleanupDirs.push(path.dirname(dir));
-    const entries = await readdir(dir);
-    expect(entries).not.toContain("paperclip");
-    expect(entries).not.toContain("para-memory-files");
-    expect(entries).not.toContain("paperclip-create-agent");
   });
 });
 
