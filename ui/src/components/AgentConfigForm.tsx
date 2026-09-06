@@ -1728,6 +1728,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+              {credentialSetup && selectedCompanyId && (
+                <AdapterCredentialConnect
+                  key={adapterType}
+                  companyId={selectedCompanyId}
+                  adapterType={adapterType}
+                  setup={credentialSetup}
+                  boundEnvKeys={boundEnvKeys}
+                  onBind={handleCredentialBind}
+                />
+              )}
+
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}

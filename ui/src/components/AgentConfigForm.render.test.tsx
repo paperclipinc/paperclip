@@ -678,6 +678,12 @@ describe("AgentConfigForm environment selector", () => {
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
+    // AgentConfigForm is on the fork's instance-settings allowlist: it still
+    // reads the admin endpoint for the environment/native-runner gates, so the
+    // board-access fixture above is not enough on its own.
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
@@ -3337,6 +3343,12 @@ describe("AgentConfigForm guided credential connect", () => {
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
+    // AgentConfigForm is on the fork's instance-settings allowlist: it still
+    // reads the admin endpoint for the environment/native-runner gates, so the
+    // board-access fixture above is not enough on its own.
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockSecretsApi.list.mockResolvedValue([]);
   });
 

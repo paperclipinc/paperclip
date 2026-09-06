@@ -1,6 +1,8 @@
+import { useMemo } from "react";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { useLocation, useNavigate } from "@/lib/router";
@@ -100,11 +102,27 @@ export function CompanySettingsNav() {
   // tab is suppressed there rather than dead-ending.
   const isCloud = Boolean(useCloudInstance());
   const activeTab = getCompanySettingsTab(location.pathname);
-  const visibleItems = items.filter((item) => {
-    if (item.value === "import" && isCloud) return false;
-    const hiddenKey = hiddenSettingKeyByTab[item.value];
-    return !hiddenKey || !hiddenSettings.has(hiddenKey);
-  });
+  const { data: boardAccess } = useBoardCapabilities();
+  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
+
+  // Two gates stack here. Upstream's: operator-hidden pages and the
+  // cloud-managed Import floor. The fork's: company surfaces follow the
+  // board-access policy (GET /cli-auth/me), and every remaining instance-*
+  // tab is instance-admin only. Degrades closed — while capabilities are
+  // unavailable, exposedSurfaces is empty and isInstanceAdmin is false.
+  const visibleItems = useMemo(() => {
+    const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+    return items.filter((item) => {
+      if (item.value === "import" && isCloud) return false;
+      const hiddenKey = hiddenSettingKeyByTab[item.value];
+      if (hiddenKey && hiddenSettings.has(hiddenKey)) return false;
+      if (item.value === "general") return exposedSurfaces.has("company.general");
+      if (item.value === "members") return exposedSurfaces.has("company.members");
+      if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
+      if (item.value === "instance-profile") return true; // per-user, always visible
+      return isInstanceAdmin; // all remaining instance-* tabs
+    });
+  }, [boardAccess, hiddenSettings, isCloud, isInstanceAdmin]);
 
   function handleTabChange(value: string) {
     const nextTab = visibleItems.find((item) => item.value === value);

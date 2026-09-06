@@ -125,6 +125,12 @@ describe("CompanySettingsNav", () => {
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
+    // Seed board access too: the nav gates company surfaces on it, and these
+    // cases render synchronously without awaiting the query.
+    queryClient.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     root.render(
       <QueryClientProvider client={queryClient}>
         <CompanySettingsNav />

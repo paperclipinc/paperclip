@@ -413,6 +413,12 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
+    // The sidebar also gates on board access; seed it so these cases exercise
+    // the operator-hidden gate rather than the degrade-closed path.
+    queryClient.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -513,9 +519,8 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Invites");
     expect(container.textContent).toContain("Secrets");
-    expect(container.textContent).toContain("Instance settings");
+    expect(container.textContent).toContain("Access");
 
     await act(async () => {
       root.unmount();
@@ -536,9 +541,9 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     await flushReact();
 
     expect(container.textContent).not.toContain("Members");
-    expect(container.textContent).not.toContain("Instance settings");
+    expect(container.textContent).not.toContain("Access");
     // The chrome itself still renders — the page is not blocked.
-    expect(container.textContent).toContain("Company Settings");
+    expect(container.textContent).toContain("Back to app");
 
     await act(async () => {
       root.unmount();

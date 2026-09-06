@@ -13,7 +13,7 @@ import {
   UserRoundPen,
   Users,
 } from "lucide-react";
-import type { PluginRecord } from "@paperclipai/shared";
+import { COMPANY_SETTINGS_SURFACES, type PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
@@ -23,6 +23,7 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useBoardCapabilities } from "@/hooks/useFeatures";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -41,10 +42,28 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
   return drivers.every((d) => d.kind === "sandbox_provider");
 }
 
+/** The company surfaces the visibility policy can expose to non-admins. */
+const POLICY_COMPANY_SURFACES = new Set<string>(COMPANY_SETTINGS_SURFACES);
+
 export function CompanySettingsSidebar() {
   const { selectedCompanyId } = useCompany();
   const { hidden: hiddenSettings } = useHiddenSettings();
-  const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
+  // Two gates stack: upstream's operator-hidden pages, and the fork's
+  // board-access policy (GET /cli-auth/me). Company surfaces follow
+  // exposedSurfaces; the instance-* pages are instance-admin only. Both
+  // degrade closed while capabilities are unavailable.
+  const { data: boardAccess } = useBoardCapabilities();
+  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
+  const showPage = (pageKey: string) => {
+    if (hiddenSettings.has(pageKey)) return false;
+    // Only the policy-managed company surfaces follow exposedSurfaces;
+    // company.export / company.import are not in COMPANY_SETTINGS_SURFACES and
+    // stay instance-admin gated like the instance-* pages.
+    if (POLICY_COMPANY_SURFACES.has(pageKey)) return exposedSurfaces.has(pageKey);
+    if (pageKey === "instance.profile") return true; // per-user, always visible
+    return isInstanceAdmin;
+  };
   const showPlugins = showPage("instance.plugins");
   // Import is floored server-side on cloud-managed instances (403 cloud_managed), so the
   // nav entry is hidden rather than dead-ending. Export stays available.
@@ -102,7 +121,9 @@ export function CompanySettingsSidebar() {
         className={primarySidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          {showPage("company.general") && (
+            <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          )}
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
