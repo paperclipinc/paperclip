@@ -119,6 +119,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const getExposedCompanySurfaces = async () =>
     (await instanceSettingsSvc.getVisibility()).companySurfaces;
 
+  async function assertSecretCatalogReadAllowed(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       throw forbidden("Run-bound agent authentication required");
@@ -589,6 +599,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertSecretCatalogReadAllowed(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets.map(({ id, name, key, status }) => ({ id, name, key, status })));
   });

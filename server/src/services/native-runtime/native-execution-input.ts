@@ -44,12 +44,26 @@ export function buildNativeExecutionInput(input: {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
-  provider?: "codex" | "opencode" | "acpx";
+  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   acpxAgent?: NativeAcpxAgent;
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   model?: string | null;
+  managedProfile?: Extract<
+    NativeExecutionInputV4["provider"],
+    { kind: "claude_managed" }
+  >["managedProfile"];
+  maxSessionListCostUsd?: number;
+  agentCoreProfile?: Extract<
+    NativeExecutionInputV4["provider"],
+    { kind: "aws_agentcore" }
+  >["agentCoreProfile"];
+  maxEstimatedSessionCostUsd?: number;
+  invocationLimits?: Extract<
+    NativeExecutionInputV4["provider"],
+    { kind: "aws_agentcore" }
+  >["invocationLimits"];
   lifecyclePolicy?: NativeExecutionInputV4["session"]["lifecyclePolicy"];
   executionMode?: "default" | "plan";
   planningContext?: NativePlanningContext | null;
@@ -69,7 +83,7 @@ export function buildNativeExecutionInput(input: {
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
   const acpxProfile = input.provider === "acpx"
     ? resolveQualifiedAcpxProfile(
-        input.acpxAgent ?? "pi",
+        input.acpxAgent ?? "codex",
         input.model ?? "",
       )
     : null;
@@ -108,18 +122,37 @@ export function buildNativeExecutionInput(input: {
       normalizedSessionId: input.normalizedSessionId,
       driverKind: input.provider === "opencode"
         ? "opencode_server"
+        : input.provider === "claude_managed"
+          ? "claude_managed_agents_api"
+          : input.provider === "aws_agentcore"
+            ? "aws_agentcore_harness_api"
         : input.provider === "acpx"
-          ? "acpx_runtime"
-          : "codex_app_server",
+            ? "acpx_runtime"
+            : "codex_app_server",
       protocolVersion: 1,
       lifecyclePolicy: input.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     },
-    provider: input.provider === "acpx"
+    provider: input.provider === "claude_managed"
+      ? {
+          kind: "claude_managed",
+          model: input.model,
+          managedProfile: input.managedProfile,
+          maxSessionListCostUsd: input.maxSessionListCostUsd,
+        }
+      : input.provider === "aws_agentcore"
+        ? {
+            kind: "aws_agentcore",
+            model: input.model,
+            agentCoreProfile: input.agentCoreProfile,
+            maxEstimatedSessionCostUsd: input.maxEstimatedSessionCostUsd,
+            invocationLimits: input.invocationLimits,
+          }
+      : input.provider === "acpx"
       ? {
           kind: "acpx",
           agent: acpxProfile!.agent,
           model: input.model,
-          permissionMode: input.acpxPermissionMode ?? "approve-all",
+          permissionMode: input.acpxPermissionMode ?? "approve-reads",
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -137,7 +170,7 @@ export function buildNativeExecutionInput(input: {
         ? {
             kind: "opencode",
             model: input.model,
-            permissionMode: input.opencodePermissionMode ?? "allow",
+            permissionMode: input.opencodePermissionMode ?? "ask",
           }
         : {
             kind: "codex",

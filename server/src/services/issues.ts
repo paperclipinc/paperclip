@@ -28,6 +28,7 @@ import {
   issueRelations,
   issueComments,
   issueDocuments,
+  issueWorkProducts,
   issueReadStates,
   issueThreadInteractions,
   issues,
@@ -8795,6 +8796,8 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issueComments.issueId, issueId)];
       if (afterCommentId) {
+        // Guard: reject non-UUID cursors before hitting the DB to avoid Postgres type errors.
+        if (!isUuidLike(afterCommentId)) return [];
         const anchor = await db
           .select({
             id: issueComments.id,
@@ -8960,7 +8963,7 @@ export function issueService(db: Db) {
       });
     },
 
-    addComment: async (
+    addComment: async function addComment(
       issueId: string,
       body: string,
       actor: {
@@ -8978,7 +8981,21 @@ export function issueService(db: Db) {
         createdAt?: Date | string | null;
       },
       dbOrTx: any = db,
-    ) => {
+    ): Promise<IssueComment> {
+      if (dbOrTx === db && actor.runId) {
+        return db.transaction(async (tx) => {
+          // Serialize run-authored comments on the issue so a provider retry
+          // cannot publish the same visible result twice. This needs no schema
+          // change: the issue row is the transaction fence, and the recursive
+          // call below performs the lookup and insert while holding it.
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .for("update");
+          return addComment(issueId, body, actor, options, tx);
+        });
+      }
       const issue = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -9013,11 +9030,45 @@ export function issueService(db: Db) {
             actor.onBehalfOfUserId,
           )
         : null;
-      const metadata = issueCommentMetadataSchema.nullable().parse(
-        actor.agentId
-          ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
-          : options?.metadata ?? null,
-      );
+      const metadata = issueCommentMetadataSchema
+        .nullable()
+        .parse(
+          actor.agentId
+            ? withAgentCommentAuthorizationMetadata(
+                options?.metadata ?? null,
+                options?.authorizationReason,
+              )
+            : (options?.metadata ?? null),
+        );
+      if (createdByRunId) {
+        const existing = await dbOrTx
+          .select()
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issueId),
+              eq(issueComments.createdByRunId, createdByRunId),
+              eq(issueComments.authorType, authorType),
+              actor.agentId
+                ? eq(issueComments.authorAgentId, actor.agentId)
+                : isNull(issueComments.authorAgentId),
+              eq(issueComments.body, redactedBody),
+              isNull(issueComments.deletedAt),
+            ),
+          )
+          .orderBy(issueComments.createdAt, issueComments.id)
+          .limit(1)
+          .then(
+            (rows: Array<typeof issueComments.$inferSelect>) => rows[0] ?? null,
+          );
+        if (existing) {
+          return redactIssueComment(
+            existing,
+            currentUserRedactionOptions.enabled,
+          );
+        }
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -9090,6 +9141,7 @@ export function issueService(db: Db) {
       originalFilename?: string | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
+      createdByRunId?: string | null;
     }) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -9136,6 +9188,46 @@ export function issueService(db: Db) {
           })
           .returning();
 
+        const registeredRunId = input.createdByRunId && isUuidLike(input.createdByRunId)
+          ? await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.createdByRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              ...(input.createdByAgentId ? [eq(heartbeatRuns.agentId, input.createdByAgentId)] : []),
+            ))
+            .then((rows) => rows[0]?.id ?? null)
+          : null;
+        const contentPath = `/api/attachments/${attachment.id}/content`;
+        const [artifactWorkProduct] = registeredRunId
+          ? await tx
+            .insert(issueWorkProducts)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              type: "artifact",
+              provider: "paperclip",
+              externalId: attachment.id,
+              title: asset.originalFilename ?? "Attachment",
+              status: "active",
+              reviewState: "none",
+              isPrimary: false,
+              healthStatus: "unknown",
+              metadata: {
+                attachmentId: attachment.id,
+                contentType: asset.contentType,
+                byteSize: asset.byteSize,
+                contentPath,
+                openPath: contentPath,
+                downloadPath: `${contentPath}?download=1`,
+                originalFilename: asset.originalFilename,
+              },
+              createdByRunId: registeredRunId,
+            })
+            .returning({ id: issueWorkProducts.id })
+          : [];
+
         return {
           id: attachment.id,
           companyId: attachment.companyId,
@@ -9152,6 +9244,7 @@ export function issueService(db: Db) {
           createdByUserId: asset.createdByUserId,
           createdAt: attachment.createdAt,
           updatedAt: attachment.updatedAt,
+          artifactWorkProductId: artifactWorkProduct?.id ?? null,
         };
       });
     },

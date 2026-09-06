@@ -19,9 +19,11 @@ import {
   type CapabilityLiveSessionSnapshot,
   type CapabilityLiveSessionStore,
   type CapabilityLiveTransportFactory,
+  type CapabilityLiveTurnEvent,
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
+import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
@@ -61,7 +63,9 @@ interface FakeProviderState {
   attachments: Array<{ runId: string; turnId: string; itemId: string }>;
   holdAfterTool: boolean;
   closeError: Error | null;
+  usageRunDelta: Record<string, unknown> | null;
   onTurnStart?: () => Promise<void>;
+  onUsage?: (queue: AsyncNotifications, turnId: string) => void | Promise<void>;
 }
 
 class FakeCapabilityCodexTransport implements CodexAppServerTransport {
@@ -83,6 +87,10 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
     if (method === "initialize") return { user: { sessionId: this.state.providerSessionId } };
     if (method === "thread/start") {
       expect(Array.isArray(params.dynamicTools)).toBe(true);
+      expect(params.completionContract).toEqual({
+        revision: "paperclip-capability-live-v1",
+        criterionIds: ["objective"],
+      });
       return {
         model: "gpt-eval-test",
         modelProvider: "openai",
@@ -240,25 +248,35 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
       },
     });
     this.state.turns.set(turnId, "completed");
-    this.notificationsQueue.push({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: this.state.threadId,
-        turnId,
-        tokenUsage: {
-          total: {
-            inputTokens: this.state.nextTurn * 100,
-            cachedInputTokens: this.state.nextTurn * 20,
-            outputTokens: this.state.nextTurn * 10,
-            reasoningOutputTokens: this.state.nextTurn * 2,
+    if (this.state.onUsage) {
+      await this.state.onUsage(this.notificationsQueue, turnId);
+    } else {
+      this.notificationsQueue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: this.state.threadId,
+          turnId,
+          tokenUsage: {
+            total: {
+              inputTokens: this.state.nextTurn * 100,
+              cachedInputTokens: this.state.nextTurn * 20,
+              outputTokens: this.state.nextTurn * 10,
+              reasoningOutputTokens: this.state.nextTurn * 2,
+            },
+            ...(this.state.usageRunDelta === null
+              ? {}
+              : {
+                  runDeltaAvailable: true,
+                  runDelta: this.state.usageRunDelta,
+                }),
           },
         },
-      },
-    });
-    this.notificationsQueue.push({
-      method: "turn/completed",
-      params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
-    });
+      });
+      this.notificationsQueue.push({
+        method: "turn/completed",
+        params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    }
     this.#activeTurnId = null;
   }
 
@@ -299,6 +317,7 @@ function providerState(): FakeProviderState {
     attachments: [],
     holdAfterTool: false,
     closeError: null,
+    usageRunDelta: null,
   };
 }
 
@@ -560,20 +579,70 @@ describe("Capability live runnerd and Codex session", () => {
     expect(state.transports[0]?.processInfo().exited).toBe(true);
 
     const active = session.sendMessage("start a long turn");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     expect(session.snapshot().status).toBe("running");
     await session.interrupt("test cleanup");
     await expect(active).resolves.toMatchObject({ status: "interrupted" });
     await service.shutdown(session.id);
   });
 
+  it("interrupts pending admission without starting provider work", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+
+    const turn = session.sendMessage("do not admit this turn");
+    expect(session.snapshot().transcript).toEqual([
+      expect.objectContaining({ role: "user", text: "do not admit this turn" }),
+    ]);
+    await session.interrupt("cancel during workspace preflight");
+    const result = await turn;
+
+    expect(result.status).toBe("interrupted");
+    expect(result.snapshot.status).toBe("warm_idle");
+    expect(result.snapshot.terminalTurns).toEqual([
+      expect.objectContaining({ turnId: result.turnId, status: "interrupted" }),
+    ]);
+    expect(state.transports[0]?.requests.filter((request) => request.method === "turn/start"))
+      .toEqual([]);
+    await service.shutdown(session.id);
+  });
+
+  it("fails visibly instead of blocking teardown on an unabortable provider start", async () => {
+    const state = providerState();
+    state.onTurnStart = () => new Promise<void>(() => undefined);
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+    const events: CapabilityLiveTurnEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    const abandonedTurn = session.sendMessage("start a provider request that never returns");
+    void abandonedTurn.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(state.transports[0]?.requests.some((request) => request.method === "turn/start"))
+        .toBe(true);
+    });
+
+    await expect(session.suspend("bounded admission teardown")).resolves.toBeUndefined();
+    expect(session.snapshot().status).toBe("failed");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "error",
+        message: expect.stringContaining("did not stop after transport close"),
+      }),
+    ]));
+    expect(state.transports[0]?.processInfo().exited).toBe(true);
+  });
+
   it("persists the selected provider and passes it to the live runner transport", async () => {
     const state = providerState();
     const providers: Array<string | undefined> = [];
+    const permissionModes: Array<string | undefined> = [];
     const baseFactory = fakeTransportFactory(state);
     const service = new CapabilityLiveSessionService({
       transportFactory: (options) => {
         providers.push(options.provider);
+        permissionModes.push(options.opencodePermissionMode);
         return baseFactory(options);
       },
     });
@@ -583,11 +652,72 @@ describe("Capability live runnerd and Codex session", () => {
     });
 
     expect(providers).toEqual(["opencode"]);
+    expect(permissionModes).toEqual(["deny"]);
     expect(session.snapshot().config).toMatchObject({
       provider: "opencode",
       driver: "opencode_server",
       providerVersion: "1.18.17",
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
+    });
+    await service.shutdown(session.id);
+  });
+
+  it("passes caller-supplied native system instructions to the provider", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+      transportOptions: {
+        baseInstructions:
+          "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+      },
+    });
+    const session = await service.create();
+
+    expect(
+      state.transports[0]?.requests.find(
+        (request) => request.method === "thread/start",
+      )?.params.baseInstructions,
+    ).toBe(
+      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+    );
+    await service.shutdown(session.id);
+  });
+
+  it("attributes Claude Managed sessions to the pinned immutable Agent version", async () => {
+    const state = providerState();
+    const managedProfiles: Array<Record<string, unknown> | undefined> = [];
+    const baseFactory = fakeTransportFactory(state);
+    const service = new CapabilityLiveSessionService({
+      transportFactory: (options) => {
+        managedProfiles.push(options.managedProfile);
+        return baseFactory(options);
+      },
+    });
+    const session = await service.create({
+      provider: "claude_managed",
+      requestedModel: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-profile-1",
+        anthropicAgentId: "agent-1",
+        agentVersion: "17",
+        environmentId: "environment-1",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 0.5,
+      },
+    });
+
+    expect(managedProfiles).toEqual([
+      expect.objectContaining({
+        agentVersion: "17",
+        betaVersion: "managed-agents-2026-04-01",
+        model: "claude-sonnet-5",
+      }),
+    ]);
+    expect(session.snapshot().config).toMatchObject({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      providerVersion: "17",
+      requestedModel: "claude-sonnet-5",
     });
     await service.shutdown(session.id);
   });
@@ -607,6 +737,74 @@ describe("Capability live runnerd and Codex session", () => {
     expect(names).toContain("invoke_discovered_capability");
     expect(names).not.toContain("list_agents");
     expect(session.snapshot().config.toolExposure).toBe("lazy");
+    await service.shutdown(session.id);
+  });
+
+  it("keeps discovered invocations correlated to the provider gateway call", async () => {
+    const state = providerState();
+    const claim = "discovery:agents:read";
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+    });
+    const session = await service.create({
+      runId: "run-live-lazy-invoke",
+      sessionId: "session-live-lazy-invoke",
+      toolExposure: "lazy",
+      capabilities: [claim],
+      explicitClaims: [claim],
+      scenario: { id: "lazy-invoke", claims: [claim] },
+    });
+    let gatewayResult: Record<string, unknown> | null = null;
+    state.onTurnStart = async () => {
+      const transport = state.transports[0]!;
+      const turnId = [...state.turns.keys()].at(-1)!;
+      const discovery = await transport.invokeServerRequest({
+        id: "request-discover",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-discover",
+          tool: "discover_capabilities",
+          arguments: {
+            query: "list company agents",
+            namespace: "discovery",
+            limit: 10,
+          },
+        },
+      });
+      expect(discovery.success).toBe(true);
+      const invoked = await transport.invokeServerRequest({
+        id: "request-invoke",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-invoke",
+          tool: "invoke_discovered_capability",
+          arguments: { operationId: "list_agents", input: {} },
+        },
+      });
+      gatewayResult = JSON.parse(
+        String(
+          (invoked.contentItems as Array<Record<string, unknown>>)[0]?.text,
+        ),
+      ) as Record<string, unknown>;
+    };
+
+    await session.sendMessage("Exercise the lazy discovery gateway.");
+
+    expect(gatewayResult).toMatchObject({
+      callId: "call-invoke",
+      operationId: "invoke_discovered_capability",
+      ok: true,
+    });
+    expect(
+      session
+        .snapshot()
+        .evidence.filter((entry) => entry.kind === "tool_call")
+        .map((entry) => entry.data.operationId),
+    ).toContain("list_agents");
     await service.shutdown(session.id);
   });
 
@@ -648,6 +846,256 @@ describe("Capability live runnerd and Codex session", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+    await service.shutdown(session.id);
+  });
+
+  it("streams normalized usage before terminal with cumulative fallback and explicit run deltas", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({
+      runId: "run-live-usage-stream",
+      sessionId: "session-live-usage-stream",
+    });
+    const events: CapabilityLiveTurnEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    await session.sendMessage("report cumulative usage");
+    state.usageRunDelta = {
+      requests: 2,
+      inputTokens: 7,
+      outputTokens: 3,
+      cachedInputTokens: 1,
+      reasoningTokens: 2,
+      providerCostUsd: 0.004,
+    };
+    await session.sendMessage("report explicit run delta");
+    unsubscribe();
+
+    const usageEvents = events.filter(
+      (event): event is Extract<CapabilityLiveTurnEvent, { kind: "usage" }> =>
+        event.kind === "usage",
+    );
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({
+      turnId: "turn-1",
+      usage: {
+        providerRequests: 1,
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 20,
+        reasoningTokens: 2,
+        costNanodollars: 0,
+      },
+    });
+    expect(usageEvents[1]).toMatchObject({
+      turnId: "turn-2",
+      usage: {
+        providerRequests: 2,
+        inputTokens: 7,
+        outputTokens: 3,
+        cachedInputTokens: 1,
+        reasoningTokens: 2,
+        costNanodollars: 4_000_000,
+      },
+    });
+    for (const usageEvent of usageEvents) {
+      const usageIndex = events.indexOf(usageEvent);
+      const terminalIndex = events.findIndex(
+        (event) => event.kind === "terminal" && event.turnId === usageEvent.turnId,
+      );
+      expect(terminalIndex).toBeGreaterThan(usageIndex);
+    }
+    await service.shutdown(session.id);
+  });
+
+  it("does not add an overlapping token snapshot to raw response usage", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } },
+        },
+      });
+      queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 100, outputTokens: 10 },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-overlap-usage", sessionId: "session-overlap-usage" });
+
+    const result = await session.sendMessage("report overlapping usage");
+
+    expect(result.snapshot.usageLedger).toHaveLength(1);
+    expect(result.snapshot.usageLedger[0]).toMatchObject({
+      providerRequests: 1,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+    await service.shutdown(session.id);
+  });
+
+  it("prefers a fresh thread read when a later turn omits usage notifications", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      if (state.nextTurn === 1) {
+        queue.push({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: state.threadId,
+            turnId,
+            tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } },
+          },
+        });
+      }
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-read-fallback", sessionId: "session-read-fallback" });
+
+    await session.sendMessage("report initial usage");
+    const second = await session.sendMessage("omit usage notification");
+
+    expect(second.snapshot.usageLedger).toMatchObject([
+      { inputTokens: 100, outputTokens: 10 },
+      { inputTokens: 100, outputTokens: 10 },
+    ]);
+    await service.shutdown(session.id);
+  });
+
+  it("uses a fresh thread read for a cost-only usage report", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: { total: { requests: 1, providerCostUsd: 0.25 } },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-cost-only", sessionId: "session-cost-only" });
+
+    const result = await session.sendMessage("report cost-only usage");
+
+    expect(result.snapshot.usageLedger).toMatchObject([{
+      providerRequests: 1,
+      inputTokens: 100,
+      outputTokens: 10,
+      costNanodollars: 250_000_000,
+    }]);
+    await service.shutdown(session.id);
+  });
+
+  it("waits for all bounded late raw response receipts before committing usage", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 40, outputTokens: 4 },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+      setTimeout(() => queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 60, outputTokens: 6 },
+        },
+      }), 25);
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-late-usage", sessionId: "session-late-usage" });
+
+    const result = await session.sendMessage("report late usage");
+
+    expect(result.snapshot.usageLedger).toHaveLength(1);
+    expect(result.snapshot.usageLedger[0]).toMatchObject({
+      providerRequests: 2,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(session.snapshot().usageLedger).toEqual(result.snapshot.usageLedger);
+    await service.shutdown(session.id);
+  });
+
+  it("combines explicit per-turn tokens with cumulative cost", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      const firstTurn = state.nextTurn === 1;
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: {
+            total: {
+              requests: state.nextTurn,
+              providerCostUsd: firstTurn ? 0.25 : 0.4,
+            },
+            runDeltaAvailable: true,
+            runDelta: {
+              requests: 1,
+              inputTokens: firstTurn ? 12 : 7,
+              outputTokens: firstTurn ? 4 : 3,
+              providerCostUsd: 0,
+            },
+          },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-mixed-usage", sessionId: "session-mixed-usage" });
+
+    await session.sendMessage("report first mixed usage");
+    const second = await session.sendMessage("report second mixed usage");
+
+    expect(second.snapshot.usageLedger).toMatchObject([
+      {
+        providerRequests: 1,
+        inputTokens: 12,
+        outputTokens: 4,
+        costNanodollars: 250_000_000,
+      },
+      {
+        providerRequests: 1,
+        inputTokens: 7,
+        outputTokens: 3,
+        costNanodollars: 150_000_000,
+      },
+    ]);
     await service.shutdown(session.id);
   });
 
@@ -736,7 +1184,7 @@ describe("Capability live runnerd and Codex session", () => {
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
     const longTurn = session.sendMessage("Start a long turn.");
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     await session.interrupt("bounded test interrupt");
     await expect(longTurn).resolves.toMatchObject({ status: "interrupted" });
     await session.sendMessage("Please report progress before reset.");
@@ -781,7 +1229,7 @@ describe("Capability live runnerd and Codex session", () => {
       turnTimeoutMs: 500,
     });
     state.holdAfterTool = true;
-    const killedTurn = first.sendMessage("Apply idempotent progress once.");
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
     await vi.waitFor(async () => {
       expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
         "Progress persisted through the live Codex tool loop.",
@@ -799,7 +1247,7 @@ describe("Capability live runnerd and Codex session", () => {
       costNanodollars: 1_500,
     })).resolves.toBe("committed");
     await state.transports[0]?.close();
-    await expect(killedTurn).rejects.toThrow("timed out");
+    await expect(killedTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
 
     // A new service models worker termination: it owns no in-memory session.
     const resumedService = new CapabilityLiveSessionService({
@@ -864,6 +1312,46 @@ describe("Capability live runnerd and Codex session", () => {
     });
   });
 
+  it("persists a resumed turnTimeoutMs override so a later resume that omits it keeps the value", async () => {
+    const state = providerState();
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const sessionId = "session-turn-timeout-persists";
+    const firstService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    await firstService.create({
+      runId: "run-turn-timeout-persists",
+      sessionId,
+      attemptId: "attempt-first",
+    });
+
+    const secondService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const secondResume = await secondService.resume({
+      sessionId,
+      attemptId: "attempt-second",
+      resumeOf: "attempt-first",
+      turnTimeoutMs: 5_000,
+    });
+    expect(secondResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+
+    const thirdService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const thirdResume = await thirdService.resume({
+      sessionId,
+      attemptId: "attempt-third",
+      resumeOf: "attempt-second",
+    });
+    expect(thirdResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+  });
+
   it("replays only a durable duplicate after restore reconciles the provider turn as interrupted", async () => {
     const state = providerState();
     const store = new InMemoryCapabilityLiveSessionStore();
@@ -878,10 +1366,7 @@ describe("Capability live runnerd and Codex session", () => {
       turnTimeoutMs: 50,
     });
     state.holdAfterTool = true;
-    const killedTurn = first.sendMessage("Apply idempotent progress once.").then(
-      () => null,
-      (error: unknown) => error,
-    );
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
     await vi.waitFor(async () => {
       expect((await store.load(first.id))?.mockState).toContain("progress-governed-once");
     });
@@ -1037,6 +1522,20 @@ describe("Capability live runnerd and Codex session", () => {
     await expect(store.load(binding.sessionId)).rejects.toThrow("capability_live_checkpoint_corrupt");
   });
 
+  it("still asserts a turn-timeout rejection after a delay longer than the turn timeout", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ turnTimeoutMs: 50 });
+    state.holdAfterTool = true;
+    const heldTurn = captureTurnRejection(session.sendMessage("Apply idempotent progress once."));
+    // This delay outlasts turnTimeoutMs, so the rejection settles before this
+    // test attaches its own assertion. Vitest fails a file on an unhandled
+    // rejection, so this test would fail the file on its own without a
+    // handler already attached at the moment the turn promise was created.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect(heldTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
+  });
+
   it.skipIf(process.platform === "win32" || !existsSync(defaultCapabilityRunnerdBinary()))(
     "terminates real runnerd after a durable receipt and resumes its exact provider thread",
     async () => {
@@ -1063,7 +1562,7 @@ describe("Capability live runnerd and Codex session", () => {
         attemptId: "attempt-real-killed",
         turnTimeoutMs: 2_000,
       });
-      const killedTurn = first.sendMessage("Apply the governed idempotent effect.");
+      const killedTurn = captureTurnRejection(first.sendMessage("Apply the governed idempotent effect."));
       await vi.waitFor(async () => {
         const checkpoint = await store.load(binding.sessionId);
         expect(checkpoint?.mockState).toContain("One durable governed effect.");
@@ -1084,7 +1583,7 @@ describe("Capability live runnerd and Codex session", () => {
       const runnerPid = killedCheckpoint?.process?.runnerPid;
       expect(runnerPid).toBeTypeOf("number");
       process.kill(runnerPid!, "SIGKILL");
-      await expect(killedTurn).rejects.toThrow();
+      await expect(killedTurn).resolves.toBeInstanceOf(Error);
 
       const resumedService = new CapabilityLiveSessionService({
         store: new DurableCapabilityLiveSessionStore({ directory, binding }),
@@ -1094,6 +1593,9 @@ describe("Capability live runnerd and Codex session", () => {
         sessionId: binding.sessionId,
         attemptId: "attempt-real-resumed",
         resumeOf: "attempt-real-killed",
+        // Smaller than this test's own timeout, so a stalled turn reports
+        // which turn stalled instead of surfacing only as a bare test timeout.
+        turnTimeoutMs: 10_000,
       });
       expect(resumed.snapshot().providerThreadId).toBe("thread-durable-runnerd");
       const reconciled = await resumed.reconcileActiveTurn();
@@ -1118,6 +1620,7 @@ describe("Capability live runnerd and Codex session", () => {
       ]));
       await resumedService.shutdown(resumed.id, "test complete");
     },
-    15_000,
+    // CI exercises two real process generations here and can exceed the unit default under load.
+    30_000,
   );
 });

@@ -18,10 +18,12 @@ import {
 import type {
   AdditionalSourceStagingFailure,
   SandboxAdditionalSource,
+  WorkspaceDurableSeedPaths,
+  WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
-export {
-  resolveReferencedSourceIgnore,
-} from "./sandbox-managed-runtime.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+export { resolveReferencedSourceIgnore } from "./sandbox-managed-runtime.js";
 export type {
   AdditionalSourceStagingFailure,
   ReferencedSourceIgnoreResolution,
@@ -332,6 +334,10 @@ export interface PreparedAdapterExecutionTargetRuntime {
    * stage referenced projects, or when every requested project staged.
    */
   additionalSourceFailures: AdditionalSourceStagingFailure[];
+  workspaceSyncSnapshot: {
+    baseline: DirectorySnapshot;
+    gitSnapshot: GitWorkspaceSnapshot | null;
+  } | null;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1536,6 +1542,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   timeoutSec?: number;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -1565,6 +1575,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       assetDirs: {},
       additionalSourceDirs: {},
       additionalSourceFailures: [],
+      workspaceSyncSnapshot: null,
       restoreWorkspace: async () => {},
     };
   }
@@ -1590,6 +1601,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       // The SSH transport does not stage referenced projects (it is out of scope), so it never
       // reports a per-project staging failure.
       additionalSourceFailures: [],
+      workspaceSyncSnapshot: null,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1610,6 +1622,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
@@ -1627,6 +1643,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     assetDirs: prepared.assetDirs,
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
+    workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }

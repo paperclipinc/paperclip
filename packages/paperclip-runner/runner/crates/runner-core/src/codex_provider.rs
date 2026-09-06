@@ -10,25 +10,58 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::durable::redact_text;
+#[cfg(test)]
+use crate::durable::QualifiedLaunchArtifact;
+use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
-use crate::process_supervisor::SupervisedProcess;
+use crate::process_supervisor::{
+    is_node_interpreter, BoundedLogBuffer, ProcessOutput, SupervisedProcess,
+    VerifiedProcessArgument, VerifiedProcessLaunch,
+};
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
+use crate::qualified_launch::verify_launch_artifact;
+use crate::question_response::validate_question_response;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
+const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
+const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
+const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_NATIVE_MCP_URL",
+    "PAPERCLIP_NATIVE_MCP_TOKEN",
+    "PAPERCLIP_OPENCODE_PERMISSION_MODE",
+    "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_RUNNER_INSTANCE_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_NORMALIZED_SESSION_ID",
+    "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+];
+const TRUSTED_OPENCODE_EXECUTABLE_ARG: &str = "--paperclip-trusted-opencode-executable";
+const MAX_PROVIDER_STDERR_LINES: usize = 32;
+const MAX_PROVIDER_STDERR_BYTES: usize = 8 * 1024;
 const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_TOOL_REQUESTS: usize = 4_096;
 const MAX_PENDING_TOOL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMPLETED_TOOL_CALL_IDS: usize = 4_096;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 128;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const OPENCODE_RUNTIME_REQUEST_METHOD: &str = "paperclip/runtimeRequest";
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
+
+#[derive(Clone, PartialEq)]
+struct ProviderCompletionContract {
+    revision: String,
+    criterion_ids: Vec<String>,
+}
 
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -252,18 +285,33 @@ pub struct CodexProviderConfig {
     pub instructions: String,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
+    #[serde(default)]
+    pub externally_sandboxed: bool,
 }
 
 impl CodexProviderConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if self.provider != "codex" || self.driver != "codex_app_server" {
+        if !matches!(
+            (self.provider.as_str(), self.driver.as_str()),
+            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+        ) {
             return Err(LocalRunnerError::invalid(
-                "the initial runner provider must be codex through codex_app_server",
+                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
             ));
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
             return Err(LocalRunnerError::invalid(
                 "Codex providerVersion is empty or oversized",
+            ));
+        }
+        if self.provider == "opencode" && self.provider_version != QUALIFIED_OPENCODE_VERSION {
+            return Err(LocalRunnerError::invalid(format!(
+                "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
+            )));
+        }
+        if self.externally_sandboxed && self.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "external sandbox delegation is only supported by the Codex provider",
             ));
         }
         if self.command.as_os_str().is_empty() {
@@ -290,6 +338,16 @@ impl CodexProviderConfig {
             .is_some_and(|model| model.is_empty() || model.len() > 240)
         {
             return Err(LocalRunnerError::invalid("Codex model is invalid"));
+        }
+        if self.provider == "opencode"
+            && self
+                .model
+                .as_ref()
+                .is_none_or(|model| !model.contains('/') || model.chars().any(char::is_control))
+        {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode model must be a qualified provider/model identifier",
+            ));
         }
         if self.provider_session_id.as_ref().is_some_and(|session_id| {
             session_id.is_empty()
@@ -452,6 +510,7 @@ enum AmbiguousTurnMessage {
 
 pub struct CodexProvider {
     process: SupervisedProcess,
+    stderr_tail: BoundedLogBuffer,
     config: CodexProviderConfig,
     authorized_tools: Vec<AuthorizedTool>,
     next_request_id: u64,
@@ -473,6 +532,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     ambiguous_turn_start_pending: bool,
     settled_provider_turn_ids: SettledProviderTurnIds,
@@ -480,6 +540,105 @@ pub struct CodexProvider {
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
+    opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    completion_contract: Option<ProviderCompletionContract>,
+    permission_profile: &'static str,
+}
+
+// The controller accepts at most 32 process-scoped Git config entries and
+// projects only these exact GitHub credential names into runnerd. Keep the
+// provider child boundary equally explicit: runnerd may inherit a configured
+// entry from this static ceiling, but cannot introduce another environment
+// variable by changing GIT_CONFIG_COUNT.
+const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "PAPERCLIP_GIT_TOKEN",
+    "GIT_TERMINAL_PROMPT",
+    "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_5",
+    "GIT_CONFIG_KEY_6",
+    "GIT_CONFIG_VALUE_6",
+    "GIT_CONFIG_KEY_7",
+    "GIT_CONFIG_VALUE_7",
+    "GIT_CONFIG_KEY_8",
+    "GIT_CONFIG_VALUE_8",
+    "GIT_CONFIG_KEY_9",
+    "GIT_CONFIG_VALUE_9",
+    "GIT_CONFIG_KEY_10",
+    "GIT_CONFIG_VALUE_10",
+    "GIT_CONFIG_KEY_11",
+    "GIT_CONFIG_VALUE_11",
+    "GIT_CONFIG_KEY_12",
+    "GIT_CONFIG_VALUE_12",
+    "GIT_CONFIG_KEY_13",
+    "GIT_CONFIG_VALUE_13",
+    "GIT_CONFIG_KEY_14",
+    "GIT_CONFIG_VALUE_14",
+    "GIT_CONFIG_KEY_15",
+    "GIT_CONFIG_VALUE_15",
+    "GIT_CONFIG_KEY_16",
+    "GIT_CONFIG_VALUE_16",
+    "GIT_CONFIG_KEY_17",
+    "GIT_CONFIG_VALUE_17",
+    "GIT_CONFIG_KEY_18",
+    "GIT_CONFIG_VALUE_18",
+    "GIT_CONFIG_KEY_19",
+    "GIT_CONFIG_VALUE_19",
+    "GIT_CONFIG_KEY_20",
+    "GIT_CONFIG_VALUE_20",
+    "GIT_CONFIG_KEY_21",
+    "GIT_CONFIG_VALUE_21",
+    "GIT_CONFIG_KEY_22",
+    "GIT_CONFIG_VALUE_22",
+    "GIT_CONFIG_KEY_23",
+    "GIT_CONFIG_VALUE_23",
+    "GIT_CONFIG_KEY_24",
+    "GIT_CONFIG_VALUE_24",
+    "GIT_CONFIG_KEY_25",
+    "GIT_CONFIG_VALUE_25",
+    "GIT_CONFIG_KEY_26",
+    "GIT_CONFIG_VALUE_26",
+    "GIT_CONFIG_KEY_27",
+    "GIT_CONFIG_VALUE_27",
+    "GIT_CONFIG_KEY_28",
+    "GIT_CONFIG_VALUE_28",
+    "GIT_CONFIG_KEY_29",
+    "GIT_CONFIG_VALUE_29",
+    "GIT_CONFIG_KEY_30",
+    "GIT_CONFIG_VALUE_30",
+    "GIT_CONFIG_KEY_31",
+    "GIT_CONFIG_VALUE_31",
+];
+
+const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+];
+
+fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
+    if provider == "codex" && external_sandbox {
+        "paperclip-runner-external-sandbox"
+    } else {
+        "paperclip-runner-workspace-only"
+    }
 }
 
 impl CodexProvider {
@@ -487,7 +646,14 @@ impl CodexProvider {
         config: &CodexProviderConfig,
         resume_thread_id: Option<&str>,
     ) -> Result<Self, LocalRunnerError> {
-        Self::start_with_tools_for_generation(config, std::iter::empty(), resume_thread_id, 1)
+        Self::start_with_tools_for_generation(
+            config,
+            std::iter::empty(),
+            resume_thread_id,
+            1,
+            None,
+            None,
+        )
     }
 
     pub fn start_with_tools(
@@ -495,7 +661,14 @@ impl CodexProvider {
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
     ) -> Result<Self, LocalRunnerError> {
-        Self::start_with_tools_for_generation(config, authorized_tools, resume_thread_id, 1)
+        Self::start_with_tools_for_generation(
+            config,
+            authorized_tools,
+            resume_thread_id,
+            1,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn start_with_tools_for_generation(
@@ -503,6 +676,8 @@ impl CodexProvider {
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
         process_generation: u64,
+        opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
         if process_generation == 0 {
@@ -511,15 +686,75 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let permission_profile = codex_permission_profile(
+            &config.provider,
+            config.externally_sandboxed
+                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+        );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
-        let mut provider = Self {
-            process: SupervisedProcess::spawn(
+        let common_environment_keys = [
+            "LANGUAGE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "RUST_BACKTRACE",
+        ];
+        let provider_environment_keys = if config.provider == "opencode" {
+            OPENCODE_PROVIDER_ENVIRONMENT_KEYS
+        } else {
+            CODEX_PROVIDER_ENVIRONMENT_KEYS
+        };
+        let environment_keys = common_environment_keys
+            .iter()
+            .copied()
+            .chain(provider_environment_keys.iter().copied())
+            .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
+            .collect::<Vec<_>>();
+        let process = if config.provider == "opencode" {
+            let profile = opencode_launch_profile.ok_or_else(|| {
+                LocalRunnerError::invalid(
+                    "OpenCode runner startup omitted its qualified launch profile",
+                )
+            })?;
+            let proxy_script = profile.proxy_script.path.to_string_lossy();
+            if config.command != profile.command.path
+                || config.args.as_slice() != [proxy_script.as_ref()]
+            {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode launch does not match the runner-owned qualified profile",
+                ));
+            }
+            let launch = verified_opencode_launch(profile)?;
+            SupervisedProcess::spawn_verified_with_environment_keys(
+                &launch,
+                Duration::from_secs(2),
+                CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                &environment_keys,
+            )?
+        } else {
+            SupervisedProcess::spawn_with_environment_keys(
                 &config.command,
                 &config.args,
                 Duration::from_secs(2),
                 CODEX_APP_SERVER_MAX_FRAME_BYTES,
-            )?,
+                &environment_keys,
+            )?
+        };
+        let mut provider = Self {
+            process,
+            stderr_tail: BoundedLogBuffer::new(
+                MAX_PROVIDER_STDERR_LINES,
+                MAX_PROVIDER_STDERR_BYTES,
+            ),
             config: config.clone(),
             authorized_tools,
             next_request_id: 1,
@@ -541,6 +776,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             ambiguous_turn_start_pending: false,
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
@@ -548,6 +784,14 @@ impl CodexProvider {
             quarantined: false,
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
+            opencode_launch_profile: opencode_launch_profile.cloned(),
+            completion_contract: completion_contract.map(|(revision, criterion_ids)| {
+                ProviderCompletionContract {
+                    revision: revision.to_owned(),
+                    criterion_ids: criterion_ids.to_vec(),
+                }
+            }),
+            permission_profile,
         };
         let initialized = provider.request(
             "initialize",
@@ -569,7 +813,6 @@ impl CodexProvider {
             "cwd": config.cwd,
             "model": config.model,
             "approvalPolicy": config.approval_policy,
-            "permissions": "paperclip-runner-workspace-only",
             "runtimeWorkspaceRoots": [config.cwd],
             "baseInstructions": config.instructions,
             "dynamicTools": dynamic_tools,
@@ -577,6 +820,25 @@ impl CodexProvider {
         let params_object = params
             .as_object_mut()
             .expect("Codex thread parameters are an object");
+        if provider.permission_profile == "paperclip-runner-external-sandbox" {
+            // The execution target (for example Daytona) is the OS sandbox.
+            // Codex must not try to create nested user/network namespaces,
+            // which correctly fail inside an unprivileged container.
+            params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
+        } else {
+            params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
+        }
+        if config.provider == "opencode" {
+            if let Some(contract) = provider.completion_contract.as_ref() {
+                params_object.insert(
+                    "completionContract".to_owned(),
+                    json!({
+                        "revision": contract.revision,
+                        "criterionIds": contract.criterion_ids,
+                    }),
+                );
+            }
+        }
         let method = if let Some(thread_id) = resume_thread_id {
             params_object.insert("threadId".to_owned(), json!(thread_id));
             "thread/resume"
@@ -668,6 +930,181 @@ impl CodexProvider {
         self.durable_tool_call_replays = true;
     }
 
+    pub(crate) fn attach_run_in_place(
+        &mut self,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        completion_contract: Option<(&str, &[String])>,
+    ) -> Result<bool, LocalRunnerError> {
+        let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let completion_contract =
+            completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
+                revision: revision.to_owned(),
+                criterion_ids: criterion_ids.to_vec(),
+            });
+        if authorized_tools != self.authorized_tools
+            || completion_contract != self.completion_contract
+        {
+            return Ok(false);
+        }
+        let blockers = self.warm_run_attachment_blockers(true)?;
+        if !blockers.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                format!(
+                    "Codex warm run attachment requires an idle live provider with no pending work ({})",
+                    blockers.join(",")
+                ),
+            ));
+        }
+        // The provider process and its thread remain authoritative. Exact
+        // settled-turn identities stay in memory so delayed output from an
+        // earlier run cannot be accepted as the next turn. A changed semantic
+        // tool or completion contract returns false so the caller can preserve
+        // the existing cold-resume behavior for that incompatible boundary.
+        self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
+        self.completion_reconciliation_pending = false;
+        self.expected_shutdown = false;
+        Ok(true)
+    }
+
+    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(completed_turn_id) = self
+            .completed_turn_authority
+            .as_ref()
+            .map(|authority| authority.provider_turn_id.clone())
+        else {
+            return Ok(());
+        };
+        if self.active_provider_turn_id.is_some() {
+            return Ok(());
+        }
+
+        // Readiness probes run over the PRP command channel while provider
+        // stdout is drained by runnerd's adjacent control-loop iteration. A
+        // final usage/warning/item frame can therefore land after the last
+        // successful probe but before run.attach executes. Close that race in
+        // the same critical section as authority rotation. Only bounded tail
+        // notifications for the already-settled turn may be discarded: a new
+        // turn, provider request, process exit, or mismatched turn remains a
+        // fail-closed attachment error.
+        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+        let mut quiet_since: Option<std::time::Instant> = None;
+        let mut drained = 0usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "Codex warm run attachment tail did not become quiescent",
+                ));
+            }
+            match self.poll()? {
+                Some(CodexProviderEvent::Notification { method, params }) => {
+                    quiet_since = None;
+                    drained = drained.saturating_add(1);
+                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment tail exceeded its bounded frame limit",
+                        ));
+                    }
+                    let names_other_turn = notification_turn_id(&params)
+                        .is_some_and(|turn_id| turn_id != completed_turn_id);
+                    let safe_tail_method = matches!(
+                        method.as_str(),
+                        "warning"
+                            | "configWarning"
+                            | "remoteControl/status/changed"
+                            | "mcpServer/startupStatus/updated"
+                            | "account/rateLimits/updated"
+                            | "item/started"
+                            | "item/completed"
+                            | "item/agentMessage/delta"
+                            | "rawResponseItem/completed"
+                            | "rawResponse/completed"
+                            | "thread/goal/updated"
+                            | "thread/goal/cleared"
+                            | "thread/tokenUsage/updated"
+                            | "thread/status/changed"
+                            | "turn/diff/updated"
+                            | "turn/plan/updated"
+                    );
+                    if names_other_turn || !safe_tail_method {
+                        return Err(LocalRunnerError::invalid(format!(
+                            "Codex warm run attachment observed unsafe post-terminal provider method {}",
+                            bounded_method(&method)
+                        )));
+                    }
+                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                        self.record_provider_trace_interpretation(
+                            frame_id,
+                            "codex.warm_attachment.completed_turn_tail",
+                            "ignored",
+                            Vec::new(),
+                            "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
+                        );
+                    }
+                }
+                Some(CodexProviderEvent::ToolCall { .. })
+                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment observed a post-terminal provider request",
+                    ));
+                }
+                Some(CodexProviderEvent::Exited { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex exited while quiescing for warm run attachment",
+                    ));
+                }
+                None => {
+                    let now = std::time::Instant::now();
+                    let quiet_start = quiet_since.get_or_insert(now);
+                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn warm_run_attachment_blockers(
+        &mut self,
+        quiesce_completed_tail: bool,
+    ) -> Result<Vec<&'static str>, LocalRunnerError> {
+        // Only an explicit attachment-readiness probe may consume the bounded,
+        // already-settled provider suffix. Ordinary checkpoint snapshots run
+        // immediately after a terminal frame while the provider can still be
+        // unwinding; turning those observations into quiescence barriers can
+        // quarantine an otherwise reusable runner before its next turn.
+        if quiesce_completed_tail {
+            self.drain_completed_turn_tail_for_warm_attachment()?;
+        }
+        let mut blockers = Vec::new();
+        if self.process.try_wait()?.is_some() {
+            blockers.push("process_exited");
+        }
+        if self.quarantined {
+            blockers.push("quarantined");
+        }
+        if self.active_provider_turn_id.is_some() {
+            blockers.push("active_turn");
+        }
+        if self.ambiguous_turn_start_pending {
+            blockers.push("ambiguous_turn_start");
+        }
+        if !self.pending_messages.is_empty() {
+            blockers.push("pending_messages");
+        }
+        if !self.deferred_ambiguous_messages.is_empty() {
+            blockers.push("deferred_messages");
+        }
+        if !self.pending_tool_requests.is_empty() {
+            blockers.push("pending_tool_requests");
+        }
+        if !self.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        Ok(blockers)
+    }
+
     pub(crate) fn restore_completed_turn_authority(
         &mut self,
         authoritative: bool,
@@ -682,6 +1119,7 @@ impl CodexProvider {
                 .unwrap_or("durable-completed-turn")
                 .to_owned(),
         });
+        self.active_turn_result_authoritative = false;
         if let Some(authority) = self.completed_turn_authority.as_ref() {
             self.settled_provider_turn_ids
                 .restore(authority.provider_turn_id.clone())?;
@@ -716,6 +1154,16 @@ impl CodexProvider {
         })
     }
 
+    pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
+        if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex semantic result cannot authorize a turn without exact active provider identity",
+            ));
+        }
+        self.active_turn_result_authoritative = true;
+        Ok(())
+    }
+
     pub(crate) fn take_rejected_accepted_turn(&mut self) -> Option<RejectedAcceptedTurn> {
         self.rejected_accepted_turn.take()
     }
@@ -736,6 +1184,7 @@ impl CodexProvider {
         let completed_turn_authority = self.completed_turn_authority.clone();
         let completion_reconciliation_pending = self.completion_reconciliation_pending;
         let durable_tool_call_replays = self.durable_tool_call_replays;
+        let completion_contract = self.completion_contract.clone();
 
         // Exact turn identities may be forgotten only after the provider
         // process that could emit them is gone. Resume the same thread in a
@@ -747,6 +1196,13 @@ impl CodexProvider {
             authorized_tools,
             Some(&thread_id),
             next_generation,
+            self.opencode_launch_profile.as_ref(),
+            completion_contract.as_ref().map(|contract| {
+                (
+                    contract.revision.as_str(),
+                    contract.criterion_ids.as_slice(),
+                )
+            }),
         )?;
         replacement.durable_tool_call_replays = durable_tool_call_replays;
         if replacement.active_provider_turn_id.is_some() {
@@ -821,16 +1277,24 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
-        let result = match self.request_classified(
-            "turn/start",
-            json!({
-                "threadId": self.thread_id,
-                "cwd": cwd,
-                "permissions": "paperclip-runner-workspace-only",
-                "runtimeWorkspaceRoots": [cwd],
-                "input": [{"type": "text", "text": message, "text_elements": []}],
-            }),
-        ) {
+        let mut turn_params = json!({
+            "threadId": self.thread_id,
+            "cwd": cwd,
+            "runtimeWorkspaceRoots": [cwd],
+            "input": [{"type": "text", "text": message, "text_elements": []}],
+        });
+        let turn_params_object = turn_params
+            .as_object_mut()
+            .expect("Codex turn parameters are an object");
+        if self.permission_profile == "paperclip-runner-external-sandbox" {
+            turn_params_object.insert(
+                "sandboxPolicy".to_owned(),
+                json!({"type": "externalSandbox", "networkAccess": "enabled"}),
+            );
+        } else {
+            turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
             Err(ProviderRequestError::Rejected(error)) => {
                 // A definite rejection proves no replacement work began.
@@ -926,6 +1390,7 @@ impl CodexProvider {
         self.ambiguous_turn_start_pending = false;
         self.expected_shutdown = false;
         self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.completed_tool_call_ids.clear();
         // Retain the prior settled identity while the next turn runs. Besides
@@ -1038,6 +1503,11 @@ impl CodexProvider {
             json!({
                 "id": rpc_id,
                 "result": codex_tool_failure("the Codex turn has already terminated"),
+            })
+        } else if method == OPENCODE_RUNTIME_REQUEST_METHOD {
+            json!({
+                "id": rpc_id,
+                "result": {"resolution": {"action": "cancel"}},
             })
         } else {
             json!({
@@ -1364,9 +1834,15 @@ impl CodexProvider {
                     input,
                 }));
             }
-            if method == "item/tool/requestUserInput" {
+            if matches!(
+                method,
+                "item/tool/requestUserInput" | OPENCODE_RUNTIME_REQUEST_METHOD
+            ) {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+                if method == "item/tool/requestUserInput"
+                    && params.get("threadId").and_then(Value::as_str)
+                        != Some(self.thread_id.as_str())
+                {
                     return Err(LocalRunnerError::invalid(
                         "Codex runtime request named another thread",
                     ));
@@ -1383,13 +1859,17 @@ impl CodexProvider {
                         "Codex runtime request arrived outside an active turn",
                     )
                 })?;
-                if params.get("turnId").and_then(Value::as_str) != Some(active_turn_id.as_str()) {
+                if runtime_request_turn_id(&params) != Some(active_turn_id.as_str()) {
                     return Err(LocalRunnerError::invalid(
                         "Codex runtime request named another turn",
                     ));
                 }
                 let (provider_request_id, question_set, option_labels) =
-                    codex_question_set(&rpc_id, &params)?;
+                    if method == OPENCODE_RUNTIME_REQUEST_METHOD {
+                        opencode_question_set(&params)?
+                    } else {
+                        codex_question_set(&rpc_id, &params)?
+                    };
                 let retained_bytes = pending_runtime_request_size(
                     &rpc_id,
                     &active_turn_id,
@@ -1437,7 +1917,7 @@ impl CodexProvider {
                         method: "warning".to_owned(),
                         params: json!({
                             "message": "rejected a Codex runtime request at the bounded pending-input limit",
-                            "providerMethod": "item/tool/requestUserInput",
+                            "providerMethod": bounded_method(method),
                         }),
                     }));
                 }
@@ -1509,14 +1989,16 @@ impl CodexProvider {
                     .active_provider_turn_id
                     .clone()
                     .expect("active provider turn checked above");
-                let completed_turn_authority = if terminal_event_type == "turn.completed" {
-                    Some(CompletedTurnAuthority {
-                        process_generation: self.process_generation,
-                        provider_turn_id: provider_turn_id.clone(),
-                    })
-                } else {
-                    None
-                };
+                let result_authoritative = self.active_turn_result_authoritative;
+                let completed_turn_authority =
+                    if terminal_event_type == "turn.completed" || result_authoritative {
+                        Some(CompletedTurnAuthority {
+                            process_generation: self.process_generation,
+                            provider_turn_id: provider_turn_id.clone(),
+                        })
+                    } else {
+                        None
+                    };
                 if !self
                     .settled_provider_turn_ids
                     .insert(provider_turn_id.clone())
@@ -1526,9 +2008,11 @@ impl CodexProvider {
                     ));
                 }
                 self.active_provider_turn_id = None;
+                self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
-                self.completion_reconciliation_pending = terminal_event_type == "turn.completed";
+                self.completion_reconciliation_pending =
+                    terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
                 // local request ownership and attempt courtesy responses, but
                 // a provider that already closed stdin must not turn the
@@ -1600,9 +2084,14 @@ impl CodexProvider {
         self.pending_tool_request_bytes = 0;
         let mut first_error = None;
         for request in pending_runtime.into_values() {
+            let result = if request.method == OPENCODE_RUNTIME_REQUEST_METHOD {
+                json!({"resolution": {"action": "cancel"}})
+            } else {
+                json!({"answers": {}})
+            };
             if let Err(error) = self.send_frame(&json!({
                 "id": request.rpc_id,
-                "result": {"answers": {}},
+                "result": result,
             })) {
                 first_error.get_or_insert(error);
             }
@@ -1670,14 +2159,29 @@ impl CodexProvider {
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
             let line = self
-                .process
-                .receive_stdout_line(Duration::from_secs(30))
-                .map_err(ProviderRequestError::Ambiguous)?
-                .ok_or_else(|| {
-                    ProviderRequestError::Ambiguous(LocalRunnerError::invalid(format!(
-                        "Codex {method} response timed out"
-                    )))
-                })?;
+                .receive_provider_stdout_line(Duration::from_secs(30))
+                .map_err(ProviderRequestError::Ambiguous)?;
+            let Some(line) = line else {
+                let exit = self
+                    .process
+                    .try_wait()
+                    .map_err(ProviderRequestError::Ambiguous)?;
+                if exit.is_some() {
+                    self.drain_provider_diagnostics(Duration::from_millis(50));
+                }
+                let diagnostic_suffix = self.provider_diagnostic_suffix();
+                let message = if let Some(exit) = exit {
+                    format!(
+                        "Codex {method} process exited before responding (exitCode={:?}, signal={:?}){diagnostic_suffix}",
+                        exit.exit_code, exit.signal
+                    )
+                } else {
+                    format!("Codex {method} response timed out{diagnostic_suffix}")
+                };
+                return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
+                    message,
+                )));
+            };
             let trace_frame_id = self.trace_inbound(&line);
             let message = parse_provider_message(&line).map_err(|error| {
                 if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
@@ -1745,6 +2249,87 @@ impl CodexProvider {
             self.pending_message_bytes = next_retained_bytes;
         }
     }
+
+    fn receive_provider_stdout_line(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<String>, LocalRunnerError> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            match self.process.recv_timeout(remaining) {
+                Ok(ProcessOutput::Stdout(line)) => return Ok(Some(line)),
+                Ok(ProcessOutput::Stderr(line)) => {
+                    self.stderr_tail.push(redact_text(&line));
+                }
+                Ok(ProcessOutput::StdoutError(message)) => {
+                    return Err(LocalRunnerError::invalid(message));
+                }
+                Ok(ProcessOutput::StdoutClosed) => return Ok(None),
+                Ok(ProcessOutput::StderrClosed) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
+            }
+        }
+    }
+
+    fn drain_provider_diagnostics(&mut self, max_wait: Duration) {
+        let deadline = std::time::Instant::now() + max_wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match self.process.recv_timeout(remaining) {
+                Ok(ProcessOutput::Stderr(line)) => {
+                    self.stderr_tail.push(redact_text(&line));
+                }
+                Ok(ProcessOutput::StderrClosed)
+                | Err(mpsc::RecvTimeoutError::Timeout)
+                | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Ok(ProcessOutput::Stdout(_))
+                | Ok(ProcessOutput::StdoutError(_))
+                | Ok(ProcessOutput::StdoutClosed) => {}
+            }
+        }
+    }
+
+    fn provider_diagnostic_suffix(&self) -> String {
+        let diagnostics = self.stderr_tail.snapshot().lines.join("\n");
+        if diagnostics.is_empty() {
+            String::new()
+        } else {
+            format!(" stderrTail={diagnostics:?}")
+        }
+    }
+}
+
+fn verified_opencode_launch(
+    profile: &OpenCodeLaunchProfile,
+) -> Result<VerifiedProcessLaunch, LocalRunnerError> {
+    let command = verify_launch_artifact(&profile.command, "OpenCode proxy command")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = verify_launch_artifact(&profile.proxy_script, "OpenCode proxy script")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let executable = verify_launch_artifact(&profile.executable, "OpenCode provider executable")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = if is_node_interpreter(&profile.command.path) {
+        VerifiedProcessArgument::CommonJsArtifact(proxy)
+    } else {
+        // Qualified test and alternate proxy commands own their ordinary
+        // argv contract. Only Node understands the runner-owned CommonJS
+        // descriptor loader flags.
+        VerifiedProcessArgument::Artifact(proxy)
+    };
+    let args = vec![
+        proxy,
+        VerifiedProcessArgument::Literal(TRUSTED_OPENCODE_EXECUTABLE_ARG.to_owned()),
+        VerifiedProcessArgument::ExecutableArtifact(executable),
+    ];
+    Ok(VerifiedProcessLaunch::new(command, args))
 }
 
 fn json_size(value: &Value, label: &str) -> Result<usize, LocalRunnerError> {
@@ -1988,10 +2573,17 @@ fn request_targets_non_active_turn(
     settled_turn_ids: &SettledProviderTurnIds,
     params: &Value,
 ) -> bool {
-    let requested_turn_id = params.get("turnId").and_then(Value::as_str);
+    let requested_turn_id = runtime_request_turn_id(params);
     requested_turn_id.is_some_and(|requested| {
         settled_turn_ids.contains(requested) || active_turn_id != Some(requested)
     })
+}
+
+fn runtime_request_turn_id(params: &Value) -> Option<&str> {
+    params
+        .get("turnId")
+        .or_else(|| params.pointer("/request/turnId"))
+        .and_then(Value::as_str)
 }
 
 fn latest_active_turn_id(snapshot: &Value) -> Option<String> {
@@ -2018,6 +2610,170 @@ fn bounded_method(method: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric() || "._/-".contains(*character))
         .take(160)
         .collect()
+}
+
+fn opencode_question_set(params: &Value) -> Result<QuestionSetMapping, LocalRunnerError> {
+    let params = params
+        .as_object()
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request params are invalid"))?;
+    if params.keys().any(|key| key != "request") {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request params contain an unknown field",
+        ));
+    }
+    let request = params
+        .get("request")
+        .and_then(Value::as_object)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request is required"))?;
+    if request.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "schema"
+                | "requestKind"
+                | "requestId"
+                | "type"
+                | "status"
+                | "prompt"
+                | "input"
+                | "origin"
+                | "turnId"
+                | "itemId"
+        )
+    }) {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request contains an unknown field",
+        ));
+    }
+    if request.get("schema").and_then(Value::as_str) != Some("paperclip.runtime_request.v2")
+        || request.get("requestKind").and_then(Value::as_str) != Some("runtime")
+        || request.get("status").and_then(Value::as_str) != Some("pending")
+    {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request discriminator is invalid",
+        ));
+    }
+    if request.get("type").and_then(Value::as_str) != Some("input") {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runnerd bridge currently supports structured input requests only",
+        ));
+    }
+    let request_id = request
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|request_id| {
+            !request_id.is_empty()
+                && request_id.chars().count() <= 160
+                && !request_id.chars().any(char::is_control)
+        })
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime requestId is invalid"))?
+        .to_owned();
+    bounded_provider_turn_id(request.get("turnId").and_then(Value::as_str))
+        .map_err(|_| LocalRunnerError::invalid("OpenCode runtime request turnId is invalid"))?;
+    request
+        .get("prompt")
+        .and_then(Value::as_str)
+        .filter(|prompt| !prompt.is_empty() && prompt.chars().count() <= 4_000)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request prompt is invalid"))?;
+    if let Some(item_id) = request.get("itemId") {
+        bounded_provider_turn_id(item_id.as_str())
+            .map_err(|_| LocalRunnerError::invalid("OpenCode runtime request itemId is invalid"))?;
+    }
+    if let Some(origin) = request.get("origin") {
+        let origin = origin.as_object().ok_or_else(|| {
+            LocalRunnerError::invalid("OpenCode runtime request origin is invalid")
+        })?;
+        if origin
+            .keys()
+            .any(|key| !matches!(key.as_str(), "adapter" | "provider" | "method"))
+            || origin.get("adapter").and_then(Value::as_str) != Some("opencode-server")
+            || origin.get("provider").and_then(Value::as_str) != Some("opencode")
+            || origin
+                .get("method")
+                .and_then(Value::as_str)
+                .is_none_or(|method| method.is_empty() || method.chars().count() > 500)
+        {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode runtime request origin is invalid",
+            ));
+        }
+    }
+    let question_set = request
+        .get("input")
+        .cloned()
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode runtime request input is required"))?;
+    validate_opencode_question_set(&question_set)?;
+    Ok((request_id, question_set, BTreeMap::new()))
+}
+
+fn validate_opencode_question_set(question_set: &Value) -> Result<(), LocalRunnerError> {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/question-set.schema.json"
+    ))
+    .map_err(|_| LocalRunnerError::invalid("embedded question-set schema is invalid"))?;
+    let validator = jsonschema::validator_for(&schema)
+        .map_err(|_| LocalRunnerError::invalid("embedded question-set schema cannot compile"))?;
+    if !validator.is_valid(question_set) {
+        return Err(LocalRunnerError::invalid(
+            "OpenCode runtime request input failed the Paperclip question-set schema",
+        ));
+    }
+    let questions = question_set
+        .get("questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LocalRunnerError::invalid("OpenCode question set is malformed"))?;
+    let mut question_ids = BTreeSet::new();
+    for question in questions {
+        let question_id = question
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| LocalRunnerError::invalid("OpenCode question id is malformed"))?;
+        if !question_ids.insert(question_id) {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode question ids must be unique",
+            ));
+        }
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let mut option_ids = BTreeSet::new();
+        for option in options {
+            let option_id = option
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| LocalRunnerError::invalid("OpenCode option id is malformed"))?;
+            if !option_ids.insert(option_id) {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode question option ids must be unique",
+                ));
+            }
+        }
+        if let Some(validation) = question.get("textValidation") {
+            if validation
+                .get("minLength")
+                .and_then(Value::as_u64)
+                .zip(validation.get("maxLength").and_then(Value::as_u64))
+                .is_some_and(|(minimum, maximum)| minimum > maximum)
+                || validation
+                    .get("minimum")
+                    .and_then(Value::as_f64)
+                    .zip(validation.get("maximum").and_then(Value::as_f64))
+                    .is_some_and(|(minimum, maximum)| minimum > maximum)
+            {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode question constraints are inverted",
+                ));
+            }
+            if let Some(pattern) = validation.get("pattern").and_then(Value::as_str) {
+                let pattern_schema = json!({"type": "string", "pattern": pattern});
+                jsonschema::validator_for(&pattern_schema).map_err(|_| {
+                    LocalRunnerError::invalid("OpenCode question pattern cannot compile")
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn codex_question_set(
@@ -2161,6 +2917,15 @@ fn codex_question_response(
     pending: &PendingRuntimeRequest,
     response: &Value,
 ) -> Result<Value, LocalRunnerError> {
+    if pending.method == OPENCODE_RUNTIME_REQUEST_METHOD {
+        validate_question_response(&pending.question_set, response)?;
+        return Ok(json!({
+            "resolution": {
+                "action": "submit",
+                "response": response,
+            },
+        }));
+    }
     let response_object = response
         .as_object()
         .ok_or_else(|| LocalRunnerError::invalid("runtime response must be an object"))?;
@@ -2278,6 +3043,130 @@ fn codex_question_response(
 mod tests {
     use super::*;
 
+    fn qualified_artifact(path: &Path) -> QualifiedLaunchArtifact {
+        QualifiedLaunchArtifact {
+            path: path.to_owned(),
+            sha256: format!("sha256:{:x}", Sha256::digest(fs::read(path).unwrap())),
+        }
+    }
+
+    #[test]
+    fn verified_opencode_proxy_executes_the_descriptor_safe_commonjs_bundle() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-opencode-launch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let command = directory.join("node");
+        let proxy = directory.join("proxy.cjs");
+        let executable = directory.join("opencode");
+        fs::write(&command, b"qualified node").unwrap();
+        fs::write(&proxy, b"module.exports = {};\n").unwrap();
+        fs::write(&executable, b"qualified opencode").unwrap();
+        let profile = OpenCodeLaunchProfile {
+            command: qualified_artifact(&command),
+            proxy_script: qualified_artifact(&proxy),
+            executable: qualified_artifact(&executable),
+        };
+
+        let launch = verified_opencode_launch(&profile).unwrap();
+        assert!(matches!(
+            launch.arguments().first(),
+            Some(VerifiedProcessArgument::CommonJsArtifact(_))
+        ));
+        assert!(matches!(
+            launch.arguments().get(1),
+            Some(VerifiedProcessArgument::Literal(argument))
+                if argument == TRUSTED_OPENCODE_EXECUTABLE_ARG
+        ));
+        assert!(matches!(
+            launch.arguments().get(2),
+            Some(VerifiedProcessArgument::ExecutableArtifact(_))
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn admits_only_exact_local_facade_provider_driver_pairs() {
+        let mut config = CodexProviderConfig {
+            provider: "opencode".to_owned(),
+            driver: "opencode_server".to_owned(),
+            provider_version: QUALIFIED_OPENCODE_VERSION.to_owned(),
+            command: PathBuf::from("node"),
+            args: Vec::new(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: Some("openrouter/model".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+        };
+        config.validate().unwrap();
+        config.provider_version = "1.18.18".to_owned();
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains(QUALIFIED_OPENCODE_VERSION));
+        config.provider_version = QUALIFIED_OPENCODE_VERSION.to_owned();
+        config.driver = "codex_app_server".to_owned();
+        assert!(config.validate().is_err());
+        config.driver = "opencode_server".to_owned();
+        config.model = Some("unqualified".to_owned());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn does_not_forward_an_ambient_opencode_command_override() {
+        assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_OPENCODE_COMMAND"));
+    }
+
+    #[test]
+    fn github_credentials_cross_only_the_bounded_provider_environment() {
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 73);
+        for key in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "PAPERCLIP_GIT_TOKEN",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_CONFIG_COUNT",
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_KEY_31",
+            "GIT_CONFIG_VALUE_31",
+        ] {
+            assert!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&key));
+        }
+        assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_KEY_32"));
+        assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_VALUE_32"));
+    }
+
+    #[test]
+    fn codex_provider_accepts_only_the_controller_derived_external_sandbox_bit() {
+        assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_RUNNER_EXTERNAL_SANDBOX"));
+        assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
+        assert_eq!(
+            codex_permission_profile("codex", true),
+            "paperclip-runner-external-sandbox"
+        );
+        assert_eq!(
+            codex_permission_profile("codex", false),
+            "paperclip-runner-workspace-only"
+        );
+        assert_eq!(
+            codex_permission_profile("opencode", true),
+            "paperclip-runner-workspace-only"
+        );
+    }
+
     #[test]
     fn converts_codex_questions_and_responses_without_provider_leakage() {
         let (request_id, question_set, labels) = codex_question_set(
@@ -2353,6 +3242,119 @@ mod tests {
     }
 
     #[test]
+    fn preserves_canonical_opencode_questions_and_wraps_the_validated_resolution() {
+        let params = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "opencode-question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "OpenCode requests user input.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "regions",
+                        "prompt": "Which regions should receive the deployment?",
+                        "required": true,
+                        "answerMode": "multi_select",
+                        "options": [
+                            {"id": "east", "label": "us-east-1"},
+                            {"id": "west", "label": "us-west-2"}
+                        ]
+                    }]
+                },
+                "origin": {
+                    "adapter": "opencode-server",
+                    "provider": "opencode",
+                    "method": "question.asked"
+                },
+                "turnId": "turn-1",
+                "itemId": "opencode-question-1"
+            }
+        });
+        let (request_id, question_set, option_labels) =
+            opencode_question_set(&params).expect("accept the proxy's canonical request");
+        assert_eq!(request_id, "opencode-question-1");
+        assert_eq!(question_set, params["request"]["input"]);
+        assert!(option_labels.is_empty());
+
+        let pending = PendingRuntimeRequest {
+            rpc_id: json!("proxy-rpc-1"),
+            turn_id: "turn-1".to_owned(),
+            method: OPENCODE_RUNTIME_REQUEST_METHOD.to_owned(),
+            params,
+            question_set,
+            option_labels,
+            retained_bytes: 0,
+        };
+        let response = json!({
+            "schema": "paperclip.question_response.v1",
+            "answers": {
+                "regions": {"selectedOptionIds": ["east", "west"]}
+            }
+        });
+        assert_eq!(
+            codex_question_response(&pending, &response)
+                .expect("wrap the validated response for the OpenCode proxy"),
+            json!({
+                "resolution": {
+                    "action": "submit",
+                    "response": response,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_non_input_and_malformed_opencode_runtime_requests() {
+        let permission = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "permission-1",
+                "type": "permission",
+                "status": "pending",
+                "prompt": "Approve this operation?",
+                "turnId": "turn-1"
+            }
+        });
+        assert!(opencode_question_set(&permission)
+            .unwrap_err()
+            .to_string()
+            .contains("structured input"));
+
+        let duplicate_options = json!({
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "Choose.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "target",
+                        "prompt": "Choose a target.",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [
+                            {"id": "same", "label": "One"},
+                            {"id": "same", "label": "Two"}
+                        ]
+                    }]
+                },
+                "turnId": "turn-1"
+            }
+        });
+        assert!(opencode_question_set(&duplicate_options)
+            .unwrap_err()
+            .to_string()
+            .contains("option ids must be unique"));
+    }
+
+    #[test]
     fn finds_only_active_turns_during_resume() {
         let snapshot = json!({"thread": {"turns": [
             {"id": "done", "status": "completed"},
@@ -2419,6 +3421,16 @@ mod tests {
             None,
             &no_settled_turns,
             &json!({}),
+        ));
+        assert!(request_targets_non_active_turn(
+            Some("turn-2"),
+            &turn_one_settled,
+            &json!({"request": {"turnId": "turn-1"}}),
+        ));
+        assert!(!request_targets_non_active_turn(
+            Some("turn-2"),
+            &turn_one_settled,
+            &json!({"request": {"turnId": "turn-2"}}),
         ));
     }
 
