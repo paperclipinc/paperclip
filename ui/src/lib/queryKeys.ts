@@ -604,6 +604,8 @@ export const queryKeys = {
     status: (companyId: string) =>
       ["activation", "status", companyId] as const,
   },
+  // cloud: the fork keeps its own upstream-sync surface (ui/src/pages/CloudUpstream.tsx).
+  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
   cloud: {
     stacks: ["cloud", "stacks"] as const,

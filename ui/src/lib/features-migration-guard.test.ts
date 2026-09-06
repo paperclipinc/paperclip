@@ -23,6 +23,19 @@ const ALLOWLIST = new Set([
   join(SRC_ROOT, "components", "SidebarAgents.tsx"),
   join(SRC_ROOT, "hooks", "useClassicTaskInterfaceEnabled.ts"),
   join(SRC_ROOT, "hooks", "useManagedSandboxOnly.ts"),
+  // Upstream-owned legacy/production shells and the streamlined-UI probe still
+  // read the admin endpoint. They are upstream files the fork does not fork, and
+  // useStreamlinedUiEnabled deliberately fails open on a read error, so the
+  // board-access migration does not cover them.
+  join(SRC_ROOT, "components", "Layout.production.tsx"),
+  join(SRC_ROOT, "components", "LegacyIssuesList.tsx"),
+  join(SRC_ROOT, "components", "Sidebar.production.tsx"),
+  join(SRC_ROOT, "components", "SidebarAgents.production.tsx"),
+  join(SRC_ROOT, "hooks", "useStreamlinedUiEnabled.ts"),
+  join(SRC_ROOT, "pages", "AgentDetail.production.tsx"),
+  join(SRC_ROOT, "pages", "AgentDetail.tsx"),
+  join(SRC_ROOT, "pages", "Agents.production.tsx"),
+  join(SRC_ROOT, "pages", "LegacyInbox.tsx"),
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

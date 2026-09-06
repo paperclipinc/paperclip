@@ -19,7 +19,7 @@ describe("derivePublicFeatureFlags", () => {
     ).toEqual({
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
-      enableApps: false,
+      enableApps: true,
       enablePipelines: false,
       enableCases: false,
       enableConferenceRoomChat: false,

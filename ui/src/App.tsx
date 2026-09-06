@@ -23,6 +23,8 @@ import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { CloudUpstream } from "./pages/CloudUpstream";
+import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
@@ -156,7 +158,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
-      <Route path="company/settings/cloud-upstream" element={<Navigate to="/company/export" replace />} />
+      {/* cloud: the fork keeps its own upstream-sync page here instead of
+          upstream's redirect to /company/export. */}
+      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route element={<HiddenSettingsPageGate pageKey="company.members" />}>
         <Route path="company/settings/members" element={<CompanyAccess />} />
         <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
@@ -747,6 +751,7 @@ export function App() {
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />
         <Route path="ux-lab/cross-issue-collaboration" element={<CrossIssueCollaborationUxLab />} />
+        <Route path="ux-lab/cloud-upstream" element={<CloudUpstreamUxLab />} />
 
         <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
           <Route index element={<CompanyRootRedirect />} />
