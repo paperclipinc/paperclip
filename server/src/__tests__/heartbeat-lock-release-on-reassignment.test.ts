@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentRuntimeState,
@@ -16,6 +16,25 @@ import {
   closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+
+const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
+
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: () => mockTelemetryClient,
+}));
+
+vi.mock("@paperclipai/shared/telemetry", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
+    "@paperclipai/shared/telemetry",
+  );
+  return {
+    ...actual,
+    trackAgentTaskRun: mockTrackAgentTaskRun,
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -29,6 +48,7 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   // Drain per-test heartbeat instances before deleting rows / closing the client
   // so detached executeRun chains never query a torn-down socket.
@@ -43,6 +63,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-lock-release-on-reassignment-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
   }, 60_000);
 
   afterEach(async () => {
@@ -56,6 +77,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
+    vi.clearAllMocks();
   });
 
   afterAll(async () => {
@@ -77,6 +99,7 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values([
@@ -283,5 +306,70 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       .then((rows) => rows[0] ?? null);
 
     expect(issue?.executionRunId).toBe(holderRunId);
+  });
+
+  it("cancels a queued holder's run on reassignment and emits agent.task_run for it", async () => {
+    const { companyId, coderAgentId, reviewerAgentId, issueId, holderRunId } =
+      await seedCrossAgentScenario({ holderStatus: "queued" });
+
+    // Keep the reviewer's queue from auto-claiming/executing the new run
+    // during this unit test, matching the pattern used for the sibling
+    // reassignment scenario in heartbeat-retry-scheduling.test.ts: cap
+    // concurrency at 1, then occupy that one slot with a busy run.
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, reviewerAgentId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { wakeReason: "test_busy_slot" },
+      startedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const newAssigneeRun = await heartbeat.wakeup(reviewerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(newAssigneeRun).not.toBeNull();
+    expect(newAssigneeRun?.agentId).toBe(reviewerAgentId);
+    expect(newAssigneeRun?.status).toBe("queued");
+
+    const holder = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, holderRunId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(holder).toEqual({
+      status: "cancelled",
+      errorCode: "lock_released_on_reassignment",
+    });
+
+    // The cancel runs inside enqueueWakeup's transaction, and the run's own
+    // required lifecycle work never awaits the telemetry emission, so wait
+    // for it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(
+        mockTelemetryClient,
+        expect.objectContaining({
+          agentId: coderAgentId,
+          state: "cancelled",
+        }),
+      );
+    });
   });
 });

@@ -1,5 +1,6 @@
 import {
   createCipheriv,
+  createHash,
   diffieHellman,
   generateKeyPairSync,
   hkdfSync,
@@ -90,6 +91,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GMAIL_CONNECTOR_SCOPES],
       subject,
       companyId,
@@ -123,6 +125,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "drive-refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
       subject,
       companyId,

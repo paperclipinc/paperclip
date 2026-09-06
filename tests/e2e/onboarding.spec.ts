@@ -247,7 +247,6 @@ test.describe("Onboarding wizard", () => {
     // offers depends on the registry this environment reports.
     const source = page.getByRole("radio").first();
     await source.waitFor({ timeout: 30_000 });
-    await source.click();
 
     // The signal above reports no ready credential, so the login panel must now
     // show, with no button to reuse a saved login.

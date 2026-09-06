@@ -30,6 +30,9 @@ export function isEphemeralCodexRuntimeAuthFile(
     ) ||
     /^instances\/[^/]+\/runtime\/paperclip-runner\/durable-sessions\/[^/]+\/codex-home\/auth\.json$/.test(
       relative,
+    ) ||
+    /^instances\/[^/]+\/runtime\/paperclip-runner\/acpx\/acpx\/[^/]+\/codex-home\/auth\.json$/.test(
+      relative,
     )
   );
 }

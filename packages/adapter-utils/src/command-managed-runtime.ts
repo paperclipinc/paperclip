@@ -12,11 +12,15 @@ import {
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
   type SandboxSyncResult,
+  type WorkspaceDurableSeedPaths,
+  type WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 
 /**
  * Input for a duplex channel open. The caller supplies only the command argument
@@ -528,6 +532,10 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -589,6 +597,10 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
           syncWorkspace: input.syncWorkspace,
+          workspaceInboundMode: input.workspaceInboundMode,
+          workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceBaseline: input.workspaceBaseline,
+          workspaceGitSnapshot: input.workspaceGitSnapshot,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
@@ -628,6 +640,10 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,

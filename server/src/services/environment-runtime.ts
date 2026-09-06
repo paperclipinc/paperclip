@@ -2156,6 +2156,11 @@ function createSandboxEnvironmentDriver(
           ...(reusableLease?.metadata?.nativeHarnessBackup
             ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
             : {}),
+          ...(providerLease && reusableLease?.metadata?.nativeWorkspaceSync
+            ? {
+                nativeWorkspaceSync: reusableLease.metadata.nativeWorkspaceSync,
+              }
+            : {}),
           ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
         };
         try {
@@ -2385,6 +2390,13 @@ function createSandboxEnvironmentDriver(
                 },
         ...(reusableLease?.metadata?.nativeHarnessBackup
           ? { nativeHarnessBackup: reusableLease.metadata.nativeHarnessBackup }
+          : {}),
+        ...(reusableLease &&
+        providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+        reusableLease.metadata?.nativeWorkspaceSync
+          ? {
+              nativeWorkspaceSync: reusableLease.metadata.nativeWorkspaceSync,
+            }
           : {}),
         ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
       };
@@ -3271,6 +3283,7 @@ const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "sandboxProviderPlugin",
   "sandboxLeaseAcquisition",
   "nativeHarnessBackup",
+  "nativeWorkspaceSync",
 ]);
 
 // Drop the host-internal and per-lease runtime keys from a sandbox config

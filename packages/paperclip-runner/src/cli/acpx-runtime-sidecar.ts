@@ -23,6 +23,7 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
@@ -54,6 +55,7 @@ import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import {
   acpxBootstrapBlockedError,
+  acpxSidecarErrorCode,
   enqueueAcpxSidecarInput,
   recordAcpxBootstrapFailure,
 } from "./acpx-sidecar-input.js";
@@ -120,6 +122,7 @@ let pendingInput = Promise.resolve();
 let bootstrapFailure: Error | null = null;
 let initializedAgent: QualifiedAcpxAgent | null = null;
 let initializedModel: string | null = null;
+let inputClosed = false;
 const tools = new Map<string, PendingTool>();
 const inputs = new Map<string, PendingInput>();
 
@@ -136,6 +139,7 @@ lines.on("line", (line) => {
   );
 });
 lines.on("close", () => {
+  inputClosed = true;
   requestShutdown("sidecar stdin closed");
 });
 process.once("SIGTERM", () => {
@@ -148,7 +152,7 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  lines.pause();
+  if (!inputClosed) lines.pause();
   pendingInput = enqueueAcpxSidecarInput(
     pendingInput,
     () => shutdown(reason),
@@ -180,15 +184,19 @@ async function receiveLine(line: string): Promise<void> {
   } catch (error) {
     const normalized =
       error instanceof Error ? error : new Error(String(error));
+    const normalizedRecord = record(normalized);
     bootstrapFailure = recordAcpxBootstrapFailure(
       bootstrapFailure,
       request.command,
       normalized,
     );
     response(request.id, false, undefined, {
-      code: safeCode(record(normalized).code, "acpx_sidecar_command_failed"),
+      code: safeCode(
+        acpxSidecarErrorCode(normalized),
+        "acpx_sidecar_command_failed",
+      ),
       message: safeMessage(normalized),
-      retryable: record(normalized).retryable === true,
+      retryable: normalizedRecord.retryable === true,
     });
   }
 }
@@ -275,7 +283,10 @@ async function dispatch(
       startedAt: new Date().toISOString(),
     });
     return {
-      identity: opened.identity,
+      identity: acpxProviderSessionIdentity(
+        openedHost.identity(),
+        openedHost.binding(),
+      ),
       sidecarPid: process.pid,
       status: opened.status,
     };
@@ -390,7 +401,10 @@ async function dispatch(
   if (request.command === "session.read") {
     const activeHost = requireHost();
     return {
-      identity: activeHost.identity(),
+      identity: acpxProviderSessionIdentity(
+        activeHost.identity(),
+        activeHost.binding(),
+      ),
       status: sanitizeRuntimeStatus(
         await readSidecarHostStatusWithin(activeHost),
       ),
@@ -399,7 +413,10 @@ async function dispatch(
   if (request.command === "session.snapshot") {
     const activeHost = requireHost();
     return {
-      identity: activeHost.identity(),
+      identity: acpxProviderSessionIdentity(
+        activeHost.identity(),
+        activeHost.binding(),
+      ),
       status: sanitizeRuntimeStatus(
         await readSidecarHostStatusWithin(activeHost),
       ),
@@ -418,7 +435,10 @@ async function dispatch(
     // still serialized, and retainActiveHostCleanup keeps admission closed
     // until one sequential close proves ownership was released.
     const activeHost = requireHost({ allowCleanupRetry: true });
-    const identity = activeHost.identity();
+    const identity = acpxProviderSessionIdentity(
+      activeHost.identity(),
+      activeHost.binding(),
+    );
     await closeSidecarHostForCommand(
       activeHost,
       boundedOptionalText(request.params.reason, "Paperclip suspension", 4_000),
@@ -1006,7 +1026,28 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
     ...(input.permissionMode === undefined
       ? {}
       : { permissionMode: requiredPermissionMode(input.permissionMode) }),
+    providerLifetimeFenceCandidates: requiredFenceCandidates(
+      input.providerLifetimeFenceCandidates,
+    ),
   };
+}
+
+function requiredFenceCandidates(
+  value: unknown,
+): readonly [number, number, number] {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 3 ||
+    value.some(
+      (port) => !Number.isSafeInteger(port) || port < 49_152 || port > 65_535,
+    ) ||
+    new Set(value).size !== 3
+  ) {
+    throw new Error(
+      "providerLifetimeFenceCandidates must be three distinct private ports",
+    );
+  }
+  return Object.freeze([...value]) as readonly [number, number, number];
 }
 
 function requiredPermissionMode(

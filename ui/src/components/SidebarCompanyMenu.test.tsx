@@ -295,16 +295,20 @@ describe("SidebarCompanyMenu", () => {
     expect(trigger).not.toBeNull();
     expect(trigger?.classList).toContain("px-4");
     expect(trigger?.classList).toContain("has-[>svg]:px-4");
-    expect(trigger?.classList).toContain("hover:bg-background");
-    expect(trigger?.classList).toContain("hover:text-foreground");
-    expect(trigger?.classList).toContain("dark:hover:bg-background");
+    expect(trigger?.classList).toContain("hover:bg-sidebar-accent");
+    expect(trigger?.classList).toContain("hover:text-sidebar-accent-foreground");
+    expect(trigger?.classList).toContain("dark:hover:bg-sidebar-accent");
+    expect(trigger?.classList).toContain("dark:hover:text-sidebar-accent-foreground");
+    expect(trigger?.classList).not.toContain("hover:bg-background");
+    expect(trigger?.classList).not.toContain("dark:hover:bg-background");
+    expect(trigger?.classList).not.toContain("dark:hover:bg-accent/50");
     act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Create new organization...");
+    expect(document.body.textContent).toContain("Create organization");
     expect(document.body.textContent).not.toContain("Add company...");
 
     act(() => {
@@ -342,11 +346,11 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).toContain("Organizations");
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Create new organization...");
+    expect(document.body.textContent).toContain("Create organization");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
     expect(document.body.textContent).not.toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
@@ -363,7 +367,7 @@ describe("SidebarCompanyMenu", () => {
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
-    expect(document.body.textContent).not.toContain("Switch organization");
+    expect(document.body.textContent).not.toContain("Organizations");
 
     act(() => {
       root.unmount();
@@ -379,7 +383,7 @@ describe("SidebarCompanyMenu", () => {
 
     await openMenu("Open Acme Labs organization switcher");
 
-    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).toContain("Organizations");
     expect(document.body.textContent).not.toContain("Invite people");
 
     act(() => {
@@ -396,7 +400,7 @@ describe("SidebarCompanyMenu", () => {
 
     await openMenu("Open Acme Labs organization switcher");
 
-    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).toContain("Organizations");
     expect(document.body.textContent).not.toContain("Invite people");
 
     act(() => {
@@ -413,7 +417,7 @@ describe("SidebarCompanyMenu", () => {
 
     await openMenu("Open Acme Labs organization switcher");
 
-    expect(document.body.textContent).toContain("Switch organization");
+    expect(document.body.textContent).toContain("Organizations");
     expect(document.body.textContent).not.toContain("Invite people");
 
     act(() => {
@@ -458,7 +462,11 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Done");
     expect(document.body.textContent).not.toContain("PAP");
     expect(document.body.textContent).not.toContain("ANA");
-    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+    const reorderButton = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Reorder Strata"]',
+    );
+    expect(reorderButton).toBeTruthy();
+    expect(reorderButton?.classList).toContain("size-8");
 
     const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Strata"));
@@ -528,7 +536,7 @@ describe("SidebarCompanyMenu", () => {
     await openMenu("Open Acme Labs organization switcher");
 
     const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Create new organization..."));
+      .find((element) => element.textContent?.includes("Create organization"));
     expect(createItem).toBeTruthy();
 
     act(() => {
@@ -593,7 +601,7 @@ describe("SidebarCompanyMenu", () => {
       expect(mockAuthApi.signOut).not.toHaveBeenCalled();
       expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
       expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
-      expect(document.body.textContent).not.toContain("Switch organization");
+      expect(document.body.textContent).not.toContain("Organizations");
 
       act(() => {
         root.unmount();
@@ -608,8 +616,8 @@ describe("SidebarCompanyMenu", () => {
       expect(mockCloudApi.listStacks).toHaveBeenCalledTimes(1);
       await openMenu("Open Acme Labs organization switcher");
 
-      expect(document.body.textContent).toContain("Switch organization");
-      expect(document.body.textContent).toContain("Create new organization...");
+      expect(document.body.textContent).toContain("Organizations");
+      expect(document.body.textContent).toContain("Create organization");
       expect(document.body.textContent).not.toContain("Organization settings");
       expect(document.body.textContent).not.toContain("Switch company");
       expect(document.body.textContent).not.toContain("Create new company...");
@@ -626,10 +634,10 @@ describe("SidebarCompanyMenu", () => {
 
       const currentRow = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
         .find((element) => element.textContent?.includes("Acme Labs"));
-      expect(currentRow?.className).toContain("bg-accent");
+      expect(currentRow?.classList.contains("bg-accent")).toBe(false);
 
       // Long slugs must not squeeze the display name out of the row, so the
-      // badge truncates and keeps the full slug on hover.
+      // secondary line truncates and keeps the full slug on hover.
       const slugBadge = document.body.querySelector('[title="strata"]');
       expect(slugBadge?.className).toContain("truncate");
 
@@ -726,7 +734,7 @@ describe("SidebarCompanyMenu", () => {
       await openMenu("Open Acme Labs organization switcher");
 
       const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-        .find((element) => element.textContent?.includes("Create new organization..."));
+        .find((element) => element.textContent?.includes("Create organization"));
       expect(createItem).toBeTruthy();
 
       act(() => {
@@ -757,7 +765,7 @@ describe("SidebarCompanyMenu", () => {
       await openMenu("Open acme-labs organization switcher");
 
       expect(document.body.textContent).toContain("Could not load organizations");
-      expect(document.body.textContent).not.toContain("Create new organization...");
+      expect(document.body.textContent).not.toContain("Create organization");
 
       act(() => {
         root.unmount();

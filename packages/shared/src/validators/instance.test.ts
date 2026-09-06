@@ -32,7 +32,7 @@ describe("instance experimental settings validators", () => {
         enableIssueGraphLivenessAutoRecovery: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       }),
-    ).toEqual({});
+    ).toEqual({ enableTaskWatchdogs: false });
   });
 
   it("defaults workspace branch repair settings on", () => {

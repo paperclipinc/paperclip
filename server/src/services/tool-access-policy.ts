@@ -15,6 +15,7 @@ import {
   toolConnections,
   toolCallEvents,
   toolInvocations,
+  toolMcpGateways,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,

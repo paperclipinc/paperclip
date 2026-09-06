@@ -199,7 +199,15 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-(--sz-277px)");
+      .toContain("w-(--profile-popover-width)");
+    expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
+      .toContain("rounded-xl");
+    expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
+      .toContain("min-h-(--profile-popover-min-height)");
+    expect(document.body.querySelector('a[href="/company/settings"]')?.className)
+      .not.toContain("bg-muted");
+    expect(document.body.textContent).not.toContain("Manage company and instance settings.");
+    expect(document.body.textContent).not.toContain("Open your activity, task, and usage ledger.");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
     expect(document.body.querySelector('a[href="/company/settings"]')).not.toBeNull();
 

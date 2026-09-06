@@ -31,6 +31,48 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
+fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..96 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("first-{index} "),
+            }
+        }))?;
+    }
+    send(json!({
+        "id": "split-burst-tool",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "callId": "split-burst-semantic-call",
+            "tool": "get_task_context",
+            "arguments": {}
+        }
+    }))
+}
+
+fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..48 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("second-{index} "),
+            }
+        }))?;
+    }
+    Ok(())
+}
+
 fn load_state(path: &Path) -> FakeState {
     fs::read(path)
         .ok()
@@ -483,6 +525,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
@@ -514,6 +557,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let require_completion_contract = args
+        .iter()
+        .any(|value| value == "--require-completion-contract");
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
@@ -700,6 +746,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
+        if message.get("method").is_none() && message.get("id") == Some(&json!("split-burst-tool"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err("split event burst semantic tool failed".into());
+            }
+            finish_split_event_burst(&state)?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
             if message.pointer("/result/success") == Some(&json!(false)) {
                 log_call(call_log.as_deref(), "tool-response:failure")?;
@@ -766,6 +821,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/start omitted the authorized dynamic tool".into());
                 }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/start omitted the durable completion contract".into());
+                }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
                 save_state(&state_path, &state)?;
@@ -783,6 +847,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "thread/resume" => {
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/resume omitted the authorized dynamic tool".into());
+                }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/resume omitted the durable completion contract".into());
                 }
                 let unowned_turn_marker = state_path.with_file_name("resume-unowned-turn");
                 if resume_unowned_turn_when_marked && unowned_turn_marker.exists() {
@@ -1089,6 +1162,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if emit_structured_activity {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
+                } else if emit_split_event_burst {
+                    send_split_event_burst(&state)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {

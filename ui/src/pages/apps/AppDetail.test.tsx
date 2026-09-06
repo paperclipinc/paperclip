@@ -262,6 +262,36 @@ function personalGrant(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function dedicatedGitHubGrant(
+  overrides: Record<string, unknown> = {},
+  githubOverrides: Record<string, unknown> = {},
+) {
+  return organizationGrant({
+    id: "grant-agent",
+    kind: "agent",
+    subjectAgentId: "agent-1",
+    subjectUserId: null,
+    isDefault: false,
+    providerTenant: {
+      github: {
+        userId: "123",
+        login: "dottabot",
+        installationCount: 1,
+        repositoryCount: 1,
+        repositorySelection: "selected",
+        installationIds: ["456"],
+        installationOwnerLogins: ["paperclipai"],
+        managementUrl: "https://github.com/settings/installations/456",
+        webhookHealth: "pending",
+        lastWebhookAt: null,
+        lastAccessRefreshAt: "2026-09-05T12:00:00.000Z",
+        ...githubOverrides,
+      },
+    },
+    ...overrides,
+  });
+}
+
 function catalogEntry(overrides: Record<string, unknown> = {}) {
   return {
     id: "catalog-read",
@@ -1612,6 +1642,97 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(revokeConnectionGrantMock).toHaveBeenCalledWith("conn-1", "grant-other");
+  });
+
+  it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant()],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.querySelector('a[href="/agents/coder"]')?.textContent).toContain("Used only by Coder");
+    expect(container.textContent).toContain("Repositories");
+    expect(container.textContent).toContain("1 selected repositories");
+    expect(container.querySelector(
+      'a[href="https://github.com/settings/installations/456"]',
+    )?.textContent).toBe("Manage repositories on GitHub");
+    expect(findButton("Refresh access")).toBeTruthy();
+    expect(container.textContent).not.toContain("Installation");
+    expect(container.textContent).not.toContain("Token continuity");
+    expect(container.textContent).not.toContain("Webhook health");
+    expect(container.textContent).not.toContain("Last event");
+    expect(container.textContent).not.toContain("Last access refresh");
+    expect(container.textContent).not.toContain("Shell Git and gh use this account");
+
+    const askFirst = container.querySelector<HTMLButtonElement>('button[aria-label="Read repo: Ask first"]');
+    expect(askFirst).toBeTruthy();
+    await act(async () => {
+      askFirst!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain(
+      "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls.",
+    );
+  });
+
+  it("warns about all-repository GitHub access within the repository row", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({}, {
+        repositoryCount: 0,
+        repositorySelection: "all",
+      })],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("All current and future repositories");
+    expect(container.textContent).not.toContain("selected repositories");
+  });
+
+  it.each([
+    ["mixed", "Mixed access; scope varies by installation"],
+    ["none", "No repositories selected"],
+  ] as const)("labels %s GitHub repository access explicitly", async (repositorySelection, expected) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({}, {
+        repositoryCount: 0,
+        repositorySelection,
+      })],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain(expected);
+    expect(container.textContent).not.toContain("selected repositories");
   });
 
   it("persists an empty audience as all organization members", async () => {

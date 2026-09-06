@@ -48,6 +48,8 @@ const RUNTIME_ADMISSION_VERIFICATION_TIMEOUT_MS = 8_000;
 const activeRuntimeHostCleanupOwners = new Set<Promise<unknown>>();
 
 class AcpxRuntimeAdmissionTimeoutError extends Error {
+  readonly code = "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT";
+
   constructor() {
     super("ACPX runtime admission verification exceeded its deadline");
     this.name = "AcpxRuntimeAdmissionTimeoutError";
@@ -126,11 +128,7 @@ export type AcpxSemanticToolSession = Omit<RunnerToolBridgeOptions, "secret">;
 
 export interface AcpxRetainedCleanupFailure {
   resource:
-    | "credential"
-    | "provider_lifetime"
-    | "command"
-    | "runtime"
-    | "tool_bridge";
+    "credential" | "provider_lifetime" | "command" | "runtime" | "tool_bridge";
   attempt: number;
   error: unknown;
 }
@@ -450,11 +448,13 @@ export class AcpxRuntimeHost {
         kind: "acpx",
         normalizedSessionId: binding.normalizedSessionId,
         ...runtimeIdentity,
-        profileDigest: binding.profileDigest,
+        profileDigest: binding.commandDigest,
         workspaceDigest: binding.workspaceDigest,
         requestedModel: binding.requestedModel,
         effectiveModel: binding.effectiveModel,
         permissionMode: binding.permissionMode,
+        providerLifetimeFenceCandidates:
+          admittedLifetime.lifetimeFenceCandidates,
       };
       const identity = createAcpxIdentityRecord(observedIdentity, binding);
       if (options.expectedIdentity) {

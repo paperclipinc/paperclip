@@ -198,6 +198,7 @@ describe("redaction", () => {
       "environment.workspace.realize",
       "native.coordinator.claim",
       "runner.transport.selected",
+      "runner.prp.authenticate",
       "runner.prp.route.register",
       "runner.transport.connect",
       "runner.session.bootstrap",

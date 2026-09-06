@@ -53,7 +53,9 @@ async function sha256(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-function providerVersion(request: EvalSessionRequest): string | null {
+export function evalSessionProviderVersion(
+  request: EvalSessionRequest,
+): string | null {
   if (request.provider === "opencode") {
     const version = request.opencodeVersion ?? "1.18.17";
     if (version !== "1.18.17") {
@@ -71,7 +73,7 @@ function providerVersion(request: EvalSessionRequest): string | null {
     return request.managedProfile!.agentVersion;
   }
   if (request.provider === "aws_agentcore") {
-    return request.agentCoreProfile!.harnessVersion;
+    return request.agentCoreProfile!.qualificationRevision;
   }
   return null;
 }
@@ -127,6 +129,32 @@ function usageIfAvailable(
   }
 }
 
+export function boundedEvalSessionUsage(
+  request: EvalSessionRequest,
+  turn: CapabilityLiveTurnResult,
+): EvalSessionUsage | null {
+  if (turn.status !== "completed") {
+    return usageIfAvailable(request, turn.snapshot);
+  }
+  const usage = evalSessionUsage(request.model, turn.snapshot);
+  if (usage.agentTurns > request.limits.maxAgentTurns) {
+    throw new Error("agent turn limit exceeded");
+  }
+  if (
+    usage.estimatedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("estimated cost limit exceeded");
+  }
+  if (
+    usage.providerReportedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("provider-reported cost limit exceeded");
+  }
+  return usage;
+}
+
 async function closeSession(
   session: CapabilityLiveSession | null,
   reason: string,
@@ -160,11 +188,16 @@ export async function runEvalSessionCli(
   const requestedProvider = request.provider ?? "codex";
   const requestedDriver = request.driver ??
     expectedEvalSessionDriver(requestedProvider);
-  const requestedProviderVersion = providerVersion(request);
+  const requestedProviderVersion = evalSessionProviderVersion(request);
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
         runnerBinary: runnerdPath,
+        // The transport performs the provider-specific allowlisting. Supplying
+        // the source environment here is still required: without it the
+        // isolated Codex home has no credential source and runnerd receives no
+        // executable PATH from the Evalbook CLI process.
+        environment: process.env,
         onDiagnostic: (message) => {
           process.stderr.write(`[eval-session runnerd] ${message}\n`);
         },
@@ -196,27 +229,11 @@ export async function runEvalSessionCli(
     } as unknown as CreateCapabilityLiveSessionInput;
     session = await service.create(createInput);
     turn = await session.sendMessage(request.prompt);
-    if (turn.status !== "completed") {
-      await session.completeAttempt("failed", `provider_turn_${turn.status}`);
-      throw new Error(`provider turn ended with status ${turn.status}`);
-    }
-    const usage = evalSessionUsage(request.model, turn.snapshot);
-    if (usage.agentTurns > request.limits.maxAgentTurns) {
-      throw new Error("agent turn limit exceeded");
-    }
-    if (
-      usage.estimatedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("estimated cost limit exceeded");
-    }
-    if (
-      usage.providerReportedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("provider-reported cost limit exceeded");
-    }
-    await session.completeAttempt("succeeded");
+    const usage = boundedEvalSessionUsage(request, turn);
+    await session.completeAttempt(
+      turn.status === "completed" ? "succeeded" : "failed",
+      turn.status === "completed" ? null : `provider_turn_${turn.status}`,
+    );
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
 
@@ -259,7 +276,7 @@ export async function runEvalSessionCli(
         mode: "live",
         replaySource: "live",
       }),
-      usage,
+      ...(usage === null ? {} : { usage }),
       timing: {
         startedAt,
         finishedAt: new Date().toISOString(),

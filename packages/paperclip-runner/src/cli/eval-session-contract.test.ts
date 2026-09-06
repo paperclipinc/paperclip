@@ -5,6 +5,10 @@ import {
   evalSessionUsage,
   parseEvalSessionRequest,
 } from "./eval-session-contract.js";
+import {
+  boundedEvalSessionUsage,
+  evalSessionProviderVersion,
+} from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -63,6 +67,43 @@ describe("eval-session request contract", () => {
       acpxAgent: "claude",
       model: "claude-sonnet-5",
     }))).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
+  });
+
+  it("accepts null optional fields from the original Evalbook v1 producer", () => {
+    const parsed = parseEvalSessionRequest(request({
+      acpxAgent: null,
+      agentCoreProfile: null,
+      opencodeVersion: null,
+    }));
+    expect(parsed).toMatchObject({
+      provider: "codex",
+      driver: "codex_app_server",
+    });
+    expect(parsed).not.toHaveProperty("acpxAgent");
+    expect(parsed).not.toHaveProperty("agentCoreProfile");
+    expect(parsed).not.toHaveProperty("opencodeVersion");
+  });
+
+  it("attributes managed providers to their immutable deployed revisions", () => {
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "aws_agentcore",
+      driver: "aws_agentcore_harness_api",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreProfile: agentCoreProfile(),
+    })))).toBe("aws-agentcore-harness-context-v2");
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      model: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-qualified",
+        anthropicAgentId: "agent-test",
+        agentVersion: "17",
+        environmentId: "environment-test",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 1,
+      },
+    })))).toBe("17");
   });
 
   it("rejects Pi and accepts both qualified remote provider profiles", () => {
@@ -143,6 +184,41 @@ describe("eval-session request contract", () => {
 });
 
 describe("eval-session usage", () => {
+  it("retains durable failed turns even when their reported usage exceeds completed-turn limits", () => {
+    const parsed = parseEvalSessionRequest(request());
+    const snapshot = {
+      usageLedger: [{
+        receiptId: "receipt-failed",
+        attemptId: "attempt-1",
+        providerResponseId: "response-failed",
+        turnId: "turn-failed",
+        observedAt: "2026-09-05T00:00:00.000Z",
+        providerCalls: 2,
+        providerRequests: 2,
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cachedInputTokens: 0,
+        reasoningTokens: 0,
+        costNanodollars: 200_000_000,
+      }],
+    } as unknown as CapabilityLiveSessionSnapshot;
+    const failedTurn = {
+      turnId: "turn-failed",
+      status: "failed" as const,
+      assistantText: "",
+      snapshot,
+    };
+
+    expect(boundedEvalSessionUsage(parsed, failedTurn)).toMatchObject({
+      agentTurns: 2,
+      providerReportedCostNanodollars: 200_000_000,
+    });
+    expect(() => boundedEvalSessionUsage(parsed, {
+      ...failedTurn,
+      status: "completed",
+    })).toThrow("agent turn limit exceeded");
+  });
+
   it("deduplicates receipts and applies the versioned model price", () => {
     const receipt = {
       receiptId: "receipt-1",
