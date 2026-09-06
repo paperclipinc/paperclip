@@ -23,7 +23,6 @@ describe("derivePublicFeatureFlags", () => {
       enablePipelines: false,
       enableCases: false,
       enableConferenceRoomChat: false,
-      enableTaskWatchdogs: false,
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableCloudSync: false,

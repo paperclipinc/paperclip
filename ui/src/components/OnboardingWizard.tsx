@@ -97,7 +97,6 @@ import {
   findCredentialAuthFailureCheck,
   findMatchingCompanySecret,
 } from "../lib/credential-connected";
-import { secretsApi } from "../api/secrets";
 import { cloudCompaniesApi } from "../api/cloudCompanies";
 import { healthApi } from "../api/health";
 import { composeCeoInstructions } from "../lib/ceo-instructions";

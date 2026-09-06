@@ -11,7 +11,6 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableConferenceRoomChat: false,
   enableClassicTaskInterface: false,
   enableManagedSandboxOnly: false,
-  enableTaskWatchdogs: false,
   enableIssuePlanDecompositions: false,
   enableExperimentalFileViewer: false,
   enableCloudSync: false,

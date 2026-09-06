@@ -149,7 +149,6 @@ export type PatchInstanceExperimentalSettings = Partial<
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
 export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
->;
 export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
 
 export const instanceSettingsSchema = z.object({

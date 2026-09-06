@@ -21,7 +21,6 @@ export interface PublicFeatureFlags {
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
-  enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
@@ -79,7 +78,6 @@ export function derivePublicFeatureFlags(input: {
     enableCases: experimental.enableCases === true,
     enableConferenceRoomChat: experimental.enableConferenceRoomChat === true,
     enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
-    enableTaskWatchdogs: experimental.enableTaskWatchdogs === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
     enableCloudSync: experimental.enableCloudSync === true,
