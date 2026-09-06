@@ -1,4 +1,10 @@
 /// <reference path="./types/express.d.ts" />
+// Kicks off the OTel bootstrap as early as possible (no-op unless
+// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
+// instrumentationReady before opening DB connections or constructing the
+// HTTP server, so trace coverage does not depend on incidental timing.
+import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -31,6 +37,11 @@ import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
+  StartupRefusalError,
+  migrationRefusalError,
+  shouldReportStartupFailure,
+} from "./startup-refusals.js";
+import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
@@ -39,11 +50,6 @@ import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/e
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
-import {
-  configureLiveEventsTransport,
-  resolveLiveEventsRedisUrl,
-  resolveLiveEventsTransportMode,
-} from "./services/live-events.js";
 import {
   feedbackService,
   applyManagedEnvironments,
@@ -103,6 +109,7 @@ import {
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
+import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -152,6 +159,16 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  setStartupRecoveryPhase("starting");
+  warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
+
+  // Tracing must be active (or have failed and logged) before the first DB
+  // connection or the HTTP server exists — see instrumentation.ts.
+  await instrumentationReady;
+  // Error monitoring must be ready before the first request can fail — see
+  // sentry.ts.
+  await sentryReady;
+  ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
@@ -236,12 +253,20 @@ export async function startServer(): Promise<StartedServer> {
   
     const apply = autoApply ? true : await promptApplyMigrations(state.pendingMigrations);
     if (!apply) {
-      throw new Error(
+      // A database with zero applied migrations and zero tables has
+      // never been migrated: under a managed-cloud supervisor that is
+      // the expected first-boot race (the harness migrates and
+      // restarts), so the refusal carries the supervised-transient
+      // class. Applied history — or pre-existing tables beside an empty
+      // journal — means drift and keeps the plain, always-reported
+      // Error.
+      throw migrationRefusalError(
+        state,
         `${label} has pending migrations (${formatPendingMigrationSummary(state.pendingMigrations)}). ` +
           "Refusing to start against a stale schema. Run pnpm db:migrate or set PAPERCLIP_MIGRATION_AUTO_APPLY=true.",
       );
     }
-  
+
     logger.info({ pendingMigrations: state.pendingMigrations }, `Applying ${state.pendingMigrations.length} pending migrations for ${label}`);
     await applyPendingMigrations(connectionString);
     return "applied (pending migrations)";
@@ -261,7 +286,13 @@ export async function startServer(): Promise<StartedServer> {
       return;
     }
     if (!config.databaseUrl) {
-      throw new Error(
+      // Under a managed-cloud supervisor a missing DATABASE_URL on boot
+      // is the config-application race (the container can start before
+      // the staged variables land), not operator error — the supervisor
+      // restarts once the config holds. A malformed value below is a
+      // real misconfiguration and stays an always-reported Error.
+      throw new StartupRefusalError(
+        "database-contract-unmet",
         "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
       );
     }
@@ -556,6 +587,12 @@ export async function startServer(): Promise<StartedServer> {
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
+  // A claimed warm-pool stack may restart while its provider environment still
+  // names the pool host. Restore the signed, durable identity before Better
+  // Auth, routes, or child-runtime configuration capture any public URL.
+  const restoredCloudRuntimeIdentity = await initializeCloudRuntimeIdentity(db as any);
+  if (restoredCloudRuntimeIdentity) config = loadConfig();
+
   if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
@@ -703,6 +740,19 @@ export async function startServer(): Promise<StartedServer> {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  const databaseBackupMaxAgeHours = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
+      Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
+  );
+  const databaseBackupAlertFile =
+    process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
+    resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
+  const databaseBackupAlertFiles = [
+    databaseBackupAlertFile,
+    resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
+    resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
+  ];
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -787,6 +837,15 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
+    databaseBackupHealth: config.databaseBackupEnabled
+      ? {
+          enabled: config.databaseBackupEnabled,
+          backupDir: config.databaseBackupDir,
+          maxAgeHours: databaseBackupMaxAgeHours,
+          alertFile: databaseBackupAlertFile,
+          alertFiles: databaseBackupAlertFiles,
+        }
+      : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -839,15 +898,6 @@ export async function startServer(): Promise<StartedServer> {
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
-  });
-
-  const liveEventsTransportMode = resolveLiveEventsTransportMode();
-  void configureLiveEventsTransport({
-    mode: liveEventsTransportMode,
-    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
-    redisUrl: resolveLiveEventsRedisUrl(),
-  }).catch((err) => {
-    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
   });
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -1437,16 +1487,43 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err }, "startup adapter login reaper sweep failed");
       });
 
-    const heartbeatMaxQueuedRunAgeMs = Math.max(
-      1,
-      Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
-    );
+    // Run the setup-token login reaper once at startup, so a login sandbox lease
+    // that outlived a server restart releases before timer ticks start.
+    await setupTokenReaper
+      .sweep()
+      .then(logSetupTokenReaperResult)
+      .catch((err) => {
+        logger.error({ err }, "startup setup-token login reaper sweep failed");
+      });
 
-    heartbeatSchedulerInterval = setInterval(() => {
-      // Async so the suppression checks below can honor the override-aware
-      // resolver (e.g. worktree run-execution opt-in). The gated work is still
-      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
-      void (async () => {
+    // Retry any orphan sandbox teardown left by a failed acquire before a server
+    // restart, so a leaked sandbox does not stay allocated across the restart.
+    await runEnvironmentLeaseCleanupSweep(0);
+
+    const runRetentionSweep = async () => {
+      const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
+      let archived = 0;
+      for (const company of activeCompanies) {
+        // Cursor pagination rebuilds the whole feed for every page; one
+        // unscoped all-items build keeps this sweep at a single feed build
+        // per company per tick.
+        const page = await attentionService(db as any).list(company.id, {
+          includeDismissed: true,
+          all: true,
+          allowUnscopedAll: true,
+        });
+        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
+      }
+      const notifications = await retentionExecutor.deliverNotifications();
+      return { archived, ...notifications };
+    };
+    await runRetentionSweep();
+
+    startHeartbeatSchedulerInterval(() => {
+      // Track the outer async callback as well as the work it starts. Shutdown
+      // can then wait through an already-running suppression check before it
+      // captures the authoritative set of running heartbeat rows.
+      trackHeartbeatSchedulerWork((async () => {
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
@@ -1572,11 +1649,10 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold for stuck "running"
-          // runs, bounded max-age for stuck "queued" runs) and make sure persisted queued
-          // work is still being driven forward.
+          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+          // persisted queued work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, maxQueuedAgeMs: heartbeatMaxQueuedRunAgeMs })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();
@@ -1779,8 +1855,23 @@ export async function startServer(): Promise<StartedServer> {
       }
     }
 
-      process.exit(0);
-    };
+    if (!skipHeartbeatDrain) {
+      await drainRunExecutionFinalizersForShutdown({
+        signal,
+        drain: drainHeartbeatExecutionFinalizers,
+        log: logger,
+      });
+    }
+
+    // Whatever the drain did not finalize (timed-out runs, the hot-restart
+    // skip path) still has a local-only tail when the in-flight run-log
+    // mirror is enabled; upload those tails now so an orderly restart
+    // never loses run output. No-op when the mirror is off.
+    try {
+      await flushInFlightRunLogMirrors();
+    } catch (err) {
+      logger.error({ err, signal }, "run-log in-flight mirror flush failed");
+    }
 
     const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
       ?.paperclipShutdown;
@@ -1870,7 +1961,12 @@ function isMainModule(metaUrl: string): boolean {
 if (isMainModule(import.meta.url)) {
   void startServer().catch(async (err) => {
     logger.error({ err }, "Paperclip server failed to start");
-    captureException(err);
+    // Supervised-transient refusals in managed-cloud deployments are an
+    // expected provisioning phase (see startup-refusals.ts) — they log
+    // and exit nonzero but do not page Sentry.
+    if (shouldReportStartupFailure(err)) {
+      captureException(err);
+    }
     await shutdownSentry();
     process.exit(1);
   });
