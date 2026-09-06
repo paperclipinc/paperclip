@@ -98,7 +98,7 @@ const initLine =
 
 afterEach(() => {
   vi.clearAllMocks();
-  claudeCliUnresolvable.value = false;
+  probeResult.throwError = null;
 });
 
 describe("claude sandbox hello probe diagnostics", () => {
@@ -496,203 +496,6 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(failed?.detail).toBeUndefined();
     expect(JSON.stringify(result.checks)).not.toContain('"subtype":"init"');
   });
-});
-
-describe("claude auth mode hints", () => {
-  const successStdout = [
-    initLine,
-    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
-  ].join("\n");
-
-  it("reports the configured subscription token for remote targets", async () => {
-    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
-
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "claude_local",
-      config: {
-        engine: "cli",
-        command: "claude",
-        env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token" },
-      },
-      executionTarget: sandboxTarget,
-      environmentName: "Daytona",
-    });
-
-    const hint = result.checks.find((check) => check.code === "claude_oauth_token_configured");
-    expect(hint).toBeTruthy();
-    expect(hint?.level).toBe("info");
-    expect(hint?.detail).toContain("configured environment variables");
-    expect(
-      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
-    ).toBe(false);
-  });
-
-  it("keeps the API-key warning authoritative when both ANTHROPIC_API_KEY and the token are set", async () => {
-    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
-
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "claude_local",
-      config: {
-        engine: "cli",
-        command: "claude",
-        env: {
-          ANTHROPIC_API_KEY: "api-test-key",
-          CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token",
-        },
-      },
-      executionTarget: sandboxTarget,
-      environmentName: "Daytona",
-    });
-
-    expect(
-      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
-    ).toBe(true);
-    expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(false);
-  });
-});
-
-describe("claude CLI local hello probe hardening", () => {
-  // Clear the host proxy and host auth variables so a local probe reads a
-  // deterministic env regardless of the machine that runs the suite.
-  const CLEARED_HOST_ENV_KEYS = [
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "ANTHROPIC_BEDROCK_BASE_URL",
-  ];
-  const successStdout = [
-    initLine,
-    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
-  ].join("\n");
-
-  let tempDir: string | null = null;
-  let claudePath = "";
-  let savedPath: string | undefined;
-  let savedEnv: Record<string, string | undefined> = {};
-
-  beforeEach(async () => {
-    tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-localprobe-"));
-    claudePath = path.join(tempDir, "claude");
-    await writeFile(claudePath, "#!/bin/sh\nexit 0\n");
-    await chmod(claudePath, 0o755);
-    savedPath = process.env.PATH;
-    process.env.PATH = tempDir;
-    savedEnv = {};
-    for (const key of CLEARED_HOST_ENV_KEYS) {
-      savedEnv[key] = process.env[key];
-      delete process.env[key];
-    }
-    // The mocked cwd resolver returns a sandbox path; the local probe reads it
-    // as the cwd, so no host directory is touched.
-    resolveAdapterExecutionTargetCwd.mockReturnValue("/home/daytona/paperclip-workspace");
-  });
-
-  afterEach(async () => {
-    process.env.PATH = savedPath;
-    for (const [key, value] of Object.entries(savedEnv)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-    tempDir = null;
-  });
-
-  it("spawns the trusted resolved claude and drops hostile caller env for a local probe", async () => {
-    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
-    process.env.HTTPS_PROXY = "http://trusted-proxy:8443";
-
-    await testEnvironment({
-      companyId: "company-1",
-      adapterType: "claude_local",
-      config: {
-        engine: "cli",
-        command: "/tmp/evil/claude",
-        env: {
-          ANTHROPIC_API_KEY: "keep-this-key",
-          NODE_OPTIONS: "--require /hostile/evil.js",
-          PATH: "/hostile/bin",
-          LD_PRELOAD: "/hostile/evil.so",
-          HTTP_PROXY: "http://caller-proxy:8080",
-        },
-      },
-      executionTarget: null,
-      environmentName: null,
-    });
-
-    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
-    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
-    const spawnedCommand = call[2] as string;
-    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
-    // The trusted resolved claude executable, never the caller command path.
-    expect(spawnedCommand).toBe(claudePath);
-    expect(spawnedCommand).not.toContain("/tmp/evil");
-    // The approved key reaches the child; the hostile keys never do.
-    expect(spawnedEnv.ANTHROPIC_API_KEY).toBe("keep-this-key");
-    expect(spawnedEnv.NODE_OPTIONS).toBeUndefined();
-    expect(spawnedEnv.PATH).toBeUndefined();
-    expect(spawnedEnv.LD_PRELOAD).toBeUndefined();
-    expect(spawnedEnv.HTTP_PROXY).toBeUndefined();
-    // The trusted proxy reaches the child; the caller proxy never does.
-    expect(spawnedEnv.HTTPS_PROXY).toBe("http://trusted-proxy:8443");
-    expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
-  });
-
-  it("warns without executing when runtime PATH selects a different local Claude executable", async () => {
-    const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
-    const runtimeClaudePath = path.join(runtimeDir, "claude");
-    await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
-    await chmod(runtimeClaudePath, 0o755);
-
-    try {
-      probeResult.value = { exitCode: 0, stdout: "2.1.251 (Claude Code)\n", stderr: "" };
-
-      const result = await testEnvironment({
-        companyId: "company-1",
-        adapterType: "claude_local",
-        config: {
-          engine: "cli",
-          command: "claude",
-          model: "claude-fable-5-1",
-          env: { PATH: runtimeDir },
-        },
-        executionTarget: null,
-        environmentName: null,
-      });
-
-      expect(result.status).toBe("warn");
-      expect(result.checks).toContainEqual(expect.objectContaining({
-        code: "claude_cli_version_probe_mismatch",
-        level: "warn",
-      }));
-      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
-    } finally {
-      await rm(runtimeDir, { recursive: true, force: true });
-    }
-  });
-
-  it("names the local host target on every result", async () => {
-    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
-
-    const result = await testEnvironment({
-      companyId: "company-1",
-      adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
-      executionTarget: null,
-      environmentName: null,
-    });
-
-    const targetCheck = result.checks.find((check) => check.code === "claude_environment_target");
-    expect(targetCheck).toBeTruthy();
-    expect(targetCheck?.message).toContain("Paperclip host");
-  });
 
   it("hard-fails an invalid just-pasted API key instead of the soft 'please log in' nudge", async () => {
     // This is the exact CLI message a just-bound, syntactically-plausible
@@ -906,5 +709,202 @@ describe("Claude ACP lane via the shared testEnvironment entrypoint (no explicit
     expect(unavailable).toBeTruthy();
     expect(unavailable?.level).toBe("warn");
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe("claude auth mode hints", () => {
+  const successStdout = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+  ].join("\n");
+
+  it("reports the configured subscription token for remote targets", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token" },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const hint = result.checks.find((check) => check.code === "claude_oauth_token_configured");
+    expect(hint).toBeTruthy();
+    expect(hint?.level).toBe("info");
+    expect(hint?.detail).toContain("configured environment variables");
+    expect(
+      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
+    ).toBe(false);
+  });
+
+  it("keeps the API-key warning authoritative when both ANTHROPIC_API_KEY and the token are set", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        env: {
+          ANTHROPIC_API_KEY: "api-test-key",
+          CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token",
+        },
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(
+      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
+    ).toBe(true);
+    expect(result.checks.some((check) => check.code === "claude_oauth_token_configured")).toBe(false);
+  });
+});
+
+describe("claude CLI local hello probe hardening", () => {
+  // Clear the host proxy and host auth variables so a local probe reads a
+  // deterministic env regardless of the machine that runs the suite.
+  const CLEARED_HOST_ENV_KEYS = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+  ];
+  const successStdout = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+  ].join("\n");
+
+  let tempDir: string | null = null;
+  let claudePath = "";
+  let savedPath: string | undefined;
+  let savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-localprobe-"));
+    claudePath = path.join(tempDir, "claude");
+    await writeFile(claudePath, "#!/bin/sh\nexit 0\n");
+    await chmod(claudePath, 0o755);
+    savedPath = process.env.PATH;
+    process.env.PATH = tempDir;
+    savedEnv = {};
+    for (const key of CLEARED_HOST_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    // The mocked cwd resolver returns a sandbox path; the local probe reads it
+    // as the cwd, so no host directory is touched.
+    resolveAdapterExecutionTargetCwd.mockReturnValue("/home/daytona/paperclip-workspace");
+  });
+
+  afterEach(async () => {
+    process.env.PATH = savedPath;
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    tempDir = null;
+  });
+
+  it("spawns the trusted resolved claude and drops hostile caller env for a local probe", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+    process.env.HTTPS_PROXY = "http://trusted-proxy:8443";
+
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "/tmp/evil/claude",
+        env: {
+          ANTHROPIC_API_KEY: "keep-this-key",
+          NODE_OPTIONS: "--require /hostile/evil.js",
+          PATH: "/hostile/bin",
+          LD_PRELOAD: "/hostile/evil.so",
+          HTTP_PROXY: "http://caller-proxy:8080",
+        },
+      },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    const spawnedCommand = call[2] as string;
+    const spawnedEnv = (call[4] as { env: Record<string, string> }).env;
+    // The trusted resolved claude executable, never the caller command path.
+    expect(spawnedCommand).toBe(claudePath);
+    expect(spawnedCommand).not.toContain("/tmp/evil");
+    // The approved key reaches the child; the hostile keys never do.
+    expect(spawnedEnv.ANTHROPIC_API_KEY).toBe("keep-this-key");
+    expect(spawnedEnv.NODE_OPTIONS).toBeUndefined();
+    expect(spawnedEnv.PATH).toBeUndefined();
+    expect(spawnedEnv.LD_PRELOAD).toBeUndefined();
+    expect(spawnedEnv.HTTP_PROXY).toBeUndefined();
+    // The trusted proxy reaches the child; the caller proxy never does.
+    expect(spawnedEnv.HTTPS_PROXY).toBe("http://trusted-proxy:8443");
+    expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
+  });
+
+  it("warns without executing when runtime PATH selects a different local Claude executable", async () => {
+    const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
+    const runtimeClaudePath = path.join(runtimeDir, "claude");
+    await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
+    await chmod(runtimeClaudePath, 0o755);
+
+    try {
+      probeResult.value = { exitCode: 0, stdout: "2.1.251 (Claude Code)\n", stderr: "" };
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          engine: "cli",
+          command: "claude",
+          model: "claude-fable-5-1",
+          env: { PATH: runtimeDir },
+        },
+        executionTarget: null,
+        environmentName: null,
+      });
+
+      expect(result.status).toBe("warn");
+      expect(result.checks).toContainEqual(expect.objectContaining({
+        code: "claude_cli_version_probe_mismatch",
+        level: "warn",
+      }));
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    } finally {
+      await rm(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("names the local host target on every result", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: null,
+      environmentName: null,
+    });
+
+    const targetCheck = result.checks.find((check) => check.code === "claude_environment_target");
+    expect(targetCheck).toBeTruthy();
+    expect(targetCheck?.message).toContain("Paperclip host");
   });
 });

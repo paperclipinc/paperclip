@@ -62,6 +62,16 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   // Naming the company creates it and goes straight to the agent step.
 
   // The agent step asks for a name and nothing else; the name is what gates
+
+  // #261 gates "Give it a heartbeat" on a connected credential for the
+  // chosen adapter, so bind a throwaway Anthropic API key before clicking.
+  await page
+    .getByLabel("Anthropic API key value")
+    .fill("sk-ant-api03-e2efakecredential1234567890");
+  await page.getByRole("button", { name: "Connect" }).click();
+  await expect(
+    page.getByRole("button", { name: /Give it a heartbeat/ }),
+  ).toBeEnabled({ timeout: 15_000 });
   // "Next", and the hire is filed under the neutral `general` role.
   await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
   await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
@@ -69,14 +79,17 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.getByRole("button", { name: /^Next$/ }).click();
 
   // The connect step arrives with no source selected — the tile row is a
-  // question, not a confirmation — so its CTA, which reads "Next" here too,
-  // stays disabled until one is pressed. Waited on for enabled rather than
-  // visible: it is already on screen, and clicking a disabled button raises
-  // nothing and does nothing.
+  // question, not a confirmation — so its CTA stays disabled until one is
+  // pressed. It reads "Connect", not "Next": the button starts the sign-in
+  // where there is one to start. This instance has no sandbox environment, so
+  // there is none, and Connect goes straight to the hire.
+  //
+  // Waited on for enabled rather than visible: it is already on screen, and
+  // clicking a disabled button raises nothing and does nothing.
   const source = page.getByRole("radio").first();
   await source.waitFor({ timeout: 30_000 });
   await source.click();
-  const connectNext = page.getByRole("button", { name: /^Next$/ });
+  const connectNext = page.getByRole("button", { name: /^Connect$/ });
   await expect(connectNext).toBeEnabled({ timeout: 30_000 });
   await connectNext.click();
 

@@ -39,6 +39,7 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
@@ -738,6 +739,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   });
 
   afterAll(async () => {
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 

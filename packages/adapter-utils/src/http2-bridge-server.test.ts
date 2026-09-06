@@ -855,7 +855,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     // so this multiplier bounds live forwards, not merely open streams.
     expect(
       HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
-    ).toBe(8_388_608);
+    ).toBe(33_554_432);
   });
 
   describe("parseCanonicalBridgeRequestPath", () => {

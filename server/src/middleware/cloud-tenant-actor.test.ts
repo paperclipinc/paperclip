@@ -13,9 +13,14 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./au
 // the user's own membership rows (rows configurable via membershipQueryRows,
 // where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
+type SeededMembership = { companyId: string; membershipRole: string; status: string };
+
 function createFakeDb(options: {
   membershipRow?: { companyId: string; membershipRole: string; status: string };
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
+  seededMemberships?: SeededMembership[];
+  /** Rows returned by the SELECT over `companies` — [] means the stack company does not exist yet. */
+  companyRows?: Array<{ id: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
 } = {}) {
@@ -36,6 +41,9 @@ function createFakeDb(options: {
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
   const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const selectedTables: unknown[] = [];
+  const memberships = options.seededMemberships ?? [membershipRow];
+  const companyRows = options.companyRows ?? [];
   const chain: Record<string, unknown> = {};
   chain.values = () => chain;
   chain.onConflictDoUpdate = () => chain;
@@ -55,24 +63,29 @@ function createFakeDb(options: {
     select: () => {
       if (options.selectThrows) throw new Error("select unavailable");
       return {
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            selectWheres.push({ table, condition });
-            const rows =
-              table === instanceSettings && settingsRow
-                ? [settingsRow]
-                : table === companyMemberships
-                  ? (options.membershipQueryRows ?? [])
-                  : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
-            };
-          },
-        }),
+        from: (table: unknown) => {
+          selectedTables.push(table);
+          return {
+            where: (condition: unknown) => {
+              selectWheres.push({ table, condition });
+              const rows =
+                table === companies
+                  ? companyRows
+                  : table === instanceSettings && settingsRow
+                    ? [settingsRow]
+                    : table === companyMemberships
+                      ? (options.membershipQueryRows ?? memberships)
+                      : [];
+              return {
+                then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+              };
+            },
+          };
+        },
       };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables, selectWheres };
+  return { db, insertedTables, deletedTables, selectWheres, selectedTables };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {
@@ -151,16 +164,8 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(deletedTables).toContain(instanceUserRoles);
   });
 
-  it("still upserts the user, company, and membership", async () => {
-    const { db, insertedTables } = createFakeDb();
-    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
-    expect(insertedTables).toContain(authUsers);
-    expect(insertedTables).toContain(companies);
-    expect(insertedTables).toContain(companyMemberships);
-  });
-
   it("resyncs an A to B to A context transition inside the debounce window", async () => {
-    const { db, insertedTables } = createFakeDb();
+    const { db, insertedTables } = createFakeDb({ companyRows: [{ id: "company-x" }] });
     const contextA = VALID_HEADERS;
     const contextB = { ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" };
 
@@ -197,6 +202,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   it("maps a non-owner stack role through to the membership without elevating", async () => {
     const { db } = createFakeDb({
       membershipRow: { companyId: "company-y", membershipRole: "member", status: "active" },
+      companyRows: [{ id: "company-y" }],
     });
     const actor = await resolveCloudTenantActor(
       db,
@@ -257,6 +263,123 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       expect(actor!.companyIds).toHaveLength(1);
       expect(actor!.memberships).toHaveLength(1);
     });
+  });
+
+  it("never creates the company (lazy creation)", async () => {
+    const { db, insertedTables } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor).not.toBeNull();
+    expect(insertedTables).toContain(authUsers);
+    expect(insertedTables).not.toContain(companies);
+  });
+
+  it("skips the membership upsert while the stack company does not exist", async () => {
+    const { db, insertedTables } = createFakeDb({ companyRows: [], seededMemberships: [] });
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(insertedTables).not.toContain(companyMemberships);
+    expect(actor!.companyIds).toEqual([]);
+    expect(actor!.memberships).toEqual([]);
+  });
+
+  it("upserts the membership once the stack company exists", async () => {
+    const { db, insertedTables } = createFakeDb({ companyRows: [{ id: "company-x" }] });
+    await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it("exposes the stack context on the actor", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
+  });
+
+  it("captures the optional gateway stack slug on the stack context", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "jannes-stubbemann" }),
+    );
+    expect(actor!.cloudStack).toEqual({
+      stackId: "stack-abc",
+      stackRole: "owner",
+      stackSlug: "jannes-stubbemann",
+    });
+  });
+
+  it("ignores a blank stack slug header", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-slug": "   " }),
+    );
+    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "owner" });
+  });
+
+  it("exposes a non-creator stack role verbatim", async () => {
+    const { db } = createFakeDb();
+    const actor = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "support" }),
+    );
+    expect(actor!.cloudStack).toEqual({ stackId: "stack-abc", stackRole: "support" });
+  });
+
+  // Fork-only behavior (upstream lacks it): the actor's access list is read back
+  // from ALL of the user's active memberships, not just the stack company.
+  it("includes ALL active memberships, not just the stack company", async () => {
+    // The user owns their stack company A and was also invited to company B (owned
+    // by a different account/stack). Both must surface in the actor's access list.
+    const stackCompany = { companyId: "company-a", membershipRole: "owner", status: "active" };
+    const invitedCompany = { companyId: "company-b", membershipRole: "member", status: "active" };
+    const { db, selectedTables } = createFakeDb({
+      membershipRow: stackCompany,
+      seededMemberships: [stackCompany, invitedCompany],
+      companyRows: [{ id: "company-a" }],
+    });
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+
+    expect(actor).not.toBeNull();
+    // The access list reads the user's REAL memberships, not a synthesized 1:1.
+    expect(selectedTables).toContain(companyMemberships);
+    expect(actor!.companyIds).toEqual(expect.arrayContaining(["company-a", "company-b"]));
+    expect(actor!.companyIds).toHaveLength(2);
+    expect(actor!.memberships).toHaveLength(2);
+    const byCompany = Object.fromEntries((actor!.memberships ?? []).map((m) => [m.companyId, m]));
+    expect(byCompany["company-a"]?.membershipRole).toBe("owner");
+    expect(byCompany["company-a"]?.status).toBe("active");
+    expect(byCompany["company-b"]?.membershipRole).toBe("member");
+    expect(byCompany["company-b"]?.status).toBe("active");
+  });
+
+  it("surfaces invited-company memberships even before the stack company exists", async () => {
+    // Lazy creation must not hide companies the user was invited to: the stack
+    // company is not created yet, but company B's membership is real.
+    const invitedCompany = { companyId: "company-b", membershipRole: "member", status: "active" };
+    const { db, insertedTables } = createFakeDb({
+      seededMemberships: [invitedCompany],
+      companyRows: [],
+    });
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+    expect(insertedTables).not.toContain(companyMemberships);
+    expect(actor!.companyIds).toEqual(["company-b"]);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+  });
+
+  it("with only the stack company still returns exactly that one (backward compat)", async () => {
+    // Single-company regression guard: only the upserted owner membership exists.
+    const stackCompany = { companyId: "company-solo", membershipRole: "owner", status: "active" };
+    const { db } = createFakeDb({
+      membershipRow: stackCompany,
+      seededMemberships: [stackCompany],
+      companyRows: [{ id: "company-solo" }],
+    });
+    const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+
+    expect(actor!.companyIds).toEqual(["company-solo"]);
+    expect(actor!.memberships).toHaveLength(1);
+    expect(actor?.memberships?.[0]?.membershipRole).toBe("owner");
+    expect(actor?.memberships?.[0]?.companyId).toBe("company-solo");
+    expect(actor!.source).toBe("cloud_tenant");
   });
 
   describe("owner instance-admin elevation (enableOwnerInstanceAdmin)", () => {

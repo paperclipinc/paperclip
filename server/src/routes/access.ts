@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
@@ -46,8 +46,10 @@ import {
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS,
   isUuidLike,
+  COMPANY_SETTINGS_SURFACES,
+  derivePublicFeatureFlags,
 } from "@paperclipai/shared";
-import type { DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole } from "@paperclipai/shared";
+import type { BoardCapabilities, DeploymentExposure, DeploymentMode, HumanCompanyMembershipRole, PermissionKey } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -85,6 +87,7 @@ import {
   agentService,
   boardAuthService,
   deduplicateAgentName,
+  instanceSettingsService,
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
@@ -95,10 +98,20 @@ import {
 } from "../services/company-member-roles.js";
 import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
+  createDrizzleActivationStore,
+  hasActivationForCompany,
+} from "../services/activation.js";
+import {
+  getInviteEmailTransport,
+  inviteEmailHook,
+  type InviteEmailPayload,
+} from "../services/invite-email.js";
+import { assertSeatAvailable } from "../services/seat-limit.js";
+import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
-import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess, assertSurfaceExposed } from "./authz.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -2649,6 +2662,9 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const instanceSettings = instanceSettingsService(db);
+  const getExposedCompanySurfaces = async () =>
+    (await instanceSettings.getVisibility()).companySurfaces;
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -2660,11 +2676,11 @@ export function accessRoutes(
   //
   // The key is deliberately NOT `requestIp()`: that helper prefers the
   // client-supplied `X-Forwarded-For` header (fine for log/audit fields,
-  // but trivially spoofable as a rate-limit key — rotating fake XFF values
+  // but trivially spoofable as a rate-limit key -- rotating fake XFF values
   // would mint a fresh budget per request). `req.ip` honors Express's
   // `trust proxy` setting (configured from TRUST_PROXY in app.ts, default:
   // trust nothing), so it is the socket's remote address unless the
-  // operator explicitly trusts a proxy — an unforgeable key either way.
+  // operator explicitly trusts a proxy -- an unforgeable key either way.
   const inviteRateLimiter = opts.inviteRateLimiter ?? createInviteRateLimiter();
   router.use("/invites/:token", (req, res, next) => {
     const result = inviteRateLimiter.consume(
@@ -2883,15 +2899,38 @@ export function accessRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) {
       throw unauthorized("Board authentication required");
     }
-    const accessSnapshot = await boardAuth.resolveBoardAccess(req.actor.userId);
+    const [accessSnapshot, settings] = await Promise.all([
+      boardAuth.resolveBoardAccess(req.actor.userId),
+      instanceSettings.get(),
+    ]);
+    // The local_trusted implicit actor has no DB role row; honor the actor
+    // claim set by the auth middleware alongside the DB-resolved role.
+    const isInstanceAdmin =
+      req.actor.source === "local_implicit" ||
+      req.actor.isInstanceAdmin === true ||
+      accessSnapshot.isInstanceAdmin;
+    const capabilities: BoardCapabilities = {
+      exposedSurfaces: isInstanceAdmin
+        ? [...COMPANY_SETTINGS_SURFACES]
+        : settings.visibility.companySurfaces,
+      features: derivePublicFeatureFlags({
+        general: settings.general,
+        experimental: settings.experimental,
+        defaultEnvironmentId: settings.defaultEnvironmentId,
+      }),
+      // Populated by PR-3 (company-standing gate); typed and empty until then.
+      companyStandings: {},
+    };
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
+      isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
       memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
+      cloudStack: req.actor.source === "cloud_tenant" ? req.actor.cloudStack ?? null : null,
+      capabilities,
     });
   });
 
@@ -3320,6 +3359,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -3349,6 +3389,10 @@ export function accessRoutes(
         }
       });
 
+      // Billing seat insertion point (Billing workstream owns enforcement;
+      // launch default is unlimited).
+      await assertSeatAvailable(db, created.companyId);
+
       const companyBranding = await getInviteCompanyBranding(created.companyId, token);
       const inviteSummary = toInviteSummaryResponse(
         req,
@@ -3357,6 +3401,17 @@ export function accessRoutes(
         companyBranding,
         opts.authPublicBaseUrl
       );
+
+      // Optional email delivery: when a recipient email is present and the
+      // Email workstream has registered a transport, send the invite. Otherwise
+      // the copyable inviteUrl below is the unchanged fallback.
+      await inviteEmailHook(getInviteEmailTransport(), {
+        email: (req.body.email as string | null | undefined) ?? null,
+        inviteUrl: inviteSummary.inviteUrl,
+        companyName: companyBranding.name ?? null,
+        role: (req.body.humanRole as InviteEmailPayload["role"]) ?? null,
+      });
+
       res.status(201).json({
         ...created,
         token,
@@ -3376,6 +3431,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanGenerateOpenClawInvitePrompt(req, companyId);
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -4143,6 +4199,7 @@ export function accessRoutes(
     } else {
       if (!invite.companyId) throw conflict("Invite is missing company scope");
       await assertCompanyPermission(req, invite.companyId, "users:invite");
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
     }
     if (invite.acceptedAt) throw conflict("Invite already consumed");
     if (invite.revokedAt) return res.json(invite);
@@ -4174,6 +4231,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/invites", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:invite");
+    await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
     const query = listCompanyInvitesQuerySchema.parse(req.query);
     const invitesForCompany = await loadCompanyInviteRecords(db, companyId, query);
     res.json(invitesForCompany);
@@ -4182,6 +4240,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/join-requests", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "joins:approve");
+    await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
     const query = listJoinRequestsQuerySchema.parse(req.query);
     const all = await loadJoinRequestRecords(db, companyId);
     const filtered = all.filter((row) => {
@@ -4199,6 +4258,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const requestId = req.params.requestId as string;
       await assertCompanyPermission(req, companyId, "joins:approve");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
 
       const existing = await db
         .select()
@@ -4349,6 +4409,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const requestId = req.params.requestId as string;
       await assertCompanyPermission(req, companyId, "joins:approve");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
 
       const existing = await db
         .select()
@@ -4478,6 +4539,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
     const [members, currentAccess] = await Promise.all([
       loadCompanyMemberRecords(db, companyId),
       loadCompanyAccessSummary(req, access, companyId),
@@ -4488,11 +4550,23 @@ export function accessRoutes(
     });
   });
 
+  // Deliberately not gated by assertSurfaceExposed("company.members", ...): the
+  // roster stays available under plain assertCompanyAccess even when the
+  // company.members management surface is hidden, since assignee pickers and
+  // mentions depend on it. Hiding the surface gates *management*, not directory reads.
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const users = await loadCompanyUserDirectory(db, companyId);
     res.json({ users });
+  });
+
+  router.get("/companies/:companyId/activation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const store = createDrizzleActivationStore(db);
+    const activated = await hasActivationForCompany(store, companyId);
+    res.json({ activated });
   });
 
   router.patch(
@@ -4502,6 +4576,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
@@ -4623,6 +4698,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
@@ -4750,6 +4826,7 @@ export function accessRoutes(
       await assertInstanceAdmin(req);
       assertAccessAdminVisible();
       const userId = req.params.userId as string;
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       await access.setUserCompanyAccess(
         userId,
         req.body.companyIds ?? [],

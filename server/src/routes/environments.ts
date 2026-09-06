@@ -59,6 +59,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { closeWarmNativeSessionsForEnvironment } from "../services/native-runtime/native-session-executor.js";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -144,6 +145,28 @@ function isTenantEditableManagedSandbox(environment: {
     environment.metadata?.managedByPaperclip === true &&
     environment.metadata?.managedKubernetesSandbox !== true
   );
+}
+
+/**
+ * Restricted (non-instance-admin) viewers must not see environment secrets or
+ * operator configuration, but they still need to know an environment's kind:
+ * the UI resolves the managed Kubernetes sandbox via `config.provider` (see
+ * `resolveForcedKubernetesEnvironment`), so a fully-empty redacted config makes
+ * a forced-Kubernetes instance look unconfigured to every restricted viewer.
+ * Keep only the non-secret `provider` discriminator; drop everything else.
+ */
+export function redactEnvironmentForRestrictedView<T extends {
+  config: Record<string, unknown> | null;
+  envVars?: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+}>(environment: T): T {
+  const provider = environment.config?.provider;
+  return {
+    ...environment,
+    config: typeof provider === "string" ? { provider } : {},
+    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
+    metadata: null,
+  };
 }
 
 const PLATFORM_PROVISIONED_MARKER_KEYS = [
@@ -375,19 +398,6 @@ export function environmentRoutes(
   function canReadFullInstanceEnvironment(req: Request) {
     return req.actor.type === "board"
       && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin);
-  }
-
-  function redactEnvironmentForRestrictedView<T extends {
-    config: Record<string, unknown> | null;
-    envVars?: Record<string, unknown> | null;
-    metadata: Record<string, unknown> | null;
-  }>(environment: T): T {
-    return {
-      ...environment,
-      config: {},
-      ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
-      metadata: null,
-    };
   }
 
   function presentEnvironmentForRead<T extends {
@@ -1294,10 +1304,23 @@ export function environmentRoutes(
       && impact.reusableSandboxLeaseCount > 0
       && impact.deleteBlockedReasons.every((reason) => reason === "reusable_sandbox_lease")
     ) {
-      const destroyResult = await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+      const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
-        failureReason: "environment_deleted",
+        reason: "environment deleted",
       });
+      if (warmSessions.busy > 0 || warmSessions.failed > 0) {
+        throw conflict(
+          warmSessions.busy > 0
+            ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
+            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+          { nativeRunnerSessions: warmSessions },
+        );
+      }
+      const destroyResult =
+        await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
+          environmentId: existing.id,
+          failureReason: "environment_deleted",
+        });
       destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
       impact = await svc.getDeleteBlastRadius(existing.id);
       if (!impact) {

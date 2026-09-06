@@ -6,11 +6,14 @@ separate from both the browser full-stack model E2E and the stress-derived
 workflow schedule in `runner-workflow-evals.md`.
 
 The canonical unit of work is one live roster plus one authored case. A full
-campaign selects every `rosters/live-*.json` file at one immutable
-`paperclip-evals` commit. That includes the complete 35-case provider rosters
-and the smaller ACPX Codex control roster. The native resume reliability gate
-is not a normal one-turn roster: it requires its separately governed external
-resource campaign and remains opt-in.
+campaign selects every enabled lane declared by
+`campaigns/live-direct-full.json` at one immutable `paperclip-evals` commit.
+That includes the complete 35-case provider rosters and the smaller ACPX Codex
+control roster. A disabled roster remains available for an explicit diagnostic
+selection, but is never inferred into a paid `all` run from the files present
+on disk. The native resume reliability gate is not a normal one-turn roster:
+it requires its separately governed external-resource campaign and remains
+opt-in.
 
 Managed-provider evidence identifies the immutable deployed provider artifact:
 Claude Managed uses its Agent version, while AgentCore uses its qualification
@@ -25,8 +28,11 @@ from the default branch and provide:
 - `target_branch`: the Paperclip branch to build and test;
 - `evals_sha`: an exact 40-character commit from
   `paperclipai/paperclip-evals`;
-- `rosters`: `all` for the entire direct suite, or a comma-separated diagnostic
-  subset;
+- `rosters`: `all` for every enabled lane in the canonical
+  `live-direct-full.json` campaign, or a comma-separated diagnostic subset.
+  Disabled lanes remain available only through an explicit diagnostic
+  selection; `all` never spends against a lane that the eval program has
+  marked disabled;
 - `max_infrastructure_retries`: zero through three, applied only when an
   attempt explicitly reports a retryable infrastructure failure.
 
@@ -43,11 +49,26 @@ the native daemon, provider dependencies, and the attempt viewer are built
 once and reused by every cell. Because the complete suite requires two matrix
 shards, this workflow accepts a shared concurrency ceiling from 2 through 100.
 
-`all` is intentionally literal. A disabled driver, missing remote profile, or
-unavailable provider is retained as an infrastructure result; it is not
-silently omitted. In particular, the ACPX Pi roster remains visible while Pi
-is disabled in the current Runner. Use a roster subset only for diagnosis, not
-to claim the full campaign is green.
+The reused provider runtime is created with `pnpm deploy --prod` from the
+frozen workspace lock. That preserves the repository's qualified dependency
+versions and patched ACP server bytes. Do not replace this step with a fresh
+`npm install` of the packed Runner tarball: npm cannot apply the workspace's
+`patchedDependencies`, so the resulting ACPX executables no longer match their
+qualified digests.
+
+The direct eval CLI also materializes a minimal immutable native runtime
+context in each isolated attempt workspace. This keeps the direct layer on the
+same `paperclip.native-execution-input.v3` contract as production, including
+the AgentCore HarnessSkill upload path, without borrowing any browser E2E
+setup.
+
+`all` means the maintained enabled campaign, not every matching file in the
+roster directory. A missing campaign file fails closed. Within an enabled
+lane, a missing remote profile or unavailable provider is retained as an
+infrastructure result; it is not silently omitted. The current ACPX Pi roster
+is declared disabled because its Runner security profile is not qualified, so
+it runs only when selected explicitly for diagnosis. Use a roster subset only
+for diagnosis, not to claim the full maintained campaign is green.
 
 A provider turn that reaches a durable failed, interrupted, or otherwise
 non-completed terminal still produces an attempt artifact and is scored as a
@@ -70,7 +91,9 @@ Claude Managed also requires the four nonsecret
 nonsecret `PAPERCLIP_AWS_AGENTCORE_*` profile variables, including
 `PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN` and the immutable
 `PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION`; the eval fails closed when
-that deployed revision differs from the pinned roster config. The workflow
+that deployed revision differs from the pinned roster config. The currently
+qualified context-aware harness revision is
+`aws-agentcore-harness-context-v2`. The workflow
 writes the GitHub OIDC token to a mode-`0600` file and never forwards long-lived
 AWS access keys.
 Provision the AgentCore stack with `--github-oidc-provider-arn` so that scoped

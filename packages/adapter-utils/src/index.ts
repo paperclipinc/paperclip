@@ -70,6 +70,7 @@ export {
 export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
+  redactDiagnosticText,
   redactSensitiveText,
 } from "./command-redaction.js";
 export {
@@ -94,7 +95,6 @@ export type {
   RuntimeStatusSink,
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
-export { inferOpenAiCompatibleBiller } from "./billing.js";
 export type {
   InferenceFailureCode,
   InferenceFailureClassification,
@@ -114,6 +114,7 @@ export {
   SANDBOX_UNSCHEDULABLE_ERROR_CODE,
   classifySandboxInfraFailure,
 } from "./sandbox-infra-failure.js";
+export { inferOpenAiCompatibleBiller } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,

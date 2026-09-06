@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
+import { ApiError } from "@/api/client";
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -152,6 +153,16 @@ const mockSecretsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({

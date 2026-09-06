@@ -130,6 +130,7 @@ import {
   buildNativeRuntimeContext,
   cancelNativeSession,
   claimNativeRestartRecoveries,
+  closeWarmNativeSessionsForEnvironment,
   currentNativeControllerIdentity,
   dispatchNativeSessionResumptions,
   detachNativeSessionsForRestart,
@@ -188,6 +189,11 @@ import {
   MAX_EXCERPT_BYTES,
 } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import {
+  createDrizzleActivationStore,
+  recordActivationEvent,
+  resolveActivationSink,
+} from "./activation.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { emitAgentTaskRun } from "./agent-task-run-telemetry.js";
@@ -215,6 +221,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  resolveHeartbeatRunErrorCode,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -376,6 +383,7 @@ import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { resolveCompanyConcurrencyCap, clampToCompanyConcurrency } from "./company-concurrency.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -396,6 +404,7 @@ import {
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
+  classifySandboxInfraFailure,
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolveSessionCompactionPolicy,
@@ -456,6 +465,30 @@ import {
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { serverVersion } from "../version.js";
+import { parsePriceTable, priceCloudTokens } from "./cloud-token-pricing.js";
+import { computeCostUsdForRun } from "./kubecost-client.js";
+import { billedCostCents, parseMargin, parseComputeRatePerHour, resolveComputeUsd } from "./run-cost.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import { loadConfig } from "../config.js";
+import {
+  adapterConsumesInstructionsBundle,
+  loadDefaultAgentInstructionsBundle,
+  resolveDefaultAgentInstructionsBundleRole,
+} from "./default-agent-instructions.js";
+
+// Cloud cost-plus billing inputs. All degrade safely to today's behaviour
+// when unset: an empty price table -> priceCloudTokens returns null ->
+// billedCostCents returns 0; an empty KUBECOST_URL -> compute cost 0; a
+// missing margin -> 1.0 (wholesale only).
+const cloudPriceTable = parsePriceTable(process.env.PAPERCLIP_CLOUD_PRICE_TABLE);
+const cloudMargin = parseMargin(process.env.PAPERCLIP_CLOUD_MARGIN_MULTIPLIER);
+const kubecostCfg = { baseUrl: process.env.KUBECOST_URL ?? "" };
+// Deterministic compute floor (wholesale pod-USD/hour). Kubecost-by-run-id is
+// preferred when it reports a positive cost, but it is fragile in cloud_tenant
+// mode (kube-state-metrics must expose the paperclip.io/run-id label, and short
+// runs round to 0 against the Prometheus scrape interval), so without this floor
+// every managed run metered 0 compute. Unset -> 0 -> safe degrade.
+const cloudComputeRatePerHour = parseComputeRatePerHour(process.env.PAPERCLIP_CLOUD_COMPUTE_USD_PER_HOUR);
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -567,6 +600,7 @@ function pendingCleanupCapWarnedSql() {
 }
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_QUEUED_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -886,6 +920,14 @@ function readTransientRetryNotBeforeFromRun(
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function readTransientRetryMaxAttemptsFromRun(run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">) {
+  const resultJson = parseObject(run.resultJson);
+  const value = resultJson.transientRetryMaxAttempts;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const attempts = Math.floor(value);
+  return attempts > 0 ? attempts : null;
+}
+
 function readTransientRecoveryContractFromRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson">,
 ) {
@@ -895,6 +937,7 @@ function readTransientRecoveryContractFromRun(
     ? {
         errorFamily,
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
+        maxAttempts: readTransientRetryMaxAttemptsFromRun(run),
       }
     : null;
 }
@@ -946,6 +989,37 @@ function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
     value,
   );
 }
+
+// A permanent, non-retryable setup failure: the agent's adapter is not runnable in
+// this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
+// which fails to acquire the k8s lease with "Adapter ... is not in the configured
+// adapter registry"). Re-invoking such an agent every heartbeat produces a
+// setup_failed retry storm, so it must pause the agent instead of looping.
+export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /is not in the configured adapter registry/i.test(message);
+}
+
+// A permanent authentication failure: the agent has no valid provider credential
+// (e.g. a keyless agent activated without connecting a model key), so every
+// heartbeat run completes with `outcome:"failed"` + this errorCode and will keep
+// failing until a human wires up a credential. Pause the agent instead of looping.
+const PERMANENT_AUTH_FAILURE_CODES = new Set([
+  "claude_auth_required",
+  "codex_auth_required",
+  "inference_auth_invalid",
+]);
+function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
+  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
+}
+
+// Generic failure-storm breaker: when this many consecutive terminal runs of an
+// agent all failed with the same errorCode (no success in between), the agent is
+// not making progress and every further automated re-invocation burns the same
+// failure again. Pause it and route the reason to a human. This is the fallback
+// for failure shapes that no dedicated branch (transient retry contracts, the
+// permanent-auth pause, the non-retryable setup pause) already handles.
+export const CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD = 6;
 
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<
@@ -1295,7 +1369,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
     input.trustPreset?.kind === "low_trust_review"
       ? (input.trustPreset.boundary.allowedSecretBindingIds ?? [])
       : undefined;
-  const allowTrustedEnvProjection = input.trustPreset?.kind !== "low_trust_review";
+  const allowTrustedEnvProjection =
+    input.trustPreset?.kind !== "low_trust_review";
   if (input.trustPreset?.kind === "low_trust_review") {
     assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
@@ -1306,7 +1381,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some(
         (key) =>
-          (allowTrustedEnvProjection && typeof input.trustedEnvProjection?.[key] === "string") ||
+          (allowTrustedEnvProjection &&
+            typeof input.trustedEnvProjection?.[key] === "string") ||
           (requiredScopedEnvBinding.consumerScopes.includes("agent") &&
             isConfiguredEnvBindingValue(agentEnv[key])) ||
           (requiredScopedEnvBinding.consumerScopes.includes("project") &&
@@ -1567,9 +1643,9 @@ export async function resolveExecutionRunAdapterConfig(input: {
     }
   }
   if (
-    allowTrustedEnvProjection
-    && input.trustedEnvProjection
-    && Object.keys(input.trustedEnvProjection).length > 0
+    allowTrustedEnvProjection &&
+    input.trustedEnvProjection &&
+    Object.keys(input.trustedEnvProjection).length > 0
   ) {
     resolvedConfig.env = {
       ...parseObject(resolvedConfig.env),
@@ -1604,9 +1680,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
       configuredApiKey: readNonEmptyString(resolvedEnv.OPENAI_API_KEY),
     });
     if (readiness.managed && !readiness.ready) {
+      // "Sign in on the host" is only actionable when the person reading this
+      // IS the operator of the machine. On a multi-user deployment the runner
+      // is a sandbox nobody can log into, so that half of the sentence sends
+      // the user somewhere that does not exist; leave them with the one action
+      // they can actually take.
+      const hostLoginActionable = loadConfig().deploymentMode === "local_trusted";
       throw new ConfigurationIncompleteFailure(
         `configuration incomplete: no Codex credentials available for managed home "${readiness.effectiveHome}". ` +
-          `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`,
+          (hostLoginActionable
+            ? `Sign in to Codex on the host with a ChatGPT subscription, or bind a per-agent OPENAI_API_KEY secret for this agent.`
+            : `Add an OPENAI_API_KEY for this agent (Agent settings -> credentials) and run it again.`),
         {
           configurationIncomplete: {
             reason: "codex_credentials_missing",
@@ -1753,9 +1837,8 @@ export function providerResourceDispositionForTerminalRun(
   desired: ProviderResourceDisposition | undefined,
   status: string | null | undefined,
 ): ProviderResourceDisposition | undefined {
-  return desired === "keep_running" && status !== "succeeded"
-    ? "stop_and_retain"
-    : desired;
+  if (desired !== "keep_running") return desired;
+  return status === "succeeded" ? desired : "stop_and_retain";
 }
 
 export interface NativeSandboxLifecycle {
@@ -3103,6 +3186,10 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  // The log route needs the status to tell "no log YET" (an active run whose
+  // runner has not opened the file) from "no log EVER" (a terminal run that
+  // never wrote one). Same row, so this costs nothing on the poll path.
+  status: heartbeatRuns.status,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -4089,19 +4176,22 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const [runIdentity] = await input.db
     .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
     .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.agent.companyId),
-      eq(heartbeatRuns.agentId, input.agent.id),
-    ))
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+      ),
+    )
     .limit(1);
-  const resolvedInstalledConnections = await filterResolvedGitHubConnectionsForRun({
-    db: input.db,
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    responsibleUserId: runIdentity?.responsibleUserId ?? null,
-    connections: effective.installedConnections,
-  });
+  const resolvedInstalledConnections =
+    await filterResolvedGitHubConnectionsForRun({
+      db: input.db,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      responsibleUserId: runIdentity?.responsibleUserId ?? null,
+      connections: effective.installedConnections,
+    });
   const permittedConnectionIds = new Set([
     ...effective.entries
       .filter((entry) => entry.effect === "include" && entry.connectionId)
@@ -4572,30 +4662,36 @@ export async function createManagedMcpRunConfig(input: {
   const [runIdentity] = await input.db
     .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
     .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.agent.companyId),
-      eq(heartbeatRuns.agentId, input.agent.id),
-    ))
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+      ),
+    )
     .limit(1);
-  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun({
-    db: input.db,
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    responsibleUserId: runIdentity?.responsibleUserId ?? null,
-    connections: installRows.filter(
-      (install) =>
-        install.enabled &&
-        install.status === "active" &&
-        !["degraded", "failed", "error", "missing_secret"].includes(
-          install.healthStatus,
-        ),
-    ).map((install) => ({
-      id: install.connectionId,
-      config: install.config,
-      transportConfig: install.transportConfig,
-    })),
-  });
+  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun(
+    {
+      db: input.db,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      responsibleUserId: runIdentity?.responsibleUserId ?? null,
+      connections: installRows
+        .filter(
+          (install) =>
+            install.enabled &&
+            install.status === "active" &&
+            !["degraded", "failed", "error", "missing_secret"].includes(
+              install.healthStatus,
+            ),
+        )
+        .map((install) => ({
+          id: install.connectionId,
+          config: install.config,
+          transportConfig: install.transportConfig,
+        })),
+    },
+  );
   const availableInstalledConnectionIds = new Set(
     resolvedAvailableInstalls.map((install) => install.id),
   );
@@ -6055,6 +6151,14 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  // This row is runtime state, not requested configuration. It is absent
+  // before the first reusable run is realized and present on the next turn;
+  // fingerprinting that transition would rotate the native session exactly
+  // when the warm runner first becomes reusable. The requested/effective mode,
+  // project policy, and issue settings remain the configuration compatibility
+  // boundary; the reusable row and its evolving generation are state.
+  delete workspaceConfig.existingExecutionWorkspace;
+  delete workspaceConfig.reusableExecutionWorkspaceConfig;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -8151,6 +8255,11 @@ export interface HeartbeatServiceOptions {
   nativeSessionBackendFactory?: (
     execution: NativeExecutionInput,
   ) => NativeSessionBackend;
+  /** Test seam for observing the native-session shutdown boundary before lease destruction. */
+  closeWarmNativeSessionsForRun?: (input: {
+    runId: string;
+    reason: string;
+  }) => Promise<{ closed: number; busy: number; failed: number }>;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -8250,6 +8359,39 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
   return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
+// On SIGTERM (every k8s rollout of the single-replica server) we first quiesce
+// new-run dispatch and then WAIT for in-flight runs to finish on their own,
+// bounded by this timeout, before interrupting anything. Keep the default well
+// under the pod terminationGracePeriod so the wait can never be SIGKILL'd
+// mid-drain (the operator is given a matching, longer grace period).
+export const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS = 3 * 60 * 1000;
+export const SHUTDOWN_DRAIN_POLL_INTERVAL_MS = 500;
+
+// Shared across ALL heartbeatService instances (routes and the scheduler each
+// construct their own) so that once graceful shutdown begins EVERY instance's
+// dispatch-suppression check observes the quiesce. If this lived in a single
+// service closure, a dispatch path on a different instance would keep starting
+// new runs mid-drain (only to be interrupted immediately or outlive cleanup).
+// Mirrors activeRunExecutions above, which is module-scoped for the same
+// cross-instance reason. It never resets in production (the process is exiting);
+// resetShutdownDrainingForTests() clears it between test cases.
+let shutdownDraining = false;
+
+/** Test-only: clears the shared graceful-shutdown quiesce flag between cases. */
+export function resetShutdownDrainingForTests(): void {
+  shutdownDraining = false;
+}
+
+export function resolveShutdownDrainTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.PAPERCLIP_SHUTDOWN_DRAIN_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+  return parsed;
+}
+
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
@@ -8333,7 +8475,13 @@ export function heartbeatService(
     }
     return cachedWorktreeRunExecutionOverride;
   };
+  // shutdownDraining is module-scoped (declared above) so that once graceful
+  // shutdown begins, every heartbeatService instance's suppression check below
+  // observes the quiesce, not just the instance that ran the drain.
   const getSchedulingSuppression = async () => {
+    if (shutdownDraining) {
+      return { suppressed: true, reason: "server_shutdown" as const };
+    }
     const override = await resolveWorktreeRunExecutionOverride();
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
@@ -8362,6 +8510,13 @@ export function heartbeatService(
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const pendingExecutions = new Set<Promise<unknown>>();
+  function trackPendingExecution(promise: Promise<unknown>) {
+    pendingExecutions.add(promise);
+    promise.finally(() => {
+      pendingExecutions.delete(promise);
+    }).catch(() => undefined);
+  }
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -8731,6 +8886,57 @@ export function heartbeatService(
       sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
     };
   }) {
+    if (input.providerResourceDisposition === "destroy") {
+      const closeResult = await (
+        options.closeWarmNativeSessionsForRun ??
+        (async ({ runId, reason }) => {
+          const environmentIds = await db
+            .selectDistinct({ environmentId: environmentLeases.environmentId })
+            .from(environmentLeases)
+            .where(
+              and(
+                eq(environmentLeases.heartbeatRunId, runId),
+                eq(environmentLeases.status, "active"),
+              ),
+            )
+            .then((rows) =>
+              rows.flatMap((row) =>
+                typeof row.environmentId === "string" &&
+                row.environmentId.length > 0
+                  ? [row.environmentId]
+                  : [],
+              ),
+            );
+          const aggregate = { closed: 0, busy: 0, failed: 0 };
+          for (const environmentId of environmentIds) {
+            const result = await closeWarmNativeSessionsForEnvironment({
+              environmentId,
+              reason,
+            });
+            aggregate.closed += result.closed;
+            aggregate.busy += result.busy;
+            aggregate.failed += result.failed;
+          }
+          return aggregate;
+        })
+      )({
+        runId: input.runId,
+        reason: "terminal heartbeat run destroyed its environment lease",
+      }).catch((err) => {
+        logger.warn(
+          { err, runId: input.runId },
+          "failed to close warm native sessions before environment lease destruction",
+        );
+        return { closed: 0, busy: 0, failed: 1 };
+      });
+      if (closeResult.busy > 0 || closeResult.failed > 0) {
+        logger.warn(
+          { runId: input.runId, warmNativeSessions: closeResult },
+          "deferred environment lease destruction until warm native sessions close",
+        );
+        return;
+      }
+    }
     const releaseResult = await envOrchestrator
       .releaseForRun({
         heartbeatRunId: input.runId,
@@ -10408,8 +10614,9 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
-      responsibleUserId: readNonEmptyString(context.responsibleUserId)
-        ?? readNonEmptyString(context.responsible_user_id),
+      responsibleUserId:
+        readNonEmptyString(context.responsibleUserId) ??
+        readNonEmptyString(context.responsible_user_id),
       agentId: agent.id,
     });
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -10631,6 +10838,57 @@ export function heartbeatService(
     };
   }
 
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: updated.id,
+          agentId: updated.agentId,
+          status: updated.status,
+          invocationSource: updated.invocationSource,
+          triggerDetail: updated.triggerDetail,
+          error: updated.error ?? null,
+          errorCode: updated.errorCode ?? null,
+          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
+          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
+  }
+
   /**
    * Resolve the run workspace: the anchor workspace plus, when the multi-project workspace-sync
    * flag is on, the read-only referenced (mentioned) project workspaces. With the flag off (the
@@ -10668,8 +10926,9 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
-      responsibleUserId: readNonEmptyString(context.responsibleUserId)
-        ?? readNonEmptyString(context.responsible_user_id),
+      responsibleUserId:
+        readNonEmptyString(context.responsibleUserId) ??
+        readNonEmptyString(context.responsible_user_id),
       agentId: agent.id,
     });
     const { additionalWorkspaces, warnings, failures } =
@@ -13129,8 +13388,18 @@ export function heartbeatService(
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
-    runIds: readonly string[] | null = null,
+    optionsOrRunIds?: {
+      hasInflightRuns?: () => boolean;
+      sleep?: (ms: number) => Promise<void>;
+      drainTimeoutMs?: number;
+      pollIntervalMs?: number;
+      nowMs?: () => number;
+    } | readonly string[] | null,
   ) {
+    const isRunIdsArg = optionsOrRunIds == null || Array.isArray(optionsOrRunIds);
+    const runIds: readonly string[] | null = isRunIdsArg ? (optionsOrRunIds ?? null) : null;
+    const drainOpts = !isRunIdsArg ? optionsOrRunIds as Exclude<typeof optionsOrRunIds, readonly string[] | null | undefined> : null;
+
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return {
@@ -13140,6 +13409,26 @@ export function heartbeatService(
         restartSuspendedRunIds: [],
       };
     }
+
+    // Suppress new-run dispatch before the wait so no scheduler path can
+    // race the shutdown. The flag is module-scoped so every heartbeatService
+    // instance observes the quiesce (see getSchedulingSuppression above).
+    shutdownDraining = true;
+
+    if (drainOpts?.hasInflightRuns) {
+      const sleepFn = drainOpts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      const nowMsFn = drainOpts.nowMs ?? (() => Date.now());
+      const drainTimeoutMs = drainOpts.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
+      const pollIntervalMs = drainOpts.pollIntervalMs ?? 500;
+      const deadline = nowMsFn() + drainTimeoutMs;
+
+      while (drainOpts.hasInflightRuns()) {
+        const remaining = deadline - nowMsFn();
+        if (remaining <= 0) break;
+        await sleepFn(Math.min(pollIntervalMs, remaining));
+      }
+    }
+
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -13274,6 +13563,14 @@ export function heartbeatService(
           parseObject(interrupted.resultJson),
         )) ?? interrupted;
 
+      // TODO(keep-lease-resume): ideally we would KEEP the sandbox lease here so
+      // restart recovery could reattach to the existing sandbox instead of
+      // provisioning a fresh one and losing partial work. The current retry path
+      // (enqueueProcessLossRetry) starts a brand-new run that provisions its own
+      // environment, so keeping the lease without a reattach-on-retry path would
+      // leak/double-lease the sandbox. Until the resume/reattach path exists we
+      // release the lease and retry from scratch (the safe, correct subset). The
+      // soft-drain above already makes this the rare exception, not the default.
       await releaseEnvironmentLeasesForRun({
         runId: interrupted.id,
         companyId: interrupted.companyId,
@@ -14936,6 +15233,14 @@ export function heartbeatService(
         scheduledRetry: null,
       };
     }
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
 
     const contextSnapshot = {
       ...parseObject(scheduled.run.contextSnapshot),
@@ -16253,6 +16558,74 @@ export function heartbeatService(
     return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
   }
 
+  // Failure-storm breaker (see CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD):
+  // pause the agent when its most recent terminal runs, including the run that
+  // just finalized, all failed with the same errorCode. Dedicated branches
+  // (transient retry contracts, permanent-auth, non-retryable setup) run before
+  // this and take precedence.
+  async function maybePauseAgentForRepeatedIdenticalFailure(
+    agent: Pick<typeof agents.$inferSelect, "id" | "status">,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "errorCode">,
+  ) {
+    const errorCode = readNonEmptyString(run.errorCode);
+    if (!errorCode) return;
+    if (agent.status === "paused" || agent.status === "terminated") return;
+
+    const recentTerminalRuns = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agent.id),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD)
+      .catch((queryErr) => {
+        logger.warn(
+          { err: queryErr, agentId: agent.id, runId: run.id },
+          "failed to evaluate repeated identical failure streak",
+        );
+        return null;
+      });
+    if (!recentTerminalRuns || recentTerminalRuns.length < CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD) {
+      return;
+    }
+    if (!recentTerminalRuns.every((recent) => recent.status === "failed" && recent.errorCode === errorCode)) {
+      return;
+    }
+
+    const identicalFailurePauseReason =
+      `Paused after ${CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD} consecutive failed runs with the same error (${errorCode}). Fix the underlying issue, then resume.`;
+    const identicalFailurePauseWrite = await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: truncateAgentErrorReason(identicalFailurePauseReason),
+        pausedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agent.id))
+      .catch((pauseErr) => {
+        logger.warn(
+          { err: pauseErr, agentId: agent.id, runId: run.id },
+          "failed to pause agent after repeated identical failures",
+        );
+        return null;
+      });
+    if (identicalFailurePauseWrite !== null) {
+      // Mirror manual pause: a paused agent must have no live runs, or a
+      // just-enqueued retry can sit in "queued" forever since dequeue skips
+      // paused agents. run is already terminal by the time this runs.
+      await cancelActiveForAgentInternal(
+        agent.id,
+        `Cancelled because the agent was paused: ${identicalFailurePauseReason}`,
+        "agent_paused",
+      );
+    }
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
@@ -16933,8 +17306,9 @@ export function heartbeatService(
     ).catch(() => undefined);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
     // Complete persisted native results before generic orphan recovery. The
@@ -17401,6 +17775,58 @@ export function heartbeatService(
       reaped.push(run.id);
     }
 
+    // Backstop for any cause of queue stranding (pause races, concurrency starvation,
+    // invokability edge cases): a run should never wait in "queued" forever.
+    // This loop only cancels the run and its wakeup; for issue-linked runs it
+    // deliberately does not touch the issue's checkoutRunId/executionRunId
+    // lock columns. Releasing that lock is left to the same-sweep
+    // reconcileStrandedAssignedIssues() (and the enqueueWakeup self-heal it
+    // triggers), mirroring how sweepStaleIssueLocks documents its own
+    // reliance on that same reconciliation pass.
+    const expiredQueuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          lt(heartbeatRuns.createdAt, new Date(now.getTime() - maxQueuedAgeMs)),
+        ),
+      );
+
+    const maxQueuedAgeHours = maxQueuedAgeMs / (60 * 60 * 1000);
+    const maxQueuedAgeHoursLabel = Number.isInteger(maxQueuedAgeHours)
+      ? String(maxQueuedAgeHours)
+      : maxQueuedAgeHours.toFixed(2);
+    const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
+
+    for (const run of expiredQueuedRuns) {
+      // Guard the cancellation on the row still being "queued": another
+      // scheduler pass or a manual resume can claim this exact run (queued ->
+      // running) between the SELECT above and this UPDATE. Without the guard
+      // we would blindly stamp a now-running/finished run back to
+      // "cancelled" and cancel its wakeup out from under it. Only touch the
+      // wakeup and append the lifecycle event when the guarded update
+      // actually transitioned the row.
+      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+        errorCode: "queue_expired",
+      });
+      if (!cancelResult.updated || !cancelResult.run) continue;
+      const cancelledRun = cancelResult.run;
+      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+      });
+      await appendRunEvent(cancelledRun, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queueExpiredMessage,
+      });
+      reaped.push(cancelledRun.id);
+    }
+
     if (reaped.length > 0) {
       logger.warn(
         { reapedCount: reaped.length, runIds: reaped },
@@ -17610,6 +18036,24 @@ export function heartbeatService(
         costCents: additionalCostCents,
         occurredAt: new Date(),
       });
+
+      // Activation instrumentation: a successful run that produced a cost
+      // event is the activation point (first successful agent run). No-op
+      // unless PAPERCLIP_ACTIVATION_SINK is set; swallows its own errors so it
+      // can never affect run completion.
+      //
+      // The run status has to be passed explicitly because this block is on the
+      // cost-event path, which fires for ANY run carrying token usage -- and
+      // `run` here is whatever the finalize chain produced, including a run
+      // that setRunStatus() marked "failed". Without the status, a BYOK run
+      // that burned tokens and then failed on auth counted as activation.
+      await recordActivationEvent(createDrizzleActivationStore(db), {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        heartbeatRunId: run.id,
+        sink: resolveActivationSink(),
+        runStatus: run.status,
+      });
     }
   }
 
@@ -17739,6 +18183,7 @@ export function heartbeatService(
             "queued heartbeat execution failed",
           );
         });
+        trackPendingExecution(execution);
         // Register the in-flight execution so drainActiveRunExecutions() can await
         // it. executeRun resolves only after its finally block finishes flushing
         // run rows/events, so awaiting this promise guarantees the run's writes
@@ -17807,6 +18252,12 @@ export function heartbeatService(
                 "scheduled native session resume failed",
               );
             });
+    // Self-heal guard for AdapterRuntimeImageMismatchError (a run landed on a
+    // sandbox pod whose runtime image does not carry the harness CLI). Flip
+    // to true the first time recovery is attempted so a second mismatch on
+    // the SAME run surfaces the original typed error terminally instead of
+    // looping.
+    let imageMismatchRecoveryAttempted = false;
             activeRunExecutionPromises.add(execution);
             void execution.finally(() =>
               activeRunExecutionPromises.delete(execution),
@@ -18760,12 +19211,16 @@ export function heartbeatService(
         issueId,
         explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
       });
-      const githubRunAuth = await createGitRemoteAuthProvider(db, agent.companyId, {
-        issueId,
-        heartbeatRunId: run.id,
-        responsibleUserId,
-        agentId: agent.id,
-      })("https://github.com/paperclipai/credential-probe.git");
+      const githubRunAuth = await createGitRemoteAuthProvider(
+        db,
+        agent.companyId,
+        {
+          issueId,
+          heartbeatRunId: run.id,
+          responsibleUserId,
+          agentId: agent.id,
+        },
+      )("https://github.com/paperclipai/credential-probe.git");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           companyId: agent.companyId,
@@ -18784,10 +19239,16 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretsSvc,
           trustPreset,
-          ...(githubRunAuth ? {
-            trustedEnvProjection: githubRunAuth.env,
-            trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN", GIT_CREDENTIAL_TOKEN_ENV_KEY],
-          } : {}),
+          ...(githubRunAuth
+            ? {
+                trustedEnvProjection: githubRunAuth.env,
+                trustedEnvSecretKeys: [
+                  "GH_TOKEN",
+                  "GITHUB_TOKEN",
+                  GIT_CREDENTIAL_TOKEN_ENV_KEY,
+                ],
+              }
+            : {}),
           requiredScopedEnvBinding: pushCapabilityPreflightRequired
             ? {
                 keys: [...PUSH_CAPABILITY_ENV_KEYS],
@@ -19223,6 +19684,63 @@ export function heartbeatService(
       const resolvedProjectWorkspaceId =
         issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
       let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
+      let issueExecutionWorkspaceIdForRun =
+        issueRef?.executionWorkspaceId ?? null;
+      let issueProjectWorkspaceIdForRun = issueRef?.projectWorkspaceId ?? null;
+      let issueExecutionWorkspacePreferenceForRun =
+        issueRef?.executionWorkspacePreference ?? null;
+      let issueExecutionWorkspaceModeForRun =
+        issueExecutionWorkspaceSettings?.mode ?? null;
+      const warmReusableExecutionWorkspace =
+        selectedEnvironmentForConfig?.driver === "sandbox" &&
+        selectedEnvironmentConfigForFingerprint.reuseLease === true &&
+        selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
+      const bindIssueToPersistedExecutionWorkspace = async (
+        workspace: ExecutionWorkspace | null,
+      ) => {
+        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+          return;
+        }
+        const nextIssueWorkspaceMode =
+          issueExecutionWorkspaceModeForPersistedWorkspace(workspace.mode) ??
+          "agent_default";
+        const shouldSwitchIssueToExistingWorkspace =
+          issueRef?.executionWorkspacePreference === "reuse_existing" ||
+          requestedExecutionWorkspaceMode === "isolated_workspace" ||
+          requestedExecutionWorkspaceMode === "operator_branch" ||
+          warmReusableExecutionWorkspace;
+        const nextIssuePatch: Record<string, unknown> = {};
+        if (issueExecutionWorkspaceIdForRun !== workspace.id) {
+          nextIssuePatch.executionWorkspaceId = workspace.id;
+        }
+        if (
+          resolvedProjectWorkspaceId &&
+          issueProjectWorkspaceIdForRun !== resolvedProjectWorkspaceId
+        ) {
+          nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
+        }
+        if (
+          shouldSwitchIssueToExistingWorkspace &&
+          (issueExecutionWorkspacePreferenceForRun !== "reuse_existing" ||
+            issueExecutionWorkspaceModeForRun !== nextIssueWorkspaceMode)
+        ) {
+          nextIssuePatch.executionWorkspacePreference = "reuse_existing";
+          nextIssuePatch.executionWorkspaceSettings = {
+            ...(issueExecutionWorkspaceSettings ?? {}),
+            mode: nextIssueWorkspaceMode,
+          };
+        }
+        if (Object.keys(nextIssuePatch).length > 0) {
+          await issuesSvc.update(issueId, nextIssuePatch);
+          issueExecutionWorkspaceIdForRun = workspace.id;
+          issueProjectWorkspaceIdForRun =
+            resolvedProjectWorkspaceId ?? issueProjectWorkspaceIdForRun;
+          if (shouldSwitchIssueToExistingWorkspace) {
+            issueExecutionWorkspacePreferenceForRun = "reuse_existing";
+            issueExecutionWorkspaceModeForRun = nextIssueWorkspaceMode;
+          }
+        }
+      };
       const baseExecutionWorkspaceMetadata =
         mergeExecutionWorkspaceMetadataForPersistence({
           existingMetadata:
@@ -19409,6 +19927,50 @@ export function heartbeatService(
         }
         throw error;
       }
+      if (adapterConsumesInstructionsBundle(agent.adapterType)) {
+        try {
+          const ensured = await agentInstructionsService().ensureManagedInstructionsMaterialized(agent, {
+            durableSnapshot: agent.managedInstructionsSnapshot ?? null,
+            loadDefaults: (role: string) =>
+              loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(role)),
+          });
+          if (ensured.snapshotToPersist) {
+            await db
+              .update(agents)
+              .set({ managedInstructionsSnapshot: ensured.snapshotToPersist, updatedAt: new Date() })
+              .where(eq(agents.id, agent.id));
+          }
+          if (ensured.status === "restored") {
+            logger.warn(
+              {
+                companyId: agent.companyId,
+                agentId: agent.id,
+                runId: run.id,
+                adapterType: agent.adapterType,
+                source: ensured.source,
+              },
+              "re-materialized missing managed instructions bundle before run",
+            );
+            await appendRunEvent(run, {
+              eventType: "instructions.rematerialized",
+              stream: "system",
+              level: "warn",
+              message: "Re-materialized missing managed instructions bundle before run",
+              payload: { source: ensured.source, entryPath: ensured.entryPath },
+            });
+          }
+        } catch (err: unknown) {
+          logger.warn(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to ensure managed instructions bundle; continuing without self-heal",
+          );
+        }
+      }
       await workspaceOperationRecorder.attachExecutionWorkspaceId(
         persistedExecutionWorkspace?.id ?? null,
       );
@@ -19440,40 +20002,7 @@ export function heartbeatService(
           },
         );
       }
-      if (
-        issueId &&
-        persistedExecutionWorkspace &&
-        !nativeRecoveryExecutionWorkspaceId
-      ) {
-        const nextIssueWorkspaceMode =
-          issueExecutionWorkspaceModeForPersistedWorkspace(
-            persistedExecutionWorkspace.mode,
-          );
-        const shouldSwitchIssueToExistingWorkspace =
-          issueRef?.executionWorkspacePreference === "reuse_existing" ||
-          requestedExecutionWorkspaceMode === "isolated_workspace" ||
-          requestedExecutionWorkspaceMode === "operator_branch";
-        const nextIssuePatch: Record<string, unknown> = {};
-        if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
-          nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
-        }
-        if (
-          resolvedProjectWorkspaceId &&
-          issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId
-        ) {
-          nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
-        }
-        if (shouldSwitchIssueToExistingWorkspace) {
-          nextIssuePatch.executionWorkspacePreference = "reuse_existing";
-          nextIssuePatch.executionWorkspaceSettings = {
-            ...(issueExecutionWorkspaceSettings ?? {}),
-            mode: nextIssueWorkspaceMode,
-          };
-        }
-        if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(issueId, nextIssuePatch);
-        }
-      }
+      await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       if (persistedExecutionWorkspace) {
         context.executionWorkspaceId = persistedExecutionWorkspace.id;
         await db
@@ -19612,6 +20141,11 @@ export function heartbeatService(
       };
       persistedExecutionWorkspace =
         realizationResult.persistedExecutionWorkspace;
+      // A sandbox realization may materialize or replace the durable workspace
+      // after the host-side provisioning boundary above. Bind that final ID to
+      // the issue before dispatch so warm turns reuse the exact same workspace
+      // and lease scope instead of silently creating a per-run replacement.
+      await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
       const remoteExecution = realizationResult.remoteExecution;
@@ -20861,6 +21395,7 @@ export function heartbeatService(
             target: executionTarget,
             lease: activeEnvironmentLease.lease,
             restartRecovery: runOptions.nativeRestartRecovery,
+            sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
             resourceDisposition: providerResourceDispositionForRun,
           });
         } else {
@@ -21433,6 +21968,39 @@ export function heartbeatService(
                         startedAt: meta.startedAt,
                       });
                     },
+                    // Persist a credential the runtime rotated mid-run. Codex is the live
+                    // case: a ChatGPT-plan auth.json carries a single-use refresh token
+                    // that the CLI rotates whenever the access token expires, and the
+                    // rotated copy dies with the sandbox. Without this the stored
+                    // credential is invalid from the next run onward, so the plan route
+                    // would work for about an hour and then break for good.
+                    onCredentialRotated: async ({ envKey, value }: { envKey: string; value: string }) => {
+                      try {
+                        const bindings = await secretsSvc.listBindings(agent.companyId);
+                        const binding = bindings.find(
+                          (candidate) =>
+                            candidate.targetType === "agent" &&
+                            candidate.targetId === agent.id &&
+                            candidate.configPath === `env.${envKey}`,
+                        );
+                        if (!binding) return;
+                        // Attributed to the agent, not a user: nobody typed this value,
+                        // the runtime produced it. Keeps the secret's audit trail honest
+                        // about who wrote each version.
+                        await secretsSvc.rotate(binding.secretId, { value }, { agentId: agent.id });
+                      } catch (err: unknown) {
+                        // Never fail a run that already did the user's work over a
+                        // bookkeeping write. A missed rotation surfaces later as an
+                        // ordinary auth error, which is recoverable; a failed run is not.
+                        // No value or fragment of it is ever logged.
+                        await onLog(
+                          "stdout",
+                          `[paperclip] Could not store the refreshed ${envKey} credential: ${
+                            err instanceof Error ? err.message : String(err)
+                          }\n`,
+                        );
+                      }
+                    },
                     authToken: authToken ?? undefined,
                   }),
               );
@@ -21959,6 +22527,9 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
+          // Thrown adapter failures never reach the finalize chain above, so the
+          // storm breaker also runs here for repeated identical failure codes.
+          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -22207,6 +22778,7 @@ export function heartbeatService(
             .select({
               nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
               attempt: nativeRunFinalizations.attempt,
+              failureDetail: nativeRunFinalizations.failureDetail,
             })
             .from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, run.id))
@@ -22225,6 +22797,12 @@ export function heartbeatService(
               nextAttemptAt: coordinator?.nextAttemptAt?.toISOString() ?? null,
               fallbackSuppressed: true,
               retryReasonCode,
+              // The executor has already redacted and bounded this diagnostic
+              // before persisting it. Retain it on the immutable transition
+              // event as well: a same-run retry reopens the log stream, so the
+              // first attempt's stderr must not be the only explanation for
+              // why a live warm runner was replaced.
+              failureDetail: coordinator?.failureDetail ?? null,
             },
           }).catch(() => undefined);
           if (coordinator?.nextAttemptAt) {
@@ -22415,7 +22993,13 @@ export function heartbeatService(
             livenessRun,
             agent,
           );
-          await releaseIssueExecutionAndPromote(livenessRun);
+          await releaseIssueExecutionAndPromote(livenessRun, {
+            // Native recovery owns the original heartbeat run through
+            // exhaustion. Once its durable coordinator has classified a
+            // terminal failure, generic issue recovery must not create a
+            // replacement retryOfRunId chain for the same provider work.
+            suppressImmediateRecovery: nativeTerminalFailureCode !== null,
+          });
           await handleIssueReviewPathDisposition(livenessRun);
 
           await updateRuntimeState(
@@ -22591,6 +23175,45 @@ export function heartbeatService(
             setupFailureAgent ??
             (await getAgent(run.agentId).catch(() => null));
           if (failedAgent) {
+            // Permanent setup failure (adapter not runnable in this environment):
+            // pause the agent so the heartbeat stops re-invoking it every interval
+            // (which otherwise produces a setup_failed retry storm), and surface the
+            // reason so it routes to a human to reconfigure the adapter.
+            if (
+              isNonRetryableAdapterSetupFailure(outerErr) &&
+              failedAgent.status !== "paused" &&
+              failedAgent.status !== "terminated"
+            ) {
+              const setupFailurePauseReason =
+                `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`;
+              const setupFailurePauseWrite = await db
+                .update(agents)
+                .set({
+                  status: "paused",
+                  pauseReason: truncateAgentErrorReason(setupFailurePauseReason),
+                  pausedAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(agents.id, failedAgent.id))
+                .catch((pauseErr) => {
+                  logger.warn(
+                    { err: pauseErr, agentId: failedAgent.id, runId },
+                    "failed to pause agent after non-retryable setup failure",
+                  );
+                  return null;
+                });
+              if (setupFailurePauseWrite !== null) {
+                // Mirror manual pause: a paused agent must have no live runs, or
+                // a just-enqueued retry can sit in "queued" forever since dequeue
+                // skips paused agents. livenessRun is already terminal (the CAS
+                // write above only succeeded because it left "running").
+                await cancelActiveForAgentInternal(
+                  failedAgent.id,
+                  `Cancelled because the agent was paused: ${setupFailurePauseReason}`,
+                  "agent_paused",
+                );
+              }
+            }
             await refreshContinuationSummaryForRun(
               livenessRun,
               failedAgent,
@@ -26434,6 +27057,40 @@ export function heartbeatService(
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    /**
+     * Await the detached run executions this service instance spawned (the
+     * fire-and-forget `void executeRun(...)` chains from startNextQueuedRunForAgent).
+     * Call this before closing the DB client / stopping the database so in-flight
+     * queries finish against a live socket instead of rejecting with
+     * "write CONNECTION_ENDED/CONNECTION_DESTROYED".
+     *
+     * Bounded by `timeoutMs` (default 5s): the common case to drain is the fast
+     * post-run unwind (lease release, status writes), which settles in
+     * milliseconds. An execution genuinely stuck on external I/O (e.g. a gateway
+     * agent.wait that never returns, or a scheduled retry) must NOT hang the
+     * caller's teardown forever, so drain resolves once `timeoutMs` elapses even
+     * if some executions are still pending. `maxPasses` re-checks for executions
+     * chained from a draining one within the time budget. Returns true if fully
+     * drained, false if it gave up on a deadline.
+     */
+    drain: async (options: { timeoutMs?: number; maxPasses?: number } = {}): Promise<boolean> => {
+      const timeoutMs = Math.max(0, options.timeoutMs ?? 5_000);
+      const maxPasses = Math.max(1, options.maxPasses ?? 50);
+      const deadline = Date.now() + timeoutMs;
+      for (let pass = 0; pass < maxPasses && pendingExecutions.size > 0; pass += 1) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const budget = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+          timer.unref?.();
+        });
+        await Promise.race([Promise.allSettled([...pendingExecutions]), budget]);
+        if (timer) clearTimeout(timer);
+      }
+      return pendingExecutions.size === 0;
     },
   };
 }

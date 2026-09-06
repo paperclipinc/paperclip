@@ -934,6 +934,9 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
       version: resolvedVersion,
       provider: secret.provider,
       providerVersionRef: versionRow?.providerVersionRef ?? null,
+      valueFingerprint: versionRow
+        ? versionRow.fingerprintSha256 ?? versionRow.valueSha256
+        : null,
       outcome: versionRow ? "success" : "failure",
     });
   }
@@ -991,10 +994,31 @@ function buildReusableSandboxLeaseScope(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
+  // Mirrors the `sandboxProviderPlugin === true` gate that
+  // reusableSandboxLeaseScopeMatches uses for its strict adapterType-equality
+  // rule. Only plugin-backed sandbox leases resolve a per-run adapter/image
+  // through the plugin worker RPC, so only they may fall back to reading
+  // adapterType/image out of providerMetadata; a built-in provider's
+  // providerMetadata is not per-run-image-keyed the way the plugin pool is,
+  // so treating any stray adapterType/image key there as a positive match
+  // would be unfounded. Built-in callers omit this flag (default false),
+  // making the fallback inert for them today; it exists so the two functions
+  // stay symmetric if a built-in provider ever starts publishing those keys.
+  isPluginBackedLease?: boolean;
 }): Record<string, unknown> | null {
   if (!input.executionWorkspaceId || !input.agentId) return null;
   const providerMetadata = input.providerMetadata ?? {};
-  const adapterType = input.adapterType ?? null;
+  // Prefer the server's own per-run hint; fall back to the plugin's actually
+  // resolved adapter type when the server's hint is absent (e.g. a run whose
+  // adapterType wasn't threaded through). This is what keeps the persisted
+  // scope from ever being null for a plugin sandbox lease that DID resolve a
+  // concrete adapter/image: a null scope has no positive proof of which
+  // image the pod carries and can be matched by any run's reuse lookup.
+  const adapterType =
+    input.adapterType ??
+    (input.isPluginBackedLease ? readString(providerMetadata.adapterType) : null) ??
+    null;
+  const runtimeImage = input.isPluginBackedLease ? readString(providerMetadata.image) : null;
   const remoteCwd = readString(providerMetadata.remoteCwd);
   const workspaceSentinel = isRecord(providerMetadata.workspaceSentinel)
     ? { ...providerMetadata.workspaceSentinel }
@@ -1015,6 +1039,7 @@ function buildReusableSandboxLeaseScope(input: {
     ...(input.leaseFingerprint
       ? { leaseFingerprint: serializeLeaseFingerprint(input.leaseFingerprint) }
       : {}),
+    ...(runtimeImage ? { runtimeImage } : {}),
     ...(remoteCwd ? { remoteCwd } : {}),
     ...(workspaceSentinel ? { workspaceSentinel } : {}),
   };
@@ -1031,17 +1056,36 @@ function reusableSandboxLeaseScopeMatches(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
+  environmentHasSecretRefs?: boolean;
 }): boolean {
   if (!input.executionWorkspaceId || !input.agentId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
+  const storedAdapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
+  // Plugin-backed sandbox leases pick a per-run runtime image keyed on the
+  // adapter type; a lease published (or resumed from before this fix) with
+  // adapterType null carries no positive proof of which image its pod is
+  // running. Treating null as a wildcard let ANY run reuse it, including one
+  // requesting a different harness (the production adapter_runtime_image_mismatch
+  // case this closes). Require a POSITIVE match instead: both sides must be
+  // set and equal, never null-on-either-side.
+  //
+  // Built-in (non-plugin) sandbox providers never publish adapterType in the
+  // scope at all (they are not per-run-image-keyed the way the plugin pool
+  // is), so their leases legitimately keep the permissive equality check:
+  // scoping the strict rule to `sandboxProviderPlugin === true` leaves that
+  // reuse path unaffected.
+  const isPluginBackedLease = input.lease.metadata?.sandboxProviderPlugin === true;
+  const adapterTypeMatches = isPluginBackedLease
+    ? storedAdapterType !== null && adapterType !== null && storedAdapterType === adapterType
+    : scope.adapterType === adapterType;
   const baseScopeMatches =
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
     scope.agentId === input.agentId &&
-    scope.adapterType === adapterType &&
+    adapterTypeMatches &&
     scope.provider === input.provider;
   if (!baseScopeMatches) return false;
 
@@ -1051,6 +1095,12 @@ function reusableSandboxLeaseScopeMatches(input: {
     if (storedLeaseFingerprint) {
       return storedLeaseFingerprint === expectedLeaseFingerprint;
     }
+    // Legacy lease (created before value-aware lease fingerprints existed): it
+    // only carries the secret-blind runtimeFingerprint. For a secret-bearing
+    // environment we must NEVER fall through to the runtime-only match, or an
+    // in-place secret value change would be invisible and we'd serve a stale
+    // credential from the reused sandbox. Force a fresh, value-aware lease.
+    if (input.environmentHasSecretRefs) return false;
     if (!input.allowLegacyRuntimeFingerprint) return false;
   }
 
@@ -1077,7 +1127,16 @@ export function findReusableSandboxLeaseId(input: {
   config: SandboxEnvironmentConfig;
   leases: Array<Pick<EnvironmentLease, "providerLeaseId" | "metadata">>;
 }): string | null {
-  return findReusableSandboxProviderLeaseId(input);
+  // Host-only run behavior (for example streamRunLogs) is intentionally not
+  // echoed by a sandbox provider in lease metadata and must not invalidate an
+  // otherwise identical reusable provider lease.
+  return findReusableSandboxProviderLeaseId({
+    config: {
+      provider: input.config.provider,
+      ...stripSandboxProviderEnvelope(input.config),
+    } as SandboxEnvironmentConfig,
+    leases: input.leases,
+  });
 }
 
 function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
@@ -1760,14 +1819,18 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but that plugin is currently ${pluginProvider.resolved.plugin.status}.`,
           );
         }
-        if (pluginProvider.state === "worker_unavailable") {
-          throw new Error(
-            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
-          );
-        }
+        // Check the wiring before the worker state. A server process with no
+        // plugin worker manager can never see a running worker, so reporting it
+        // as "worker is not running" sends debugging after a healthy worker
+        // instead of the missing dependency.
         if (!pluginWorkerManager) {
           throw new Error(
             `Sandbox provider "${parsed.config.provider}" is installed, but sandbox plugin workers are unavailable in this server process.`,
+          );
+        }
+        if (pluginProvider.state === "worker_unavailable") {
+          throw new Error(
+            `Sandbox provider "${parsed.config.provider}" is installed via plugin "${pluginProvider.resolved.plugin.pluginKey}", but its worker is not running.`,
           );
         }
 
@@ -1835,6 +1898,13 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+        // Hoisted out of the filter: whether this environment references any
+        // secrets gates the secret-blind legacy runtime fallback below. One DB
+        // read per acquire, never per candidate lease.
+        const environmentHasSecretRefs =
+          reusableCandidateLeases.length > 0
+            ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
+            : false;
         const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
           reusableSandboxLeaseScopeMatches({
             lease,
@@ -1846,6 +1916,7 @@ function createSandboxEnvironmentDriver(
             provider: parsed.config.provider,
             config: providerConfigForLease,
             leaseFingerprint,
+            environmentHasSecretRefs,
             allowLegacyRuntimeFingerprint:
               lease.status === "active" &&
               input.heartbeatRunId !== null &&
@@ -2033,6 +2104,7 @@ function createSandboxEnvironmentDriver(
               config: providerConfigForLease,
               leaseFingerprint,
               providerMetadata: sanitizedProviderMetadata,
+              isPluginBackedLease: true,
             })
           : null;
 
@@ -2083,6 +2155,16 @@ function createSandboxEnvironmentDriver(
               acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
             ),
             metadata: pluginLeaseMetadata,
+            reusesReusableLeaseId:
+              providerLease &&
+              reusableLease?.heartbeatRunId === input.heartbeatRunId
+                ? reusableLease.id
+                : null,
+            replacesReusableLeaseId:
+              providerLease &&
+              reusableLease?.heartbeatRunId !== input.heartbeatRunId
+                ? reusableLease?.id
+                : null,
           });
         } catch (error) {
           // The conditional lease insert rejected, so no lease row exists. A
@@ -2179,6 +2261,13 @@ function createSandboxEnvironmentDriver(
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
+      // Hoisted out of the filter: whether this environment references any
+      // secrets gates the secret-blind legacy runtime fallback below. One DB
+      // read per acquire, never per candidate lease.
+      const environmentHasSecretRefs =
+        reusableCandidateLeases.length > 0
+          ? (await collectEnvironmentSecretRefs({ db, environment: input.environment })).length > 0
+          : false;
       const reusableExistingLeases = reusableCandidateLeases.filter((lease) =>
         reusableSandboxLeaseScopeMatches({
           lease,
@@ -2190,6 +2279,7 @@ function createSandboxEnvironmentDriver(
           provider: parsed.config.provider,
           config: providerConfigForLease,
           leaseFingerprint,
+          environmentHasSecretRefs,
           allowLegacyRuntimeFingerprint:
             lease.status === "active" &&
             input.heartbeatRunId !== null &&
@@ -2312,6 +2402,18 @@ function createSandboxEnvironmentDriver(
             providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
           ),
           metadata: builtinLeaseMetadata,
+          reusesReusableLeaseId:
+            reusableLease &&
+            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+            reusableLease.heartbeatRunId === input.heartbeatRunId
+              ? reusableLease.id
+              : null,
+          replacesReusableLeaseId:
+            reusableLease &&
+            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+            reusableLease.heartbeatRunId !== input.heartbeatRunId
+              ? reusableLease.id
+              : null,
         });
       } catch (error) {
         // The conditional lease insert rejected, so no lease row exists. A managed
@@ -3717,6 +3819,9 @@ export function environmentRuntimeService(
           }
           if (
             providerResourceDisposition === "destroy" &&
+            isRecord(leaseSnapshot.metadata?.reusableSandboxLease) &&
+            leaseSnapshot.metadata.reusableSandboxLease.adapterType ===
+              "paperclip_runner" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
             (!leaseSnapshot.providerLeaseId ||
               !verifyNativeHarnessBackupStamp(
@@ -3845,8 +3950,39 @@ export function environmentRuntimeService(
           ),
         );
 
+      const holdingRunIds = leaseRows
+        .map((row) => row.heartbeatRunId)
+        .filter((runId): runId is string => Boolean(runId));
+      const liveRunIds = new Set<string>();
+      if (holdingRunIds.length > 0) {
+        const liveRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              inArray(heartbeatRuns.id, holdingRunIds),
+              inArray(heartbeatRuns.status, [
+                "queued",
+                "scheduled_retry",
+                "running",
+              ]),
+            ),
+          );
+        for (const liveRun of liveRuns) liveRunIds.add(liveRun.id);
+      }
+
       const destroyed: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
+        // An issue may become terminal inside its provider turn. Do not tear
+        // down the sandbox while that run is still exporting its workspace or
+        // polling the callback bridge. The heartbeat finalizer observes the
+        // terminal issue and destroys the resource after those boundaries.
+        if (
+          leaseRow.heartbeatRunId &&
+          liveRunIds.has(leaseRow.heartbeatRunId)
+        ) {
+          continue;
+        }
         const environment = leaseRow.environmentId
           ? await environmentsSvc.getById(leaseRow.environmentId)
           : null;

@@ -110,11 +110,19 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
-    expect(workflow).toContain("docker image inspect");
-    expect(workflow).toContain('.Config.User == "daytona"');
+    expect(workflow).toContain("docker logout ghcr.io");
+    expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
+    expect(workflow).toContain(`--format '{{json .Image}}'`);
+    expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
+    expect(workflow).not.toContain("docker image inspect");
+    expect(workflow).not.toContain("docker buildx prune --all --force");
+    expect(workflow).not.toContain("docker system prune --all --force");
+    expect(workflow).toContain('.architecture == "amd64"');
+    expect(workflow).toContain('.os == "linux"');
+    expect(workflow).toContain('.config.User == "daytona"');
     expect(workflow).toContain("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=");
     expect(workflow).toContain(
-      "pnpm --filter @paperclipai/paperclip-runner build:provider-pack",
+      "node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack",
     );
     expect(workflow).toContain(
       "PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack",
@@ -122,7 +130,30 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}",
     );
-    expect(workflow).toContain("anonymous_config");
+    expect(workflow.indexOf("cosign verify")).toBeLessThan(
+      workflow.indexOf("docker logout ghcr.io"),
+    );
+    expect(workflow.indexOf("docker logout ghcr.io")).toBeLessThan(
+      workflow.indexOf(`--format '{{json .Image}}'`),
+    );
+    const providerInstall = dockerfile.indexOf(
+      "RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+    );
+    const runnerSourceCopy = dockerfile.indexOf(
+      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+    );
+    const providerRevisionArg = dockerfile.indexOf(
+      "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
+    );
+    const cliInstall = dockerfile.indexOf("RUN npm install -g");
+    const finalMetadataArgs = dockerfile.lastIndexOf(
+      "ARG PAPERCLIP_RUNNER_CONTENT_ID",
+    );
+    expect(providerInstall).toBeGreaterThan(0);
+    expect(providerInstall).toBeLessThan(runnerSourceCopy);
+    expect(providerInstall).toBeLessThan(providerRevisionArg);
+    expect(cliInstall).toBeGreaterThan(0);
+    expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });
 
   it("hashes the audited image dependency closure rather than the repository revision", async () => {

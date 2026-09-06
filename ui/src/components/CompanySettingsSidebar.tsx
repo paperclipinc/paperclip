@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArrowLeft,
   Cpu,
   Download,
   FlaskConical,
@@ -14,7 +15,6 @@ import {
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
-import { useBoardCapabilities } from "@/hooks/useFeatures";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { NavLink } from "@/lib/router";
@@ -27,6 +27,7 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -71,9 +72,6 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
-  const { data: boardAccess } = useBoardCapabilities();
-  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
-  const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
@@ -81,25 +79,39 @@ export function CompanySettingsSidebar() {
     // operator hides the Plugins surface.
     enabled: showPlugins,
   });
-  const showCloudUpstream = boardAccess?.capabilities.features.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
-    <ContextualSidebarFrame surface="settings" title="Settings" icon={SlidersHorizontal}>
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="flex flex-col gap-0.5">
-          {exposedSurfaces.has("company.general") ? (
-            <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          ) : null}
-          {showCloudUpstream ? (
+    <ContextualSidebarFrame
+      surface="settings"
+      title="Settings"
+      showHeader={false}
+      className={primarySidebarStyles.surface}
+    >
+      <div
+        data-slot="settings-sidebar-header"
+        className="flex h-(--sz-60px) shrink-0 items-center px-3"
+      >
+        <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
+          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+        </div>
+      </div>
+      <nav
+        aria-label="Settings"
+        data-slot="contextual-sidebar-nav"
+        className={primarySidebarStyles.nav}
+      >
+        <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
+          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
               label="Profile"
               icon={UserRoundPen}
               end
             />
-          ) : null}
-          {exposedSurfaces.has("company.members") ? (
+          )}
+          {showPage("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
               label="Members"
@@ -107,7 +119,7 @@ export function CompanySettingsSidebar() {
               badge={badges?.joinRequests ?? 0}
               end
             />
-          ) : null}
+          )}
           {companySettingsPluginSlots
             .filter((slot) => slot.routePath)
             .map((slot) => (
@@ -119,93 +131,74 @@ export function CompanySettingsSidebar() {
                 end
               />
             ))}
-          {exposedSurfaces.has("company.invites") ? (
-            <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
-          ) : null}
-          {exposedSurfaces.has("company.secrets") ? (
+          {showPage("company.secrets") && (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+          )}
+          {showPage("instance.environments") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
+              label="Environments"
+              icon={MonitorCog}
+              end
+            />
+          )}
+          {showPage("instance.access") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
+              label="Access"
+              icon={Shield}
+              end
+            />
+          )}
+          {showPage("company.export") && (
+            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          )}
+          {!isCloud && showPage("company.import") && (
+            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+          )}
+          {showPage("instance.experimental") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
+              label="Experimental"
+              icon={FlaskConical}
+            />
+          )}
+          {showPlugins && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
+              label="Plugins"
+              icon={Puzzle}
+            />
+          )}
+          {showPlugins && sidebarPlugins.length > 0 ? (
+            <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
+              {sidebarPlugins.map((plugin) => (
+                <NavLink
+                  key={plugin.id}
+                  to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins/${plugin.id}`}
+                  state={SIDEBAR_SCROLL_RESET_STATE}
+                  className={({ isActive }) =>
+                    [
+                      "rounded-md px-2 py-1.5 text-xs transition-colors",
+                      isActive
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    ].join(" ")
+                  }
+                >
+                  {plugin.manifestJson.displayName ?? plugin.packageName}
+                </NavLink>
+              ))}
+            </div>
           ) : null}
+          {showPage("instance.adapters") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
+              label="Adapters"
+              icon={Cpu}
+            />
+          )}
         </div>
-        <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          My settings
-        </div>
-        <div className="flex flex-col gap-0.5">
-          <SidebarNavItem
-            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-            label="Profile"
-            icon={UserRoundPen}
-            end
-          />
-        </div>
-        {isInstanceAdmin ? (
-          <>
-            <div className="mt-5 px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              Instance settings
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
-                label="General"
-                icon={SlidersHorizontal}
-                end
-              />
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-                label="Environments"
-                icon={MonitorCog}
-                end
-              />
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-                label="Access"
-                icon={Shield}
-                end
-              />
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
-                label="Heartbeats"
-                icon={Clock3}
-                end
-              />
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
-                label="Experimental"
-                icon={FlaskConical}
-              />
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-                label="Plugins"
-                icon={Puzzle}
-              />
-              {sidebarPlugins.length > 0 ? (
-                <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
-                  {sidebarPlugins.map((plugin) => (
-                    <NavLink
-                      key={plugin.id}
-                      to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins/${plugin.id}`}
-                      state={SIDEBAR_SCROLL_RESET_STATE}
-                      className={({ isActive }) =>
-                        [
-                          "rounded-md px-2 py-1.5 text-xs transition-colors",
-                          isActive
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                        ].join(" ")
-                      }
-                    >
-                      {plugin.manifestJson.displayName ?? plugin.packageName}
-                    </NavLink>
-                  ))}
-                </div>
-              ) : null}
-              <SidebarNavItem
-                to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
-                label="Adapters"
-                icon={Cpu}
-              />
-            </div>
-          </>
-        ) : null}
       </nav>
     </ContextualSidebarFrame>
   );

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  firstMeaningfulStderrLine,
   inferOpenAiCompatibleBiller,
   type AdapterExecutionContext,
   type AdapterExecutionResult,
@@ -138,14 +139,11 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
+// The benign-banner filter this adapter used to carry privately now lives in
+// adapter-utils, so every adapter that derives a fallback run error from stderr
+// shares one list. Re-exported here because callers (and the adapter's own
+// regression suite) import it from this module.
+export { firstMeaningfulStderrLine };
 
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
@@ -162,13 +160,6 @@ function isBenignCodexStderrLine(line: string): boolean {
   return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
 }
 
-export function firstMeaningfulStderrLine(text: string): string {
-  const meaningful = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line && !isBenignCodexStderrLine(line));
-  return meaningful ?? firstNonEmptyLine(text);
-}
 
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },
@@ -857,65 +848,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) => {
-                  // Hosted path first. When the run authenticated with a
-                  // credential the USER supplied, the refreshed copy has to go
-                  // back to where that credential came from — the credential
-                  // store — not to any host file. This is not an optimisation:
-                  // OpenAI rotates the refresh token on every refresh and the
-                  // old one dies immediately, so skipping this would leave the
-                  // stored credential invalid from the next run onward. The
-                  // feature would look fine for about an hour and then break
-                  // permanently, which is worse than not shipping it.
-                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
-                    try {
-                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
-                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
-                        await ctx.onCredentialRotated({
-                          envKey: "CODEX_AUTH_JSON",
-                          value: rotated,
-                        });
-                        await onLog(
-                          "stdout",
-                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
-                        );
-                      }
-                    } catch (err) {
-                      // A failed copy-back must never fail a run that already
-                      // did the user's work. The cost is a stale stored
-                      // credential, which surfaces as a normal auth error on a
-                      // later run, not as a lost result here.
-                      await onLog(
-                        "stdout",
-                        `[paperclip] Codex plan credential copy-back skipped: ${
-                          err instanceof Error ? err.message : String(err)
-                        }\n`,
-                      );
-                    }
-                    return;
-                  }
-                  // The copy-back exists to persist refreshed ChatGPT-subscription
-                  // tokens back to the credential the managed homes symlink to.
-                  // When no shared host credential store exists (cloud/multi-tenant
-                  // servers whose auth lives only in managed per-company homes, or
-                  // a host that never ran `codex login`) there is nothing to merge
-                  // into, and creating a shared `~/.codex` on a multi-tenant server
-                  // would leak one tenant's credential into the store every other
-                  // tenant's managed home is seeded from. Skip instead of letting
-                  // the ENOENT fail the teardown and mark a completed run failed.
-                  if (!sharedHostHasUsableAuth) {
-                    await onLog(
-                      "stdout",
-                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
-                    );
-                    return;
-                  }
+                restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
+                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                  }));
-                },
+                    // Additive cache write (sandbox to host): also cache the
+                    // sandbox subscription credential in its per-identity slot,
+                    // keyed by the real `account_id`. Company-scoped root; the
+                    // helper ensures the slot directory private and containment-
+                    // guarded. The off-switch (default on) is read inside.
+                    resolveCacheEntryPath: (accountId) =>
+                      ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
+                    env: process.env,
+                  })),
+                // No `exclude` denylist: `stagedCodexHomeDir` already contains
+                // ONLY the allowlisted files (auth/config/skills), so there is
+                // nothing to filter out.
               },
             ],
           });

@@ -15,7 +15,7 @@ import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
 import { environmentsApi } from "../api/environments";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
 import {
@@ -35,6 +35,13 @@ import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  connectSourceName,
+  OnboardingLoginCard,
+  OnboardingCardField,
+  OnboardingLoginCodeRow,
+  type AdapterLoginChrome,
+} from "./AdapterLoginChrome";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
@@ -77,6 +84,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
@@ -194,15 +202,6 @@ function formatArgList(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
-
 const openCodeThinkingEffortOptions = [
   { id: "", label: "Auto" },
   { id: "minimal", label: "Minimal" },
@@ -284,7 +283,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
+  // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
+  // non-permitted viewers simply get an empty list.
+  const editAgentId = !isCreate ? props.agent.id : null;
+  const { data: pendingProposals = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "none"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+    retry: false,
+  });
+  const agentBindingProposals = useMemo(
+    () =>
+      pendingProposals.filter(
+        (proposal) => proposal.kind === "binding" && proposal.target?.id === editAgentId,
+      ),
+    [pendingProposals, editAgentId],
+  );
+  const proposalReview = useProposalReview(selectedCompanyId, []);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const adapterPickerDisabledTypes = useMemo(() => {
+    const next = new Set(disabledTypes);
+    // Fail closed while settings load. Existing native agents still render
+    // their current value in edit mode, but the picker does not offer a fresh
+    // native selection until the explicit experimental opt-in is known true.
+    if (experimentalSettings?.enableNativeRunner !== true) {
+      next.add("paperclip_runner");
+    }
+    return next;
+  }, [disabledTypes, experimentalSettings?.enableNativeRunner]);
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: every agent runs in the platform-managed
   // environment, so the form hides each host filesystem path and each
@@ -301,7 +333,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
   // Reuses the same general-settings query the rest of the UI uses.
-  const { data: generalSettings } = useFeatures();
+  const { data: generalSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
 
   const { data: environments = [] } = useQuery<Environment[]>({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
@@ -506,6 +547,108 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
   }
 
+
+  // Create mode holds the non-secret stored-session claim after a Claude
+  // subscription login reaches the server `stored` state. The claim marks the
+  // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
+  // in the create request; the server binds and enforces the token
+  // independently. The claim never carries a token value.
+  const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
+
+  // After a login binds CLAUDE_CODE_OAUTH_TOKEN, the user-secret-definitions list
+  // in the cache is stale. The form reads that list once at page load, so it does
+  // not contain the definition the login just bound. The bound row then compares
+  // its key against the stale list and shows a false "no longer exists" health
+  // error. Invalidate the list so the row reads the fresh definitions and clears
+  // the error.
+  const invalidateUserSecretDefinitions = () => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.secrets.userDefinitions(selectedCompanyId),
+    });
+  };
+
+  // Add the fixed binding to the create-mode form state after the login stores.
+  // Keep every unrelated binding. Hold the claim so the create request sends it.
+  const handleClaudeLoginStored = (storedSessionId: string) => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeStoredSessionId: storedSessionId,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: after a login stores the token, add the fixed binding to the
+  // existing agent and persist it at once. The server already stored the token;
+  // this step binds `CLAUDE_CODE_OAUTH_TOKEN` to the agent's environment through
+  // the normal agent-update patch path, so no manual bind step remains. Flush any
+  // pending editor draft first, keep every unrelated binding, and mark the merged
+  // set into the overlay so the editor and the saved patch agree.
+  //
+  // An update can never consume a fresh login's stored-session claim -- only the
+  // create and hire paths can, per `enforceClaudeOAuthBindingClaim`. So this save
+  // must set `applyStoredClaudeLogin`, the same way `handleApplyStoredClaudeLoginEdit`
+  // does, or the server rejects the patch with the fixed claim error even though
+  // the login already stored the token. Without the flag every fresh login on an
+  // existing agent's own page fails to save the binding.
+  const handleClaudeLoginStoredEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Create mode: bind the fixed reference to an existing stored login with no new
+  // login round trip. Add the fixed binding and set the apply-existing flag. The
+  // create request sends the flag; the server binds the token only for a user
+  // actor and only when a stored value exists. Keep every unrelated binding.
+  const handleApplyStoredClaudeLogin = () => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeApplyStoredLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: bind the fixed reference to an existing stored login with no new
+  // login round trip, then persist it at once. Add the fixed binding to the
+  // existing agent and save the patch with the apply-existing flag. Flush any
+  // pending editor draft first and keep every unrelated binding.
+  const handleApplyStoredClaudeLoginEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
+    invalidateUserSecretDefinitions();
+  };
+
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -519,11 +662,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [currentDefaultEnvironmentId, environments],
   );
   const instanceDefaultEnvironmentId = useMemo(() => {
-    const environmentId = generalSettings?.defaultEnvironmentId ?? null;
+    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
     if (!environmentId) return "";
     const selected = environments.find((environment) => environment.id === environmentId) ?? null;
     return selected?.driver === "local" ? "" : environmentId;
-  }, [environments, generalSettings?.defaultEnvironmentId]);
+  }, [environments, instanceSettings?.defaultEnvironmentId]);
   const instanceDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
     [environments, instanceDefaultEnvironmentId],
@@ -985,7 +1128,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+          id: option.value,
+          label: option.label,
+        }))
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"
@@ -1455,11 +1601,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <ModelDropdown
                 models={models}
                 value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
+                onChange={(v) => {
+                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
+                  const clearUnsupportedEffort = adapterType === "codex_local"
+                    && Boolean(currentThinkingEffort)
+                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                  if (isCreate) {
+                    set!({
+                      model: v,
+                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+                    });
+                    return;
+                  }
+                  mark("adapterConfig", "model", v || undefined);
+                  if (clearUnsupportedEffort) {
+                    mark("adapterConfig", thinkingEffortKey, undefined);
+                    mark("adapterConfig", "reasoningEffort", undefined);
+                  }
+                }}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 allowDefault={adapterType !== "opencode_local"}
@@ -1569,28 +1728,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {credentialSetup && selectedCompanyId && (
-                <AdapterCredentialConnect
-                  key={adapterType}
-                  companyId={selectedCompanyId}
-                  adapterType={adapterType}
-                  setup={credentialSetup}
-                  boundEnvKeys={boundEnvKeys}
-                  onBind={handleCredentialBind}
-                />
-              )}
-
               <Field label="Environment variables" hint={help.envVars}>
                 <EnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
-                  value={currentEnv}
+                  value={
+                    isCreate
+                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+                  }
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
                   }}
-                  onChange={updateEnv}
+                  onChange={(env) =>
+                    isCreate
+                      ? set!({ envBindings: env ?? {}, envVars: "" })
+                      : mark("adapterConfig", "env", env)
+                  }
                 />
               </Field>
 
@@ -1900,9 +2056,44 @@ export type AdapterLoginDescriptor = {
 // `onApplyStored` binds the fixed reference to an existing stored login with no
 // new login round trip. The panel shows the apply-existing affordance only when
 // the status route reports a stored value.
+// `autoStart`, `onCancel`, `onConnected` and `chrome` are what the onboarding
+// connect step needs, and each is off or absent by default so the two settings
+// surfaces that render this panel keep the behaviour they have.
+//
+// They are props on the existing panels rather than a second implementation
+// because the part onboarding needs unchanged is the whole of it: the session
+// start, the two polls, the server deadline, the one-shot completion read. A
+// copy drawn to the new design would have had to reproduce all of that
+// correctly, and the first thing to rot would have been the timeout and
+// cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Start the login on mount instead of waiting for a press. The connect step's
+  // footer button is the press — by the time the panel is rendered there, the
+  // customer has already asked for this.
+  autoStart?: boolean;
+  // The customer abandoned the login from inside the card. The panel has
+  // already cancelled the server session by the time this fires; the caller
+  // uses it to put its own control back to the state it started in.
+  onCancel?: () => void;
+  // The login reached its success state. Onboarding advances on this, which is
+  // why the `onboarding` chrome draws no success state of its own — the screen
+  // it would appear on is already gone.
+  onConnected?: () => void;
+  chrome?: AdapterLoginChrome;
+  /**
+   * The address the customer has to open, once the server has produced one.
+   *
+   * The one fact about a running login that the step needs outside the card:
+   * its own button is what sends the customer there, and a prompt arriving is
+   * what moves the step from waiting to ready. Everything else it needs the
+   * panel already does — the paste submits itself, success is reported through
+   * `onConnected`, and the customer's own Cancel press is reported through
+   * `onCancel` — so this stays a single value rather than a whole session
+   * handed upward.
+   */
+  onPromptReady?: (authorizationUrl: string | null) => void;
 };
 
 // The login panel dispatcher. It picks the panel from the projected panel mode,
@@ -1941,6 +2132,11 @@ function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
   environmentId,
+  autoStart,
+  onCancel,
+  onConnected,
+  chrome = "panel",
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -1949,9 +2145,18 @@ function DisplayedCodeLoginPanel({
   // URL.
   const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
 
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
+
   const startLogin = useMutation({
     mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
       setSessionId(session.sessionId);
@@ -1961,24 +2166,54 @@ function DisplayedCodeLoginPanel({
     },
   });
 
+  // Reset local state, so the panel returns to its idle start state and the
+  // Sign in button is available again.
+  const clearActiveSession = useCallback(() => {
+    resumedRef.current = false;
+    setSessionId(null);
+    setLatchedPrompt(null);
+    setStartError(null);
+  }, []);
+
   const cancelLogin = useMutation({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
-    onSuccess: () => {
-      // Reset local state, so the panel returns to its idle start state and the
-      // Log in button is available again.
-      setSessionId(null);
-      setLatchedPrompt(null);
-      setStartError(null);
-    },
+    onSuccess: clearActiveSession,
     onError: (error) => {
       setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
     },
   });
 
+  // Read the caller's active session on mount, with no session id, so the
+  // browser rediscovers its own session after a reload with no local state. A
+  // 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["adapter-login-active-session", companyId, adapterType],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   const statusQuery = useQuery({
     queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && !releasingResumedSession,
+    // A status 404 is unrecoverable: the server removed the row, so a retry
+    // cannot bring it back. Stop at once and fail loudly.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
@@ -2000,6 +2235,150 @@ function DisplayedCodeLoginPanel({
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
   const isActive = Boolean(sessionId) && !isTerminal;
   const startDisabled = startLogin.isPending || isActive;
+
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    setStartError(null);
+    setLatchedPrompt(active.prompt ?? null);
+    setSessionId(active.sessionId);
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
+
+  // A resumed session's status poll found the session already gone: the read
+  // that discovered it and the poll that tried to use it raced, and the
+  // session lost. The panel cannot resume it, and there is no unmount cleanup
+  // left to fall back on, so it releases the reservation itself and waits for
+  // that release before it returns to the idle start state.
+  useEffect(() => {
+    const error = statusQuery.error;
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (!resumedRef.current || releasingResumedSession) return;
+    setReleasingResumedSession(true);
+    const id = sessionId;
+    void (async () => {
+      if (id) {
+        await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
+          // The session is already gone either way; nothing more to do.
+        });
+      }
+      setReleasingResumedSession(false);
+      clearActiveSession();
+    })();
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId, adapterType, clearActiveSession]);
+
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. The ref is the guard rather than the mutation's
+  // own pending flag: `startLogin` settles, and without a latch a re-render
+  // after it settles would read "not pending, no session yet" during the gap
+  // before the session id lands and start a second login the server would
+  // count against the per-owner cap.
+  const autoStartedRef = useRef(false);
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
+    autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
+    startLoginRef.current();
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
+
+  // Report success upward once. `authenticated` is this panel's terminal
+  // success: unlike the Claude login there is no completion read after it, so
+  // the status is the whole of the news.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (status !== "authenticated" || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.();
+  }, [status]);
+
+  // Report the prompt's URL upward, the way the submitted-browser-code panel
+  // does. The caller's loading beat ends when this arrives, so without it the
+  // onboarding step waits on a card that has already opened: the code is on
+  // screen and the button stays disabled. Fires with null on mount, before the
+  // one-time prompt lands, which is the same null the caller starts from.
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(prompt?.url ?? null);
+  }, [prompt]);
+
+  const handleCancel = () => {
+    cancelLogin.mutate();
+    onCancel?.();
+  };
+
+  if (chrome === "onboarding") {
+    const failed = isTerminal && status && status !== "authenticated";
+    return (
+      <OnboardingLoginCard
+        loading={!prompt && !startError && !failed}
+        onCancel={handleCancel}
+        instruction={
+          <>
+            {/* The same destination as the step's own button. Two ways to one
+                link: the button for the customer following the flow, the anchor
+                for anyone finishing in another browser. */}
+            <a
+              href={prompt?.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Sign in to {connectSourceName(adapterType)}
+            </a>
+            {" by providing the authorization code below"}
+          </>
+        }
+      >
+        {startError ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {startError}
+          </p>
+        ) : failed ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {status === "timed_out"
+              ? "The login timed out. Start it again."
+              : status === "cancelled"
+                ? "The login was cancelled."
+                : "The login did not finish. Start it again."}
+          </p>
+        ) : (
+          <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
+        )}
+      </OnboardingLoginCard>
+    );
+  }
 
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
@@ -2055,16 +2434,36 @@ function DisplayedCodeLoginPanel({
         {isActive && prompt && (
           <div className="space-y-2">
             <div className="text-(length:--text-micro) text-muted-foreground">
-              Open the authentication page and enter the code.
+              Copy the code, then open the authentication page.
             </div>
-          {/* URL first, then the code. The instruction above says to open the
-              page and *then* enter the code, and the numbering now says the
-              same — so the order the two rows appear in has to agree with both,
-              rather than handing over the code before the page it belongs to. */}
+          {/* Code first, then the URL, and the sentence and the numbering both
+              say so.
+
+              This used to run the other way, on the reasoning that handing over
+              a code before the page it belongs to was getting ahead of the
+              customer. What that missed is where the two rows are used: opening
+              the page is what leaves this screen, and the form waiting on the
+              other side wants the code that was on this one. Reaching back for
+              it is the step worth removing, so the code is read and copied
+              while it is still in front of you.
+
+              The onboarding card is ordered the same way and for the same
+              reason. The Claude panel below is not, and should not be — its
+              second row is a field to type *into*, so there the page genuinely
+              does come first. */}
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                1. Authentication URL
+                1. Code
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+            </div>
+            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                2. Authentication URL
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
             </div>
@@ -2084,15 +2483,6 @@ function DisplayedCodeLoginPanel({
                 </a>
               </Button>
             </div>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                2. Code
-              </div>
-              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
-            </div>
-            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
           </div>
         </div>
         )}
@@ -2146,6 +2536,11 @@ function SubmittedBrowserCodeLoginPanel({
   environmentId,
   onStored,
   onApplyStored,
+  autoStart,
+  onCancel,
+  onConnected,
+  chrome = "panel",
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2178,6 +2573,13 @@ function SubmittedBrowserCodeLoginPanel({
   // apply-existing path binds the fixed reference with no new login round trip,
   // so the panel shows the applied confirmation and hides the apply affordance.
   const [appliedStored, setAppliedStored] = useState(false);
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
 
   const resetLocalState = () => {
     setStartError(null);
@@ -2233,6 +2635,7 @@ function SubmittedBrowserCodeLoginPanel({
           : {}),
       }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       resetLocalState();
       setSessionId(session.sessionId);
     },
@@ -2244,6 +2647,7 @@ function SubmittedBrowserCodeLoginPanel({
   const clearActiveSession = () => {
     // Return the panel to its idle start state. The Log in button is available
     // again, and both polls stop because the session id is null.
+    resumedRef.current = false;
     setSessionId(null);
     resetLocalState();
   };
@@ -2268,7 +2672,7 @@ function SubmittedBrowserCodeLoginPanel({
   });
 
   // Release the server session at once, without a change to the panel state. The
-  // client-cutoff timer and the unmount path both use this. The server holds a
+  // client-cutoff timer uses this. The server holds a
   // per-owner reservation until the session reaches a terminal state, so an
   // abandoned session locks the owner out until the server deadline. A best-
   // effort cancel frees that reservation now, so the same owner can start a new
@@ -2288,11 +2692,33 @@ function SubmittedBrowserCodeLoginPanel({
     [companyId],
   );
 
+  // Read the caller's active Claude setup-token session on mount, with no
+  // session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["claude-setup-token-active-session", companyId],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   // Both polls run only while a session is active and the client cap has not
   // passed. The timeout stops the polls, so the panel never polls forever. A
   // status 404 also stops the polls: the server cleaned up the session, so the
   // panel enters a terminal failure state instead.
-  const pollingEnabled = Boolean(sessionId) && !timedOut && !statusGone;
+  const pollingEnabled =
+    Boolean(sessionId) && !timedOut && !statusGone && !releasingResumedSession;
 
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
@@ -2319,12 +2745,51 @@ function SubmittedBrowserCodeLoginPanel({
   // race against the next poll. React Query keeps the last successful data on
   // error, so without this branch the panel would hold stale data and show
   // nothing. Enter the terminal failure state, which stops both polls.
+  //
+  // A resumed session takes a different path: the read that discovered it and
+  // the poll that tried to use it raced, and the session lost. There is no
+  // unmount cleanup left to fall back on, so the panel releases the
+  // reservation itself and waits for that release before it returns to the
+  // idle start state, instead of trusting the 404 alone.
   useEffect(() => {
     const error = statusQuery.error;
-    if (error instanceof ApiError && error.status === 404) {
-      setStatusGone(true);
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (resumedRef.current) {
+      if (releasingResumedSession) return;
+      setReleasingResumedSession(true);
+      const id = sessionId;
+      void (async () => {
+        if (id) {
+          await agentsApi.cancelClaudeSetupTokenLogin(companyId, id).catch(() => {
+            // The session is already gone either way; nothing more to do.
+          });
+        }
+        setReleasingResumedSession(false);
+        clearActiveSession();
+      })();
+      return;
     }
-  }, [statusQuery.error]);
+    setStatusGone(true);
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId]);
+
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    resetLocalState();
+    setSessionId(active.sessionId);
+    if (active.prompt) {
+      setAuthorizationUrl(active.prompt.authorizationUrl);
+      if (active.prompt.transportAdvisory) setTransportInsecure(true);
+    }
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
 
   // Poll the guarded prompt route until it returns the authorization URL. The
   // route returns 404 until the URL is ready, so the panel treats a 404 as
@@ -2399,21 +2864,6 @@ function SubmittedBrowserCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
 
-  // Hold the active session id for the unmount cleanup. The panel updates it on
-  // every render. When the panel unmounts, or the parent removes it as the login
-  // closes, with an active, non-terminal session, the cleanup releases that
-  // session on the server. The ref is null once the session leaves the active
-  // state, so the cleanup never cancels a session the server already removed.
-  const activeSessionRef = useRef<string | null>(null);
-  activeSessionRef.current = isActive ? sessionId : null;
-
-  useEffect(() => {
-    return () => {
-      const id = activeSessionRef.current;
-      if (id) releaseServerSession(id);
-    };
-  }, [releaseServerSession]);
-
   // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
   // status, a stored success, or a new login). It re-arms when `expiresAt`
@@ -2454,10 +2904,166 @@ function SubmittedBrowserCodeLoginPanel({
   const handleSubmit = () => {
     if (!canSubmit) return;
     submitCode.mutate(trimmedCode);
-    // Clear the browser code right after submit, so the secret never lingers in
-    // the input.
-    setBrowserCode("");
+    // Onboarding keeps the code on screen; the panel still clears it.
+    //
+    // Clearing emptied the input in the same frame the paste landed, so on the
+    // connect step the only feedback for the seconds that followed was a field
+    // that had just gone blank — reported from staging as the paste looking
+    // dropped, or the step looking stuck. There the field is disabled from here
+    // on and the step's own button carries the status, so the code can stay:
+    // `resetLocalState` clears it whenever a session starts, resumes or is
+    // cleared, the value dies with the panel moments later, and the code is
+    // single-use and already spent.
+    //
+    // The panel is not that. It sits in a form that stays open long after the
+    // login, with its own status area doing the reporting — so there the code
+    // does have somewhere to linger, and clearing it remains right.
+    if (chrome !== "onboarding") setBrowserCode("");
   };
+
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. Latched for the same reason as the
+  // displayed-code panel: a second start would burn an owner reservation, and
+  // here it would also rotate the stored token twice.
+  const autoStartedRef = useRef(false);
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
+    autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
+    startLoginRef.current();
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
+
+  /**
+   * Submit the pasted code without a press.
+   *
+   * Only in the onboarding chrome, and only here: this is the login where the
+   * code comes *back* off the clipboard, so the paste is the answer and a
+   * Submit button after it adds a step that can be missed. The displayed-code
+   * login has no field to watch.
+   *
+   * Driven by the paste rather than by the value, which is the part that is
+   * easy to get wrong. `isValidBrowserCode` looks like a completeness check and
+   * is not one: it accepts any run of printable ASCII from a single character
+   * up, deliberately, because the provider's exact format has never been
+   * pinned down. Keying the submit off the value therefore fires on the first
+   * keystroke of anyone who types the code instead of pasting it — submitting
+   * one character, failing, and clearing the field they were typing into.
+   *
+   * So the paste arms it and the shape check still gates it, which leaves
+   * typing to Enter. A paste that is not usable simply sits in the field.
+   *
+   * `submitCode.isPending` is inside `canSubmit` and `handleSubmit` clears the
+   * field, so one paste can only submit once.
+   */
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+  const autoSubmit = chrome === "onboarding";
+  const pastedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmit || !pastedRef.current) return;
+    pastedRef.current = false;
+    if (!canSubmit) return;
+    handleSubmitRef.current();
+  }, [autoSubmit, canSubmit, browserCode]);
+
+  // Report success upward once. The `stored` state is the only success state,
+  // which is why this watches `isStored` and not the `authenticated` status the
+  // completion read still has to follow.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (!isStored || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.();
+  }, [isStored]);
+
+  const handleCancel = () => {
+    cancelLogin.mutate();
+    onCancel?.();
+  };
+
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(authorizationUrl);
+  }, [authorizationUrl]);
+
+  if (chrome === "onboarding") {
+    const failedNow = isFailure || timedOut;
+    return (
+      <OnboardingLoginCard
+        loading={!authorizationUrl && !startError && !failedNow}
+        onCancel={handleCancel}
+        instruction={
+          <>
+            <a
+              href={authorizationUrl ?? undefined}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Sign in to {connectSourceName(adapterType)}
+            </a>
+            {" then come back and enter authorization code"}
+          </>
+        }
+      >
+        {/* The plain-HTTP advisory survives the redesign. It is the one thing on
+            this card not about getting the login done, and dropping it to keep
+            the card tidy would remove a warning about a code travelling in
+            clear text. */}
+        {transportInsecure && (
+          <p className="flex items-start gap-2 pl-2 text-xs text-amber-700 dark:text-amber-200">
+            <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+            This connection is not encrypted. The login code travels in clear text on this
+            network. Continue only on a network you trust.
+          </p>
+        )}
+        {startError ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {startError}
+          </p>
+        ) : failedNow ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {timedOut && !isFailure ? CLAUDE_LOGIN_TIMED_OUT_MESSAGE : CLAUDE_LOGIN_FAILED_MESSAGE}
+          </p>
+        ) : (
+          <OnboardingCardField
+            value={browserCode}
+            onChange={setBrowserCode}
+            onSubmit={handleSubmit}
+            onPaste={() => {
+              pastedRef.current = true;
+            }}
+            disabled={submitCode.isPending || isCompleting}
+          />
+        )}
+      </OnboardingLoginCard>
+    );
+  }
 
   return (
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">

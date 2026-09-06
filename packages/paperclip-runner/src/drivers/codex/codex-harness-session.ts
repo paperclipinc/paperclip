@@ -78,10 +78,11 @@ export class CodexHarnessSession
   }
 
   async attachRun(input: { runId: string }): Promise<void> {
+    const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.activeTurnId !== null ||
       this.turnStartPending ||
-      this.pendingRuntimeRequestMap.size > 0
+      (!transportOwnsQuiescence &&
+        (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
@@ -91,6 +92,16 @@ export class CodexHarnessSession
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
     });
+    if (transportOwnsQuiescence) {
+      // Runnerd's attachment contract performs two durable readiness probes,
+      // drains the settled provider tail, and rotates authority atomically.
+      // Its proof supersedes host reducer state that can remain stale when a
+      // semantic-result consumer stops before the interrupt terminal arrives.
+      // Drop only the prior run's already-proven-settled buffered suffix.
+      this.activeTurnId = null;
+      this.pendingRuntimeRequestMap.clear();
+      this.eventQueue.clear();
+    }
     this.runId = input.runId;
     this.result = null;
     this.resultFingerprint = null;
@@ -173,6 +184,10 @@ export class CodexHarnessSession
       effectiveCollaborationMode,
     });
     this.turnStartPending = true;
+    let releaseTurnStartSettled: () => void = () => {};
+    this.turnStartSettled = new Promise((resolve) => {
+      releaseTurnStartSettled = resolve;
+    });
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
@@ -193,6 +208,13 @@ export class CodexHarnessSession
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
       });
     } catch (error) {
+      // A turn/started notification can arrive and mark a turn active while
+      // turn/start is still pending. The turn/start request just rejected,
+      // so no turn was accepted. Roll that optimistic state back so a
+      // terminal notification for it cannot pass the active-turn check below
+      // and release a terminal event for a turn that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       if (dispositionOnlyRecovery) {
         if (error instanceof CodexRpcError) {
           // A JSON-RPC error is a definite provider rejection: no turn was
@@ -209,6 +231,11 @@ export class CodexHarnessSession
       throw error;
     } finally {
       this.turnStartPending = false;
+      // Release a terminal notification that arrived and parked itself
+      // while this turn/start was in flight. This runs before turn.accepted
+      // below, in the same synchronous continuation, so a released waiter
+      // never observes the terminal turn ahead of turn.accepted.
+      releaseTurnStartSettled();
     }
     const turn = record(response.turn);
     const turnId = text(turn.id);
@@ -668,10 +695,10 @@ export class CodexHarnessSession
     };
   }
 
-  async close(): Promise<void> {
+  async close(input?: { reason: string }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
-    await this.transport.close();
+    await this.transport.close(input?.reason);
   }
 
   async detachControllerForRestart(): Promise<void> {

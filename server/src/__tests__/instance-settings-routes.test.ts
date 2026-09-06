@@ -7,9 +7,11 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
+  getVisibility: vi.fn(),
   update: vi.fn(),
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
+  updateVisibility: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -92,6 +94,8 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.update.mockReset();
     mockInstanceSettingsService.updateGeneral.mockReset();
     mockInstanceSettingsService.updateExperimental.mockReset();
+    mockInstanceSettingsService.getVisibility.mockReset();
+    mockInstanceSettingsService.updateVisibility.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.computeTaskDrain.mockReset();
     mockHeartbeatService.applyTaskDrain.mockReset();
@@ -216,6 +220,19 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+    mockInstanceSettingsService.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
+    mockInstanceSettingsService.updateVisibility.mockResolvedValue({
+      id: "instance-settings-1",
+      visibility: { companySurfaces: ["company.general", "company.members"] },
+    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
       driver: "local",
@@ -550,13 +567,13 @@ describe("instance settings routes", () => {
       companyIds: ["company-1"],
     });
 
-    await request(app).get("/api/instance/settings/experimental").expect(200);
+    await request(app).get("/api/instance/settings/experimental").expect(403);
+    expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
 
     await request(app)
       .patch("/api/instance/settings/experimental")
       .send({ enableEnvironments: true })
       .expect(403);
-
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
@@ -593,7 +610,7 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("allows non-admin board users to read general settings", async () => {
+  it("rejects non-admin board users from reading general settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -603,13 +620,8 @@ describe("instance settings routes", () => {
     });
 
     const res = await request(app).get("/api/instance/settings/general");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      censorUsernameInLogs: false,
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects signed-in users without company access from reading general settings", async () => {
@@ -659,6 +671,104 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  it("allows instance admins to read and update the visibility policy", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const getRes = await request(app).get("/api/instance/settings/visibility");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.companySurfaces).toContain("company.members");
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: ["company.general", "company.members"] });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body).toEqual({
+      companySurfaces: ["company.general", "company.members"],
+    });
+    expect(mockInstanceSettingsService.updateVisibility).toHaveBeenCalledWith({
+      companySurfaces: ["company.general", "company.members"],
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin board users from reading or updating the visibility policy", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    await request(app).get("/api/instance/settings/visibility").expect(403);
+    await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: [] })
+      .expect(403);
+    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers from the visibility policy", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: [] })
+      .expect(403);
+  });
+
+  it("rejects unknown surfaces in the visibility patch with a validation error", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: ["instance.general"] });
+    expect(res.status).toBe(400);
+    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-admin board users from reading the full instance settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    await request(app).get("/api/instance/settings").expect(403);
+    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted regression: the implicit local actor still reads everything", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app).get("/api/instance/settings").expect(200);
+    await request(app).get("/api/instance/settings/general").expect(200);
+    await request(app).get("/api/instance/settings/experimental").expect(200);
+    await request(app).get("/api/instance/settings/visibility").expect(200);
   });
 
   describe("executionMode floor on cloud-managed instances", () => {

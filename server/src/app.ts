@@ -93,7 +93,7 @@ import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
-import { applyUiBranding } from "./ui-branding.js";
+import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./services/plugin-loader.js";
 import {
@@ -110,6 +110,7 @@ import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { decideBundledPluginAction } from "./services/bundled-plugin-heal.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -194,6 +195,24 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
   return req.accepts(["html"]) === "html";
+}
+
+/**
+ * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
+ * /branding — the stylesheet link applyUiBranding injects points here. Without
+ * this route the request falls through to the SPA fallback and comes back as
+ * text/html, which the browser refuses to apply as a stylesheet. A missing
+ * brand asset 404s for the same reason. No-op when no brand dir is configured,
+ * so the default build's routing is unchanged.
+ */
+export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
+  const brandDir = getBrandDir(env);
+  if (!brandDir) return false;
+  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
+  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
+    res.status(404).end();
+  });
+  return true;
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -431,10 +450,10 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
-  api.use(builtInAgentRoutes(db));
+  api.use(builtInAgentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
@@ -519,7 +538,7 @@ export async function createApp(
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
-  api.use(issueTreeControlRoutes(db));
+  api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
@@ -694,6 +713,9 @@ export async function createApp(
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
+  // Deployer-mounted brand assets (must come before the SPA fallback / vite
+  // middleware so /branding/brand.css never resolves to the HTML shell).
+  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -717,8 +739,23 @@ export async function createApp(
       // short cache so operators who swap them out see the new version
       // reasonably fast, with must-revalidate overrides for index.html and
       // sw.js (see staticUiCacheControl for why those two).
+      // The HTML shell MUST go through the branded fallback below, which injects
+      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
+      // script reads. Serving the RAW index.html here (Express's default
+      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
+      // bypasses that injection -> no theme meta -> the script defaults to dark ->
+      // a dark->light flash on first paint until a branded route loads. So disable
+      // directory-index serving AND route an explicit `/index.html` to the fallback.
+      app.get("/index.html", (_req, res) => {
+        res
+          .status(200)
+          .set("Content-Type", "text/html")
+          .set("Cache-Control", "no-cache")
+          .end(readBrandedStaticIndexHtml(uiDist));
+      });
       app.use(
         express.static(uiDist, {
+          index: false,
           maxAge: "1h",
           setHeaders(res, filePath) {
             const override = staticUiCacheControl(filePath);

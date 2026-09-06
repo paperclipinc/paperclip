@@ -1067,7 +1067,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
-      const errorCode = loginMeta.requiresLogin || invalidCredential
+      const errorCode = proc.errorCode
+        // Forward the transport-level error code from the run-disposition seam
+        // first, even on the unparsed path. A lost duplex control channel
+        // surfaces the typed `duplex_channel_lost` code before any provider
+        // classification, so the CLI lane and the ACP lane report it alike.
+        ? proc.errorCode
+        : loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1206,23 +1212,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage: rawErrorMessage,
+        errorMessage,
       });
     const transientRetryNotBefore = providerQuota || transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
           stdout: proc.stdout,
           stderr: proc.stderr,
-          errorMessage: rawErrorMessage,
+          errorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin || invalidCredential
+    const resolvedErrorCode = proc.errorCode
+      // Forward the transport-level error code from the run-disposition seam
+      // first. A lost duplex control channel surfaces the typed
+      // `duplex_channel_lost` code before any provider classification.
+      ? proc.errorCode
+      : loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage: rawErrorMessage,
+        errorMessage,
       })
       ? "model_not_found"
       : failed && clearSessionForMaxTurns

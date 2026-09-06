@@ -15,8 +15,6 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SummarySlotCard } from "./SummarySlotCard";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
-
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 if (!HTMLElement.prototype.hasPointerCapture) {
@@ -26,7 +24,7 @@ if (!HTMLElement.prototype.hasPointerCapture) {
   });
 }
 
-const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
   revisions: vi.fn(),
@@ -35,7 +33,7 @@ const mockSummarySlotsApi = vi.hoisted(() => ({
 const mockBuiltInAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ resume: vi.fn() }));
 
-vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("@/api/summarySlots", () => ({ summarySlotsApi: mockSummarySlotsApi }));
 vi.mock("@/api/builtInAgents", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/builtInAgents")>()),
@@ -231,9 +229,10 @@ describe("SummarySlotCard", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableSummaries: true,
+      enableBuiltInAgents: true,
+    });
     mockBuiltInAgentsApi.list.mockResolvedValue([readySummarizer()]);
     mockSummarySlotsApi.get.mockResolvedValue({ slot: null, document: null, generatingIssue: null } satisfies GetSummarySlotResponse);
     mockSummarySlotsApi.revisions.mockResolvedValue({ slot: null, revisions: [] } satisfies ListSummarySlotRevisionsResponse);
@@ -252,9 +251,10 @@ describe("SummarySlotCard", () => {
   });
 
   it("renders nothing and does not fetch slots when the summaries flag is off", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableSummaries: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableSummaries: false,
+      enableBuiltInAgents: true,
+    });
 
     root = renderCard(container);
     await flushQueries();

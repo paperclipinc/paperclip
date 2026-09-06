@@ -54,7 +54,6 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
-  enableTaskWatchdogs: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
@@ -118,6 +117,15 @@ export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().guid().nullable().optional(),
 }).strict();
 
+export const instanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z
+    .array(z.enum(COMPANY_SETTINGS_SURFACES))
+    .default([...COMPANY_SETTINGS_SURFACES]),
+}).strict();
+
+export const patchInstanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
+}).strict();
 // The longest time a task drain can run before it expires on its own. A
 // caller can send a shorter `ttlMs`, but not a longer one — the request must
 // fail instead of the server silently clamping the value.
@@ -139,19 +147,9 @@ export type PatchInstanceExperimentalSettings = Partial<
   >
 >;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
-export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
-
-export const instanceVisibilitySettingsSchema = z.object({
-  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES))
-    .default([...COMPANY_SETTINGS_SURFACES]),
-}).strict();
-
-export const patchInstanceVisibilitySettingsSchema = z.object({
-  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
-}).strict();
-
 export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
 export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
+export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
 
 export const instanceSettingsSchema = z.object({
   id: z.string().guid(),

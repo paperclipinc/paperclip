@@ -8,6 +8,10 @@ const workflowPath = resolve(
   repositoryRoot,
   ".github/workflows/runner-protocol-live-evals.yml",
 );
+const trustedPrWorkflowPath = resolve(
+  repositoryRoot,
+  ".github/workflows/pr-trusted.yml",
+);
 
 test("direct live eval workflow keeps paid execution behind stable actor authorization", async () => {
   const workflow = await readFile(workflowPath, "utf8");
@@ -32,6 +36,19 @@ test("direct live eval workflow keeps paid execution behind stable actor authori
   for (const action of actions) assert.match(action, /^[^@]+@[0-9a-f]{40}$/u);
 });
 
+test("pull request CI builds the canonical Evalbook viewer", async () => {
+  const workflow = await readFile(trustedPrWorkflowPath, "utf8");
+  const buildJob = workflow.slice(
+    workflow.indexOf("  build:"),
+    workflow.indexOf("  verify_serialized_server:"),
+  );
+
+  assert.match(
+    buildJob,
+    /name: Build Runner Evalbook viewer[\s\S]*pnpm --filter @paperclipai\/paperclip-runner build:issue-thread/u,
+  );
+});
+
 test("resolves both repositories immutably and bounds total matrix concurrency", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   const authorize = workflow.slice(
@@ -45,6 +62,7 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     /repos\/paperclipai\/paperclip-evals\/commits\/\$EVALS_SHA/u,
   );
   assert.match(authorize, /COMMITPERCLIP_KEY/u);
+  assert.match(authorize, /GH_REPO: paperclipai\/paperclip-evals/u);
   assert.match(
     authorize,
     /GH_TOKEN: \$\{\{ steps\.evals_token\.outputs\.value \}\}/u,
@@ -66,6 +84,19 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     ),
   ];
   assert.equal(privateCheckouts.length, 3);
+  const privateTokenSteps = [
+    ...workflow.matchAll(
+      /^      - name: Generate private eval-repository token\n(?<body>(?:^ {8,}.*\n?)*)/gmu,
+    ),
+  ];
+  assert.equal(privateTokenSteps.length, 4);
+  for (const tokenStep of privateTokenSteps) {
+    assert.match(
+      tokenStep.groups.body,
+      /^ {10}GH_REPO: paperclipai\/paperclip-evals$/mu,
+      "every private-eval token must be minted from the eval repository installation",
+    );
+  }
   for (const checkout of privateCheckouts) {
     assert.match(
       checkout[0],
@@ -74,6 +105,15 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
   }
   assert.match(workflow, /matrix_0/u);
   assert.match(workflow, /matrix_1/u);
+  assert.match(
+    workflow,
+    /pnpm --filter @paperclipai\/paperclip-runner deploy --prod/u,
+  );
+  assert.match(
+    workflow,
+    /--runner-cli runner-protocol-build\/extracted\/portable\/dist\/cli\/eval-session\.js/u,
+  );
+  assert.doesNotMatch(workflow, /npm install --prefix/u);
 });
 
 test("publishes only the separately sanitized Evalbook through trusted OIDC code", async () => {

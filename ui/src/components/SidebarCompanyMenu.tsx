@@ -248,6 +248,27 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     userId: currentUserId,
   });
 
+  // In Paperclip Cloud the switcher lists the signed-in user's stacks
+  // (organizations) instead of the instance's companies: a cloud instance holds
+  // exactly one company, and switching means leaving this tenant host entirely.
+  const cloud = useCloudInstance();
+  const isCloud = Boolean(cloud);
+  // Invites now live on the Members page; hide the shortcut when the hosting
+  // operator hides either surface. Until the health response resolves, the
+  // hidden set is unknown — keep the shortcut out rather than flash it.
+  const { hidden: hiddenSettings, loaded: hiddenSettingsLoaded } = useHiddenSettings();
+  const showInvitePeople =
+    hiddenSettingsLoaded &&
+    !hidesCompanyPage(hiddenSettings, "company.members") &&
+    !hidesCompanyPage(hiddenSettings, "company.invites");
+  const cloudBaseUrl = cloud?.cloudBaseUrl ?? null;
+  const stacksQuery = useQuery({
+    queryKey: queryKeys.cloud.stacks,
+    queryFn: () => cloudApi.listStacks(),
+    enabled: isCloud,
+    staleTime: 30_000,
+    retry: false,
+  });
   const stacks = stacksQuery.data?.stacks ?? [];
   const currentStack = isCloud
     ? stacks.find((stack) => stack.isCurrent)

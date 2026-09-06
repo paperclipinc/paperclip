@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -133,6 +134,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   });
 
   afterAll(async () => {
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 

@@ -74,6 +74,7 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { SANDBOX_EXEC_TIMEOUT_ERROR_CODE } from "./sandbox-exec-timeout.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -190,6 +191,15 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
     | null;
   /** Whether this environment is configured to reuse its provider lease. */
   readonly reusableLeaseConfigured?: boolean;
+  /**
+   * The sandbox runs a managed, pre-baked runtime image (plugin-backed
+   * provider) whose adapter CLI is contractually complete. When true, the
+   * runtime-install shim is disabled: a missing CLI means the run landed on the
+   * wrong runtime image (a different harness), so we fail fast with
+   * {@link AdapterRuntimeImageMismatchError} instead of attempting a network
+   * install that a locked/sovereign egress would block until timeout.
+   */
+  prebakedRuntime?: boolean | null;
   /** Host-observed provenance for this exact sandbox acquisition. */
   readonly sandboxLeaseAcquisition?: SandboxLeaseAcquisition | null;
   shellCommand?: "bash" | "sh" | null;
@@ -224,6 +234,79 @@ export type AdapterExecutionTarget =
   | AdapterLocalExecutionTarget
   | AdapterSshExecutionTarget
   | AdapterSandboxExecutionTarget;
+
+/** Stable error code for a wrong-runtime-image sandbox run. */
+export const ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE = "adapter_runtime_image_mismatch" as const;
+
+// How many times the pre-baked runtime probe is asked before the sandbox is
+// declared unreachable. Two, because the probe is a shell builtin: one lost
+// answer is a channel blip worth re-asking, and a second says the channel is
+// genuinely gone rather than slow.
+const PREBAKED_RUNTIME_PROBE_ATTEMPTS = 2;
+
+/**
+ * Thrown when a managed, pre-baked sandbox does not carry the adapter's runtime
+ * CLI on PATH. The run landed on a runtime image for a different harness, so the
+ * image the plugin picked does not match the harness the server exec's. We
+ * surface this immediately instead of attempting a doomed network install
+ * (locked egress) that would otherwise stall until the adapter timeout and
+ * report a confusing `adapter_failed`.
+ */
+export class AdapterRuntimeImageMismatchError extends Error {
+  readonly code = ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE;
+  readonly adapterCommand: string;
+  constructor(command: string, targetDescription: string, detail?: string) {
+    super(
+      `expected the pre-baked runtime image to provide the '${command}' CLI, but it is not present on PATH in the ${targetDescription}. The run landed on the wrong runtime image (a different harness); refusing to attempt a network install for a managed sandbox.${
+        detail ? ` (${detail})` : ""
+      }`,
+    );
+    this.name = "AdapterRuntimeImageMismatchError";
+    this.adapterCommand = command;
+  }
+}
+
+export function isAdapterRuntimeImageMismatchError(
+  value: unknown,
+): value is AdapterRuntimeImageMismatchError {
+  return (
+    value instanceof Error &&
+    (value as { code?: unknown }).code === ADAPTER_RUNTIME_IMAGE_MISMATCH_CODE
+  );
+}
+
+/**
+ * Thrown when the pre-baked runtime probe never answered. `command -v` returns
+ * in microseconds, so a timeout says the exec channel died (a dropped exec
+ * WebSocket, an apiserver restart, a pod evicted mid-probe), not that the image
+ * is missing the CLI. Keeping this distinct from
+ * {@link AdapterRuntimeImageMismatchError} matters twice over: the user is told
+ * the truth rather than that their run "landed on the wrong runtime image", and
+ * recovery does not spend the one-shot image self-heal re-leasing a fresh
+ * sandbox for a fault no image can fix. Carries the same stable code as the
+ * exec watchdog so downstream attribution is unchanged.
+ */
+export class AdapterSandboxProbeUnansweredError extends Error {
+  readonly code = SANDBOX_EXEC_TIMEOUT_ERROR_CODE;
+  readonly adapterCommand: string;
+  constructor(command: string, targetDescription: string, attempts: number) {
+    super(
+      `the sandbox never answered the '${command}' runtime probe in the ${targetDescription} (${attempts} attempts). The exec channel dropped before the probe could report, so the runtime image was never established either way.`,
+    );
+    this.name = "AdapterSandboxProbeUnansweredError";
+    this.adapterCommand = command;
+  }
+}
+
+export function isAdapterSandboxProbeUnansweredError(
+  value: unknown,
+): value is AdapterSandboxProbeUnansweredError {
+  return (
+    value instanceof Error &&
+    (value as { code?: unknown }).code === SANDBOX_EXEC_TIMEOUT_ERROR_CODE &&
+    value.name === "AdapterSandboxProbeUnansweredError"
+  );
+}
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
@@ -725,6 +808,20 @@ async function ensureSandboxCommandResolvable(
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
   }
 
+  // A managed, pre-baked image is fixed: its CLI set is decided at build time.
+  // `adapterConfig.command` is a free-form string, so an agent can ask for a
+  // binary that is simply not in the image, and there the install below is
+  // doomed twice over. Locked/sovereign egress blocks it, so it stalls until
+  // the adapter's entire timeout budget is spent, and even a successful
+  // install would be thrown away with the lease. Say what is actually true
+  // and stop, rather than reporting "not installed or not on PATH", which
+  // reads as something a retry or an operator could fix.
+  if (target.prebakedRuntime === true) {
+    throw new Error(
+      `Command "${command}" is not part of this sandbox's pre-baked runtime image, and a managed sandbox cannot install one. Set the agent's command back to the adapter's own CLI.`,
+    );
+  }
+
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
@@ -840,9 +937,11 @@ export async function runAdapterExecutionTargetProcess(
         env,
         stdin: options.stdin,
         timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
-        // The tail loop already streams incremental chunks; suppress the
-        // runner's end-of-run batched onLog to avoid duplicate log bytes.
         onLog: runLogTail ? undefined : options.onLog,
+        runId,
+        onOutput: runLogTail ? undefined : (stream, text) => {
+          void options.onLog(stream, text);
+        },
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
@@ -963,6 +1062,14 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
+      // Forward the run id so a streaming sandbox runner can bridge worker
+      // output chunks back to onLog live (across the plugin worker boundary).
+      runId,
+      // Route streamed chunks to the same log tail; a streaming runner sets
+      // `streamed` so the buffered dump is suppressed upstream (no double log).
+      onOutput: (stream, text) => {
+        void onLog(stream, text);
+      },
     });
   }
 
@@ -1112,12 +1219,67 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   graceSec?: number;
   onLog?: AdapterExecutionTargetShellOptions["onLog"];
 }): Promise<void> {
+  const sandboxTarget =
+    input.target?.kind === "remote" && input.target.transport === "sandbox"
+      ? input.target
+      : null;
+  const isSandbox = sandboxTarget !== null;
+  const detectCommand = input.detectCommand?.trim();
+
+  // Managed, pre-baked sandbox: the runtime CLI is contractually part of the
+  // image. A network install is never appropriate (locked/sovereign egress
+  // blocks it and the run stalls until timeout). Probe once; if the CLI is
+  // missing the run landed on the wrong runtime image (a different harness) and
+  // we fail fast with a typed, actionable error instead of installing.
+  if (sandboxTarget && sandboxTarget.prebakedRuntime === true) {
+    if (!detectCommand) {
+      // Nothing to assert (no probe command); never attempt an install either.
+      return;
+    }
+    // A probe that times out has told us nothing about the image: `command -v`
+    // is a shell builtin that answers instantly, so no answer means the exec
+    // channel dropped. Ask again before drawing any conclusion; the retry is
+    // free when the sandbox is healthy.
+    let probe: Awaited<ReturnType<typeof runAdapterExecutionTargetShellCommand>> | null = null;
+    for (let attempt = 1; attempt <= PREBAKED_RUNTIME_PROBE_ATTEMPTS; attempt += 1) {
+      probe = await runAdapterExecutionTargetShellCommand(
+        input.runId,
+        input.target,
+        `command -v ${shellQuote(detectCommand)} >/dev/null 2>&1`,
+        {
+          cwd: input.cwd,
+          env: input.env,
+          timeoutSec: input.timeoutSec,
+          graceSec: input.graceSec,
+        },
+      );
+      if (!probe.timedOut) break;
+    }
+    if (probe && !probe.timedOut && probe.exitCode === 0) {
+      return;
+    }
+    // Still no answer after every attempt: the sandbox is unreachable, which is
+    // a transient infrastructure fault and NOT a verdict on the image.
+    if (!probe || probe.timedOut) {
+      throw new AdapterSandboxProbeUnansweredError(
+        detectCommand,
+        describeAdapterExecutionTarget(input.target),
+        PREBAKED_RUNTIME_PROBE_ATTEMPTS,
+      );
+    }
+    // The probe answered and the CLI is not there: the image really is wrong.
+    throw new AdapterRuntimeImageMismatchError(
+      detectCommand,
+      describeAdapterExecutionTarget(input.target),
+      `detect probe exited ${probe.exitCode ?? "?"}`,
+    );
+  }
+
   const installCommand = input.installCommand?.trim();
-  if (!installCommand || input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!installCommand || !isSandbox) {
     return;
   }
 
-  const detectCommand = input.detectCommand?.trim();
   if (detectCommand) {
     const probe = await runAdapterExecutionTargetShellCommand(
       input.runId,
@@ -1619,19 +1781,61 @@ async function syncProcessSessionRemoteScript(input: {
   return { uploaded };
 }
 
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+// Event files are named with a monotonic zero-padded sequence
+// ("000000000001.json", "000000000002.json", ...) written by a serial,
+// atomic (tmp+rename) writer, so string comparison of names is equivalent
+// to sequence order. This lets the reader stop the batch at the first bad
+// file it finds, rather than skipping past it, so events are never
+// delivered out of order.
+//
+// Removing a file is the caller's responsibility (see poll()): this
+// function only reads and reports, so a file can never be removed before
+// the caller has actually delivered its event.
 async function readRemoteJsonFiles(input: {
   client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
   dir: string;
-}): Promise<Array<{ name: string; body: string }>> {
-  const names = await input.client.listJsonFiles(input.dir);
+  afterName: string | null;
+}): Promise<{
+  events: Array<{ name: string; body: string }>;
+  // Set when the batch stopped before exhausting every listed name (a read
+  // failure or an empty body). The caller must treat this as a failed
+  // cycle for escalation purposes, even though the events read before the
+  // stop point are still delivered normally.
+  stoppedEarly: { name: string; error: unknown } | null;
+}> {
+  const listedNames = await input.client.listJsonFiles(input.dir);
+  const names = input.afterName
+    ? listedNames.filter((name) => name > input.afterName!)
+    : listedNames;
   const out: Array<{ name: string; body: string }> = [];
+  let stoppedEarly: { name: string; error: unknown } | null = null;
   for (const name of names) {
     const filePath = path.posix.join(input.dir, name);
-    const body = await input.client.readTextFile(filePath);
-    await input.client.remove(filePath).catch(() => undefined);
+    let body: string;
+    try {
+      body = await input.client.readTextFile(filePath);
+    } catch (error) {
+      // Stop the batch at the first file that fails to read (missing,
+      // non-zero exit, or otherwise) rather than skipping past it. Events
+      // must be delivered in filename (sequence) order: if file N fails but
+      // N+1 happens to succeed, delivering N+1 before N would reorder
+      // events. The file is left in place (nothing here removes it), so
+      // the next poll cycle re-lists it (names are monotonic, nothing was
+      // skipped over) and retries from exactly this point.
+      stoppedEarly = { name, error };
+      break;
+    }
+    // Treat an empty read the same as a failed one: a momentarily-empty or
+    // partially observed file must not be delivered as a real event.
+    if (!body.trim()) {
+      stoppedEarly = { name, error: new Error("event file was empty") };
+      break;
+    }
     out.push({ name, body });
   }
-  return out;
+  return { events: out, stoppedEarly };
 }
 
 async function waitForLocalServerListen(server: net.Server): Promise<number> {
@@ -1968,7 +2172,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       // keep polling. A `shutdownAck` can land in the same batch right after
       // an `exit` event; deliver it too, so this tick never drops an
       // already-fetched (and already-removed-from-disk) event.
-      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
       for (const event of events) {
         const parsed = JSON.parse(event.body) as {
           type?: string;
@@ -2147,7 +2351,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     if (stopReadingForShutdownAck) return;
     void (async () => {
       try {
-        const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+        const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
         if (stopReadingForShutdownAck) return;
         for (const event of events) {
           try {
@@ -3965,7 +4169,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
 
   await onLog(
     "stdout",
-    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir}.\n`,
+    `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir} (forward target: ${hostApiUrl}).\n`,
   );
 
   const bridgeAsset = await createSandboxCallbackBridgeAsset();

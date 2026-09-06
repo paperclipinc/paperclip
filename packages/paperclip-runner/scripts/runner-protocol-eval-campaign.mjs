@@ -77,6 +77,31 @@ function parseRosterSelection(value) {
   return new Set(selected);
 }
 
+async function maintainedRosterSelection(programRoot) {
+  const campaignPath = resolve(programRoot, "campaigns/live-direct-full.json");
+  const campaign = await loadObject(campaignPath);
+  if (
+    campaign.schema !== "paperclip-runner/live-campaign/v1" ||
+    !Array.isArray(campaign.lanes)
+  ) {
+    throw new Error(`Unsupported live campaign schema in ${campaignPath}`);
+  }
+  const selected = campaign.lanes
+    .filter((lane) => lane.executionClass !== "disabled")
+    .map((lane) => {
+      const rosterPath = inside(
+        programRoot,
+        resolve(dirname(campaignPath), String(lane.roster ?? "")),
+        "Campaign roster",
+      );
+      return basename(rosterPath);
+    });
+  if (selected.length === 0 || new Set(selected).size !== selected.length) {
+    throw new Error("Maintained live campaign must contain unique enabled rosters");
+  }
+  return new Set(selected);
+}
+
 export async function buildProtocolEvalCatalog({
   evalsRoot,
   rosterSelection = "all",
@@ -94,7 +119,9 @@ export async function buildProtocolEvalCatalog({
   }
   const programRoot = resolve(evalsRoot, "evals/paperclip-runner");
   const rosterRoot = resolve(programRoot, "rosters");
-  const selected = parseRosterSelection(rosterSelection);
+  const requested = parseRosterSelection(rosterSelection);
+  const selected =
+    requested ?? (await maintainedRosterSelection(programRoot));
   const rosterFiles = (await readdir(rosterRoot, { withFileTypes: true }))
     .filter(
       (entry) =>

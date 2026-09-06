@@ -37,7 +37,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure, isCodexInvalidApiKeyError } from "./parse.js";
+import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -241,14 +241,12 @@ async function prepareCodexRemoteManagedHome(
     // loudly as refresh_token_reused on the next host Codex use (re-auth
     // recovers) — never silent host-credential corruption, so it must not
     // mask the run result.
-    teardown: async () => {
-      await createWorkspaceRestoreTeardown({
-        stagedRuntime,
-        onLog,
-        startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
-        failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
-      })();
-    },
+    teardown: createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+    }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
     // re-stage, idle eviction) — never on a clean turn that keeps the runtime
@@ -270,10 +268,6 @@ async function prepareCodexRemoteManagedHome(
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
-    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
-    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
-    // the terminal failed result instead of silently switching lanes.
-    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
     adapterType: "codex_local",
@@ -282,38 +276,27 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
-  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-  const authFailure = classifyCodexAuthRefreshFailure({ errorMessage });
-  if (authFailure) {
-    return {
-      ...result,
-      errorCode: authFailure,
+  const authFailure = classifyCodexAuthRefreshFailure({
+    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n"),
+  });
+  if (!authFailure) return result;
+
+  return {
+    ...result,
+    errorCode: authFailure,
+    errorFamily: authFailure,
+    resultJson: {
+      ...(result.resultJson ?? {}),
       errorFamily: authFailure,
-      resultJson: {
-        ...(result.resultJson ?? {}),
-        errorFamily: authFailure,
-      },
-    };
-  }
-
-  // A rejected/missing OpenAI API key is a permanent auth failure: surface it
-  // as codex_auth_required (no errorFamily; it is not a retry contract) so the
-  // heartbeat pauses the agent and the run card offers credential-connect.
-  if (isCodexInvalidApiKeyError({ errorMessage })) {
-    return {
-      ...result,
-      errorCode: "codex_auth_required",
-    };
-  }
-
-  return result;
+    },
+  };
 }
 
 /**
@@ -363,7 +346,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexAuthFailureClassification(result);
+    return withCodexAuthRefreshFailureClassification(result);
   };
 }
 

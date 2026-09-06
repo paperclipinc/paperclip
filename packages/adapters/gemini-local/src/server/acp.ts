@@ -163,15 +163,13 @@ async function prepareGeminiRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] => {
-    const restore = createWorkspaceRestoreTeardown({
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
       stagedRuntime,
       onLog,
       startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
       failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
     });
-    return async () => { await restore(); };
-  };
   const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
   const stagedRuntime = await input.stage(
     geminiSkillsHome

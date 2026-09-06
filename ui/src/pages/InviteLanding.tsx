@@ -164,41 +164,40 @@ function AwaitingJoinApprovalPanel({
   const approverLabel = invitedByUserName ?? "An organization admin";
 
   return (
-    <div className="min-h-screen bg-background px-6 py-12 text-foreground">
-      <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6" data-testid="invite-pending-approval">
+    <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
+      <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6" data-testid="invite-pending-approval">
         <div className="flex items-center gap-3">
           <InviteCompanyLogo
             companyDisplayName={companyDisplayName}
             companyLogoUrl={companyLogoUrl}
-            companyBrandColor={companyBrandColor}
-            className="h-12 w-12 border border-border rounded-none"
+            className="h-12 w-12 border border-zinc-800 rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
         </div>
         <div className="mt-4 space-y-3">
-          <p className="text-sm text-muted-foreground">
+          <p className="text-sm text-zinc-400">
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
-          <div className="border border-border p-3">
-            <p className="text-xs text-muted-foreground mb-1">Approval page</p>
-            <p className="text-sm text-foreground">Company Settings → Members</p>
+          <div className="border border-zinc-800 p-3">
+            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
+            <p className="text-sm text-zinc-200">Settings → Members</p>
           </div>
-          <p className="text-sm text-muted-foreground">
-            Ask them to visit <span className="text-foreground">Company Settings → Members</span> to approve your request.
+          <p className="text-sm text-zinc-400">
+            Ask them to visit <span className="text-zinc-200">Settings → Members</span> to approve your request.
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-zinc-500">
             Refresh this page after you've been approved — you'll be redirected automatically.
           </p>
         </div>
         {claimSecret && claimApiKeyPath ? (
-          <div className="mt-4 space-y-1 border border-border p-3 text-xs text-muted-foreground">
-            <div className="text-foreground">Claim secret</div>
+          <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
+            <div className="text-zinc-200">Claim secret</div>
             <div className="font-mono break-all">{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
         ) : null}
         {onboardingTextUrl ? (
-          <div className="mt-4 text-xs text-muted-foreground">
+          <div className="mt-4 text-xs text-zinc-400">
             Onboarding: <span className="font-mono break-all">{onboardingTextUrl}</span>
           </div>
         ) : null}
@@ -354,10 +353,7 @@ export function InviteLandingPage() {
     setSelectedCompanyId(companyId, { source: "manual" });
     let present = false;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { companies } = await queryClient.fetchQuery({
-        ...companiesListQueryOptions,
-        staleTime: 0,
-      });
+      const { companies } = await fetchCompanyListForCurrentAccount(queryClient);
       if (companies.some((company) => company.id === companyId)) {
         present = true;
         break;
@@ -589,14 +585,13 @@ export function InviteLandingPage() {
 
     return (
       joinedNow ? (
-        <div className="min-h-screen bg-background px-6 py-12 text-foreground">
-          <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6">
+        <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
+          <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6">
             <div className="flex items-center gap-3">
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                companyBrandColor={companyBrandColor}
-                className="h-12 w-12 border border-border rounded-none"
+                className="h-12 w-12 border border-zinc-800 rounded-none"
               />
               <h1 className="text-lg font-semibold">You joined the organization</h1>
             </div>
@@ -629,7 +624,6 @@ export function InviteLandingPage() {
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
-                companyBrandColor={companyBrandColor}
                 className="h-16 w-16 rounded-none border border-border"
               />
               <div className="min-w-0">
@@ -650,35 +644,35 @@ export function InviteLandingPage() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Company</div>
-                <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Organization</div>
+                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
               </div>
-              <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invited by</div>
-                <div className="mt-1 text-sm text-foreground">{invitedByUserName ?? "Paperclip board"}</div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invited by</div>
+                <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
-              <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Requested access</div>
-                <div className="mt-1 text-sm text-foreground">
-                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Requested access</div>
+                <div className="mt-1 text-sm text-zinc-100">
+                  {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Organization access"}
                 </div>
               </div>
-              <div className="border border-border p-3">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-muted-foreground">Invite expires</div>
-                <div className="mt-1 text-sm text-foreground">{formatDate(invite.expiresAt)}</div>
+              <div className="border border-zinc-800 p-3">
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-zinc-500">Invite expires</div>
+                <div className="mt-1 text-sm text-zinc-100">{formatDate(invite.expiresAt)}</div>
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-                <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-700 dark:text-amber-200/80">Message from inviter</div>
-                <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-50">{inviteMessage}</p>
+                <div className="text-xs uppercase tracking-(--tracking-caps) text-amber-200/80">Message from inviter</div>
+                <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
               </div>
             ) : null}
 
             {sessionQuery.data ? (
-              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-900 dark:text-emerald-50">
+              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-50">
                 Signed in as <span className="font-medium">{sessionLabel}</span>.
               </div>
             ) : null}

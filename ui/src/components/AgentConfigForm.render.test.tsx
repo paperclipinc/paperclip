@@ -6,10 +6,11 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
-import { AgentConfigForm } from "./AgentConfigForm";
+import { ToastProvider } from "../context/ToastContext";
+import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -57,6 +58,18 @@ const mockAccessApi = vi.hoisted(() => ({
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  listProposals: vi.fn(),
+  listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/agents", () => ({
@@ -665,6 +678,7 @@ describe("AgentConfigForm environment selector", () => {
         features: { defaultEnvironmentId: null, enableEnvironments: true, executionMode: "any" },
       }),
     );
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     // Default: the caller has no active session. A resume test overrides this
@@ -1546,6 +1560,19 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("WXYZ-1234");
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("https://auth.example.test/device");
+
+    // Code above URL, and the numbering agrees. Opening the page is what leaves
+    // this screen for a form that wants the code from it, so the code is read
+    // while it is still in front of you. The panel used to run the other way.
+    const labels = [...result.container.querySelectorAll("div")]
+      .map((el) => el.textContent?.trim())
+      .filter((t) => t === "1. Code" || t === "2. Authentication URL");
+    expect(labels).toEqual(["1. Code", "2. Authentication URL"]);
+
+    const codeIndex = result.container.textContent!.indexOf("WXYZ-1234");
+    const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
+    expect(codeIndex).toBeGreaterThan(-1);
+    expect(urlIndex).toBeGreaterThan(codeIndex);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {
@@ -1614,6 +1641,185 @@ describe("AgentConfigForm environment selector", () => {
     expect(login?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("WXYZ-1234");
+  });
+
+  it("does not cancel an active login session when the panel unmounts", async () => {
+    // The owner-scoped active-session read and the manual Cancel button now
+    // take over the purpose the unmount cancel used to serve. The connect step
+    // unmounts the panel routinely — Cancel closes the canvas, switching source
+    // remounts it under a new key, closing the wizard drops it — and each of
+    // those unmounts must leave the session reachable by a later mount's resume
+    // read, not release it. Deliberately not pushed to `roots`: this test does
+    // the unmount itself, and that unmount is the thing under test.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    expect(findButton(result.container, "Cancel"), "the login should be active").toBeTruthy();
+
+    mockAgentsApi.cancelAdapterAuthLogin.mockClear();
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it("shows a reachable Cancel control in the onboarding chrome and cancels the session", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const onCancel = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+                onCancel={onCancel}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Cancel")));
+
+    await clickByText(container, "Cancel");
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "session-1",
+    );
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes an active login session on mount, adopting its session id and prompt", async () => {
+    // A page reload loses every piece of local state, so the panel must read
+    // the caller's active session and adopt it instead of starting a new one.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    // The prompt survives every owner read while the session stays active, so
+    // the status poll for the resumed session agrees with the resumed read.
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("RESUME-1"));
+
+    // The prompt from the resumed read shows without a fresh start.
+    expect(result.container.textContent).toContain("RESUME-1");
+    expect(result.container.textContent).toContain("https://auth.example.test/resumed");
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    // The panel polls the resumed session id, not a freshly started one.
+    expect(mockAgentsApi.getAdapterAuthLoginStatus).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "resumed-session-1",
+    );
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+  });
+
+  it("starts a new session when the active-session read finds none", async () => {
+    // The default mock already answers with no active session (a 404). This
+    // pins the fallback: the panel still waits for the caller's press.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => mockAgentsApi.getActiveAdapterAuthLoginSession.mock.calls.length > 0);
+    await flushReact();
+
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: "sandbox-1",
+    });
+  });
+
+  it("releases a resumed session after an unrecoverable resume error, waiting for the cancel response", async () => {
+    // The active-session read finds a session, but by the time the status poll
+    // reaches the server the session is already gone (a race between the two
+    // reads). The panel cannot resume it, so it releases the reservation
+    // explicitly instead of trusting the 404 alone, and it waits for that
+    // release before it returns to its start state.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockRejectedValue(
+      new ApiError("Adapter login session not found", 404, {
+        error: "Adapter login session not found",
+      }),
+    );
+    let resolveCancel!: () => void;
+    mockAgentsApi.cancelAdapterAuthLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = () => resolve({
+          sessionId: "resumed-session-1",
+          environmentId: "sandbox-1",
+          status: "cancelled",
+          expiresAt: null,
+          failure: null,
+          prompt: null,
+        });
+      }),
+    );
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      mockAgentsApi.cancelAdapterAuthLogin.mock.calls.some((call) => call[2] === "resumed-session-1"),
+    );
+
+    // The cancel call fired, but the panel still shows the resumed login as
+    // active because it is waiting for the cancel response.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    resolveCancel();
+    await flushUntil(() => findButton(result.container, "Sign in")?.disabled === false);
+
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
   });
 
   it("announces the login state through a polite live region", async () => {

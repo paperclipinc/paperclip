@@ -141,7 +141,7 @@ describeEmbeddedPostgres("issue comment derived attribution migration", () => {
       const state = await inspectMigrations(connectionString);
 
       expect(state.status).toBe("upToDate");
-      expect(state.availableMigrations).not.toContain("0134_issue_comment_derived_attribution_fast.sql");
+      expect(state.availableMigrations).not.toContain("0126_issue_comment_derived_attribution.sql");
       expect(state.availableMigrations).toContain(DERIVED_ATTRIBUTION_MIGRATION);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });

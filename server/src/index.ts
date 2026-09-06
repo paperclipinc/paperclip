@@ -1,8 +1,4 @@
 /// <reference path="./types/express.d.ts" />
-// Kicks off the OTel bootstrap as early as possible (no-op unless
-// OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
-// instrumentationReady before opening DB connections or constructing the
-// HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
@@ -45,6 +41,11 @@ import {
   getManagedInstanceConfig,
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
+import {
+  configureLiveEventsTransport,
+  resolveLiveEventsRedisUrl,
+  resolveLiveEventsTransportMode,
+} from "./services/live-events.js";
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
@@ -68,6 +69,7 @@ import {
   issueService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
+  reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -162,9 +164,6 @@ export async function startServer(): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
 
-  // Tracing must be active (or have failed and logged) before the first DB
-  // connection or the HTTP server exists — see instrumentation.ts.
-  await instrumentationReady;
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
@@ -740,19 +739,6 @@ export async function startServer(): Promise<StartedServer> {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
-  const databaseBackupMaxAgeHours = Math.max(
-    1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
-      Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
-  );
-  const databaseBackupAlertFile =
-    process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
-    resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
-  const databaseBackupAlertFiles = [
-    databaseBackupAlertFile,
-    resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
-    resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
-  ];
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -837,15 +823,6 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
-    databaseBackupHealth: config.databaseBackupEnabled
-      ? {
-          enabled: config.databaseBackupEnabled,
-          backupDir: config.databaseBackupDir,
-          maxAgeHours: databaseBackupMaxAgeHours,
-          alertFile: databaseBackupAlertFile,
-          alertFiles: databaseBackupAlertFiles,
-        }
-      : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -898,6 +875,15 @@ export async function startServer(): Promise<StartedServer> {
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
+  });
+
+  const liveEventsTransportMode = resolveLiveEventsTransportMode();
+  void configureLiveEventsTransport({
+    mode: liveEventsTransportMode,
+    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
+    redisUrl: resolveLiveEventsRedisUrl(),
+  }).catch((err) => {
+    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
   });
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -978,6 +964,19 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
+    });
+
+  void reconcileCloudUpstreamRunsOnStartup(db as any)
+    .then((result: { reconciled: number }) => {
+      if (result.reconciled > 0) {
+        logger.warn(
+          { reconciled: result.reconciled },
+          "reconciled cloud upstream runs from a previous server process",
+        );
+      }
+    })
+    .catch((err: unknown) => {
+      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
 
   // Backfill auth.json into any already-isolated codex_local managed home that
@@ -1519,6 +1518,11 @@ export async function startServer(): Promise<StartedServer> {
     };
     await runRetentionSweep();
 
+    const heartbeatMaxQueuedRunAgeMs = Math.max(
+      1,
+      Number(process.env.PAPERCLIP_HEARTBEAT_MAX_QUEUED_RUN_AGE_MS) || 24 * 60 * 60 * 1000,
+    );
+
     startHeartbeatSchedulerInterval(() => {
       // Track the outer async callback as well as the work it starts. Shutdown
       // can then wait through an already-running suppression check before it
@@ -1649,8 +1653,9 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
+          // Periodically reap orphaned runs (5-min staleness threshold for stuck "running"
+          // runs, bounded max-age for stuck "queued" runs) and make sure persisted queued
+          // work is still being driven forward.
           trackHeartbeatSchedulerWork(heartbeat
             .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
             .then(() => heartbeat.promoteDueScheduledRetries())

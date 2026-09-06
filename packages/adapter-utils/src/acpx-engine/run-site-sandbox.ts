@@ -320,7 +320,9 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
         });
       }
       return {
-        referencedProjectStagingFailures: [],
+        referencedProjectStagingFailures: (staged.stagedRuntime.additionalSourceFailures ?? []).map(
+          (failure) => ({ projectId: failure.projectId, error: failure.error }),
+        ),
       };
     },
 

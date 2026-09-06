@@ -1404,7 +1404,7 @@ describe("NewIssueDialog", () => {
 
   it("reveals the watchdog editor from the overflow menu", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableTaskWatchdogs: true } }),
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
     );
 
     const { root } = renderDialog(container);
@@ -1430,7 +1430,7 @@ describe("NewIssueDialog", () => {
 
   it("submits the configured watchdog from a restored draft", async () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableTaskWatchdogs: true } }),
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
     );
     localStorage.setItem(
       "paperclip:issue-draft",

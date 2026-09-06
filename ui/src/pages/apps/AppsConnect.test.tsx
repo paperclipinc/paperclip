@@ -270,6 +270,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -662,6 +663,17 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("starts a selected app deep link at step one of its two-step setup", async () => {
+    mockSearch.value = "source=gmail";
+    listGalleryMock.mockResolvedValue({ apps: [GMAIL] });
+
+    await render();
+
+    expect(document.body.textContent).toContain("Step 1 of 2");
+    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    expect(document.body.textContent).not.toContain("Pick app   ·");
+  });
+
   it("opens a brokered Gmail deep link at the access step", async () => {
     mockParams.appKey = "gmail";
     mockSearch.value = "byo=1&appKey=gmail&stage=access";
@@ -669,6 +681,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
+    expect(document.body.textContent).toContain("Step 1 of 2");
+    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    expect(document.body.textContent).not.toContain("Pick app   ·");
     expect(document.body.textContent).toContain("Which humans can use this credential?");
     expect(document.body.textContent).toContain("Just me");
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
@@ -717,6 +732,47 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
     );
   });
+
+  it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
+    "revalidates a cached pending enrollment before continuing (expiry %s)",
+    async (expiresAt) => {
+      mockSearch.value = "source=github&stage=setup";
+      listGalleryMock.mockResolvedValue({
+        apps: [{
+          ...GITHUB,
+          methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+          ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+        }],
+      });
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "pending",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: [],
+        verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=cached",
+        expiresAt,
+      });
+
+      await render();
+      expect(container.textContent).toContain("Step 2 of 2");
+      await act(async () => {
+        buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
+        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
+      );
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+      );
+      expect(navigateTopLevelMock).not.toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=cached",
+      );
+    },
+  );
 
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
@@ -2644,6 +2700,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     }
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -2866,6 +2923,46 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     // Residual risk of a real-but-hostile authorization page: name the host the
     // operator is being handed to (PAP-17099).
     expect(container.textContent).toContain("auth.example.test");
+  });
+
+  it("exchanges a managed connect response in the tenant without opening Cloud confirmation", async () => {
+    const session = "managed_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      input === "/cloud/connections/handoff"
+        ? Response.json({ authorizationUrl: "https://provider.example.test/authorize?state=managed" })
+        : new Response(null, { status: 404 }));
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "mcp.example.test" },
+      connection: { id: "conn-1", credentialPolicy: "shared", status: "draft" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: {
+        kind: "oauth",
+        startUrl: "https://my.paperclip.app/connections/confirm?session=legacy",
+        handoff: { kind: "paperclip_cloud", session },
+      },
+    });
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=managed",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   /**

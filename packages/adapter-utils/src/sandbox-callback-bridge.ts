@@ -20,7 +20,13 @@ const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// Must comfortably exceed the largest legitimate request/response an in-sandbox
+// agent exchanges over the bridge. Issue documents (plans/specs) allow a 512KB
+// body (upsertIssueDocumentSchema: z.string().max(524288)); a PUT wraps that in
+// a JSON envelope and a GET returns it with metadata, so 256KB rejected real
+// document reads/writes with an opaque 502. 1MB covers a max document plus its
+// JSON envelope with margin; the queue protocol already base64-chunks large bodies.
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 1024 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
@@ -159,6 +165,18 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
 
+  // Hiring (paperclip-create-agent skill): adapter/icon discovery, comparing
+  // existing agent configs, submitting the hire request, and linking the
+  // resulting approval to its source issue. Direct agent creation
+  // (POST /api/companies/:id/agents) stays denied — hires must go through the
+  // approval-gated agent-hires endpoint, which the server still permission-checks.
+  { method: "GET", path: /^\/llms\/agent-configuration\.txt$/ },
+  { method: "GET", path: /^\/llms\/agent-configuration\/[^/]+\.txt$/ },
+  { method: "GET", path: /^\/llms\/agent-icons\.txt$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/agent-configurations$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+
   // Approvals (request, read, comment)
   { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
   { method: "GET", path: /^\/api\/approvals\/[^/]+\/issues$/ },
@@ -186,6 +204,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  // Exactly-once semantics for retried mutating calls (e.g. routine runs, hires).
+  // Without this the server can't dedupe an agent's retry and may double-execute.
+  "idempotency-key",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {

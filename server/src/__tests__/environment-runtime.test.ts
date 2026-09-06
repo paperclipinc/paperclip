@@ -115,6 +115,35 @@ describe("findReusableSandboxLeaseId", () => {
     expect(selected).toBe("sandbox-template-b");
   });
 
+  it("ignores host-only log streaming when matching a reusable plugin lease", () => {
+    const selected = findReusableSandboxLeaseId({
+      config: {
+        provider: "fake-plugin",
+        image: "template-b",
+        timeoutMs: 300000,
+        reuseLease: true,
+        streamRunLogs: true,
+        runnerLifecycleMode: "warm",
+        target: null,
+      },
+      leases: [
+        {
+          providerLeaseId: "sandbox-template-b",
+          metadata: {
+            provider: "fake-plugin",
+            image: "template-b",
+            timeoutMs: 300000,
+            reuseLease: true,
+            runnerLifecycleMode: "warm",
+            target: "us",
+          },
+        },
+      ],
+    });
+
+    expect(selected).toBe("sandbox-template-b");
+  });
+
   it("requires image identity for reusable fake sandbox leases", () => {
     const selected = findReusableSandboxLeaseId({
       config: {
@@ -610,11 +639,87 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(acquired.lease.metadata?.nativeWorkspaceSync).toEqual(
       workspaceSyncStamp,
     );
+    await expect(
+      environmentService(db).getLeaseById(first.lease.id),
+    ).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+    });
     expect(
       workerManager.call.mock.calls.filter(
         (call) => call[1] === "environmentAcquireLease",
       ),
     ).toHaveLength(1);
+  });
+
+  it("reacquires one provider lease row idempotently during same-run recovery", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === seeded.pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentResumeLease") {
+          return {
+            providerLeaseId: seeded.reusableLease.providerLeaseId,
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(
+          `Unexpected plugin method during same-run reacquisition: ${method}`,
+        );
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+
+    const reacquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: seeded.environment,
+      issueId: null,
+      agentId: seeded.agentId,
+      heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: {
+        id: seeded.executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(reacquired.lease).toMatchObject({
+      id: seeded.reusableLease.id,
+      heartbeatRunId: seeded.runId,
+      providerLeaseId: seeded.reusableLease.providerLeaseId,
+      status: "active",
+      cleanupStatus: null,
+    });
+    const rows = await environmentService(db).listLeases(seeded.environment.id);
+    expect(
+      rows.filter(
+        (lease) =>
+          lease.heartbeatRunId === seeded.runId &&
+          lease.providerLeaseId === seeded.reusableLease.providerLeaseId,
+      ),
+    ).toHaveLength(1);
+    expect(workerManager.call).toHaveBeenCalledWith(
+      seeded.pluginId,
+      "environmentResumeLease",
+      expect.objectContaining({
+        providerLeaseId: seeded.reusableLease.providerLeaseId,
+      }),
+      expect.any(Number),
+    );
   });
 
   it("destroys a disposable paperclip_runner sandbox after the turn", async () => {
@@ -658,6 +763,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
     await environmentService(db).updateLeaseMetadata(reusableLease.id, {
       ...(reusableLease.metadata ?? {}),
+      reusableSandboxLease: {
+        ...((reusableLease.metadata?.reusableSandboxLease as Record<
+          string,
+          unknown
+        >) ?? {}),
+        adapterType: "paperclip_runner",
+      },
       sandboxLeaseAcquisition: { outcome: "created" },
     });
     const workerManager = {
@@ -4530,11 +4642,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType: null,
+          adapterType,
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType: null,
+            adapterType,
             config: providerConfig,
           }),
         },
@@ -5175,6 +5287,180 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         author: "Paperclip",
         categories: ["automation"],
         capabilities: ["environment.drivers.register"],
+  it("throws a worker-not-running error once the readiness deadline is exhausted", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Never Running Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.never-running-sandbox-provider",
+      packageName: "@acme/never-running-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.never-running-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Never Running Sandbox Provider",
+        description: "Test plugin worker that never comes online before the readiness deadline",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const workerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 25,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    await expect(
+      runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/worker is not running/);
+    // Confirms the loop actually polled repeatedly across the deadline window
+    // instead of giving up after a single check.
+    expect(workerManager.isRunning.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps polling across a longer worker restart window and succeeds once the handle registers late", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Registered Late Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.registered-late-sandbox-provider",
+      packageName: "@acme/registered-late-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.registered-late-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Registered Late Sandbox Provider",
+        description: "Test plugin worker handle that stays unregistered/starting for most of the readiness window",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // Simulates a worker process restart: the handle is absent (or "starting")
+    // for most of the readiness window and only reports running with several
+    // checks left before the deadline. A larger attempt count than the
+    // existing "waits briefly" sanity test, to prove the loop is bound by the
+    // deadline rather than by a small fixed number of attempts.
+    const readyAfterChecks = 8;
+    let checks = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => {
+        if (id !== pluginId) return false;
+        checks += 1;
+        return checks >= readyAfterChecks;
+      }),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-registered-late",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 200,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-registered-late");
+    expect(checks).toBe(readyAfterChecks);
+  });
+
         entrypoints: { worker: "dist/worker.js" },
         environmentDrivers: [
           {
@@ -5641,11 +5927,16 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           environmentId: environment.id,
           executionWorkspaceId,
           agentId,
-          adapterType: null,
+          // A concrete, matching adapter type on both the stored scope and
+          // the acquireRunLease call below: null is never a wildcard match
+          // for plugin-backed leases (see reusableSandboxLeaseScopeMatches),
+          // so this resume-then-fallback exercise needs a genuine positive
+          // match to reach the resume RPC at all.
+          adapterType: "codex_local",
           provider: "fake-plugin",
           runtimeFingerprint: reusableRuntimeFingerprint({
             provider: "fake-plugin",
-            adapterType: null,
+            adapterType: "codex_local",
             config: providerConfig,
           }),
         },
@@ -5679,6 +5970,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       issueId: null,
       agentId,
       heartbeatRunId: runId,
+      adapterType: "codex_local",
       persistedExecutionWorkspace: {
         id: executionWorkspaceId,
         mode: "shared_workspace",
@@ -6022,8 +6314,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("destroys scoped reusable plugin-backed sandbox leases", async () => {
-    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+    const { pluginId, companyId, runId, executionWorkspaceId, reusableLease } =
       await seedReusablePluginSandboxLease();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, runId));
 
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
@@ -6060,6 +6356,37 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       failureReason: "execution_workspace_closed",
       cleanupStatus: "success",
     });
+  });
+
+  it("does not destroy a scoped reusable lease while its run is active", async () => {
+    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+      await seedReusablePluginSandboxLease();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => undefined),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentDestroyLease",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+    });
+
+    const destroyed = await runtimeWithPlugin.destroyReusableSandboxLeases({
+      companyId,
+      executionWorkspaceId,
+      failureReason: "issue_terminal_done",
+    });
+
+    expect(destroyed).toEqual([]);
+    expect(workerManager.call).not.toHaveBeenCalled();
+    await expect(
+      environmentService(db).getLeaseById(reusableLease.id),
+    ).resolves.toMatchObject({ status: "active" });
   });
 
   it("destroys reusable plugin-backed sandbox leases scoped to an environment", async () => {
@@ -6192,8 +6519,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("retries reusable plugin-backed sandbox destroy when the worker is unavailable", async () => {
-    const { pluginId, companyId, executionWorkspaceId, reusableLease } =
+    const { pluginId, companyId, executionWorkspaceId, runId, reusableLease } =
       await seedReusablePluginSandboxLease();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
 
     const offlineWorkerManager = {
       isRunning: vi.fn(() => false),
@@ -6513,6 +6844,43 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(effective?.nativeSyncOut).toBe(true);
     // The worker did not verify the reuse verbs, so reusable leases stay false.
     expect(effective?.reusableLeases).toBe(false);
+  });
+
+  it("reports a missing plugin worker manager as a wiring failure, not a stopped worker", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const runtimeWithoutWorkerManager = environmentRuntimeService(db);
+
+    await expect(
+      runtimeWithoutWorkerManager.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/sandbox plugin workers are unavailable in this server process/);
+  });
+
+  it("still reports a stopped worker as a stopped worker when the manager is wired", async () => {
+    const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
+    const offlineWorkerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithOfflineWorker = environmentRuntimeService(db, {
+      pluginWorkerManager: offlineWorkerManager,
+      pluginWorkerReadyTimeoutMs: 0,
+    });
+
+    await expect(
+      runtimeWithOfflineWorker.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/its worker is not running/);
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {

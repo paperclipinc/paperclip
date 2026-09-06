@@ -193,12 +193,14 @@ export const authApi = {
         null,
       );
     }
-    if (res.status === 401) return null;
     // `undefined` (JSON parse failed — e.g. an empty body) is deliberately
     // distinct from a successfully-parsed literal `null`: only the latter is
     // better-auth's documented "no session" shape.
     const payload = await res.json().catch(() => undefined);
     if (!res.ok) {
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload ?? null);
+      if (recovery) return recovery;
+      if (res.status === 401) return null;
       logAuthHttpError("GET", "/get-session", res.status, res.statusText, payload);
       throw new AuthApiError(`Failed to load session (${res.status})`, res.status, payload ?? null);
     }
