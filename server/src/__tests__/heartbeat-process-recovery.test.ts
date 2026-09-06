@@ -51,7 +51,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
-const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+const mockTelemetryClient = vi.hoisted(() => ({
+  track: vi.fn(),
+  // Upstream's run telemetry hashes private refs through the client; without
+  // this the shared event builders throw inside the recovery paths.
+  hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
+}));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
