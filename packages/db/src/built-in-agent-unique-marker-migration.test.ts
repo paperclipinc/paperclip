@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0198_built_in_agent_unique_marker.sql";
+const MIGRATION_FILE = "0201_built_in_agent_unique_marker.sql";
 const UNIQUE_INDEX = "agents_company_built_in_agent_key_unique_idx";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

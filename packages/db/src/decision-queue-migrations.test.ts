@@ -8,9 +8,9 @@ import {
 } from "./test-embedded-postgres.js";
 
 const DECISION_QUEUE_MIGRATIONS = [
-  "0198_decision_queues_and_triage.sql",
-  "0199_decision_queue_composite_key.sql",
-  "0200_yellow_maria_hill.sql",
+  "0201_decision_queues_and_triage.sql",
+  "0202_decision_queue_composite_key.sql",
+  "0203_yellow_maria_hill.sql",
 ] as const;
 
 const cleanups: Array<() => Promise<void>> = [];

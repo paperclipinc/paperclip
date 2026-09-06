@@ -61,8 +61,8 @@ d("heartbeat context_snapshot expression index migration", () => {
     // Idempotency: re-running the migration statements against an already
     // migrated database must be a no-op, not an error.
     for (const migration of [
-      "./migrations/0209_heartbeat_context_snapshot_indexes.sql",
-      "./migrations/0210_heartbeat_context_taskkey_index.sql",
+      "./migrations/0212_heartbeat_context_snapshot_indexes.sql",
+      "./migrations/0213_heartbeat_context_taskkey_index.sql",
     ]) {
       const migrationSql = await readFile(
         fileURLToPath(new URL(migration, import.meta.url)),

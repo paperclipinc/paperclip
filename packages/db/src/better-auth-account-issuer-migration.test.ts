@@ -18,7 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0230_better_auth_account_issuer.sql";
+const MIGRATION_FILE = "0233_better_auth_account_issuer.sql";
 const UNIQUE_INDEX = "account_issuer_account_id_uq";
 
 // Better Auth's own issuer helpers: `createLocalAccountIssuer("credential")`
