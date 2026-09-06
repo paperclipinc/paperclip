@@ -48,11 +48,6 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import {
-  configureLiveEventsTransport,
-  resolveLiveEventsRedisUrl,
-  resolveLiveEventsTransportMode,
-} from "./services/live-events.js";
 import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
@@ -80,7 +75,6 @@ import {
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
-import { reconcileCloudUpstreamRunsOnStartup } from "./services/cloud-upstreams.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
@@ -905,15 +899,6 @@ export async function startServer(): Promise<StartedServer> {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
-
-  const liveEventsTransportMode = resolveLiveEventsTransportMode();
-  void configureLiveEventsTransport({
-    mode: liveEventsTransportMode,
-    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
-    redisUrl: resolveLiveEventsRedisUrl(),
-  }).catch((err) => {
-    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
-  });
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -993,19 +978,6 @@ export async function startServer(): Promise<StartedServer> {
     })
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
-    });
-
-  void reconcileCloudUpstreamRunsOnStartup(db as any)
-    .then((result) => {
-      if (result.reconciled > 0) {
-        logger.warn(
-          { reconciled: result.reconciled },
-          "reconciled cloud upstream runs from a previous server process",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
 
   // Backfill auth.json into any already-isolated codex_local managed home that

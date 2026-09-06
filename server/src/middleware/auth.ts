@@ -54,8 +54,9 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { cloudTenantCompanyId } from "../services/cloud-tenant-company.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
+
+export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -511,7 +512,60 @@ export function cloudActorHeaderSourceFromHeaders(
   };
 }
 
+/**
+ * postgres.js codes for a connection the server side closed out from under
+ * an in-flight query — a pooled Postgres endpoint recycling or suspending
+ * (observed 2026-09-03 with a managed pooler closing the socket mid-INSERT).
+ * The driver reconnects transparently on the next query; only the statement
+ * that was on the wire is lost.
+ */
+const transientDbConnectionCodes = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+]);
+
+/**
+ * True when the error chain (drizzle wraps the driver error as `cause`)
+ * carries a postgres.js closed-connection code. Exported for tests.
+ */
+export function isTransientDbConnectionError(error: unknown): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && transientDbConnectionCodes.has(code)) return true;
+  }
+  return false;
+}
+
+/**
+ * Runs `run` and retries it exactly once when it fails on a transient
+ * closed-connection error. Callers must pass an idempotent operation.
+ * Exported for tests.
+ */
+export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientDbConnectionError(error)) throw error;
+    return run();
+  }
+}
+
+/**
+ * Trusted-header actor resolution with a single transient-connection retry.
+ * The tenant sync inside is idempotent end to end — every write is an
+ * upsert/on-conflict/delete and the write debounce records only after the
+ * whole sync succeeds — so replaying it after a dropped connection is safe,
+ * and turns a golden-path authentication 500 into a served request.
+ */
 export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
+  return retryOnTransientDbConnectionError(() => resolveCloudTenantActorOnce(db, req));
+}
+
+async function resolveCloudTenantActorOnce(
   db: Db,
   req: CloudActorHeaderSource,
 ): Promise<Express.Request["actor"] | null> {
@@ -525,12 +579,13 @@ export async function resolveCloudTenantActor(
   const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
   const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
-  // Optional: the gateway URL slug this stack is served under. Surfaced as the
-  // stack company's slugAliases so the SPA can resolve /<slug>/... URLs the
-  // gateway proxies verbatim (post-checkout and account-page links use it).
-  const stackSlug = req.header("x-paperclip-cloud-stack-slug")?.trim() || undefined;
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
+  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
+  const paperclipCompanyName = req
+    .header("x-paperclip-cloud-paperclip-company-name")
+    ?.trim();
   const companyId = cloudTenantCompanyId(stackId);
+  const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
   const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
   const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
@@ -575,81 +630,88 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  // The stack's company is created lazily through the standard onboarding
-  // wizard (POST /api/companies with the deterministic stack company id) —
-  // never fabricated here. Until it exists this actor simply has no
-  // membership in it; once it exists, this upsert keeps late-joining stack
-  // users (and role changes from the gateway) in sync on every request.
-  let stackCompanyExists = false;
-  try {
-    stackCompanyExists = await db
-      .select({ id: companies.id })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows.length > 0);
-  } catch {
-    stackCompanyExists = false;
+  if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
+
+  if (shouldSync && paperclipCompanyName) {
+    await repairCloudTenantCompanyName(db, {
+      companyId,
+      paperclipCompanyId,
+      paperclipCompanyName,
+      now,
+    });
   }
 
-  if (stackCompanyExists) {
-    const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    const membership = await db
-      .insert(companyMemberships)
-      .values({
-        companyId,
-        principalType: "user",
-        principalId: userId,
+  // Runs after the name repair so the prefix derives from the repaired name.
+  // The helper self-gates on the legacy markers, so it is a no-op once the
+  // company has been repaired or was claimed by a current build.
+  if (shouldSync) {
+    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
+  }
+
+  effectiveMembership = shouldSync ? await db
+    .insert(companyMemberships)
+    .values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [
+        companyMemberships.companyId,
+        companyMemberships.principalType,
+        companyMemberships.principalId,
+      ],
+      set: {
         status: "active",
         membershipRole,
         updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [
-          companyMemberships.companyId,
-          companyMemberships.principalType,
-          companyMemberships.principalId,
-        ],
-        set: {
-          status: "active",
-          membershipRole,
-          updatedAt: now,
-        },
-      })
-      .returning()
-      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-
-    await ensureHumanRoleDefaultGrants(db, {
+      },
+    })
+    .returning()
+    .then((rows) => rows[0] ?? {
       companyId,
-      principalId: userId,
-      membershipRole: membership.membershipRole,
-      grantedByUserId: userId,
-    });
+      membershipRole,
+      status: "active",
+    }) : { companyId, membershipRole, status: "active" as const };
 
+  // Without instance-admin elevation, cloud tenant users are authorized purely
+  // through company-scoped permission grants — seed the same role defaults the
+  // regular membership flows create.
+  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
+    companyId,
+    principalId: userId,
+    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+    grantedByUserId: null,
+  });
+  if (shouldSync) {
+    cloudTenantWriteDebounce.delete(userId);
+    cloudTenantWriteDebounce.set(userId, { fingerprint: syncFingerprint, syncedAt: Date.now() });
+    pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, Date.now());
   }
 
-  // Fork feature (upstream lacks this): the actor's memberships are read
-  // back from ALL active company memberships for the user, not just the
-  // stack company, so tenant users retain access to any additional
-  // companies they belong to on this instance.
-  let memberships: Array<{ companyId: string; membershipRole: string | null; status: string }>;
+  // The stack's seeded company is only where Cloud provisioned this user.
+  // Companies created afterwards on the instance (imports, in-app company
+  // creation) attach real membership rows for the user, so union those with
+  // the pinned primary — the same active-membership scope a locally
+  // authenticated session actor carries. Strictly this user's own rows; the
+  // membership-creating flows seed their own permission grants, so nothing
+  // needs seeding per request here. A read failure degrades to the pinned
+  // primary instead of blocking authentication, mirroring the fail-closed
+  // owner-elevation resolution below.
+  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
+    [];
   try {
-    memberships = await db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      );
-  } catch {
-    const fallbackRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-    memberships = [{ companyId, membershipRole: fallbackRole, status: "active" }];
+    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
+      (row) => row.companyId !== companyId,
+    );
+  } catch (err) {
+    logger.warn(
+      { err, userId, stackId },
+      "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
+    );
   }
 
   return {
@@ -657,8 +719,15 @@ export async function resolveCloudTenantActor(
     userId,
     userName,
     userEmail,
-    companyIds: memberships.map((row) => row.companyId),
-    memberships,
+    companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
+    memberships: [
+      {
+        companyId,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        status: effectiveMembership.status,
+      },
+      ...additionalMemberships,
+    ],
     // Computed per request, never persisted: the stack owner is elevated to
     // instance admin of their own dedicated instance only while the
     // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
@@ -666,30 +735,10 @@ export async function resolveCloudTenantActor(
     // there is no role row to clean up.
     isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
     source: "cloud_tenant",
-    cloudStack: { stackId, stackRole, ...(stackSlug ? { stackSlug } : {}) },
   };
 }
 
-export function resolveCloudTenantWsAuth(
-  headers: Record<string, string | string[] | undefined>,
-): { userId: string; companyId: string } | null {
-  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!expectedToken) return null;
-  const token = firstHeaderValue(headers["x-paperclip-cloud-tenant-token"]);
-  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
-  const userId = firstHeaderValue(headers["x-paperclip-cloud-user-id"]);
-  const stackId = firstHeaderValue(headers["x-paperclip-cloud-stack-id"]);
-  if (!userId || !stackId) return null;
-  return { userId, companyId: cloudTenantCompanyId(stackId) };
-}
-
-function firstHeaderValue(value: string | string[] | undefined): string | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const trimmed = raw?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : null;
-}
-
-function requiredCloudHeader(req: Request, name: string): string {
+function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);
@@ -708,6 +757,251 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function cloudTenantCompanyId(stackId: string): string {
+  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function humanizeCloudStackSlug(stackId: string): string {
+  const slug = stackId
+    .trim()
+    .replace(/^paperclip-stack-/i, "")
+    .replace(/^stack-/i, "");
+  const displayName = slug
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+  return displayName || "Workspace";
+}
+
+export function isKnownBadCloudCompanyName(
+  name: string,
+  ids: { companyId: string; paperclipCompanyId?: string },
+): boolean {
+  const normalized = name.trim();
+  return (
+    /^paperclip-stack-.+/i.test(normalized) ||
+    /^stack-.+\s+paperclip$/i.test(normalized) ||
+    normalized === ids.companyId ||
+    (ids.paperclipCompanyId !== undefined &&
+      normalized === ids.paperclipCompanyId)
+  );
+}
+
+async function repairCloudTenantCompanyName(
+  db: Db,
+  input: {
+    companyId: string;
+    paperclipCompanyId?: string;
+    paperclipCompanyName: string;
+    now: Date;
+  },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (
+      !existing ||
+      !isKnownBadCloudCompanyName(existing.name, {
+        companyId: input.companyId,
+        paperclipCompanyId: input.paperclipCompanyId,
+      })
+    ) {
+      return;
+    }
+    await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(companies)
+        .set({ name: input.paperclipCompanyName, updatedAt: input.now })
+        .where(
+          and(
+            eq(companies.id, input.companyId),
+            // A user may rename the company between the read above and this
+            // repair. Match the exact observed machine name so that concurrent
+            // genuine renames always win.
+            eq(companies.name, existing.name),
+          ),
+        )
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_machine_name_repair",
+          previousName: existing.name,
+          name: input.paperclipCompanyName,
+        },
+      });
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy Cloud tenant company name",
+    );
+  }
+}
+
+/**
+ * Claims the tenant company row for this stack.
+ *
+ * The prefix derives from the company name, exactly as it does for a
+ * self-hosted company. Each attempt is a standalone INSERT, so a failed
+ * attempt is its own implicit transaction and cannot poison a surrounding
+ * one. `onConflictDoNothing` only absorbs the `companies.id` conflict — a
+ * prefix that another company already holds still raises `23505`, so the loop
+ * moves on to the next suffix.
+ */
+async function insertCloudTenantCompany(
+  db: Db,
+  input: { companyId: string; companyName: string; now: Date },
+): Promise<void> {
+  const base = deriveIssuePrefixBase(input.companyName);
+  for (let attempt = 1; attempt <= MAX_ISSUE_PREFIX_ATTEMPTS; attempt += 1) {
+    try {
+      await db
+        .insert(companies)
+        .values({
+          id: input.companyId,
+          name: input.companyName,
+          description: null,
+          status: "active",
+          issuePrefix: `${base}${issuePrefixSuffixForAttempt(attempt)}`,
+          updatedAt: input.now,
+        })
+        .onConflictDoNothing({
+          target: companies.id,
+        });
+      return;
+    } catch (error) {
+      if (!isIssuePrefixConflict(error)) throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique issue prefix for the tenant company");
+}
+
+/**
+ * The issue prefix that pre-name-derivation builds gave a tenant company.
+ *
+ * This derivation survives only as the detector for the one-time repair
+ * below. Nothing mints a prefix this way any more.
+ */
+function legacyProvisionedIssuePrefix(stackId: string): string {
+  const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
+  return `PC${hash}`;
+}
+
+/** The placeholder description that pre-name-derivation builds wrote. */
+const LEGACY_PROVISIONED_DESCRIPTION_PREFIX = "Provisioned by Paperclip Cloud for stack ";
+
+/**
+ * One-time repair for companies claimed by a pre-name-derivation build.
+ *
+ * Those companies carry an opaque hash prefix and a placeholder description
+ * that the operator never chose. Re-derive the prefix from the company's
+ * current name, re-key the stored issue and case identifiers onto it, and drop
+ * the placeholder. Both guards stop matching once the repair lands, so a later
+ * pass is a no-op.
+ */
+async function repairCloudTenantCompanyProvisionDefaults(
+  db: Db,
+  input: { companyId: string; stackId: string; now: Date },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({
+        name: companies.name,
+        issuePrefix: companies.issuePrefix,
+        description: companies.description,
+      })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (!existing) return;
+
+    const legacyPrefix = legacyProvisionedIssuePrefix(input.stackId);
+    const legacyDescription = existing.description?.startsWith(LEGACY_PROVISIONED_DESCRIPTION_PREFIX)
+      ? existing.description
+      : null;
+    if (existing.issuePrefix !== legacyPrefix) {
+      if (!legacyDescription) return;
+      // The prefix was already re-derived, so only the placeholder is left.
+      await db
+        .update(companies)
+        .set({ description: null, updatedAt: input.now })
+        .where(and(
+          eq(companies.id, input.companyId),
+          eq(companies.description, legacyDescription),
+        ));
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const candidate = await pickAvailableIssuePrefix(tx, deriveIssuePrefixBase(existing.name));
+      if (!candidate || candidate === legacyPrefix) return;
+
+      const [updated] = await tx
+        .update(companies)
+        .set({
+          issuePrefix: candidate,
+          ...(legacyDescription ? { description: null } : {}),
+          updatedAt: input.now,
+        })
+        .where(and(
+          eq(companies.id, input.companyId),
+          // A user may rename the company between the read above and this
+          // repair. Match the exact observed legacy prefix so that concurrent
+          // genuine renames always win.
+          eq(companies.issuePrefix, legacyPrefix),
+        ))
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
+        companyId: input.companyId,
+        fromPrefix: legacyPrefix,
+        toPrefix: candidate,
+      });
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_provision_defaults_repair",
+          previousIssuePrefix: legacyPrefix,
+          issuePrefix: candidate,
+          descriptionCleared: legacyDescription !== null,
+          issuesRekeyed: rekeyed.issues,
+          casesRekeyed: rekeyed.cases,
+        },
+      });
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy tenant company provisioning defaults",
+    );
+  }
 }
 
 export function requireBoard(req: Express.Request) {
