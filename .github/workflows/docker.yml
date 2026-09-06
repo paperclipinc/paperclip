@@ -164,12 +164,31 @@ jobs:
           target: production
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # tini must stay PID 1 so the orphans agent runs leave behind are
+      # wait()ed rather than pinning as zombies until the cgroup pid limit
+      # exhausts every fork() in the container. Run against the PUSHED image:
+      # the build above is multi-arch with `push: true`, so nothing is loaded
+      # into the runner's daemon. The cloud variant is FROM production and
+      # inherits the same ENTRYPOINT, so this covers both.
+      - name: Verify PID 1 reaps orphaned processes
+        env:
+          # Through the environment, not interpolated into the script body, so
+          # the tag text is data rather than shell.
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
+          test -n "$image"
+          echo "Verifying orphan reaping in $image"
+          docker run --rm -i --pull always "$image" sh -s < scripts/assert-orphan-reaping.sh
 
   # The cloud variant carries built bundled plugins for managed deployments
   # (see the `cloud` stage in the Dockerfile). It runs as its own job with no
@@ -310,7 +329,9 @@ jobs:
           # the variant; add here when managed deployments need another.
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha

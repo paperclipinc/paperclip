@@ -1910,7 +1910,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     async () => {
       const connectionString = await createTempDatabase();
       await applyPendingMigrations(connectionString);
-      const hash = await migrationHash("0236_remove_cheap_model_profiles.sql");
+      const hash = await migrationHash("0239_remove_cheap_model_profiles.sql");
       const companyId = "10000000-0000-4000-8000-000000000236";
       const agentId = "20000000-0000-4000-8000-000000000236";
       const issueId = "30000000-0000-4000-8000-000000000236";
