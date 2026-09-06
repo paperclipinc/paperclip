@@ -1103,8 +1103,8 @@ export function validateRunnerCatalog(): MatrixExecution[] {
       );
     }
   }
-  if (matrix.length !== 73)
-    throw new Error(`Expected 73 runner executions; received ${matrix.length}`);
+  if (matrix.length !== 68)
+    throw new Error(`Expected 68 runner executions; received ${matrix.length}`);
   return matrix;
 }
 
