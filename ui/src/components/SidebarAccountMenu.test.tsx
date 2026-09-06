@@ -291,11 +291,7 @@ describe("SidebarAccountMenu", () => {
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
-    // cloud: on a cloud instance, sign-out leaves the SPA entirely for the
-    // gateway's marketing sign-in page rather than invalidating in-app
-    // queries (there's no app left to refetch into).
-    expect(assignSpy).toHaveBeenCalledOnce();
-    expect(assignSpy.mock.calls[0][0]).toMatch(/^\/auth\/sign-in\?signedout=1&next=/);
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
 
     await act(async () => {
       root.unmount();
@@ -385,7 +381,9 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="authenticated" open onOpenChange={() => {}} />
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="authenticated" open onOpenChange={() => {}} />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });

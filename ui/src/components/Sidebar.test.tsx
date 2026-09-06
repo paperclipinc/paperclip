@@ -398,6 +398,7 @@ describe("Sidebar", () => {
   });
 
   it("groups and orders the streamlined Work and Org navigation", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
       enableIsolatedWorkspaces: false,
       enableApps: true,
@@ -467,6 +468,7 @@ describe("Sidebar", () => {
   });
 
   it("keeps Timeline out of the global navigation", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
     const root = await renderSidebar();
 
@@ -538,6 +540,7 @@ describe("Sidebar", () => {
   });
 
   it("always shows Connectors in the Org section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableApps: false } }));
     const root = await renderSidebar();
 

@@ -15,7 +15,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { cloudBillingApi } from "@/api/cloudBilling";
-import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
@@ -144,11 +144,7 @@ export function SidebarAccountMenu({
     retry: false,
   });
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
   // Cloud-only: expose the hosting layer's plan/billing page.
   const summaryQuery = useQuery({
     queryKey: queryKeys.cloudBilling.summary,

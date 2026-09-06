@@ -290,6 +290,8 @@ describe("Layout", () => {
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: true } }),
     );
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ keyboardShortcuts: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;

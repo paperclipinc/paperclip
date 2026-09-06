@@ -780,6 +780,9 @@ describe("Inbox toolbar", () => {
     routerMock.location.pathname = "/inbox/mine";
     localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
     apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.currentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
       id: "execution-workspace-1",
       name: "Workspace Aurora",

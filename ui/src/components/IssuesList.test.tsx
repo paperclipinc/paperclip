@@ -353,6 +353,8 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockAccessApi.getCurrentBoardAccess.mockReset();
+    mockInstanceSettingsApi.getExperimental.mockReset();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
     mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);

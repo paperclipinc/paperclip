@@ -718,6 +718,9 @@ describe("IssueProperties", () => {
       enableStreamlinedUi: false,
       enableClassicTaskInterface: false,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: false } }),
+    );
 
     const root = renderProperties(container, {
       issue: createIssue(),
@@ -741,6 +744,9 @@ describe("IssueProperties", () => {
       enableStreamlinedUi: false,
       enableClassicTaskInterface: false,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: false } }),
+    );
     const headerSlot = document.createElement("div");
     headerSlot.id = "properties-pane-header-slot";
     document.body.appendChild(headerSlot);
@@ -763,6 +769,9 @@ describe("IssueProperties", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableClassicTaskInterface: false,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: false } }),
+    );
     const root = renderProperties(container, {
       issue: createIssue({ workMode: "planning" }),
       childIssues: [],
@@ -810,6 +819,9 @@ describe("IssueProperties", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableClassicTaskInterface: false,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: false } }),
+    );
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
     mockIssuesApi.listDocuments.mockResolvedValue([planDocument, artifactDocument]);
     Element.prototype.scrollIntoView = vi.fn();
@@ -1111,6 +1123,9 @@ describe("IssueProperties", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableClassicTaskInterface: true,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: true } }),
+    );
     const onAddSubIssue = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue(),
@@ -1479,6 +1494,9 @@ describe("IssueProperties", () => {
       enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: true } }),
+    );
     const blocking = Array.from({ length: 7 }, (_, index) => ({
       id: `blocking-${index + 1}`,
       identifier: `BLOCKING-${index + 1}`,
@@ -1971,6 +1989,9 @@ describe("IssueProperties", () => {
       enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableClassicTaskInterface: true } }),
+    );
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
@@ -3383,6 +3404,9 @@ describe("IssueProperties", () => {
 
   it("hides the execution workspace picker without an enabled project policy", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: null })]);
     const root = renderProperties(container, {
       issue: createIssue({ projectId: "project-1" }),
@@ -3400,6 +3424,9 @@ describe("IssueProperties", () => {
 
   it("shows the workspace picker with no bound workspace", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     mockProjectsApi.list.mockResolvedValue([createProject({
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
     })]);
@@ -3419,6 +3446,9 @@ describe("IssueProperties", () => {
 
   it("saves the exact isolated-workspace payload", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     mockProjectsApi.list.mockResolvedValue([createProject({
       executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
     })]);
@@ -3449,6 +3479,9 @@ describe("IssueProperties", () => {
 
   it("searches reusable workspaces and saves the selected workspace", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+    );
     mockProjectsApi.list.mockResolvedValue([createProject({
       executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
     })]);
