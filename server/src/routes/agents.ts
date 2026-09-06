@@ -30,7 +30,11 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  isHeartbeatRunTerminalStatus,
+  startAdapterAuthSessionRequestSchema,
+  startClaudeSetupTokenSessionRequestSchema,
+  submitBrowserCodeRequestSchema,
+  toAccountHandle,
+  type AgentAdapterType,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -43,7 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
+import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -81,6 +85,8 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -100,7 +106,11 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactAgentAdapterConfig,
+  redactEventPayload,
+} from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
   HarnessRuntimeRequestResolutionError,
@@ -205,7 +215,6 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
-import { claudeHostLoginUnavailableReason } from "../services/execution-allowlist.js";
 import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -1027,6 +1036,17 @@ export function agentRoutes(
     return false;
   }
 
+  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
+    return false;
+  }
+
   async function filterAgentsForActor<T extends Record<string, unknown>>(
     req: Request,
     rows: T[],
@@ -1222,11 +1242,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
-        // Pin the Test lease to the agent's own adapter so the sandbox boots the
-        // harness image the Test will exec against (matching real agent runs). It
-        // also keeps the lease from being an adapter-less one, which a plugin that
-        // cannot prove a single-adapter environment now rejects.
-        adapterType: input.adapterType,
+        // Re-check the company binding atomically at lease time. The route
+        // guard already rejected a foreign environment, but the binding could
+        // change between the guard check and the lease acquire. This closes
+        // that check-to-lease race so a foreign sandbox never gets a lease.
+        assertCompanyBinding: true,
         // Apply the active custom-image template so the Test boots with the
         // operator's captured sandbox customizations and prepared image state,
         // matching what real agent runs use. Without this the test would
@@ -1502,8 +1522,12 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const baseAgent = redactAgentRowForResponse(
+      options?.restricted ? redactForRestrictedAgentView(agent) : agent,
+    );
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...baseAgent,
       chainOfCommand,
       access: accessState,
     };
@@ -1982,8 +2006,17 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  function assertSelectableAdapterType(type: string | null | undefined): string {
+  async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
     const adapterType = assertKnownAdapterType(type);
+    if (adapterType === "paperclip_runner") {
+      const experimental = await instanceSettings.getExperimental();
+      if (experimental.enableNativeRunner !== true) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
     const disabled = new Set(getDisabledAdapterTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
@@ -1994,6 +2027,74 @@ export function agentRoutes(
       `Adapter "${adapterType}" is not available on this instance. `
       + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
     );
+  }
+
+  async function assertFreshPaperclipRunnerProvider(
+    companyId: string,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<void> {
+    if (adapterType !== "paperclip_runner") return;
+    let profile;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+    } catch (error) {
+      if (error instanceof PaperclipRunnerProviderProfileError) {
+        throw unprocessable(error.message, { code: error.code });
+      }
+      throw error;
+    }
+    if (profile.provider === "claude_managed") {
+      await managedAgentProfileService(db).requireQualified(
+        companyId,
+        profile.managedProfileId,
+      );
+    } else if (profile.provider === "aws_agentcore") {
+      await remoteAgentProfileService(db).requireQualified(
+        companyId,
+        profile.agentCoreProfileId,
+        "aws_bedrock_agentcore_harness",
+      );
+    }
+  }
+
+  function resolvePaperclipRunnerAdapterTransition(input: {
+    previousAdapterType: string;
+    nextAdapterType: string;
+    previousAdapterConfig: Record<string, unknown>;
+    nextAdapterConfig: Record<string, unknown>;
+  }): Record<string, unknown> {
+    if (
+      input.nextAdapterType !== "paperclip_runner"
+      || input.previousAdapterType === input.nextAdapterType
+    ) {
+      return input.nextAdapterConfig;
+    }
+    if (input.previousAdapterType !== "codex_local") {
+      throw unprocessable(
+        `Cannot convert ${input.previousAdapterType} to Paperclip Runner while only the Codex provider is available.`,
+        { code: "paperclip_runner_adapter_conversion_unsupported" },
+      );
+    }
+    return {
+      ...input.nextAdapterConfig,
+      model:
+        asNonEmptyString(input.nextAdapterConfig.model)
+        ?? asNonEmptyString(input.previousAdapterConfig.model)
+        ?? DEFAULT_CODEX_LOCAL_MODEL,
+    };
+  }
+
+  function assertProviderTraceSettingTransition(
+    req: Request,
+    nextRuntimeConfig: unknown,
+    previousRuntimeConfig?: unknown,
+  ): void {
+    const previousRaw =
+      asRecord(asRecord(previousRuntimeConfig)?.debug)?.providerTrace === "raw";
+    const nextRaw =
+      asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
+    if (previousRaw !== nextRaw) assertInstanceAdmin(req);
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -2490,6 +2591,15 @@ export function agentRoutes(
     );
   }
 
+  function assertExternalInstructionsAdmin(
+    req: Request,
+    agent: Parameters<typeof agentInstructionsBundleMode>[0],
+  ) {
+    if (agentInstructionsBundleMode(agent) === "external") {
+      assertInstanceAdmin(req);
+    }
+  }
+
   function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
   }
@@ -2715,6 +2825,21 @@ export function agentRoutes(
     };
   }
 
+  // Single presenter for every response that emits a raw agent row. Restricted
+  // views blank the config wholesale for authorization reasons; this runs for
+  // config-reading (board) callers too, so plaintext `adapterConfig.env` values
+  // never leave the API regardless of actor scope.
+  function redactAgentRowForResponse<T extends { adapterConfig?: unknown } | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    return {
+      ...agent,
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -2726,11 +2851,33 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
+  }
+
+  function restoreRedactedAgentEnv(
+    requestedConfig: Record<string, unknown>,
+    existingConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const requestedEnv = asRecord(requestedConfig.env);
+    const existingEnv = asRecord(existingConfig.env);
+    if (!requestedEnv || !existingEnv) return requestedConfig;
+
+    const restoredEnv = { ...requestedEnv };
+    for (const [key, value] of Object.entries(requestedEnv)) {
+      const binding = asRecord(value);
+      if (
+        binding?.type === "plain"
+        && binding.value === REDACTED_EVENT_VALUE
+        && Object.prototype.hasOwnProperty.call(existingEnv, key)
+      ) {
+        restoredEnv[key] = existingEnv[key];
+      }
+    }
+    return { ...requestedConfig, env: restoredEnv };
   }
 
   function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
@@ -2738,7 +2885,7 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactAgentAdapterConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
@@ -2987,12 +3134,6 @@ export function agentRoutes(
           config: effectiveAdapterConfig,
           executionTarget,
           environmentName,
-          // A cloud tenant reaches this server through the gateway and has no
-          // shell on it, so adapters must not answer with host-login advice
-          // ("run `codex login`") or report a host credential file as theirs.
-          // Every other actor source is a local/self-hosted operator for whom
-          // the host genuinely is their own machine.
-          callerControlsHost: req.actor?.source !== "cloud_tenant",
         });
 
         const prefixChecks = [
@@ -3444,7 +3585,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -3562,16 +3703,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
-    if (trustPreset.kind === "denied") {
-      res.status(403).json({ error: trustPreset.detail });
-      return;
-    }
-    if (trustPreset.kind === "low_trust_review") {
-      res.json(buildLowTrustSelfView(agent));
-      return;
-    }
-    if (req.actor.keyScope?.kind === "task_bridge") {
+    if (
+      req.actor.keyScope?.kind === "task_bridge"
+      || req.actor.keyScope?.kind === "skill_test"
+    ) {
       res.json({
         id: agent.id,
         companyId: agent.companyId,
@@ -3581,6 +3716,15 @@ export function agentRoutes(
         status: agent.status,
         keyScope: req.actor.keyScope,
       });
+      return;
+    }
+    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
+    if (trustPreset.kind === "denied") {
+      res.status(403).json({ error: trustPreset.detail });
+      return;
+    }
+    if (trustPreset.kind === "low_trust_review") {
+      res.json(buildLowTrustSelfView(agent));
       return;
     }
     res.json(await buildAgentDetail(agent));
@@ -3750,6 +3894,11 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertExternalInstructionsAdmin(req, existing);
+    assertExternalInstructionsAdmin(req, {
+      ...existing,
+      adapterConfig: rollbackAdapterConfig,
+    });
     if (
       rollbackAdapterType !== existing.adapterType ||
       rollbackAdapterType === "paperclip_runner"
@@ -3784,7 +3933,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(redactAgentRowForResponse(updated));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -3858,7 +4007,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
+    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
@@ -3872,7 +4021,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     const hiredAgentId = randomUUID();
-    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -3881,12 +4030,12 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
-    requestedAdapterConfig = await inheritCompanyCredentialEnv(
-      db,
+    assertExternalInstructionsAdmin(req, {
+      id: hiredAgentId,
       companyId,
-      hireInput.adapterType,
-      requestedAdapterConfig,
-    );
+      name: hireInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
@@ -4083,7 +4232,7 @@ export function agentRoutes(
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
+    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
@@ -4097,7 +4246,7 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     const agentId = randomUUID();
-    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
       createInput.adapterType,
@@ -4106,12 +4255,12 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
-    requestedAdapterConfig = await inheritCompanyCredentialEnv(
-      db,
+    assertExternalInstructionsAdmin(req, {
+      id: agentId,
       companyId,
-      createInput.adapterType,
-      requestedAdapterConfig,
-    );
+      name: createInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
@@ -4200,7 +4349,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(redactAgentRowForResponse(agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -4272,6 +4421,7 @@ export function agentRoutes(
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -4292,6 +4442,7 @@ export function agentRoutes(
     }
 
     const syncedAdapterConfig = syncInstructionsBundleConfigFromFilePath(existing, nextAdapterConfig);
+    assertExternalInstructionsAdmin(req, { ...existing, adapterConfig: syncedAdapterConfig });
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
@@ -4347,6 +4498,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
     res.json(await instructions.getBundle(existing));
   });
 
@@ -4355,6 +4507,8 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+    if (req.body.mode === "external") assertInstanceAdmin(req);
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -4401,6 +4555,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -4416,6 +4571,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
@@ -4463,6 +4619,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -4526,12 +4683,12 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? (() => {
-        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
-        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
-      })()
+    const nextAdapterType = hasOwn(patchData, "adapterType")
+      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
+    const requestedAdapterType = nextAdapterType === existing.adapterType
+      ? nextAdapterType
+      : await assertSelectableAdapterType(nextAdapterType);
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -4550,6 +4707,7 @@ export function agentRoutes(
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
+      assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
         typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
@@ -4565,9 +4723,11 @@ export function agentRoutes(
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
+      let rawEffectiveAdapterConfig = requestedAdapterConfig
+        ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
+        : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -4621,6 +4781,10 @@ export function agentRoutes(
         adapterConfig: effectiveAdapterConfig,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      assertExternalInstructionsAdmin(req, {
+        ...existing,
+        adapterConfig: patchData.adapterConfig,
+      });
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -4678,7 +4842,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -4704,7 +4868,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -4739,7 +4903,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -4771,7 +4935,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -4825,7 +4989,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -4895,7 +5059,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
@@ -5225,16 +5389,6 @@ export function agentRoutes(
     await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     if (agent.adapterType !== "claude_local") {
       res.status(400).json({ error: "Login is only supported for claude_local agents" });
-      return;
-    }
-
-    // `claude login` runs on the server host; when the instance forces all
-    // execution onto the Kubernetes sandbox, sandboxed runs can never see that
-    // host-local login state, so refuse before spawning anything.
-    const { executionMode } = await instanceSettings.getGeneral();
-    const hostLoginUnavailableReason = claudeHostLoginUnavailableReason(executionMode);
-    if (hostLoginUnavailableReason) {
-      res.status(409).json({ error: hostLoginUnavailableReason });
       return;
     }
 
@@ -5746,6 +5900,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
@@ -5786,6 +5941,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -5873,6 +6029,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(await runRedactions.redactForRun(
@@ -6346,6 +6503,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -6364,29 +6522,12 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const safeOffset = Number.isFinite(offset) ? offset : 0;
-
-    // A run gets its log handle when the runner opens the file, so any
-    // NON-TERMINAL run (queued, running in its first moments, or waiting on a
-    // scheduled retry) legitimately has none. That is an empty log, not a
-    // missing resource: the transcript poller only stops re-requesting after a
-    // 404 on a TERMINAL run, so 404ing this case made every non-terminal run
-    // 404 once per poll interval for its entire life. A terminal run with no
-    // handle never got one, so that case still 404s below and the client stops
-    // asking.
-    if (!run.logStore || !run.logRef) {
-      if (!isHeartbeatRunTerminalStatus(run.status)) {
-        res.set("Cache-Control", "no-cache, no-store");
-        res.json({ runId, store: null, logRef: null, content: "", nextOffset: safeOffset });
-        return;
-      }
-    }
-
     const result = await heartbeat.readLog(run, {
-      offset: safeOffset,
+      offset: Number.isFinite(offset) ? offset : 0,
       limitBytes,
     });
 
@@ -6398,6 +6539,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -6409,6 +6551,7 @@ export function agentRoutes(
     const operationId = req.params.operationId as string;
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);

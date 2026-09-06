@@ -10,7 +10,6 @@ import {
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, issueService, issueTreeControlService, logActivity } from "../services/index.js";
 import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
-import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
 
@@ -32,16 +31,11 @@ async function waitForRunCancellationTasks(tasks: Promise<void>[]) {
   }
 }
 
-export function issueTreeControlRoutes(
-  db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
-) {
+export function issueTreeControlRoutes(db: Db) {
   const router = Router();
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const heartbeat = heartbeatService(db, {
-    pluginWorkerManager: options.pluginWorkerManager,
-  });
+  const heartbeat = heartbeatService(db);
 
   async function resolveRootIssue(req: Request) {
     const rootIssueId = req.params.id as string;

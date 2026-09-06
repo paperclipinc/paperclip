@@ -93,6 +93,8 @@ type SealedEnvelope = {
 
 type ConnectorResponse = {
   confirmationUrl?: unknown;
+  authorizationUrl?: unknown;
+  handoff?: unknown;
   expiresAt?: unknown;
   scopes?: unknown;
   claimId?: unknown;
@@ -363,7 +365,32 @@ export function createPaperclipCloudConnector(input: {
       ) {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
       }
-      return { authorizationUrl: confirmationUrl.toString(), expiresAt: response.expiresAt };
+      let authorizationUrl: URL | undefined;
+      if (response.authorizationUrl !== undefined) {
+        if (typeof response.authorizationUrl !== "string") {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        try {
+          authorizationUrl = new URL(response.authorizationUrl);
+        } catch {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        if (
+          authorizationUrl.protocol !== "https:"
+          || authorizationUrl.username
+          || authorizationUrl.password
+          || authorizationUrl.hash
+          || !isExpectedProviderAuthorizationUrl(profile, authorizationUrl)
+        ) {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+      }
+      const handoff = parseCloudHandoff(response.handoff);
+      return {
+        authorizationUrl: authorizationUrl?.toString() ?? confirmationUrl.toString(),
+        expiresAt: response.expiresAt,
+        ...(handoff ? { handoff } : {}),
+      };
     },
     async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; claimId: string; redemptionId: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -431,6 +458,25 @@ export function createPaperclipCloudConnector(input: {
       return acknowledged;
     },
   };
+}
+
+function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: string } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid handoff", "CONNECTOR_BAD_RESPONSE");
+  }
+  const record = value as Record<string, unknown>;
+  const session = record.session;
+  if (
+    record.kind !== "tenant_background"
+    || typeof session !== "string"
+    || session.length < 16
+    || session.length > 512
+    || !/^[A-Za-z0-9_-]+$/.test(session)
+  ) {
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid handoff", "CONNECTOR_BAD_RESPONSE");
+  }
+  return { kind: "paperclip_cloud", session };
 }
 
 export type PaperclipCloudConnector = ReturnType<typeof createPaperclipCloudConnector>;

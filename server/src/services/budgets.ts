@@ -627,91 +627,6 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       return buildPolicySummary(row);
     },
 
-    // Cloud-only recurring carry-over wallet. Each monthly Paddle budget charge
-    // (and the trial/included-budget seeds) lands here via the control-plane and
-    // INCREMENTS the company's `lifetime` budget policy cap by `deltaCents` —
-    // never overwrites it. Cumulative usage vs this ever-growing cap gives the
-    // carry-over wallet for free (unused balance rolls forward). The legacy
-    // `calendar_month_utc` company policy + its `companies.budgetMonthlyCents`
-    // mirror are deliberately left untouched.
-    incrementCompanyBudget: async (
-      companyId: string,
-      deltaCents: number,
-      actorUserId: string | null = null,
-    ): Promise<{ amount: number }> => {
-      const delta = Math.floor(deltaCents);
-      if (!Number.isFinite(delta) || delta <= 0) {
-        throw unprocessable("deltaCents must be a positive integer");
-      }
-
-      const company = await db
-        .select({ id: companies.id })
-        .from(companies)
-        .where(eq(companies.id, companyId))
-        .then((rows) => rows[0] ?? null);
-      if (!company) throw notFound("Company not found");
-
-      const now = new Date();
-      // Atomic upsert: create the lifetime policy at `delta` if absent, otherwise
-      // add `delta` to the existing cap. Keyed by the (company, scope, metric,
-      // window) unique index so the calendar_month policy is a separate row.
-      const row = await db
-        .insert(budgetPolicies)
-        .values({
-          companyId,
-          scopeType: "company",
-          scopeId: companyId,
-          metric: "billed_cents",
-          windowKind: "lifetime",
-          amount: delta,
-          isActive: true,
-          createdByUserId: actorUserId,
-          updatedByUserId: actorUserId,
-        })
-        .onConflictDoUpdate({
-          target: [
-            budgetPolicies.companyId,
-            budgetPolicies.scopeType,
-            budgetPolicies.scopeId,
-            budgetPolicies.metric,
-            budgetPolicies.windowKind,
-          ],
-          set: {
-            amount: sql`${budgetPolicies.amount} + ${delta}`,
-            isActive: true,
-            updatedByUserId: actorUserId,
-            updatedAt: now,
-          },
-        })
-        .returning()
-        .then((rows) => rows[0]);
-
-      // Topping up the wallet can lift a company out of a budget hard-stop: if
-      // cumulative usage is now below the new cap, resume the scope and clear
-      // any open incidents.
-      const observedAmount = await computeObservedAmount(db, row);
-      if (observedAmount < row.amount) {
-        await resumeScopeFromBudget(row);
-        await resolveOpenIncidentsForPolicy(row.id, null, null);
-      }
-
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: actorUserId ?? "cloud_billing",
-        action: "budget.wallet_incremented",
-        entityType: "budget_policy",
-        entityId: row.id,
-        details: {
-          deltaCents: delta,
-          amount: row.amount,
-          windowKind: row.windowKind,
-        },
-      });
-
-      return { amount: row.amount };
-    },
-
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
       const policies = await Promise.all(rows.map((row) => buildPolicySummary(row)));
@@ -946,18 +861,6 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         scopeName: project.name,
         reason: "Project is paused because its budget hard-stop was reached.",
       };
-    },
-
-    // Cloud-internal read for the control-plane's lifecycle sweep: every company
-    // currently paused by the budget hard-stop (status=paused AND
-    // pause_reason=budget), with when it paused. Companies paused for other
-    // reasons (archived, manual) are excluded. Read-only; the caller (the
-    // /api/cloud/budget-paused route) is gated on the trusted cloud-credit header.
-    listBudgetPausedCompanies: async (): Promise<{ companyId: string; pausedAt: Date | null }[]> => {
-      return db
-        .select({ companyId: companies.id, pausedAt: companies.pausedAt })
-        .from(companies)
-        .where(and(eq(companies.status, "paused"), eq(companies.pauseReason, "budget")));
     },
 
     resolveIncident: async (

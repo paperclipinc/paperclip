@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   KUBERNETES_PROVIDER_KEY,
-  claudeHostLoginUnavailableReason,
   evaluateExecutionAllowlist,
   type ExecutionEnvironmentCandidate,
 } from "./execution-allowlist.js";
@@ -86,17 +85,33 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
-  describe("claudeHostLoginUnavailableReason", () => {
-    it("returns a human-readable reason when execution is forced onto Kubernetes", () => {
-      const reason = claudeHostLoginUnavailableReason("kubernetes");
-      expect(reason).not.toBeNull();
-      expect(reason).toMatch(/Kubernetes sandbox/);
-      expect(reason).toMatch(/credential/i);
+  describe("managedSandboxOnly (deny local execution)", () => {
+    const daytonaSandboxEnv: ExecutionEnvironmentCandidate = { driver: "sandbox", provider: "daytona" };
+
+    it("DENIES the local driver", () => {
+      const result = evaluateExecutionAllowlist({ managedSandboxOnly: true }, localEnv);
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.deniedDriver).toBe("local");
+        expect(result.reason).toMatch(/managed sandbox only/i);
+      }
     });
 
-    it("returns null when host login is allowed", () => {
-      expect(claudeHostLoginUnavailableReason("any")).toBeNull();
-      expect(claudeHostLoginUnavailableReason(undefined)).toBeNull();
+    it("ALLOWS the platform-managed (daytona) sandbox and the tenant's own sandbox/ssh", () => {
+      // Unlike kubernetes mode, managed-sandbox-only does not pin one
+      // provider: it only forbids local. Tenant-owned sandbox and ssh
+      // environments run on the tenant's own infrastructure, not Paperclip's.
+      expect(evaluateExecutionAllowlist({ managedSandboxOnly: true }, daytonaSandboxEnv).allowed).toBe(true);
+      expect(evaluateExecutionAllowlist({ managedSandboxOnly: true }, sshEnv).allowed).toBe(true);
+    });
+
+    it("still denies local even when combined with executionMode any/undefined", () => {
+      expect(evaluateExecutionAllowlist({ executionMode: "any", managedSandboxOnly: true }, localEnv).allowed).toBe(false);
+    });
+
+    it("does not affect local when the mode is off", () => {
+      expect(evaluateExecutionAllowlist({ managedSandboxOnly: false }, localEnv).allowed).toBe(true);
+      expect(evaluateExecutionAllowlist({}, localEnv).allowed).toBe(true);
     });
   });
 

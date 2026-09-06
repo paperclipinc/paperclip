@@ -172,8 +172,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  patchInstanceVisibilitySettingsSchema,
-  issueGraphLivenessAutoRecoveryRequestSchema,
+  startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -875,7 +874,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
-  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -1034,7 +1032,6 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
-  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -1254,36 +1251,38 @@ registry.registerPath({
       }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
-      serverInfo: z.object({
-        processStartedAt: z.string().datetime(),
-        git: z.union([
-          z.object({
-            available: z.literal(true),
-            fullSha: z.string(),
-            shortSha: z.string(),
-            branchName: z.string().nullable(),
-            subject: z.string(),
-            committedAt: z.string().datetime().nullable(),
-            localChanges: z.union([
-              z.object({
-                available: z.literal(true),
-                hasLocalChanges: z.boolean(),
-                stagedFileCount: z.number().int().nonnegative(),
-                unstagedFileCount: z.number().int().nonnegative(),
-                untrackedFileCount: z.number().int().nonnegative(),
-              }).strict(),
-              z.object({
-                available: z.literal(false),
-                unavailableReason: z.enum(["git_status_unavailable"]),
-              }).strict(),
-            ]),
-          }).strict(),
-          z.object({
-            available: z.literal(false),
-            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
-          }).strict(),
-        ]),
-      }).strict().optional(),
+      databaseBackup: z.object({
+        enabled: z.boolean(),
+        status: z.enum(["ok", "warning"]),
+        backupDir: z.string().optional(),
+        maxAgeHours: z.number().optional(),
+        latestBackup: z.object({
+          name: z.string(),
+          path: z.string(),
+          mtime: z.string().datetime(),
+          ageHours: z.number(),
+          sizeBytes: z.number(),
+        }).nullable().optional(),
+        lastFailure: z.object({
+          path: z.string(),
+          mtime: z.string().datetime(),
+          message: z.string(),
+        }).nullable().optional(),
+        warnings: z.array(z.object({
+          code: z.enum([
+            "database_backup_check_failed",
+            "database_backup_last_failure",
+            "database_backup_missing",
+            "database_backup_stale",
+          ]),
+          message: z.string(),
+        })),
+      }).optional(),
+      warnings: z.array(z.object({
+        code: z.string(),
+        message: z.string(),
+      })).optional(),
+      serverInfo: healthServerInfoSchema.optional(),
     })),
     // The database-unreachable body still carries version and commit so
     // deployment tooling can verify the running build during an outage;
@@ -4225,19 +4224,27 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/api/instance/settings/visibility",
+  path: "/api/instance/task-drain",
   tags: ["instance"],
-  summary: "Get instance visibility settings",
+  summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
 registry.registerPath({
-  method: "patch",
-  path: "/api/instance/settings/visibility",
+  method: "post",
+  path: "/api/instance/task-drain",
   tags: ["instance"],
-  summary: "Update instance visibility settings",
-  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  summary: "Start a task drain, so new run admission holds until active runs finish",
+  request: { body: jsonBody(startTaskDrainRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "End a task drain and restore run admission",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
@@ -6929,43 +6936,6 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/companies/{companyId}/activation",
-  tags: ["access"],
-  summary: "Get company activation status",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/companies/{companyId}/budgets/increment",
-  tags: ["costs"],
-  summary: "Increment company budget (cloud-internal)",
-  request: {
-    params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
-  },
-  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/budget-paused",
-  tags: ["costs"],
-  summary: "List companies with paused budgets (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/activation-signals",
-  tags: ["costs"],
-  summary: "List per-company activation signals for lifecycle-email gating (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────
