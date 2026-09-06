@@ -14113,10 +14113,19 @@ export function heartbeatService(
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
+    // Allow the adapter to request a tighter attempt cap than the default
+    // bounded backoff (e.g. a cold/unavailable model should not retry as many
+    // times as a rate limit). An explicit opts.maxAttempts still wins.
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        opts?.maxAttempts ??
+          transientRecovery?.maxAttempts ??
+          BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
       ),
     );
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
@@ -14143,10 +14152,6 @@ export function heartbeatService(
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" &&
       transientRecovery?.errorFamily === "transient_upstream"
@@ -21932,7 +21937,16 @@ export function heartbeatService(
                     config: runtimeConfig,
                     context: adapterContext,
                     runtimeCommandSpec:
-                      adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+                      adapter.getRuntimeCommandSpec?.(runtimeConfig, {
+                        // A managed, pre-baked sandbox image carries the CLI
+                        // already; never emit a network install for it (locked
+                        // egress would stall it until timeout). The execution
+                        // target fails fast on an image mismatch instead.
+                        prebakedRuntime:
+                          executionTarget?.kind === "remote" &&
+                          executionTarget.transport === "sandbox" &&
+                          executionTarget.prebakedRuntime === true,
+                      }) ?? null,
                     executionTarget,
                     executionTransport: remoteExecution
                       ? {
@@ -22527,9 +22541,6 @@ export function heartbeatService(
             );
           }
           const livenessRun = finalizedRun;
-          // Thrown adapter failures never reach the finalize chain above, so the
-          // storm breaker also runs here for repeated identical failure codes.
-          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
           await refreshContinuationSummaryForRun(livenessRun, agent);
           const skipRunIssueComment =
             parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
@@ -22659,7 +22670,71 @@ export function heartbeatService(
             outcome === "failed" &&
             readTransientRecoveryContractFromRun(livenessRun)
           ) {
-            await scheduleBoundedRetryForRun(livenessRun, agent);
+            const transientRetry = await scheduleBoundedRetryForRun(
+              livenessRun,
+              agent,
+            );
+            // A bounded retry caps attempts inside ONE chain, but the next
+            // heartbeat opens a fresh chain, so a permanent misconfiguration
+            // that merely looks transient loops failed runs forever. One
+            // company reached 521 failed runs in 48 hours this way: an
+            // OpenRouter key asked for an amazon-bedrock model, which answers
+            // "Unexpected server error" and classifies as a retryable upstream
+            // fault every time. Once the budget is spent, hand the run to the
+            // storm breaker, which still only pauses after
+            // CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD terminal runs share
+            // one error code. A real upstream blip recovers long before that.
+            if (transientRetry?.outcome === "retry_exhausted") {
+              await maybePauseAgentForRepeatedIdenticalFailure(
+                agent,
+                livenessRun,
+              );
+            }
+          } else if (
+            outcome === "failed" &&
+            isPermanentAuthFailureRun(livenessRun) &&
+            agent.status !== "paused" &&
+            agent.status !== "terminated"
+          ) {
+            // No valid provider credential: pause the agent so its heartbeat
+            // stops re-running (and failing auth) every interval, and surface
+            // the reason so a human connects a model key and resumes.
+            const authFailurePauseReason =
+              "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.";
+            const authFailurePauseWrite = await db
+              .update(agents)
+              .set({
+                status: "paused",
+                pauseReason: truncateAgentErrorReason(authFailurePauseReason),
+                pausedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(agents.id, agent.id))
+              .catch((pauseErr) => {
+                logger.warn(
+                  { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
+                  "failed to pause agent after permanent auth failure",
+                );
+                return null;
+              });
+            if (authFailurePauseWrite !== null) {
+              // Mirror manual pause (routes/agents.ts cancelActiveForAgent): a
+              // paused agent must have no live runs, or a just-enqueued retry
+              // can sit in "queued" forever since dequeue skips paused agents.
+              // livenessRun is already terminal, so it cannot be re-cancelled.
+              await cancelActiveForAgentInternal(
+                agent.id,
+                `Cancelled because the agent was paused: ${authFailurePauseReason}`,
+                "agent_paused",
+              );
+            }
+          } else if (outcome === "failed") {
+            // Fallback storm breaker for failure codes no dedicated branch
+            // handles.
+            await maybePauseAgentForRepeatedIdenticalFailure(
+              agent,
+              livenessRun,
+            );
           }
           const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
             livenessRun,
@@ -22993,6 +23068,9 @@ export function heartbeatService(
             livenessRun,
             agent,
           );
+          // Thrown adapter failures never reach the finalize chain, so the
+          // storm breaker also runs here for repeated identical failure codes.
+          await maybePauseAgentForRepeatedIdenticalFailure(agent, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
             // Native recovery owns the original heartbeat run through
             // exhaustion. Once its durable coordinator has classified a
