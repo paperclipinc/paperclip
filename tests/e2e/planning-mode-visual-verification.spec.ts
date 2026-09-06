@@ -63,15 +63,19 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   // The agent step asks for a name and nothing else; the name is what gates
 
-  // #261 gates "Give it a heartbeat" on a connected credential for the
-  // chosen adapter, so bind a throwaway Anthropic API key before clicking.
-  await page
-    .getByLabel("Anthropic API key value")
-    .fill("sk-ant-api03-e2efakecredential1234567890");
-  await page.getByRole("button", { name: "Connect" }).click();
-  await expect(
-    page.getByRole("button", { name: /Give it a heartbeat/ }),
-  ).toBeEnabled({ timeout: 15_000 });
+  // #261 gates "Give it a heartbeat" on a connected credential for the chosen
+  // adapter. Upstream has since reordered the wizard, so the credential card
+  // is not always on this screen — bind a throwaway Anthropic key only when
+  // the card is actually here, rather than blocking the whole run on a fill
+  // that can never resolve.
+  const onboardingApiKey = page.getByLabel("Anthropic API key value");
+  if (await onboardingApiKey.count()) {
+    await onboardingApiKey.fill("sk-ant-api03-e2efakecredential1234567890");
+    await page.getByRole("button", { name: "Connect" }).first().click();
+    await expect(
+      page.getByRole("button", { name: /Give it a heartbeat/ }),
+    ).toBeEnabled({ timeout: 15_000 });
+  }
   // "Next", and the hire is filed under the neutral `general` role.
   await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
   await page.locator("#onboarding-agent-name").fill(AGENT_NAME);

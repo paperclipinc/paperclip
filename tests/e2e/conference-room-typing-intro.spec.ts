@@ -80,15 +80,19 @@ async function runOnboardingWizard(page: Page, companyName: string) {
 
   // Step 3: name the agent. The role picker is gone — the arc asks for a
   // name and hires under the neutral `general` role.
-    // #261 gates "Give it a heartbeat" on a connected credential for the
-    // chosen adapter, so bind a throwaway Anthropic API key before clicking.
-    await page
-      .getByLabel("Anthropic API key value")
-      .fill("sk-ant-api03-e2efakecredential1234567890");
-    await page.getByRole("button", { name: "Connect" }).click();
+  // #261 gates "Give it a heartbeat" on a connected credential for the chosen
+  // adapter. Upstream has since reordered the wizard, so the credential card
+  // is not always on this screen — bind a throwaway Anthropic key only when
+  // the card is actually here, rather than blocking the whole run on a fill
+  // that can never resolve.
+  const onboardingApiKey = page.getByLabel("Anthropic API key value");
+  if (await onboardingApiKey.count()) {
+    await onboardingApiKey.fill("sk-ant-api03-e2efakecredential1234567890");
+    await page.getByRole("button", { name: "Connect" }).first().click();
     await expect(
       page.getByRole("button", { name: /Give it a heartbeat/ }),
     ).toBeEnabled({ timeout: 15_000 });
+  }
   await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
   await page.locator("#onboarding-agent-name").fill("Ada");
   await page.getByRole("button", { name: /^Next$/ }).click();
