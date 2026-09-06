@@ -24,6 +24,10 @@ export function restoreOnboardingState(
 
   const saved = { ...(raw as Record<string, unknown>) };
 
+  // Credential bindings name a secret id. A restored one can belong to another
+  // company, and the server rejects it. They are session-only, never persisted.
+  delete saved.credentialBindings;
+
   const companyId = saved.createdCompanyId;
   if (typeof companyId !== "string" || companyId === "") return saved;
 

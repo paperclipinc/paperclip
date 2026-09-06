@@ -1690,6 +1690,12 @@ describe("CompanyEnvironments — test provider button", () => {
       enableEnvironments: true,
       enableManagedSandboxOnly: true,
     });
+    // The page reads the policy from board access on the fork.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        features: { enableEnvironments: true, enableManagedSandboxOnly: true },
+      }),
+    );
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 

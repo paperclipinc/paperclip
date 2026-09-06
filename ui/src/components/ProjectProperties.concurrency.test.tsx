@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -56,6 +57,11 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 function primedClient() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queryKeys.instance.experimentalSettings, { enableIsolatedWorkspaces: true });
+  // ProjectProperties reads its flags from board access on the fork.
+  client.setQueryData(
+    queryKeys.access.currentBoardAccess,
+    buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
+  );
   return client;
 }
 

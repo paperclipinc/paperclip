@@ -2491,6 +2491,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
     });
+    // Keyboard shortcuts come from board access on the fork.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { keyboardShortcuts: true } }),
+    );
 
     await act(async () => {
       root.render(

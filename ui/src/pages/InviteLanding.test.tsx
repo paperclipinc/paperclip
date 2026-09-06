@@ -667,7 +667,7 @@ describe("InviteLandingPage", () => {
       await act(async () => {
         await new Promise((resolve) => window.setTimeout(resolve, 60));
       });
-      const cached = queryClient.getQueryData(queryKeys.companies.all) as
+      const cached = queryClient.getQueryData(queryKeys.companies.list("user-1")) as
         | { companies: Array<{ id: string }> }
         | undefined;
       if (cached?.companies.some((company) => company.id === "company-1")) break;
@@ -683,7 +683,7 @@ describe("InviteLandingPage", () => {
     // The joined company must be present in the shared companies cache by the
     // time navigation happens, so CompanyRootRedirect can resolve the inviter
     // company rather than falling back to companies[0] (the user's own).
-    const cached = queryClient.getQueryData(queryKeys.companies.all) as
+    const cached = queryClient.getQueryData(queryKeys.companies.list("user-1")) as
       | { companies: Array<{ id: string }> }
       | undefined;
     expect(cached?.companies.map((company) => company.id)).toContain("company-1");

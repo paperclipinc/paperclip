@@ -53,7 +53,7 @@ export function CompanySettingsSidebar() {
   // exposedSurfaces; the instance-* pages are instance-admin only. Both
   // degrade closed while capabilities are unavailable.
   const { data: boardAccess } = useBoardCapabilities();
-  const exposedSurfaces = new Set(boardAccess?.capabilities.exposedSurfaces ?? []);
+  const exposedSurfaces = new Set<string>(boardAccess?.capabilities.exposedSurfaces ?? []);
   const isInstanceAdmin = boardAccess?.isInstanceAdmin === true;
   const showPage = (pageKey: string) => {
     if (hiddenSettings.has(pageKey)) return false;

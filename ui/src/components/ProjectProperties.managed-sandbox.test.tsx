@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectProperties } from "./ProjectProperties";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
+import type { PublicFeatureFlags } from "@paperclipai/shared";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -88,6 +90,12 @@ function render(project: Project, experimentalSettings: Record<string, unknown> 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (experimentalSettings) {
     client.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+    // ProjectProperties reads these flags from board access on the fork, so the
+    // same settings have to be primed there for the gate under test to see them.
+    client.setQueryData(
+      queryKeys.access.currentBoardAccess,
+      buildCurrentBoardAccess({ features: experimentalSettings as Partial<PublicFeatureFlags> }),
+    );
   }
   act(() => {
     root.render(
