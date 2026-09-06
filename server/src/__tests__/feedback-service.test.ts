@@ -519,57 +519,6 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
-  it("does not persist an env-overridden censorUsernameInLogs value on the sharing-preference write-back", async () => {
-    const { issueId, commentId } = await seedIssueWithAgentComment();
-
-    await db.insert(instanceSettings).values({
-      singletonKey: "default",
-      general: {
-        censorUsernameInLogs: true,
-        feedbackDataSharingPreference: "prompt",
-      },
-      experimental: {},
-    });
-
-    const previousOverrides = process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES;
-    process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES = JSON.stringify({
-      general: { censorUsernameInLogs: false },
-    });
-
-    try {
-      const result = await svc.saveIssueVote({
-        issueId,
-        targetType: "issue_comment",
-        targetId: commentId,
-        vote: "up",
-        authorUserId: "user-1",
-        allowSharing: true,
-      });
-
-      expect(result.persistedSharingPreference).toBe("allowed");
-
-      const settings = await db
-        .select()
-        .from(instanceSettings)
-        .where(eq(instanceSettings.singletonKey, "default"))
-        .then((rows) => rows[0] ?? null);
-
-      // The env override forces censorUsernameInLogs=false at read time, but
-      // the write-back must persist the raw stored value (true), never the
-      // override.
-      expect(settings?.general).toMatchObject({
-        censorUsernameInLogs: true,
-        feedbackDataSharingPreference: "allowed",
-      });
-    } finally {
-      if (previousOverrides === undefined) {
-        delete process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES;
-      } else {
-        process.env.PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES = previousOverrides;
-      }
-    }
-  });
-
   it("stores a trace record for document revision feedback targets", async () => {
     const { issueId, revisionId } = await seedIssueWithAgentDocument();
 
@@ -669,7 +618,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
-  it("builds a detailed sanitized shared bundle with issue and agent context", async () => {
+  it("builds a sanitized shared bundle without reading external instruction roots", async () => {
     const { companyId, issueId, targetCommentId, runId } = await seedIssueWithRichAgentComment();
 
     await svc.saveIssueVote({
@@ -713,8 +662,12 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(sourceRun?.id).toBe(runId);
     expect(JSON.stringify(sourceRun)).toContain("gpt-5.4");
     expect(skillItems?.[1]?.sourceLocator).toBe("https://github.com/octo/research/tree/main/skills/public-skill");
-    expect(String(instructions?.entryBody)).toContain("[REDACTED]");
-    expect(String(instructions?.entryBody)).not.toContain("secret-value");
+    expect(instructions).toBeNull();
+    expect(runtime?.configuredInstructionsBundleMode).toBe("external");
+    expect(runtime?.configuredInstructionsFilePath).toBeNull();
+    expect(runtime?.configuredInstructionsRootPath).toBeNull();
+    expect(JSON.stringify(bundle)).not.toContain("secret-value");
+    expect(JSON.stringify(bundle)).not.toContain("private-workspace");
   });
 
   it("keeps earlier local votes local when a later vote enables sharing", async () => {

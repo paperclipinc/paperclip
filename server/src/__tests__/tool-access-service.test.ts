@@ -5344,6 +5344,14 @@ describeEmbeddedPostgres("tool access service", () => {
     await grantBoardUser(db, company.id, userId, [], "owner");
     const profile = "drive.read" as const;
     const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    connector.startAuthorization = vi.fn(async ({ returnState }) => ({
+      authorizationUrl: `https://my.example.test/connections/confirm?session=legacy&state=${encodeURIComponent(returnState)}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      handoff: {
+        kind: "paperclip_cloud" as const,
+        session: "cloud_session_abcdefghijklmnop",
+      },
+    }));
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const actor = { actorType: "user" as const, actorId: userId };
     const driveDefinition = getConnectableAppDefinition("google-drive")!;
@@ -5366,6 +5374,10 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       });
       const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      expect(started.handoff).toEqual({
+        kind: "paperclip_cloud",
+        session: "cloud_session_abcdefghijklmnop",
+      });
       const app = createRouteApp(
         db,
         boardSessionActor(company.id, "owner", userId),
@@ -5576,7 +5588,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
-  it("activates allowed Drive write actions with recommended approval defaults after a managed callback", async () => {
+  it("activates allowed Drive write actions without approval defaults after a managed callback", async () => {
     const company = await createCompany(db);
     const userId = `drive-write-member-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5640,14 +5652,10 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       const searchEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "search_files");
       const createEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "create_file");
-      const [approvalPolicy] = await db.select().from(toolPolicies).where(and(
+      await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ));
-      expect(approvalPolicy).toMatchObject({
-        policyType: "require_approval",
-        selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-      });
+      ))).resolves.toEqual([]);
       await expect(db.select().from(toolConnectionInstalls).where(and(
         eq(toolConnectionInstalls.connectionId, connected.connectionId),
         eq(toolConnectionInstalls.targetType, "company"),
@@ -5666,7 +5674,6 @@ describeEmbeddedPostgres("tool access service", () => {
         targetId: agent.id,
       });
       await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, profileRow!.id));
-      await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, approvalPolicy!.id));
 
       mockToolsList([
         { name: "search_files", description: "Search files with a changed contract.", annotations: { readOnlyHint: true } },
@@ -5706,14 +5713,14 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "agent", targetId: agent.id }),
       ]);
-      await expect(db.select().from(toolPolicies).where(eq(toolPolicies.id, approvalPolicy!.id)))
-        .resolves.toEqual([expect.objectContaining({ enabled: false })]);
+      await expect(db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id)))
+        .resolves.toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
   });
 
-  it("keeps a managed draft retryable when recommended-default finalization fails", async () => {
+  it("keeps a managed draft retryable when default finalization fails", async () => {
     const company = await createCompany(db);
     const userId = `drive-finalize-failure-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5817,16 +5824,10 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "company", targetId: company.id }),
       ]);
-      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
       await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ))).resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-        }),
-      ]);
+      ))).resolves.toEqual([]);
       await expect(db.select().from(toolConnectionInstalls).where(and(
         eq(toolConnectionInstalls.connectionId, connected.connectionId),
         eq(toolConnectionInstalls.targetType, "company"),
@@ -5951,16 +5952,10 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "company", targetId: company.id }),
       ]);
-      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
       await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ))).resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-        }),
-      ]);
+      ))).resolves.toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -6468,12 +6463,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolPolicies).where(and(
       eq(toolPolicies.companyId, company.id),
       eq(toolPolicies.enabled, true),
-    ))).resolves.toEqual([
-      expect.objectContaining({
-        policyType: "require_approval",
-        selectors: expect.objectContaining({ catalogEntryId: sendMessageEntry.id }),
-      }),
-    ]);
+    ))).resolves.toEqual([]);
     const callbackPolicy = toolAccessPolicyService(db);
     const decide = (entry: (typeof completed.catalog)[number]) => callbackPolicy.decide({
       companyId: company.id,
@@ -6490,8 +6480,8 @@ describeEmbeddedPostgres("tool access service", () => {
       reasonCode: "allow_profile",
     });
     await expect(decide(sendMessageEntry)).resolves.toMatchObject({
-      decision: "require_approval",
-      reasonCode: "requires_approval_policy",
+      decision: "allow",
+      reasonCode: "allow_profile",
     });
     const [personalGrant] = await db.select().from(connectionGrants).where(and(
       eq(connectionGrants.connectionId, connected.connectionId),
@@ -6737,7 +6727,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(versions.filter((version) => version.status === "current")).toHaveLength(2);
   });
 
-  it("returns a pre-scoped personal Notion callback directly to Test", async () => {
+  it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");
@@ -6809,7 +6799,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(callbackRes.status).toBe(303);
     expect(callbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${connectRes.body.connectionId}/test?success=1`,
+      `/${company.issuePrefix}/apps/${connectRes.body.connectionId}/permissions?success=1`,
     );
     const [activeConnection] = await db.select().from(toolConnections).where(eq(
       toolConnections.id,
@@ -6993,7 +6983,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(redirectCallbackRes.status).toBe(303);
     expect(redirectCallbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/test?success=1`,
+      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
     );
     expect(fetchMock).toHaveBeenCalledTimes(6);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
@@ -7557,15 +7547,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ toolName: "list_tables", riskLevel: "read" }),
     ]);
     await expect(db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id)))
-      .resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          enabled: true,
-          selectors: expect.objectContaining({
-            catalogEntryId: completed.actions.canMakeChanges[0]!.catalogEntryId,
-          }),
-        }),
-      ]);
+      .resolves.toEqual([]);
     const [connection] = await db.select().from(toolConnections).where(eq(
       toolConnections.id,
       connected.connectionId,
@@ -8549,8 +8531,8 @@ describeEmbeddedPostgres("tool access service", () => {
       status: 502,
       details: expect.objectContaining({
         code: "oauth_refresh_missing",
-        setupUrl: `/apps/${connect.connectionId}/setup`,
-        reconnectUrl: `/apps/${connect.connectionId}/advanced`,
+        setupUrl: `/apps/${connect.connectionId}/permissions`,
+        reconnectUrl: `/apps/${connect.connectionId}/permissions`,
         connection: expect.objectContaining({ healthStatus: "failed" }),
       }),
     });

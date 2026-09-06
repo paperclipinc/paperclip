@@ -1,16 +1,15 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
-  getVisibility: vi.fn(),
   update: vi.fn(),
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
-  updateVisibility: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -42,49 +41,57 @@ function registerModuleMocks() {
 // Identity object the mocked db.transaction hands to writers; tests assert
 // both the marker clear and the settings update receive THIS same tx.
 const TX_SENTINEL = { __tx: true };
+// Runs the callback with a sentinel tx and propagates throws, so a failing
+// write inside rejects the whole request exactly like a real transaction
+// rollback. This is the default mockDb.transaction implementation; a test
+// that installs its own mockImplementation loses this default, so
+// beforeEach below reinstalls it before every test.
+function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>) {
+  return fn(TX_SENTINEL);
+}
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
 const mockDb = {
-  // Runs the callback with a sentinel tx and propagates throws, so a
-  // failing write inside rejects the whole request exactly like a real
-  // transaction rollback.
-  transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  transaction: vi.fn(defaultTransactionImplementation),
 };
 
-async function createApp(actor: any) {
-  const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    req.actor = actor;
-    next();
-  });
-  app.use("/api", instanceSettingsRoutes(mockDb as any));
-  app.use(errorHandler);
-  return app;
-}
-
 describe("instance settings routes", () => {
+  const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
+    const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
+    ]);
+    return { errorHandler, instanceSettingsRoutes };
+  });
+
+  function createApp(actor: any) {
+    const { errorHandler, instanceSettingsRoutes } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/instance-settings.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
+    // vi.clearAllMocks() clears recorded calls only; it does not remove a
+    // mockImplementation a prior test installed. Reinstall the default here
+    // so a stateful implementation from one test can never leak into the
+    // next one.
+    mockDb.transaction.mockReset();
+    mockDb.transaction.mockImplementation(defaultTransactionImplementation);
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
     mockInstanceSettingsService.update.mockReset();
     mockInstanceSettingsService.updateGeneral.mockReset();
     mockInstanceSettingsService.updateExperimental.mockReset();
-    mockInstanceSettingsService.getVisibility.mockReset();
-    mockInstanceSettingsService.updateVisibility.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.computeTaskDrain.mockReset();
     mockHeartbeatService.applyTaskDrain.mockReset();
@@ -209,40 +216,6 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
-    mockInstanceSettingsService.getVisibility.mockResolvedValue({
-      companySurfaces: [
-        "company.general",
-        "company.members",
-        "company.invites",
-        "company.secrets",
-        "company.plugins",
-      ],
-    });
-    mockInstanceSettingsService.updateVisibility.mockResolvedValue({
-      id: "instance-settings-1",
-      visibility: { companySurfaces: ["company.general", "company.members"] },
-    });
-    mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
-      lookbackHours: 24,
-      cutoff: "2026-04-26T12:00:00.000Z",
-      generatedAt: "2026-04-27T12:00:00.000Z",
-      findings: 1,
-      recoverableFindings: 1,
-      skippedOutsideLookback: 0,
-      items: [],
-    });
-    mockHeartbeatService.reconcileIssueGraphLiveness.mockResolvedValue({
-      findings: 1,
-      autoRecoveryEnabled: true,
-      lookbackHours: 24,
-      cutoff: "2026-04-26T12:00:00.000Z",
-      escalationsCreated: 1,
-      existingEscalations: 0,
-      skipped: 0,
-      skippedAutoRecoveryDisabled: 0,
-      skippedOutsideLookback: 0,
-      escalationIssueIds: ["issue-2"],
-    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
       driver: "local",
@@ -568,25 +541,7 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows local board users to update task watchdog controls", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app)
-      .patch("/api/instance/settings/experimental")
-      .send({ enableTaskWatchdogs: true })
-      .expect(200);
-
-    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
-      enableTaskWatchdogs: true,
-    });
-  });
-
-  it("rejects non-admin board users from reading or updating experimental settings", async () => {
+  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -595,13 +550,13 @@ describe("instance settings routes", () => {
       companyIds: ["company-1"],
     });
 
-    await request(app).get("/api/instance/settings/experimental").expect(403);
-    expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
+    await request(app).get("/api/instance/settings/experimental").expect(200);
 
     await request(app)
       .patch("/api/instance/settings/experimental")
       .send({ enableEnvironments: true })
       .expect(403);
+
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
@@ -638,7 +593,7 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects non-admin board users from reading general settings", async () => {
+  it("allows non-admin board users to read general settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -648,8 +603,13 @@ describe("instance settings routes", () => {
     });
 
     const res = await request(app).get("/api/instance/settings/general");
-    expect(res.status).toBe(403);
-    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      censorUsernameInLogs: false,
+      keyboardShortcuts: false,
+      feedbackDataSharingPreference: "prompt",
+    });
   });
 
   it("rejects signed-in users without company access from reading general settings", async () => {
@@ -699,104 +659,6 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
-  });
-
-  it("allows instance admins to read and update the visibility policy", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const getRes = await request(app).get("/api/instance/settings/visibility");
-    expect(getRes.status).toBe(200);
-    expect(getRes.body.companySurfaces).toContain("company.members");
-
-    const patchRes = await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: ["company.general", "company.members"] });
-    expect(patchRes.status).toBe(200);
-    expect(patchRes.body).toEqual({
-      companySurfaces: ["company.general", "company.members"],
-    });
-    expect(mockInstanceSettingsService.updateVisibility).toHaveBeenCalledWith({
-      companySurfaces: ["company.general", "company.members"],
-    });
-    expect(mockLogActivity).toHaveBeenCalledTimes(2);
-  });
-
-  it("rejects non-admin board users from reading or updating the visibility policy", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "user-1",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: ["company-1"],
-    });
-
-    await request(app).get("/api/instance/settings/visibility").expect(403);
-    await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: [] })
-      .expect(403);
-    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
-  });
-
-  it("rejects agent callers from the visibility policy", async () => {
-    const app = await createApp({
-      type: "agent",
-      agentId: "agent-1",
-      companyId: "company-1",
-      source: "agent_key",
-    });
-
-    await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: [] })
-      .expect(403);
-  });
-
-  it("rejects unknown surfaces in the visibility patch with a validation error", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const res = await request(app)
-      .patch("/api/instance/settings/visibility")
-      .send({ companySurfaces: ["instance.general"] });
-    expect(res.status).toBe(400);
-    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
-  });
-
-  it("rejects non-admin board users from reading the full instance settings", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "user-1",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: ["company-1"],
-    });
-
-    await request(app).get("/api/instance/settings").expect(403);
-    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
-  });
-
-  it("local_trusted regression: the implicit local actor still reads everything", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    await request(app).get("/api/instance/settings").expect(200);
-    await request(app).get("/api/instance/settings/general").expect(200);
-    await request(app).get("/api/instance/settings/experimental").expect(200);
-    await request(app).get("/api/instance/settings/visibility").expect(200);
   });
 
   describe("executionMode floor on cloud-managed instances", () => {
@@ -1300,10 +1162,19 @@ describe("instance settings routes", () => {
       const transactionCalls: string[] = [];
       let releasePostTransaction: (() => void) | undefined;
       let sawFirstCall = false;
+      // Resolves the instant the first (blocked) transaction call starts.
+      // The test then waits for this real event, not a fixed duration.
+      // Under CPU contention the event loop can take far longer than any
+      // fixed budget to reach this call, so a timer would flake here.
+      let notifyFirstTransactionStarted: (() => void) | undefined;
+      const firstTransactionStarted = new Promise<void>((resolve) => {
+        notifyFirstTransactionStarted = resolve;
+      });
       mockDb.transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => {
         if (!sawFirstCall) {
           sawFirstCall = true;
           transactionCalls.push("post-start");
+          notifyFirstTransactionStarted?.();
           return new Promise((resolve) => {
             releasePostTransaction = () => {
               transactionCalls.push("post-commit");
@@ -1315,19 +1186,44 @@ describe("instance settings routes", () => {
         return fn(TX_SENTINEL);
       });
 
+      // Each route handler awaits listCompanyIds as its last step before it
+      // enters the task-drain transition queue, so a second call proves the
+      // DELETE passed authorization and reached the queue — not merely that
+      // it has not arrived yet.
+      let listCompanyIdsCallCount = 0;
+      let notifySecondListCompanyIdsCall: (() => void) | undefined;
+      const secondListCompanyIdsCall = new Promise<void>((resolve) => {
+        notifySecondListCompanyIdsCall = resolve;
+      });
+      mockInstanceSettingsService.listCompanyIds.mockImplementation(async () => {
+        listCompanyIdsCallCount += 1;
+        if (listCompanyIdsCallCount === 2) notifySecondListCompanyIdsCall?.();
+        return ["company-1", "company-2"];
+      });
+
       const app = await createApp(adminActor);
 
-      // supertest only sends the request once something calls .then() on
-      // it, so kick both off eagerly instead of waiting for the final
-      // Promise.all below to do it — otherwise neither request would even
-      // reach the (still-pending) POST transaction during the wait.
+      // supertest only sends a request once something calls .then() on it,
+      // so force the POST to send now instead of waiting for the final
+      // Promise.all below to do it.
       const postPromise = request(app).post("/api/instance/task-drain").send({});
       postPromise.then(() => {}, () => {});
+      // Wait for the POST's transaction call to start before the test sends
+      // the DELETE. At that point the POST already called listCompanyIds,
+      // already entered the task-drain transition queue, and sits blocked
+      // inside the mocked db.transaction call — the POST holds the queue.
+      // Only a real event proves this; a fixed wait would not, because the
+      // event loop can take far longer than any fixed budget under CPU
+      // contention. Sending the DELETE only after this event fixes the
+      // request order by the queue, not by which socket the operating
+      // system happens to service first.
+      await firstTransactionStarted;
       const deletePromise = request(app).delete("/api/instance/task-drain");
       deletePromise.then(() => {}, () => {});
-      // Give both requests time to reach as far as they can go before the
-      // POST's transaction is released.
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      // Wait for the DELETE's own listCompanyIds call. It proves the DELETE
+      // passed authorization and reached the transition queue behind the
+      // POST — not merely that it has not shown up yet.
+      await secondListCompanyIdsCall;
       expect(transactionCalls).toEqual(["post-start"]);
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();

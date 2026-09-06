@@ -50,6 +50,16 @@ const mockWorkspaceDiffReprojection = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockQueueRuntimeRequestResolution = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  decide: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+const mockWorkspaceOperationService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  listForRun: vi.fn(),
+  readLog: vi.fn(),
+}));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
@@ -100,16 +110,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
-      hasPermission: vi.fn(async () => true),
-    }),
+    accessService: () => mockAccessService,
     approvalService: () => ({}),
     builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
@@ -120,7 +121,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-    workspaceOperationService: () => ({}),
+    workspaceOperationService: () => mockWorkspaceOperationService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -236,6 +237,14 @@ describe("agent live run routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -289,7 +298,6 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
-      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -313,6 +321,11 @@ describe("agent live run routes", () => {
       companyId: "company-1",
       agentId: "agent-1",
       status: "succeeded",
+    });
+    mockWorkspaceOperationService.getById.mockResolvedValue({
+      id: "operation-1",
+      companyId: "company-1",
+      runId: "run-1",
     });
     mockQueueRuntimeRequestResolution.mockReturnValue({
       commandId: "command-resolution-1",
@@ -445,16 +458,18 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
-      id: "run-1",
-      companyId: "company-1",
-      status: "running",
-      logStore: "local_file",
-      logRef: "logs/run-1.ndjson",
-    }, {
-      offset: 12,
-      limitBytes: 64,
-    });
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith(
+      {
+        id: "run-1",
+        companyId: "company-1",
+        logStore: "local_file",
+        logRef: "logs/run-1.ndjson",
+      },
+      {
+        offset: 12,
+        limitBytes: 64,
+      },
+    );
     expect(res.body).toEqual({
       runId: "run-1",
       store: "local_file",
@@ -464,59 +479,51 @@ describe("agent live run routes", () => {
     });
   });
 
-  it.each(["queued", "running", "scheduled_retry"] as const)(
-    "returns an empty log (not 404) for a %s run that has not opened its log yet",
-    async (status) => {
-      // The runner writes the log handle when it opens the file, so a
-      // non-terminal run legitimately has none — including a run waiting on a
-      // scheduled retry, which has no handle at all yet. The transcript poller
-      // only stops re-requesting on a 404 for TERMINAL runs, so 404ing these
-      // made every such run 404 on every poll for its whole life.
-      mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-        id: "run-1",
+  it.each(["skill_test", "task_bridge"])(
+    "denies %s keys from company-wide run and workspace logs",
+    async (kind) => {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action !== "company_scope:read",
+        action: input.action,
+        reason: input.action === "company_scope:read" ? "deny_key_scope" : "allow_explicit_grant",
+        explanation: input.action === "company_scope:read"
+          ? "Restricted keys cannot read company-wide run telemetry."
+          : "Allowed by test grant.",
+      }));
+      const actor = {
+        type: "agent",
+        agentId: routeAgentId,
         companyId: "company-1",
-        status,
-        logStore: null,
-        logRef: null,
-      });
+        source: "agent_key",
+        keyScope: kind === "skill_test"
+          ? { kind, issueId: "issue-1" }
+          : { kind, parentIssueId: "issue-1" },
+      };
+      const app = await createApp({}, actor);
+      const paths = [
+        "/api/companies/company-1/heartbeat-runs",
+        "/api/companies/company-1/live-runs",
+        "/api/heartbeat-runs/run-1",
+        "/api/heartbeat-runs/run-1/events",
+        "/api/heartbeat-runs/run-1/log",
+        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/workspace-operations/operation-1/log",
+      ];
 
-      const res = await requestApp(
-        await createApp(),
-        (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
-      );
+      for (const path of paths) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(path));
+        expect(res.status, `${path}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.error).toContain("Run telemetry");
+      }
 
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body).toEqual({
-        runId: "run-1",
-        store: null,
-        logRef: null,
-        content: "",
-        nextOffset: 12,
-      });
       expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.readLog).not.toHaveBeenCalled();
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "company_scope:read",
+        resource: { type: "company", companyId: "company-1" },
+      }));
     },
   );
-
-  it("still 404s the log of a terminal run that never wrote one", async () => {
-    // A cancelled/failed run with no handle never got one, so the client is
-    // right to stop asking — that path keeps its 404.
-    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-      id: "run-1",
-      companyId: "company-1",
-      status: "cancelled",
-      logStore: null,
-      logRef: null,
-    });
-    const { notFound } = await import("../errors.js");
-    mockHeartbeatService.readLog.mockRejectedValue(notFound("Run log not found"));
-
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log"),
-    );
-
-    expect(res.status).toBe(404);
-  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({

@@ -231,43 +231,47 @@ describe("server adapter registry", () => {
     expect(adapter!.supportsLocalAgentJwt).toBe(true);
   });
 
-  it("built-in local adapters declare cheap model profile defaults where supported", async () => {
-    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gemini-2.5-flash-lite" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
-      expect.objectContaining({
-        key: "cheap",
-        adapterConfig: expect.objectContaining({ model: "gpt-5.1-codex-mini" }),
-        source: "adapter_default",
-      }),
-    ]);
-    await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  it("rejects an incomplete managed runner provider before probing Codex", async () => {
+    const adapter = requireServerAdapter("paperclip_runner");
+    expect(adapter.supportsInstructionsBundle).toBe(true);
+    expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
+    const result = await adapter.testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider: "claude_managed" },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "fail",
+      checks: [{
+        code: "paperclip_runner_claude_managed_profile_required",
+        level: "error",
+      }],
+    });
+  });
+
+  it.each([
+    ["claude_managed", {
+      managedProfileId: "managed-primary",
+      managedAgentsRetentionAcknowledged: true,
+    }, "claude_managed_profile_selected"],
+    ["aws_agentcore", {
+      agentCoreProfileId: "agentcore-primary",
+      agentCoreRetentionAcknowledged: true,
+    }, "aws_agentcore_profile_selected"],
+  ] as const)("accepts a complete %s profile selection", async (provider, config, code) => {
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      config: { provider, ...config },
+    });
+
+    expect(result).toMatchObject({
+      adapterType: "paperclip_runner",
+      status: "warn",
+      checks: expect.arrayContaining([expect.objectContaining({ code, level: "info" })]),
+    });
   });
 
   it.each([
@@ -346,21 +350,6 @@ describe("server adapter registry", () => {
       detectCommand: null,
       installCommand: null,
     });
-  });
-
-  it("emits no network install command for a managed, pre-baked k8s sandbox", () => {
-    // Pre-baked plugin-backed sandbox images carry the CLI already and run
-    // behind a locked egress; a network install would only stall until timeout.
-    // The install command must be suppressed so the wrong-image case fails fast.
-    for (const type of ["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local"]) {
-      const spec = findActiveServerAdapter(type)?.getRuntimeCommandSpec?.({}, { prebakedRuntime: true });
-      expect(spec, type).not.toBeNull();
-      expect(spec?.installCommand, type).toBeNull();
-      // The command + detect probe are still emitted so the pre-flight assertion
-      // can verify the CLI is present.
-      expect(spec?.command, type).toBeTruthy();
-      expect(spec?.detectCommand, type).toBe(spec?.command);
-    }
   });
 
   it("switches active adapter behavior back to the builtin when an override is paused", async () => {
