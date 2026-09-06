@@ -21,6 +21,7 @@ import {
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
@@ -141,20 +142,16 @@ export function NewAgentDialog() {
 
   async function copyText(text: string, unavailableBody: string) {
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
+      await copyTextToClipboard(text);
+      return true;
     } catch {
-      // Fall through to the unavailable message below.
+      pushToast({
+        title: "Clipboard unavailable",
+        body: unavailableBody,
+        tone: "warn",
+      });
+      return false;
     }
-
-    pushToast({
-      title: "Clipboard unavailable",
-      body: unavailableBody,
-      tone: "warn",
-    });
-    return false;
   }
 
   const createAgentInviteMutation = useMutation({
@@ -355,7 +352,7 @@ export function NewAgentDialog() {
               </label>
 
               <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
+                Agent invites create a join request first. An organization admin still approves the request before the agent can claim its API key.
               </div>
 
               <div>
@@ -388,7 +385,7 @@ export function NewAgentDialog() {
                     ) : null}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this company.
+                    Send this prompt to the external agent that should join this organization.
                   </p>
                 </div>
               </div>

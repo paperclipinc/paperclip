@@ -1,7 +1,6 @@
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
-  InstanceSchedulerHeartbeatAgent,
   WorkspaceOperation,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -16,6 +15,7 @@ export interface RunLivenessFields {
 
 export interface ActiveRunForIssue {
   id: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -45,6 +45,7 @@ export interface ActiveRunForIssue {
 
 export interface LiveRunForIssue {
   id: string;
+  runtimeMode?: "legacy" | "native";
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -136,6 +137,7 @@ export const heartbeatsApi = {
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);
   },
-  listInstanceSchedulerAgents: () =>
-    api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
+  async listInstanceSchedulerAgents(): Promise<import("@paperclipai/shared").InstanceSchedulerHeartbeatAgent[]> {
+    return api.get("/instance/scheduler-agents");
+  },
 };

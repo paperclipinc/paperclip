@@ -9,7 +9,10 @@ import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerPermissionMode,
 } from "@paperclipai/adapter-utils";
+import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -20,6 +23,9 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  parseSetupTokenPrompt,
+  parseSetupTokenCredential,
 } from "@paperclipai/adapter-claude-local/server";
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
@@ -34,6 +40,8 @@ import {
   sessionCodec as codexSessionCodec,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,
+  CODEX_DEVICE_LOGIN_COMMAND,
+  parseDeviceLoginPrompt,
 } from "@paperclipai/adapter-codex-local/server";
 import {
   agentConfigurationDoc as codexAgentConfigurationDoc,
@@ -78,11 +86,24 @@ import {
   syncGrokSkills,
   testEnvironment as grokTestEnvironment,
   sessionCodec as grokSessionCodec,
+  GROK_DEVICE_LOGIN_COMMAND,
+  parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
 import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
+import {
+  execute as kimiExecute,
+  listKimiSkills,
+  syncKimiSkills,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+} from "@paperclipai/adapter-kimi-local";
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
@@ -189,15 +210,70 @@ The standalone ACPX adapter has been retired. Use:
 Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly instead of falling back to the process adapter.
 `;
 
+// The Claude interactive login capability. Claude runs `claude setup-token` on a
+// real pseudo-terminal. The user pastes a browser code back into the flow. The
+// flow uses a fixed host-side timeout and records a stored session identifier on
+// success. The capability data holds no secret; the callbacks return runtime
+// values only.
+const claudeLoginCapability: AdapterLoginCapability = {
+  panelMode: "submitted_browser_code",
+  timeoutPolicy: "fixed",
+  getCommand: () => CLAUDE_SETUP_TOKEN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseSetupTokenPrompt(output);
+    return prompt ? { url: prompt.url } : null;
+  },
+  captureCredential: (output) => {
+    const token = parseSetupTokenCredential(output);
+    return token === null ? null : Buffer.from(token, "utf8");
+  },
+  completionClaim: "storedSessionId",
+};
+
+// The Codex interactive login capability. Codex runs `codex login --device-auth`
+// on a real pseudo-terminal, because a pipe emits no login prompt. The flow shows
+// a one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim.
+const codexLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
+// The Grok interactive login capability. Grok runs `grok login --device-auth`
+// on a real pseudo-terminal, the same way Codex does. The flow shows a
+// one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim. `getCommand` is descriptive only: the login path selects
+// the real command from the closed key map in `login-command.ts`, never from
+// this member.
+const grokLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => GROK_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseGrokDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  runtimeToolDelivery: "native_mcp",
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
     agentId: "claude",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.12.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/claude-agent-acp"],
     },
   },
@@ -218,10 +294,12 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
+  loginCapability: claudeLoginCapability,
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
+  runtimeToolDelivery: "environment",
   async execute(ctx) {
     await ctx.onLog("stderr", `${retiredAcpxMessage}\n`);
     await ctx.onMeta?.({
@@ -264,13 +342,14 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  runtimeToolDelivery: "native_mcp",
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {
     agentId: "codex",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=22.13.0",
+      nodeRange: ">=24.11.0",
       packages: ["@agentclientprotocol/codex-acp"],
     },
   },
@@ -291,10 +370,122 @@ const codexLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: codexAgentConfigurationDoc,
   getConfigSchema: getCodexConfigSchema,
   getQuotaWindows: codexGetQuotaWindows,
+  loginCapability: codexLoginCapability,
+};
+
+const paperclipRunnerAdapter: ServerAdapterModule = {
+  type: "paperclip_runner",
+  runtimeToolDelivery: "environment",
+  async execute(ctx) {
+    const message = "paperclip_runner requires the native runner coordinator";
+    await ctx.onLog("stderr", `${message}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: "paperclip_runner_coordinator_required",
+      provider: "codex",
+      summary: message,
+    };
+  },
+  async testEnvironment(context) {
+    const configuredProvider = context.config.provider ?? "codex";
+    if (configuredProvider !== "codex") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "paperclip_runner_provider_unsupported",
+          level: "error" as const,
+          message: "Paperclip Runner currently supports only the Codex provider.",
+        }],
+      };
+    }
+    if (context.executionTarget?.kind === "remote") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "paperclip_runner_environment_unsupported",
+          level: "error" as const,
+          message: "Paperclip Runner currently requires a local execution environment.",
+        }],
+      };
+    }
+    const configuredPermission = context.config.codexPermissionMode;
+    if (
+      configuredPermission !== undefined
+      && resolvePaperclipRunnerPermissionMode("codex", configuredPermission)
+        !== configuredPermission
+    ) {
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "runner_permission_mode_invalid",
+          level: "error" as const,
+          message: "codexPermissionMode is not supported by Codex.",
+        }],
+      };
+    }
+    const result = await codexTestEnvironment(context);
+    return { ...result, adapterType: "paperclip_runner" };
+  },
+  listSkills: listCodexSkills,
+  syncSkills: syncCodexSkills,
+  sessionCodec: codexSessionCodec,
+  models: codexModels,
+  modelProfiles: codexModelProfiles,
+  listModels: listCodexModels,
+  refreshModels: refreshCodexModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: false,
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
+  agentConfigurationDoc:
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex through the Rust Paperclip runner and authenticated PRP transport.\n",
+  getConfigSchema: () => ({
+    fields: [
+      {
+        key: "codexPermissionMode",
+        label: "Codex permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.description,
+      },
+      {
+        key: "lifecycleMode",
+        label: "Runner lifecycle",
+        type: "select" as const,
+        default: "per_turn",
+        options: [
+          { value: "per_turn", label: "Turn by turn" },
+          { value: "warm", label: "Warm session" },
+        ],
+        hint: "Warm sessions retain runnerd and Codex between governed runs.",
+      },
+      {
+        key: "idleTimeoutMs",
+        label: "Warm idle timeout (ms)",
+        type: "number" as const,
+        default: 300_000,
+        hint: "Warm sessions suspend after this much inactivity.",
+      },
+    ],
+  }),
+  loginCapability: codexLoginCapability,
 };
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  runtimeToolDelivery: "environment",
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -314,6 +505,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const cursorCloudAdapter: ServerAdapterModule = {
   type: "cursor_cloud",
+  runtimeToolDelivery: "invocation_context",
   execute: cursorCloudExecute,
   testEnvironment: cursorCloudTestEnvironment,
   sessionCodec: cursorCloudSessionCodec,
@@ -329,13 +521,14 @@ const cursorCloudAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  runtimeToolDelivery: "environment",
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   acp: {
     agentId: "gemini",
     skillsMode: "ephemeral",
     prerequisites: {
-      nodeRange: ">=20.0.0",
+      nodeRange: ">=24.11.0",
       packages: ["@google/gemini-cli"],
     },
   },
@@ -357,6 +550,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
+  runtimeToolDelivery: "environment",
   execute: grokExecute,
   testEnvironment: grokTestEnvironment,
   listSkills: listGrokSkills,
@@ -374,14 +568,49 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+  loginCapability: grokLoginCapability,
 };
 
-const hermesGatewayAdapter = createHermesGatewayServerAdapter();
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: "kimi_local",
+  runtimeToolDelivery: "environment",
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  acp: {
+    agentId: "kimi",
+    skillsMode: "ephemeral",
+    prerequisites: {
+      nodeRange: ">=20.0.0",
+      packages: ["@moonshot-ai/kimi-code"],
+    },
+  },
+  listSkills: listKimiSkills,
+  syncSkills: syncKimiSkills,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  models: kimiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "kimi", "@moonshot-ai/kimi-code"),
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
 
-const hermesLocalAdapter = createHermesLocalServerAdapter();
+const hermesGatewayAdapter: ServerAdapterModule = {
+  ...createHermesGatewayServerAdapter(),
+  runtimeToolDelivery: "invocation_context",
+};
+
+const hermesLocalAdapter: ServerAdapterModule = {
+  ...createHermesLocalServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  runtimeToolDelivery: "invocation_context",
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -393,6 +622,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  runtimeToolDelivery: "environment",
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -413,6 +643,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  runtimeToolDelivery: "environment",
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,
@@ -447,12 +678,14 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
+    kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,

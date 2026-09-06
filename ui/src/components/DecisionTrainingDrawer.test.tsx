@@ -77,7 +77,7 @@ function findClickable(label: string): HTMLElement | null {
 }
 
 function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
-  return {
+  return ({
     id: "row-1",
     companyId: "c1",
     sourceKind: "issue_thread_interaction",
@@ -110,7 +110,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     dismissal: null,
     trainingExampleId: null,
     ...overrides,
-  };
+  }) as AttentionItem;
 }
 
 function buildSnapshot(): DecisionTrainingExample["snapshot"] {

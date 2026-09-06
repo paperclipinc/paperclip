@@ -519,6 +519,35 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     return { root, managedAgentHome };
   }
 
+  it("does not gate sandbox-destined runs on host credentials — the sandbox image may carry its own login", async () => {
+    const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    await expect(
+      resolveExecutionRunAdapterConfig({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+        responsibleUserId: "user-1",
+        environmentDriver: "sandbox",
+        executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+        projectEnv: null,
+        secretsSvc: {
+          resolveAdapterConfigForRuntime,
+          resolveEnvBindings: vi.fn(),
+          collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+        } as any,
+      }),
+    ).resolves.toMatchObject({
+      resolvedConfig: expect.objectContaining({ command: "codex" }),
+    });
+  });
+
   it("surfaces a configuration-incomplete blocker when a managed home has no auth and OPENAI_API_KEY is empty", async () => {
     const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
@@ -1025,17 +1054,18 @@ describe("buildReferencedProjectRunObservability", () => {
       failures: [
         { projectId: "project-b", reason: "authorization" },
         { projectId: "project-c", reason: "resolution" },
-        { projectId: "project-d", reason: "staging" },
+        { projectId: "project-d", reason: "staging", error: "extract failed: boom" },
       ],
     });
 
     // Requested is the synced count plus every dropped project, so the counts reconcile.
     expect(observability.referenced_projects_requested).toBe(4);
     expect(observability.referenced_projects_synced).toBe(1);
+    // A staging failure carries its error message; a failure without one omits the field.
     expect(observability.referenced_project_failures).toEqual([
       { project_id: "project-b", reason: "authorization" },
       { project_id: "project-c", reason: "resolution" },
-      { project_id: "project-d", reason: "staging" },
+      { project_id: "project-d", reason: "staging", error: "extract failed: boom" },
     ]);
   });
 

@@ -1,15 +1,19 @@
 import { ServerCog, Wrench } from "lucide-react";
 import { Link } from "@/lib/router";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
+import { appSourceConnectHref } from "./app-connect-policy";
 
 /** Popular gallery keys surfaced first in the Browse store (PAP-13254, door 1). */
-export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
+export const POPULAR_KEYS = ["zapier", "notion", "posthog", "linear", "jira", "cloudflare"];
 
 /** Deep-link into the Connect wizard's bring-your-own-tool URL flow. */
 export const BYO_CONNECT_HREF = "/apps/connect?byo=1";
 
 /** Zapier connects with the complete MCP URL issued by Zapier. */
 export const ZAPIER_CONNECT_HREF = "/apps/connect?byo=1&source=zapier";
+
+/** MCP-direct OAuth apps enter through the generic source deep link. */
+export const NOTION_CONNECT_HREF = appSourceConnectHref("notion");
 
 /**
  * First-class "Connect your own tool" card (PAP-12371, Finding C; PAP-13254).
@@ -28,7 +32,7 @@ export function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">Connect your own tool</div>
         <div className="text-xs text-muted-foreground">
-          Paste the URL from a custom or self-hosted MCP server and review its actions before enabling it.
+          Paste the URL from a custom or self-hosted MCP server. All discovered actions are enabled automatically.
         </div>
       </div>
       <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>

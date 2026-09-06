@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
   CreditCard,
@@ -13,8 +13,9 @@ import type { DeploymentMode, ServerGitInfo } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { cloudBillingApi } from "@/api/cloudBilling";
-import { useFeatures } from "@/hooks/useFeatures";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
+import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -136,7 +137,6 @@ export function SidebarAccountMenu({
   version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const queryClient = useQueryClient();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const open = controlledOpen ?? internalOpen;
@@ -146,20 +146,13 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
-  const { data: experimentalSettings } = useFeatures();
-  // Cloud-only: expose the hosting layer's plan/billing page. Self-hosted
-  // instances have no /account page, so no entry. The `cloudBilling` instance
-  // flag is deliberately off on the hosted cloud today (it also re-enables a
-  // server-side 403 on tenant budget writes), so detect the cloud gateway the
-  // same way CloudTrialBanner does: a successful cloud-billing summary
-  // response only ever comes from behind the gateway. Same query key as the
-  // banner so the fetch (and its cache) is shared. On self-hosted instances
-  // the probe 404s, and a rejected query has `data === undefined` forever, so
-  // staleTime/gcTime: Infinity alone do NOT stop react-query from refetching
-  // it - the app's global default is refetchOnWindowFocus: true (main.tsx),
-  // which would otherwise re-hit the probe on every tab focus. Disable every
-  // refetch trigger explicitly so a self-hosted instance fetches this exactly
-  // once per page load, ever.
+
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  // Cloud-only: expose the hosting layer's plan/billing page.
   const summaryQuery = useQuery({
     queryKey: queryKeys.cloudBilling.summary,
     queryFn: () => cloudBillingApi.summary(),
@@ -172,27 +165,7 @@ export function SidebarAccountMenu({
   });
   const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      // cloud: leave the SPA entirely; the gateway serves the marketing
-      // sign-in page. signedout=1 drives its "You've been signed out" note.
-      if (deploymentMode === "authenticated") {
-        const next = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
-        window.location.assign(`/auth/sign-in?signedout=1&next=${next}`);
-        return;
-      }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-    onError: () => {
-      // cloud: even if the sign-out call failed, leave the SPA: the gate will bounce a
-      // still-valid session straight back in, and a half-dead session must not
-      // strand the user on a broken app shell.
-      if (deploymentMode === "authenticated") window.location.assign("/auth/sign-in");
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
@@ -210,6 +183,10 @@ export function SidebarAccountMenu({
   function closeNavigationChrome() {
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
+  }
+
+  function handleSignOut() {
+    signOutMutation.mutate();
   }
 
   return (
@@ -330,7 +307,7 @@ export function SidebarAccountMenu({
                     "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
                     signOutMutation.isPending && "cursor-not-allowed opacity-60",
                   )}
-                  onClick={() => signOutMutation.mutate()}
+                  onClick={handleSignOut}
                   disabled={signOutMutation.isPending}
                 >
                   <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">

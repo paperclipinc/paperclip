@@ -27,6 +27,8 @@ describe("derivePublicFeatureFlags", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableCloudSync: false,
+      enableManagedSandboxOnly: false,
+      enableClassicTaskInterface: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableBuiltInAgents: false,

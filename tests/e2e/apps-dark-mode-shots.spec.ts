@@ -127,7 +127,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("apps list dark mode with attention banner", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps`);
+    await page.goto(`/${seed.prefix}/apps/connections`);
     await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/needs attention/i).first()).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-01-apps-dark.png`, fullPage: true });
@@ -135,9 +135,9 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("attention banner dark mode", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps`);
+    await page.goto(`/${seed.prefix}/apps/connections`);
     await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/app needs attention/i).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/connection needs attention/i).first()).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-02-attention-dark.png`, fullPage: true });
   });
 
@@ -157,16 +157,16 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-04-advanced-paste-dark.png`, fullPage: true });
   });
 
-  test("developer tabs share the merged Apps sidebar", async ({ page }) => {
+  test("developer routes share the merged Apps sidebar without hidden tabs", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps/advanced/profiles`);
-    await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "Access profiles" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator('a[href$="/apps/advanced/runtime"]', { hasText: "Health" })).toBeVisible();
+    await expect(page.locator('a[href$="/apps/advanced/gateways"]', { hasText: "Gateways" })).toHaveCount(0);
+    await expect(page.locator('a[href$="/apps/advanced/profiles"]', { hasText: "Profiles" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.
-    await expect(page.locator('a[href$="/apps"]', { hasText: "Connections" })).toBeVisible();
+    await expect(page.locator('a[href$="/apps/connections"]', { hasText: "Connections" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-05-developer-overview-dark.png`, fullPage: true });
   });
 
@@ -180,11 +180,13 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await page.getByLabel("App name").fill("QA Renamed App");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("heading", { name: "QA Renamed App" })).toBeVisible({ timeout: 20_000 });
+    await page.getByText("Danger zone", { exact: true }).click();
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-06-danger-zone-dark.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-07-after-remove-dark.png`, fullPage: true });
   });
 });
