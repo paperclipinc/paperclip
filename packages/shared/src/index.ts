@@ -321,6 +321,9 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
+// Zod 4 keeps `.default()` active after `.partial()`; these strip the defaults
+// so a patch/override parse keeps only the keys the caller actually sent.
+export { objectWithoutDefaults, shapeWithoutDefaults } from "./validators/partial.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,

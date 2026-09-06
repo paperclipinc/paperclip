@@ -32,7 +32,11 @@ import {
   type PatchInstanceVisibilitySettings,
   DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
-import { applyOperatorGeneralDefaults, stripOperatorGeneralEchoes } from "@paperclipai/shared";
+import {
+  applyOperatorGeneralDefaults,
+  objectWithoutDefaults,
+  stripOperatorGeneralEchoes,
+} from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
@@ -138,10 +142,13 @@ export function parseInstanceSettingsOverrides(
   }
 
   const sections = parsed as Record<string, unknown>;
+  // Zod 4 keeps a field `.default()` active through `.partial()`, so a plain
+  // `.partial()` here would report every absent key at its default and the
+  // overlay would overwrite stored settings the operator never mentioned.
   const sectionSchemas = {
-    general: instanceGeneralSettingsSchema.partial().strip(),
-    experimental: instanceExperimentalSettingsSchema.partial().strip(),
-    visibility: instanceVisibilitySettingsSchema.partial().strip(),
+    general: objectWithoutDefaults(instanceGeneralSettingsSchema).partial().strip(),
+    experimental: objectWithoutDefaults(instanceExperimentalSettingsSchema).partial().strip(),
+    visibility: objectWithoutDefaults(instanceVisibilitySettingsSchema).partial().strip(),
   } as const;
 
   const result = emptyOverrides();
@@ -476,21 +483,6 @@ export function applyManagedExperimentalOverlay(
   return { experimental: next, managedKeys };
 }
 
-function toInstanceSettings(
-  row: typeof instanceSettings.$inferSelect,
-  overrides: InstanceSettingsOverrides = emptyOverrides(),
-): InstanceSettings {
-  return {
-    id: row.id,
-    defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-    general: resolveGeneralSettings(row.general, overrides.general),
-    experimental: resolveExperimentalSettings(row.experimental, overrides.experimental),
-    visibility: resolveVisibilitySettings(row.visibility, overrides.visibility),
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  } as InstanceSettings;
-}
-
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
@@ -521,6 +513,9 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       defaultEnvironmentId: row.defaultEnvironmentId ?? null,
       general: toGeneralView(row.general),
       experimental: toExperimentalView(row.experimental),
+      // Fork-only section; upstream's view has no visibility concept, so it is
+      // resolved here rather than being dropped from every settings response.
+      visibility: resolveVisibilitySettings(row.visibility, overrides.visibility),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     } as InstanceSettings;
@@ -603,7 +598,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     getVisibility: async (): Promise<InstanceVisibilitySettings> => {
       const row = await getOrCreateRow();
-      return normalizeVisibilitySettings(row.visibility);
+      return resolveVisibilitySettings(row.visibility, overrides.visibility);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {

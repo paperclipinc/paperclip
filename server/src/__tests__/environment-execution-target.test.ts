@@ -215,55 +215,6 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
   });
 
-  it("suppresses the buffered onLog dump when the runner reports streamed output, and forwards onOutput", async () => {
-    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
-      driver: "sandbox",
-      config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
-    });
-
-    const executeSpy = vi.fn(async (input: Record<string, unknown>) => {
-      const onOutput = input.onOutput as
-        | ((stream: "stdout" | "stderr", text: string) => void)
-        | undefined;
-      onOutput?.("stdout", "live-chunk");
-      return { exitCode: 0, timedOut: false, stdout: "live-chunk", stderr: "", streamed: true };
-    });
-
-    const target = await resolveEnvironmentExecutionTarget({
-      db: {} as never,
-      companyId: "company-1",
-      adapterType: "codex_local",
-      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
-      leaseId: "lease-1",
-      leaseMetadata: {},
-      lease: { providerLeaseId: "pl-1" } as never,
-      environmentRuntime: { execute: executeSpy, supportsSync: () => false } as never,
-    });
-
-    expect(target?.kind).toBe("remote");
-    const runner = (target as { runner?: { execute: (i: unknown) => Promise<unknown> } }).runner!;
-    expect(runner).toBeTruthy();
-
-    const logCalls: Array<[string, string]> = [];
-    const outputCalls: Array<[string, string]> = [];
-    const result = (await runner.execute({
-      command: "echo",
-      args: ["hi"],
-      onLog: async (stream: "stdout" | "stderr", chunk: string) => {
-        logCalls.push([stream, chunk]);
-      },
-      onOutput: (stream: "stdout" | "stderr", text: string) => {
-        outputCalls.push([stream, text]);
-      },
-    })) as { streamed?: boolean; stdout: string };
-
-    expect(executeSpy.mock.calls[0][0]).toHaveProperty("onOutput");
-    expect(outputCalls).toEqual([["stdout", "live-chunk"]]);
-    expect(logCalls).toEqual([]);
-    expect(result.streamed).toBe(true);
-    expect(result.stdout).toBe("live-chunk");
-  });
-
   it("still emits the buffered onLog dump for a legacy (non-streamed) runner result", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",

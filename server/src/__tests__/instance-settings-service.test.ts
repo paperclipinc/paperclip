@@ -48,6 +48,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
+      enableCloudSync: false,
       enableSummaries: false,
       enableStatusCards: false,
       enableDecisions: false,
@@ -594,7 +595,9 @@ describe("instanceSettingsService with env overrides", () => {
   it("getExperimental() without the env var behaves exactly as before", async () => {
     const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), { runtimeEnv: {} });
     const experimental = await svc.getExperimental();
-    expect(experimental.enableApps).toBe(false);
+    // enableApps now defaults ON upstream, so probe a flag that still defaults
+    // off — the point is that an unset override changes nothing.
+    expect(experimental.enableEnvironments).toBe(false);
   });
 
   it("getVisibility() applies overrides over stored company surfaces (fork-only)", async () => {
