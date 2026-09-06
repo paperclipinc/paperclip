@@ -117,6 +117,29 @@ describe("claude execute auth failure classification", () => {
     expect(result.errorFamily ?? null).toBeNull();
   });
 
+  // The CLI's own remedy for "not logged in" is an interactive `/login`, which
+  // is not something a Paperclip agent can ever do: the run is headless, and on
+  // a managed sandbox the pod is destroyed with the lease. Echoing it sent a
+  // paying hosted user chasing a command they could not run, with no hint that
+  // the fix is to reconnect the credential. Same rule codex-local already
+  // applies: lead with the remedy that works here, mention host login second.
+  it("does not tell the user to run an interactive login it cannot run", async () => {
+    const result = await runExecuteWithProcResult({
+      exitCode: 1,
+      stdout: claudeFailureStdout("Not logged in \u00b7 Please run /login"),
+      stderr: "",
+    });
+
+    expect(result.errorCode).toBe("claude_auth_required");
+    expect(result.errorMessage).toBe(
+      "Claude reported no usable credential. Connect a Claude credential for this agent, "
+        + "then resume. If you already connected one, it was rejected (an OAuth token that "
+        + "has expired or been revoked does this) so mint a fresh one with `claude setup-token` "
+        + "and reconnect it. On a self-hosted install, signing in to Claude on the host also works.",
+    );
+    expect(result.errorMessage ?? "").not.toContain("/login");
+  });
+
   it("classifies a 401 invalid OAuth access token failure as claude_auth_required", async () => {
     const result = await runExecuteWithProcResult({
       exitCode: 1,

@@ -11,7 +11,7 @@ import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { inheritCompanyCredentialEnv } from "./agent-credential-inheritance.js";
+import { adapterConfigHasSecretRef, inheritCompanyCredentialEnv } from "./agent-credential-inheritance.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
@@ -1659,6 +1659,29 @@ export function builtInAgentService(
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
         patch.adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+      }
+      // Inheritance at create time is not enough for a built-in agent: it is
+      // provisioned with the company, before the user has connected any
+      // provider key, so it inherits nothing and nothing ever re-runs. Left
+      // there it can never run, and the only signal is a paused agent saying
+      // "Connect a model key to run this agent." Re-inherit here, on the path
+      // every built-in agent goes through, but only while it still has no
+      // credential of its own, so an explicit choice is never overwritten.
+      if (!existingPendingApproval) {
+        const currentAdapterType = patch.adapterType ?? existing.adapterType;
+        const currentAdapterConfig = patch.adapterConfig ?? existing.adapterConfig;
+        if (!adapterConfigHasSecretRef(currentAdapterConfig)) {
+          const inherited = await inheritCompanyCredentialEnv(
+            db,
+            companyId,
+            currentAdapterType,
+            (currentAdapterConfig ?? {}) as Record<string, unknown>,
+          );
+          if (adapterConfigHasSecretRef(inherited)) {
+            patch.adapterType = currentAdapterType;
+            patch.adapterConfig = inherited;
+          }
+        }
       }
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;
