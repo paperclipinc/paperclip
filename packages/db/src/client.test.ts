@@ -657,7 +657,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         "0141_built_in_managed_resources.sql",
       );
       const legacyBuiltInResourcesHash = createHash("sha256")
-        .update("legacy 0136_built_in_managed_resources.sql")
+        .update("legacy 0141_built_in_managed_resources.sql")
         .digest("hex");
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
