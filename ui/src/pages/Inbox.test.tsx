@@ -40,6 +40,11 @@ const apiMocks = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
   currentBoardAccess: vi.fn(),
   projectsList: vi.fn(),
+  experimentalSettings: vi.fn(),
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: { getExperimental: apiMocks.experimentalSettings },
 }));
 
 vi.mock("../api/approvals", () => ({

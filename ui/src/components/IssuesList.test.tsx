@@ -47,6 +47,9 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   listSummaries: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 const mockExternalObjectsApi = vi.hoisted(() => ({
   getIssueSummaries: vi.fn(),
 }));
@@ -98,6 +101,10 @@ vi.mock("@/api/access", () => ({
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: mockExecutionWorkspacesApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/externalObjects", () => ({

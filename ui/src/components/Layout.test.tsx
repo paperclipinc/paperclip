@@ -11,6 +11,10 @@ const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
 }));
@@ -227,6 +231,10 @@ vi.mock("../hooks/useCompanyPageMemory", () => ({
 
 vi.mock("../api/health", () => ({
   healthApi: mockHealthApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/access", () => ({

@@ -27,6 +27,7 @@ import { shouldOfferClaudeHostLogin } from "../lib/claude-host-login";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AdapterCredentialConnect } from "../components/AdapterCredentialConnect";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
