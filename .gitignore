@@ -66,3 +66,8 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# Stray runtime artifacts from tooling run inside the repo root (Django-shaped:
+# hypercorn config, .djcache, secret_key) plus Codex CLI state. None of this is
+# part of Paperclip; 48 such files were swept into #317 by accident.
+/config/
