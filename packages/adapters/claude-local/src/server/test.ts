@@ -19,7 +19,9 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  detectClaudeAuthRetryStorm,
   detectClaudeLoginRequired,
+  isClaudeInvalidCredentialError,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
@@ -415,12 +417,48 @@ export async function testEnvironment(
         stderr: probe.stderr,
       });
 
-      if (probe.timedOut) {
+      if (probe.timedOut && detectClaudeAuthRetryStorm(probe.stdout)) {
+        // The Claude CLI does not fail fast on an invalid credential: it retries
+        // the provider's 401 with backoff until the probe window closes. The
+        // retry events on stdout are the provider rejecting the credential, so
+        // this timeout is a hard credential rejection, not an infra timeout.
+        logSandboxProbeDiagnostic(
+          "Claude CLI hello probe timed out retrying an authentication failure",
+          "credential_rejected",
+        );
+        checks.push({
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+          hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
+        });
+      } else if (probe.timedOut) {
         checks.push({
           code: "claude_hello_probe_timed_out",
           level: "warn",
           message: "Claude hello probe timed out.",
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
+        });
+      } else if (loginMeta.requiresLogin && loginMeta.credentialRejected && !loginMeta.parsedTokenFailure) {
+        // The CLI's "Invalid API key · Please run /login" wording: a credential
+        // was presented and the provider said it is invalid. This is a hard
+        // failure (authFailure closes the credential-connect gate), not the
+        // soft "please log in" nudge below. A token failure reported in the
+        // parsed result fields keeps upstream's login-gate path below, which
+        // emits the canonical adapter_auth_missing signal so the interface can
+        // offer the sandbox login flow. The raw output stays untrusted: fixed
+        // message and hint only.
+        logSandboxProbeDiagnostic(
+          "Claude CLI hello probe reported a rejected credential",
+          "credential_rejected",
+        );
+        checks.push({
+          code: "claude_hello_probe_credential_rejected",
+          level: "error",
+          message: "Claude rejected the provided credential.",
+          authFailure: true,
+          hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
         });
       } else if (loginMeta.requiresLogin) {
         // The raw probe output is untrusted. Log only the fixed context and the
@@ -492,6 +530,17 @@ export async function testEnvironment(
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
+        // A raw 401 / authentication_error payload that never matched the
+        // login-prompt wording is still the provider rejecting the credential:
+        // keep the generic failure code but mark it authFailure so the
+        // credential-connect gate closes on it.
+        const invalidCredential =
+          loginMeta.credentialRejected ||
+          isClaudeInvalidCredentialError({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          });
         checks.push(
           usageLimited
             ? {
@@ -511,7 +560,10 @@ export async function testEnvironment(
                   code: "claude_hello_probe_failed",
                   level: "error",
                   message: "Claude hello probe failed.",
-                  hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+                  ...(invalidCredential ? { authFailure: true } : {}),
+                  hint: invalidCredential
+                    ? "Paste a fresh, valid Claude API key or subscription token, then retry."
+                    : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
                 },
         );
       }

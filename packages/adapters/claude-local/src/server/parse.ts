@@ -229,7 +229,16 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
-}): { requiresLogin: boolean; loginUrl: string | null; credentialRejected: boolean } {
+}): {
+  requiresLogin: boolean;
+  loginUrl: string | null;
+  credentialRejected: boolean;
+  // True only when the rejection came from the parsed terminal fields of a
+  // failed run (upstream's trusted signal). Callers that keep upstream's
+  // login-gate behaviour for that case can tell it apart from a rejection
+  // that was only visible in the raw output text.
+  parsedTokenFailure: boolean;
+} {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
 
@@ -251,10 +260,24 @@ export function detectClaudeLoginRequired(input: {
     claudeResultIndicatesAuthFailure(parsed) &&
     CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
 
+  // Independent of requiresLogin: a message can say the credential is invalid
+  // without also matching the login-prompt wording (e.g. a raw
+  // 401/authentication_error payload on stderr with no parsed result), and
+  // detectClaudeLoginRequired is the one place that already has the full
+  // message text assembled. This deliberately keeps the broad raw-text scope:
+  // it only ever upgrades a soft "please log in" nudge into a hard rejection
+  // for the credential probes, and never widens `requiresLogin`, which stays
+  // on upstream's parsed-terminal-fields-only rule above.
+  const credentialRejected =
+    tokenFailure ||
+    promptLines.some((line) => CLAUDE_CREDENTIAL_REJECTED_RE.test(line)) ||
+    isClaudeInvalidCredentialError({ parsed, stdout: input.stdout, stderr: input.stderr });
+
   return {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
-    credentialRejected: tokenFailure,
+    credentialRejected,
+    parsedTokenFailure: tokenFailure,
   };
 }
 

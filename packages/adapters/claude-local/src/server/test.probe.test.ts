@@ -99,6 +99,10 @@ const initLine =
 afterEach(() => {
   vi.clearAllMocks();
   probeResult.throwError = null;
+  // Reset the per-test "claude CLI is not on PATH" switch so a permissive-path
+  // case never leaks an unresolvable command into the local probe hardening
+  // cases that run after it in this file.
+  claudeCliUnresolvable.value = false;
 });
 
 describe("claude sandbox hello probe diagnostics", () => {

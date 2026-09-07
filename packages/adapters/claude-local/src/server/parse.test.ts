@@ -22,7 +22,7 @@ describe("detectClaudeLoginRequired", () => {
         stdout: "",
         stderr: "Invalid API key · Please run /login",
       }),
-    ).toEqual({ requiresLogin: true, loginUrl: null, credentialRejected: true });
+    ).toEqual({ requiresLogin: true, loginUrl: null, credentialRejected: true, parsedTokenFailure: false });
   });
 
   it("does not classify a bare invalid API key as the Claude login flow, but still flags it as a credential rejection", () => {

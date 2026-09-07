@@ -921,18 +921,18 @@ export async function testClaudeAcpEnvironment(
   // the CLI lane, testClaudeAcpEnvironment above only ever emits static
   // presence checks, so a rejected BYOK key would otherwise sail through as
   // "Connected" with no error anywhere (the exact staging bug this closes).
-  // When a credential is actually configured, borrow the CLI lane's live
+  // When a credential is actually configured on the agent (BYOK API key or
+  // subscription token in the adapter env), borrow the CLI lane's live
   // "say hello" probe (hello-probe.ts) to get a real provider verdict
   // instead. Bedrock is excluded — its auth is AWS-credential-based, not
-  // something this Anthropic API-key/token probe can validate.
+  // something this Anthropic API-key/token probe can validate. A host-only
+  // credential (no config credential) is covered by upstream's sandbox login
+  // probe below, which seeds the host env; the two probes are mutually
+  // exclusive so an environment test spawns exactly one hello run.
   const configOauthToken = envConfig.CLAUDE_CODE_OAUTH_TOKEN;
-  const hasCredentialToProbe =
-    !hasBedrock &&
-    (isNonEmpty(configApiKey) ||
-      isNonEmpty(hostApiKey) ||
-      isNonEmpty(configOauthToken) ||
-      isNonEmpty(hostOauthToken));
-  if (hasCredentialToProbe) {
+  const hasConfigCredentialToProbe =
+    !hasBedrock && (isNonEmpty(configApiKey) || isNonEmpty(configOauthToken));
+  if (hasConfigCredentialToProbe) {
     const probeChecks = await runClaudeAcpCredentialProbe({
       config,
       envConfig,
@@ -958,7 +958,11 @@ export async function testClaudeAcpEnvironment(
   // a sandbox target, and a distinct warn check when the probe cannot run. The
   // user interface reads the canonical signal to offer login on the sandbox ACP
   // path.
-  if (!hasBedrock && !isNonEmpty(configApiKey)) {
+  // A config credential (API key or subscription token) was already probed
+  // by the BYOK hello probe above; only the host-inherited / no-credential
+  // cases reach this sandbox login probe, so one environment test never
+  // spawns two hello runs.
+  if (!hasBedrock && !isNonEmpty(configApiKey) && !isNonEmpty(configOauthToken)) {
     const probeEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") probeEnv[key] = value;

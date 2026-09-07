@@ -1029,15 +1029,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      // A rejected credential is classified alongside (not instead of) the
+      // login prompt: both resolve to claude_auth_required so the heartbeat's
+      // permanent-auth pause covers them, but the surfaced message names the
+      // actionable fix instead of echoing the provider's 401.
       const invalidCredential =
-        !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
-        isClaudeInvalidCredentialError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
+        (loginMeta.credentialRejected ||
+          isClaudeInvalidCredentialError({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          }));
       const providerQuota =
         !loginMeta.requiresLogin &&
         !invalidCredential &&
@@ -1073,7 +1077,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // surfaces the typed `duplex_channel_lost` code before any provider
         // classification, so the CLI lane and the ACP lane report it alike.
         ? proc.errorCode
-        : loginMeta.requiresLogin
+        : loginMeta.requiresLogin || invalidCredential
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1177,15 +1181,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const invalidCredential =
       failed &&
-      !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
-      isClaudeInvalidCredentialError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage: rawErrorMessage,
-      });
+      (loginMeta.credentialRejected ||
+        isClaudeInvalidCredentialError({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: rawErrorMessage,
+        }));
     // The raw CLI text stays in resultJson; the surfaced message must tell the
     // user what to do, not echo the provider's 401.
     const errorMessage = invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : rawErrorMessage;
@@ -1227,7 +1231,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // first. A lost duplex control channel surfaces the typed
       // `duplex_channel_lost` code before any provider classification.
       ? proc.errorCode
-      : loginMeta.requiresLogin
+      : loginMeta.requiresLogin || invalidCredential
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
