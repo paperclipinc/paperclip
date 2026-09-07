@@ -248,7 +248,7 @@ async function waitForHeartbeatIdle(
 // once on the object `db.select()` itself returns.
 function wrapQueryChainWithConcurrentSideEffect<T extends object>(
   target: T,
-  sideEffect: () => Promise<void>,
+  sideEffect: (rows: unknown) => Promise<void>,
 ): T {
   return new Proxy(target, {
     get(obj, prop, receiver) {
@@ -259,7 +259,7 @@ function wrapQueryChainWithConcurrentSideEffect<T extends object>(
           (value as (...a: unknown[]) => unknown).call(
             obj,
             async (rows: unknown) => {
-              await sideEffect();
+              await sideEffect(rows);
               return onFulfilled ? onFulfilled(rows) : rows;
             },
             onRejected,
@@ -3725,7 +3725,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // "setup_failed") rather than the adapter-failure catch. The condition is
     // transient and self-healing, so it must be classified retryable
     // infrastructure, not a terminal setup failure.
-    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } =
+      await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
     const pluginId = randomUUID();
     const environmentId = randomUUID();
@@ -3742,7 +3743,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         apiVersion: 1,
         version: "1.0.0",
         displayName: "Kubernetes Sandbox Provider",
-        description: "Test Kubernetes sandbox provider whose worker is mid-restart",
+        description:
+          "Test Kubernetes sandbox provider whose worker is mid-restart",
         author: "Paperclip",
         categories: ["automation"],
         capabilities: ["environment.drivers.register"],
@@ -3834,23 +3836,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(issues)
-      .set({ status: "in_review" })
+      .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
-    // Simulate the worker mid-restart: the manager IS wired into this process,
-    // it just reports the worker as not running yet. That is the transient,
-    // self-healing condition this test is about. A process with no worker
-    // manager at all is a permanent wiring bug and reports a different error.
-    const restartingWorkerManager = {
-      isRunning: vi.fn(() => false),
-      call: vi.fn(),
-    } as unknown as PluginWorkerManager;
-    const heartbeat = heartbeatService(db, {
-      environmentRuntime: environmentRuntimeService(db, {
-        pluginWorkerManager: restartingWorkerManager,
-        pluginWorkerReadyTimeoutMs: 0,
-      }),
-    });
+    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
 
     const runs = await waitForValue(async () => {
@@ -3891,7 +3880,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toEqual({
-      status: "in_review",
+      status: "in_progress",
       executionRunId: retryRun?.id ?? null,
     });
 
@@ -3912,7 +3901,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // attempt 1, not schedule a retry. If the classifier's sandbox-worker
     // regex over-matches on the coincidental "worker is not running"
     // substring, this test fails by finding a scheduled_retry row instead.
-    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, wakeupRequestId, issueId } =
+      await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
 
     await db.insert(issueThreadInteractions).values({
@@ -3969,11 +3959,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(issues)
-      .set({ status: "in_review" })
+      .set({ status: "in_progress" })
       .where(eq(issues.id, issueId));
 
     mockAdapterExecute.mockRejectedValueOnce(
-      new Error('Sandbox provider "kubernetes" is not installed or its plugin worker is not running.'),
+      new Error(
+        'Sandbox provider "kubernetes" is not installed or its plugin worker is not running.',
+      ),
     );
 
     const heartbeat = heartbeatService(db);
@@ -3988,7 +3980,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return row?.status === "failed" ? row : null;
     });
     expect(failedRun?.errorCode).toBe("adapter_failed");
-    expect(failedRun?.error).toContain("is not installed or its plugin worker is not running");
+    expect(failedRun?.error).toContain(
+      "is not installed or its plugin worker is not running",
+    );
 
     const interaction = await waitForValue(async () => {
       const row = await db
@@ -3997,7 +3991,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
       const result = row?.result ?? null;
-      const resumeFailure = result && "resumeFailure" in result ? result.resumeFailure : null;
+      const resumeFailure =
+        result && "resumeFailure" in result ? result.resumeFailure : null;
       return resumeFailure?.status === "needs_attention" ? row : null;
     });
     expect(interaction?.result).toMatchObject({
@@ -4015,11 +4010,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // may still exist for the issue once it's escalated and rerouted; the
     // test only cares that *this* run's failure was not classified as
     // retryable infrastructure.)
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
     expect(runs.some((row) => row.retryOfRunId === runId)).toBe(false);
     expect(
       runs.some(
-        (row) => row.status === "scheduled_retry" && row.scheduledRetryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        (row) =>
+          row.status === "scheduled_retry" &&
+          row.scheduledRetryReason ===
+            INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       ),
     ).toBe(false);
 
@@ -4033,7 +4034,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.status).toBe("blocked");
 
     const recoveryAction = await db
-      .select({ status: issueRecoveryActions.status, sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .select({
+        status: issueRecoveryActions.status,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+      })
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))
       .then((rows) => rows[0] ?? null);
@@ -4042,11 +4046,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceIssueId: issueId,
     });
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({
       authorType: "system",
-      body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
+      body: expect.stringContaining(
+        "Agent failed to resume after approval: `adapter_failed` — needs attention",
+      ),
     });
 
     mockAdapterExecute.mockClear();
@@ -4391,26 +4400,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // clobbers a run that is now legitimately executing (and cancels its
     // wakeup and appends a queue_expired event to a run no longer queued).
     //
-    // The queue-expiry backstop's own select is the FOURTH `db.select` call
-    // inside reapOrphanedRuns (1: retryableNativeProcesses, 2: cancellationRequests,
-    // 3: activeRuns, 4: expiredQueuedRuns -- the conditional monitorIssues select is
-    // skipped because activeRuns is empty) -- so intercepting call #4 targets
-    // exactly the expiredQueuedRuns select and injects the race right after
-    // it resolves, before the loop below reaches this run's cancellation.
+    // reapOrphanedRuns issues several unrelated selects before its queue-expiry
+    // backstop select, and that count shifts whenever the reaper grows a new
+    // sweep, so the race is keyed on the result rather than on call order: the
+    // expiredQueuedRuns select is the one (and only) query whose rows include
+    // this run while it is still "queued". Inject the claim right after that
+    // select resolves, before the loop below reaches this run's cancellation.
     const originalSelect = db.select.bind(db);
-    let selectCallCount = 0;
+    let claimed = false;
     const selectSpy = vi.spyOn(db, "select").mockImplementation((...args: unknown[]) => {
-      selectCallCount += 1;
       const builder = (originalSelect as (...a: unknown[]) => object)(...args);
-      if (selectCallCount === 4) {
-        return wrapQueryChainWithConcurrentSideEffect(builder, async () => {
-          await db
-            .update(heartbeatRuns)
-            .set({ status: "running", updatedAt: new Date() })
-            .where(eq(heartbeatRuns.id, runId));
+      return wrapQueryChainWithConcurrentSideEffect(builder, async (rows) => {
+        if (claimed || !Array.isArray(rows)) return;
+        const returnedThisQueuedRun = rows.some((row) => {
+          const candidate = row as { id?: unknown; status?: unknown } | null;
+          return candidate?.id === runId && candidate?.status === "queued";
         });
-      }
-      return builder;
+        if (!returnedThisQueuedRun) return;
+        claimed = true;
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "running", updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, runId));
+      });
     });
 
     const heartbeat = heartbeatService(db);

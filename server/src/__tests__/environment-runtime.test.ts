@@ -7583,7 +7583,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("reports a missing plugin worker manager as a wiring failure, not a stopped worker", async () => {
+  it("reports a missing plugin worker manager as a stopped worker so the lease failure stays retryable", async () => {
+    // A server process with no plugin worker manager resolves the provider as
+    // `worker_unavailable`, the same state a mid-restart worker reports. The
+    // heartbeat classifies that message as transient sandbox infrastructure
+    // and schedules an infra retry instead of failing setup terminally.
     const { companyId, environment, runId } = await seedReusablePluginSandboxLease();
     const runtimeWithoutWorkerManager = environmentRuntimeService(db);
 
@@ -7595,7 +7599,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         heartbeatRunId: runId,
         persistedExecutionWorkspace: null,
       }),
-    ).rejects.toThrow(/sandbox plugin workers are unavailable in this server process/);
+    ).rejects.toThrow(/its worker is not running/);
   });
 
   it("still reports a stopped worker as a stopped worker when the manager is wired", async () => {
