@@ -37,7 +37,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
-import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { classifyCodexAuthRefreshFailure, isCodexInvalidApiKeyError } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
@@ -268,6 +268,10 @@ async function prepareCodexRemoteManagedHome(
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
+    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
+    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
+    // the terminal failed result instead of silently switching lanes.
+    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
     adapterType: "codex_local",
@@ -276,27 +280,38 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
-function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+function withCodexAuthFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
   if ((result.exitCode ?? 0) === 0) return result;
   const resultJson = parseObject(result.resultJson);
   const stopReason = asString(resultJson.stopReason, "");
-  const authFailure = classifyCodexAuthRefreshFailure({
-    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join("\n"),
-  });
-  if (!authFailure) return result;
-
-  return {
-    ...result,
-    errorCode: authFailure,
-    errorFamily: authFailure,
-    resultJson: {
-      ...(result.resultJson ?? {}),
+  const errorMessage = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  const authFailure = classifyCodexAuthRefreshFailure({ errorMessage });
+  if (authFailure) {
+    return {
+      ...result,
+      errorCode: authFailure,
       errorFamily: authFailure,
-    },
-  };
+      resultJson: {
+        ...(result.resultJson ?? {}),
+        errorFamily: authFailure,
+      },
+    };
+  }
+
+  // A rejected/missing OpenAI API key is a permanent auth failure: surface it
+  // as codex_auth_required (no errorFamily; it is not a retry contract) so the
+  // heartbeat pauses the agent and the run card offers credential-connect.
+  if (isCodexInvalidApiKeyError({ errorMessage })) {
+    return {
+      ...result,
+      errorCode: "codex_auth_required",
+    };
+  }
+
+  return result;
 }
 
 /**
@@ -346,7 +361,7 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
-    return withCodexAuthRefreshFailureClassification(result);
+    return withCodexAuthFailureClassification(result);
   };
 }
 
@@ -492,6 +507,7 @@ export async function testCodexAcpEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "codex_engine_selected",
@@ -554,7 +570,22 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  if (!targetIsRemote) {
+  if (!targetIsRemote && !callerControlsHost && !isNonEmpty(envConfig.OPENAI_API_KEY)) {
+    // Hosted multi-tenant: the host's `~/.codex` is not this user's, and they
+    // have no shell to run `codex login` on, so neither the native-auth check
+    // nor the login hint below can mean anything to them. Never evaluate (or
+    // report) the server host's own credential as the tenant's. Say the one
+    // thing they can act on. Deliberately explicit that a ChatGPT plan is a
+    // route only through a login on their own machine, so a subscriber who
+    // reads a bare "set OPENAI_API_KEY" does not keep hunting for the plan
+    // option instead of buying the credit the key needs.
+    checks.push({
+      code: "codex_acp_credentials_missing",
+      level: "warn",
+      message: "No Codex credentials are configured for this agent.",
+      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
+    });
+  } else if (!targetIsRemote) {
     const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
     const hostApiKey =
       Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
