@@ -2165,16 +2165,50 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     });
   });
 
+  // In-memory per session/poll-loop instance: a fresh bridge (and thus a
+  // fresh watermark and failure streak) starts on every run, which is fine.
+  // There is nothing to recover across restarts, since the whole point of
+  // the watermark is to dedupe within a single still-running poll loop.
+  let lastDeliveredEventName: string | null = null;
+  let consecutivePollFailures = 0;
+
+  const logPollFailure = async (message: string) => {
+    consecutivePollFailures += 1;
+    await onLog(
+      "stderr",
+      `[paperclip] ACP process session bridge poll failed: ${message} ` +
+        `(attempt ${consecutivePollFailures}/${MAX_CONSECUTIVE_POLL_FAILURES})\n`,
+    );
+    // A single failed poll cycle (e.g. the directory listing itself
+    // failing, a single event file that will not read, or a malformed
+    // event body) is treated as transient: only tear the session down once
+    // MAX_CONSECUTIVE_POLL_FAILURES full cycles have failed back to back.
+    // Any cycle that completes without a failure resets the streak to 0.
+    if (consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+      deliverRemoteEvent({ type: "error", message });
+      return true;
+    }
+    return false;
+  };
+
   const poll = async () => {
     if (stopping) return;
     try {
       // Read every file this tick fetched before this loop decides whether to
       // keep polling. A `shutdownAck` can land in the same batch right after
       // an `exit` event; deliver it too, so this tick never drops an
-      // already-fetched (and already-removed-from-disk) event.
-      const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
+      // already-fetched event. `readRemoteJsonFiles` never removes a file
+      // itself: each file is removed below only after its event has actually
+      // been handed to the caller, and the delivery watermark skips it on the
+      // next cycle even when that removal fails.
+      const { events, stoppedEarly } = await readRemoteJsonFiles({
+        client,
+        dir: eventsDir,
+        afterName: lastDeliveredEventName,
+      });
+      let midBatchFailure: string | null = null;
       for (const event of events) {
-        const parsed = JSON.parse(event.body) as {
+        let parsed: {
           type?: string;
           stream?: "stdout" | "stderr";
           data?: string;
@@ -2182,13 +2216,50 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           signal?: string | null;
           message?: string;
         };
-        deliverRemoteEvent(parsed);
+        try {
+          parsed = JSON.parse(event.body) as typeof parsed;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to parse ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        try {
+          deliverRemoteEvent(parsed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to deliver ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        // Only now that the event has actually been handed to the caller do
+        // we advance the watermark and attempt to remove the remote file. A
+        // throw above (parse or deliver) leaves both untouched, so the file
+        // is re-read from exactly this point on the next cycle and nothing
+        // already delivered is ever repeated.
+        lastDeliveredEventName = event.name;
+        const filePath = path.posix.join(eventsDir, event.name);
+        try {
+          await client.remove(filePath);
+        } catch (removeError) {
+          const removeMessage = removeError instanceof Error ? removeError.message : String(removeError);
+          await onLog(
+            "stderr",
+            `[paperclip] ACP process session bridge failed to remove processed event file ${event.name}; ` +
+              `relying on the delivery watermark to avoid re-sending it: ${removeMessage}\n`,
+          );
+        }
+      }
+      if (midBatchFailure) {
+        if (await logPollFailure(midBatchFailure)) return;
+      } else if (stoppedEarly) {
+        const error = stoppedEarly.error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (await logPollFailure(`failed to read ACP process session event file ${stoppedEarly.name}: ${message}`)) return;
+      } else {
+        consecutivePollFailures = 0;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
-      return;
+      if (await logPollFailure(message)) return;
     } finally {
       if (!stopping) {
         schedulePoll();
