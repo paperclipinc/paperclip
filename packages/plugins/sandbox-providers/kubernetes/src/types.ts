@@ -183,4 +183,19 @@ export interface KubernetesLeaseMetadata {
    * a Kubernetes pod's image cannot change in place).
    */
   image?: string;
+  scopedNetworkPolicyName: string | null;
+  scopedNetworkEgress: {
+    allowFqdns: string[];
+    allowCidrs: string[];
+  };
+  /**
+   * True when this lease's backend has NO data channel for the native file-sync
+   * transport. Native sync streams over a pod exec, which only the `sandbox-cr`
+   * backend exposes; the `job` backend carries no exec path, so its sync hook
+   * rejects immediately. The server's per-lease sync-capability gate honors this
+   * opt-out so a job lease keeps the byte-identical base64 fallback instead of
+   * being routed to a native hook that would only error. Absent/false ⇒ native
+   * sync may be used when the worker advertises the verbs.
+   */
+  nativeFileSyncUnsupported?: boolean;
 }

@@ -11,6 +11,7 @@ import { identifyUser } from "@/analytics";
 import { resolveCloudZeroCompanyState } from "@/lib/cloud-zero-company";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 import { WorkspaceSetupPendingPage } from "@/components/WorkspaceSetupPendingPage";
+import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { Card } from "@/components/ui/card";
 
 // authApi.getSession() only resolves to `null` for a DEFINITIVE
@@ -36,13 +37,13 @@ function NoBoardAccessPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
       <Card className="block p-6">
-        <h1 className="text-xl font-semibold">No company access</h1>
+        <h1 className="text-xl font-semibold">No organization access</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          This account is signed in, but it does not have an active company membership or instance-admin access on
+          This account is signed in, but it does not have an active organization membership or instance-admin access on
           this Paperclip instance.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          Use a company invite or sign in with an account that already belongs to this org.
+          Use an organization invite or sign in with an account that already belongs to this org.
         </p>
       </Card>
     </div>
@@ -139,7 +140,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   // The session check has been failing for a non-definitive reason
@@ -169,7 +170,7 @@ export function CloudAccessGate() {
   if (isBootstrapPending) {
     const health = healthQuery.data;
     if (!health) {
-      return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+      return <PaperclipLoading />;
     }
     const claimError = claimMutation.error instanceof ApiError
       ? { status: claimMutation.error.status, message: claimMutation.error.message }

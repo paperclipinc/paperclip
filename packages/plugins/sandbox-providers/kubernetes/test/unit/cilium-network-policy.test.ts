@@ -90,4 +90,20 @@ describe("buildCiliumNetworkPolicyManifest", () => {
       ).toBe(false);
     });
   });
+
+  it("targets only the granted run when building a scoped policy", () => {
+    const cnp = buildCiliumNetworkPolicyManifest({
+      ...baseInput,
+      name: "pc-run-egress",
+      endpointSelector: { "paperclip.io/run-id": "run-123" },
+      includeBaseRules: false,
+      ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", name: "pc-run", uid: "uid-1" }],
+      egressAllowFqdns: ["github.com", "pypi.org"],
+    });
+
+    expect(cnp.metadata.name).toBe("pc-run-egress");
+    expect(cnp.metadata.ownerReferences).toHaveLength(1);
+    expect(cnp.spec.endpointSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
+    expect(cnp.spec.egress).toHaveLength(1);
+  });
 });

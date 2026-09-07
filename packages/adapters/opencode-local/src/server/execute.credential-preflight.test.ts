@@ -17,7 +17,7 @@ const {
     exitCode: 0,
     signal: null,
     timedOut: false,
-    stdout: "",
+    stdout: "anthropic/claude-sonnet-4-5\n",
     stderr: "",
     pid: 123,
     startedAt: new Date().toISOString(),
@@ -73,6 +73,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+import * as credentialPreflight from "./credential-preflight.js";
 import { OPENCODE_PROVIDER_CREDENTIAL_ENV_KEYS } from "./credential-preflight.js";
 import { execute } from "./execute.js";
 
@@ -80,7 +81,7 @@ describe("opencode credential preflight in execute", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -106,6 +107,11 @@ describe("opencode credential preflight in execute", () => {
   }
 
   it("fails fast with inference_auth_invalid when the run has no provider credential", async () => {
+    vi.spyOn(credentialPreflight, "evaluateOpenCodeCredentialPreflight").mockResolvedValue({
+      ready: false,
+      source: null,
+      detail: null,
+    });
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-nocred-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");

@@ -20,10 +20,11 @@ export interface PublicFeatureFlags {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
-  enableTaskWatchdogs: boolean;
+  enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
+  enableManagedSandboxOnly: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -31,6 +32,7 @@ export interface PublicFeatureFlags {
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   enableSummaries: boolean;
+  enableStatusCards: boolean;
   cloudBilling: boolean;
   cloudTrialBanner: boolean;
   // Derived from instance general settings / instance defaults. These ride
@@ -75,10 +77,11 @@ export function derivePublicFeatureFlags(input: {
     enablePipelines: experimental.enablePipelines === true,
     enableCases: experimental.enableCases === true,
     enableConferenceRoomChat: experimental.enableConferenceRoomChat === true,
-    enableTaskWatchdogs: experimental.enableTaskWatchdogs === true,
+    enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
     enableCloudSync: experimental.enableCloudSync === true,
+    enableManagedSandboxOnly: experimental.enableManagedSandboxOnly === true,
     enableExternalObjects: experimental.enableExternalObjects === true,
     enableSmokeLab: experimental.enableSmokeLab === true,
     enableBuiltInAgents: experimental.enableBuiltInAgents === true,
@@ -86,6 +89,7 @@ export function derivePublicFeatureFlags(input: {
     enableGoalsSidebarLink: experimental.enableGoalsSidebarLink === true,
     enableServerInfoDebugView: experimental.enableServerInfoDebugView === true,
     enableSummaries: experimental.enableSummaries === true,
+    enableStatusCards: experimental.enableStatusCards === true,
     cloudBilling: experimental.cloudBilling === true,
     cloudTrialBanner: experimental.cloudTrialBanner === true,
     keyboardShortcuts: general.keyboardShortcuts === true,

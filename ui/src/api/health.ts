@@ -1,4 +1,5 @@
 import type { ServerInfoSnapshot } from "@paperclipai/shared";
+import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 export type DevServerHealthStatus = {
   enabled: true;
@@ -14,6 +15,14 @@ export type DevServerHealthStatus = {
   lastRestartAt: string | null;
 };
 
+export type CloudInstanceHealthStatus = {
+  managed: true;
+  managedBy: "paperclip-cloud";
+  stackSlug: string | null;
+  stackDisplayName?: string;
+  cloudBaseUrl: string | null;
+};
+
 export type HealthStatus = {
   status: "ok";
   version?: string;
@@ -27,6 +36,12 @@ export type HealthStatus = {
   };
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
+  cloud?: CloudInstanceHealthStatus;
+  /**
+   * Settings surfaces hidden by the hosting operator (keys from the shared
+   * settings-visibility registry). Absent when nothing is hidden.
+   */
+  hiddenSettings?: string[];
 };
 
 export const healthApi = {
@@ -37,6 +52,8 @@ export const healthApi = {
     });
     if (!res.ok) {
       const payload = await res.json().catch(() => null) as { error?: string } | null;
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
       throw new Error(payload?.error ?? `Failed to load health (${res.status})`);
     }
     return res.json();
@@ -49,6 +66,8 @@ export const healthApi = {
     });
     if (!res.ok) {
       const payload = await res.json().catch(() => null) as { error?: string } | null;
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+      if (recovery) return recovery;
       throw new Error(payload?.error ?? `Failed to request restart (${res.status})`);
     }
   },

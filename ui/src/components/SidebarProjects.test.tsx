@@ -298,6 +298,8 @@ describe("SidebarProjects", () => {
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
+      starredDocumentIds: [],
+      documentStarredAt: {},
       updatedAt: null,
     };
     mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));

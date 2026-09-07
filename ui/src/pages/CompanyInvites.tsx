@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { Badge } from "@/components/ui/badge";
@@ -70,48 +71,22 @@ export function CompanyInvites() {
   }
 
   async function copyText(text: string, unavailableBody: string, afterFallback?: () => void) {
+    // Route through the shared helper so the secure-context gate and the
+    // off-screen-textarea fallback stay in one place (ui/src/lib/clipboard.ts);
+    // a local copy here silently no-ops over plain HTTP on a LAN hostname.
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        return true;
-      }
+      await copyTextToClipboard(text);
+      afterFallback?.();
+      return true;
     } catch {
-      // Fall through to the unavailable message below.
+      afterFallback?.();
+      pushToast({
+        title: "Clipboard unavailable",
+        body: unavailableBody,
+        tone: "warn",
+      });
+      return false;
     }
-
-    const canUseLegacyCopy =
-      typeof document !== "undefined" &&
-      typeof document.execCommand === "function" &&
-      (typeof document.queryCommandSupported !== "function" || document.queryCommandSupported("copy"));
-    if (canUseLegacyCopy) {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.setAttribute("readonly", "true");
-      textarea.style.position = "fixed";
-      textarea.style.top = "0";
-      textarea.style.left = "-9999px";
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, textarea.value.length);
-
-      try {
-        const copied = document.execCommand("copy");
-        document.body.removeChild(textarea);
-        afterFallback?.();
-        if (copied) return true;
-      } catch {
-        document.body.removeChild(textarea);
-      }
-    }
-
-    afterFallback?.();
-    pushToast({
-      title: "Clipboard unavailable",
-      body: unavailableBody,
-      tone: "warn",
-    });
-    return false;
   }
 
   async function copyInviteUrl(url: string) {
