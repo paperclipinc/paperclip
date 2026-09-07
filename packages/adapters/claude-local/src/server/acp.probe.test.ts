@@ -273,7 +273,12 @@ describe("Claude ACP lane live credential probe", () => {
     expect(result.checks.some((check) => check.authFailure)).toBe(false);
   });
 
-  it("does not run the live probe at all when no credential is configured (subscription mode)", async () => {
+  it("does not run the BYOK credential probe when no credential is configured (subscription mode)", async () => {
+    // With no config credential the BYOK hello probe above must stay out of
+    // the way. Upstream's sandbox login probe still runs exactly once for a
+    // sandbox target (it is what reports the canonical adapter_auth_missing
+    // signal), so the assertion is "one probe, and none of it is the BYOK
+    // rejection path", not "no probe at all".
     const result = await testClaudeAcpEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
@@ -286,8 +291,9 @@ describe("Claude ACP lane live credential probe", () => {
       environmentName: "Daytona",
     });
 
-    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
-    expect(result.checks.some((check) => check.code.startsWith("claude_hello_probe_"))).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_credential_rejected")).toBe(false);
+    expect(result.checks.some((check) => check.authFailure)).toBe(false);
     expect(
       result.checks.some((check) => check.code === "claude_acp_credential_probe_unavailable"),
     ).toBe(false);

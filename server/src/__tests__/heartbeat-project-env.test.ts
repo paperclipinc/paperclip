@@ -304,6 +304,81 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
+  it("does not project brokered GitHub credentials across a low-trust boundary", async () => {
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      trustedEnvProjection: {
+        GH_TOKEN: "brokered-github-token",
+        GITHUB_TOKEN: "brokered-github-token",
+      },
+      trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({});
+    expect(result.secretKeys).toEqual(new Set());
+  });
+
+  it("does not let a brokered projection satisfy low-trust push preflight", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project"],
+        reason: "push_write_credential_missing",
+        remediation: "Bind an explicitly allowed GitHub write credential.",
+      },
+      trustedEnvProjection: { GH_TOKEN: "brokered-github-token" },
+      trustedEnvSecretKeys: ["GH_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: { reason: "push_write_credential_missing" },
+      },
+    });
+  });
+
   it("blocks required missing user secrets before runtime env resolution", async () => {
     const resolveAdapterConfigForRuntime = vi.fn();
     const resolveEnvBindings = vi.fn();
@@ -518,6 +593,35 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     );
     return { root, managedAgentHome };
   }
+
+  it("does not gate sandbox-destined runs on host credentials — the sandbox image may carry its own login", async () => {
+    const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    await expect(
+      resolveExecutionRunAdapterConfig({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+        responsibleUserId: "user-1",
+        environmentDriver: "sandbox",
+        executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+        projectEnv: null,
+        secretsSvc: {
+          resolveAdapterConfigForRuntime,
+          resolveEnvBindings: vi.fn(),
+          collectMissingRuntimeBindings: vi.fn().mockResolvedValue([]),
+        } as any,
+      }),
+    ).resolves.toMatchObject({
+      resolvedConfig: expect.objectContaining({ command: "codex" }),
+    });
+  });
 
   it("surfaces a configuration-incomplete blocker when a managed home has no auth and OPENAI_API_KEY is empty", async () => {
     const { managedAgentHome } = await stubManagedCodexEnv({ seedSharedAuth: false });
@@ -1025,17 +1129,18 @@ describe("buildReferencedProjectRunObservability", () => {
       failures: [
         { projectId: "project-b", reason: "authorization" },
         { projectId: "project-c", reason: "resolution" },
-        { projectId: "project-d", reason: "staging" },
+        { projectId: "project-d", reason: "staging", error: "extract failed: boom" },
       ],
     });
 
     // Requested is the synced count plus every dropped project, so the counts reconcile.
     expect(observability.referenced_projects_requested).toBe(4);
     expect(observability.referenced_projects_synced).toBe(1);
+    // A staging failure carries its error message; a failure without one omits the field.
     expect(observability.referenced_project_failures).toEqual([
       { project_id: "project-b", reason: "authorization" },
       { project_id: "project-c", reason: "resolution" },
-      { project_id: "project-d", reason: "staging" },
+      { project_id: "project-d", reason: "staging", error: "extract failed: boom" },
     ]);
   });
 

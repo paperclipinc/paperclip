@@ -252,8 +252,8 @@ describe("CompanySwitcher — cloud create company", () => {
     await flushReact();
 
     expect(findButton(container, "Create company")).toBeUndefined();
-    // The native "Manage Companies" affordance is still there.
-    expect(container.textContent).toContain("Manage Companies");
+    // The native "Manage Organizations" affordance is still there.
+    expect(container.textContent).toContain("Manage Organizations");
 
     await act(async () => root.unmount());
   });
