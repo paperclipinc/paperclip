@@ -2084,10 +2084,6 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // footer button is the press — by the time the panel is rendered there, the
   // customer has already asked for this.
   autoStart?: boolean;
-  // The customer abandoned the login from inside the card. The panel has
-  // already cancelled the server session by the time this fires; the caller
-  // uses it to put its own control back to the state it started in.
-  onCancel?: () => void;
   // The login reached its success state. Onboarding advances on this, which is
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
@@ -2144,7 +2140,6 @@ function DisplayedCodeLoginPanel({
   adapterType,
   environmentId,
   autoStart,
-  onCancel,
   onConnected,
   chrome = "panel",
   onPromptReady,
@@ -2208,6 +2203,13 @@ function DisplayedCodeLoginPanel({
       }
     },
     retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
   });
 
   // While the panel releases a resumed session it cannot recover (see below),
@@ -2344,17 +2346,11 @@ function DisplayedCodeLoginPanel({
     onPromptReadyRef.current?.(prompt?.url ?? null);
   }, [prompt]);
 
-  const handleCancel = () => {
-    cancelLogin.mutate();
-    onCancel?.();
-  };
-
   if (chrome === "onboarding") {
     const failed = isTerminal && status && status !== "authenticated";
     return (
       <OnboardingLoginCard
         loading={!prompt && !startError && !failed}
-        onCancel={handleCancel}
         instruction={
           <>
             {/* The same destination as the step's own button. Two ways to one
@@ -2548,7 +2544,6 @@ function SubmittedBrowserCodeLoginPanel({
   onStored,
   onApplyStored,
   autoStart,
-  onCancel,
   onConnected,
   chrome = "panel",
   onPromptReady,
@@ -2717,6 +2712,13 @@ function SubmittedBrowserCodeLoginPanel({
       }
     },
     retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
   });
 
   // While the panel releases a resumed session it cannot recover (see below),
@@ -3011,11 +3013,6 @@ function SubmittedBrowserCodeLoginPanel({
     onConnectedRef.current?.();
   }, [isStored]);
 
-  const handleCancel = () => {
-    cancelLogin.mutate();
-    onCancel?.();
-  };
-
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
   useEffect(() => {
@@ -3027,7 +3024,6 @@ function SubmittedBrowserCodeLoginPanel({
     return (
       <OnboardingLoginCard
         loading={!authorizationUrl && !startError && !failedNow}
-        onCancel={handleCancel}
         instruction={
           <>
             <a

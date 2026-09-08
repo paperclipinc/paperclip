@@ -12,6 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
 
 const apiPrefixes: Record<string, string> = {
+  "pipelines.ts": "/api",
+  "cases.ts": "/api",
+  "smoke-lab.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
@@ -69,13 +72,6 @@ const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 const explicitOpenApiCoverageExclusions = new Set([
-  // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
-  "pipelines.ts",
-  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
-  "cases.ts",
-  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
-  "smoke-lab.ts",
-  // Cloud upstream routes are fork-specific and not in the public OpenAPI document.
   "cloud-upstreams.ts",
 ]);
 
@@ -290,6 +286,7 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
 
     expect(spec.paths["/api/openapi.json"].get.security).toEqual([]);
+    expect(spec.paths["/runtime-tools/github/credentials"].post.security).toEqual([{ RuntimeToolsBearerAuth: [] }]);
     expect(spec.paths["/api/plugins/install"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },
