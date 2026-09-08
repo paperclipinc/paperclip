@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -180,6 +181,7 @@ import {
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   parseRemoteExecutableCandidate,
+  buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
   nativeUsageCostUsd,
   normalizeNativeUsage,
@@ -624,8 +626,8 @@ describe("remote provider pack manifest", () => {
     const payload = {
       pins: {
         nodeMinimum: "24.11.0",
-        codex: "0.148.0",
-        opencode: "1.18.17",
+        codex: "0.153.4",
+        opencode: "1.18.29",
         acpx: "0.13.1",
         claudeAcp: "0.70.0",
         codexAcp: "1.6.2",
@@ -682,7 +684,7 @@ describe("remote provider pack manifest", () => {
       );
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
-      "1.18.17",
+      "1.18.29",
     );
     for (const [artifactName, substituteName] of [
       ["nodeCommand", "productionLock"],
@@ -1601,6 +1603,32 @@ describe("remote provider checkpoint restores", () => {
 });
 
 describe("remote preinstalled executable discovery", () => {
+  it("stages a relative-path CLI shim without changing its installation or losing arguments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-codex-shim-"));
+    try {
+      const installation = join(root, "image install's bin");
+      const target = join(root, "workspace", "bin", "codex");
+      const source = join(installation, "codex");
+      await mkdir(installation, { recursive: true });
+      await mkdir(join(root, "workspace", "bin"), { recursive: true });
+      const shim = '#!/bin/sh\ncat "$(dirname "$0")/version.txt"\nprintf "%s\\n" "$@"\n';
+      await writeFile(source, shim, { mode: 0o755 });
+      await writeFile(join(installation, "version.txt"), "codex-cli 0.153.4\n");
+      // Existing deployments may already have the old symlink. Never write
+      // through it into the shared installation while upgrading the launcher.
+      await symlink(source, target);
+      for (let pass = 0; pass < 2; pass++) {
+        execFileSync("sh", ["-c", buildRemoteCodexLauncherCommand(source, target)]);
+        expect(execFileSync(target, ["--version", "argument with 'quotes'"], { encoding: "utf8" }))
+          .toBe("codex-cli 0.153.4\n--version\nargument with 'quotes'\n");
+        expect(await readFile(source, "utf8")).toBe(shim);
+      }
+      expect(await readdir(join(root, "workspace", "bin"))).toEqual(["codex"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("accepts one normalized absolute executable path", () => {
     expect(
       parseRemoteExecutableCandidate(
@@ -3319,7 +3347,7 @@ describe("native warm session supervision", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it("reattaches a live runnerd warm session under a fresh run authority", async () => {
+  it.each([false, true])("verifies a live warm owner before refreshing run authority (broker: %s)", async (useBroker) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-runnerd-warm-authority-"),
     );
@@ -3391,8 +3419,13 @@ describe("native warm session supervision", () => {
         return result;
       })
       .mockImplementationOnce(async (options) => {
-        expect(options.existingSession).toBe(firstSession);
-        expect(options.persistedSession).toBeUndefined();
+        if (useBroker) {
+          expect(options.existingSession).toBeUndefined();
+          expect(options.persistedSession?.providerSessionId).toBe("provider-runnerd-warm");
+        } else {
+          expect(options.existingSession).toBe(firstSession);
+          expect(options.persistedSession).toBeUndefined();
+        }
         return result;
       });
 
@@ -3400,6 +3433,7 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: leaseDb(first),
         execution: first,
+        runnerEnvironment: useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" } : undefined,
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
@@ -3441,20 +3475,26 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: continuationDb,
         execution: second,
+        runnerEnvironment: useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" } : undefined,
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
       });
-      expect(firstClose).not.toHaveBeenCalled();
-      await vi.waitFor(
-        () =>
-          expect(firstClose).toHaveBeenCalledWith({
-            reason: "warm native session idle timeout",
-          }),
-        {
-          timeout: 1_500,
-        },
-      );
+      if (useBroker) {
+        expect(firstClose).toHaveBeenCalledOnce();
+        expect(firstClose).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
+      } else {
+        expect(firstClose).not.toHaveBeenCalled();
+        await vi.waitFor(
+          () =>
+            expect(firstClose).toHaveBeenCalledWith({
+              reason: "warm native session idle timeout",
+            }),
+          {
+            timeout: 1_500,
+          },
+        );
+      }
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -4013,6 +4053,11 @@ describe("runnerd provider runtime wiring", () => {
       useRunnerd: true,
     });
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    // Durable local runner state must settle before releasing this scope to
+    // another run, just like a remote runner's checkpoint.
+    expect(state.execute).toHaveBeenCalledWith(expect.objectContaining({
+      requireSessionCloseBeforeReturn: true,
+    }));
     await expect(
       executePaperclipNativeSession({
         db: leaseDb(second),
@@ -6009,6 +6054,84 @@ describe("runnerd provider runtime wiring", () => {
     expect(state.createTransport.mock.calls[0]![0].runnerBinary).not.toBe(
       `${remoteCwd}/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd`,
     );
+  });
+
+  it("uses the image's shared Codex without uploading or installing artifacts", async () => {
+    const syncIn = vi.fn(async () => undefined);
+    const remoteExecute = vi.fn(
+      async (command: { command: string; args?: string[] }) => {
+        let stdout = "";
+        const script = command.args?.[1] ?? "";
+        if (command.args?.[0] === "--build-metadata") {
+          stdout = JSON.stringify({
+            schema: "paperclip-runner/runnerd-build-metadata/v1",
+            binaryName: "paperclip-runnerd",
+            packageName: "@paperclipai/paperclip-runner",
+            binaryContractVersion: 2,
+            prpTransportModes: ["listen_ws"],
+          });
+        } else if (command.args?.[0] === "--version") {
+          if (
+            command.command.endsWith(
+              "/.paperclip-runtime/paperclip-runner/bin/codex",
+            )
+          ) {
+            throw new Error("reached-preinstalled-codex-verification");
+          }
+          stdout = "codex-cli 0.153.4";
+        } else if (script.includes("command -v paperclip-runnerd")) {
+          stdout = "/usr/local/bin/paperclip-runnerd\n";
+        } else if (script.includes("command -v codex")) {
+          stdout = script.includes("/opt/paperclip-runner/bin/codex")
+            ? "/opt/paperclip-runner/bin/codex\n"
+            : "/usr/local/bin/codex\n";
+        } else if (!script.includes("ln -sfn") && !script.includes("paperclip_codex_launcher_tmp")) {
+          throw new Error(`unexpected command: ${command.command}`);
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout,
+        };
+      },
+    );
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-image-runtime",
+      runnerIngressAuthorized: true,
+      runnerExecutionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        environmentId: "environment",
+        leaseId: "lease",
+        providerKey: "daytona",
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        runner: { execute: remoteExecute, syncIn },
+      } as never,
+    });
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const transport = state.createTransport.mock
+      .calls[0]![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+    };
+    await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
+      "reached-preinstalled-codex-verification",
+    );
+    expect(syncIn).not.toHaveBeenCalled();
+    expect(remoteExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "/opt/paperclip-runner/bin/codex",
+        args: ["--version"],
+      }),
+    );
+    expect(
+      remoteExecute.mock.calls.some(([call]) => call.command === "npm"),
+    ).toBe(false);
   });
 
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {

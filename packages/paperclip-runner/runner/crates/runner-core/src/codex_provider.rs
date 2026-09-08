@@ -24,7 +24,7 @@ use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.29";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -551,6 +551,22 @@ pub struct CodexProvider {
 // entry from this static ceiling, but cannot introduce another environment
 // variable by changing GIT_CONFIG_COUNT.
 const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "ZDOTDIR",
+    "BASH_ENV",
+    "PAPERCLIP_GITHUB_BROKER_URL",
+    "PAPERCLIP_GITHUB_BROKER_TOKEN",
+    "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+    "GH_CONFIG_DIR",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_AUTH_SOCK",
+    "GIT_SSH_COMMAND",
+    "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "PAPERCLIP_GIT_TOKEN",
@@ -3127,8 +3143,13 @@ mod tests {
 
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
-        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 73);
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 89);
         for key in [
+            "PAPERCLIP_GITHUB_BROKER_URL",
+            "PAPERCLIP_GITHUB_BROKER_TOKEN",
+            "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+            "GH_CONFIG_DIR",
+            "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
             "GH_TOKEN",
             "GITHUB_TOKEN",
             "PAPERCLIP_GIT_TOKEN",
