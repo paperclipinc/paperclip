@@ -1803,6 +1803,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
+                  </>)}
+                  {renderAdapterFields("advanced")}
+                </div>
+              </CollapsibleSection>
+              )}
+
               {credentialSetup && selectedCompanyId && (
                 <AdapterCredentialConnect
                   key={adapterType}
@@ -1836,7 +1842,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {/* Edit-only: timeout + grace period */}
               {!isCreate && (
                 <>
                   <Field label="Timeout (sec)" hint={help.timeoutSec}>
@@ -1864,11 +1869,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     />
                   </Field>
                 </>
-              )}
-                  </>)}
-                  {renderAdapterFields("advanced")}
-                </div>
-              </CollapsibleSection>
               )}
 
           </div>
