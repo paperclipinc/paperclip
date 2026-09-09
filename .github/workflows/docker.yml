@@ -27,7 +27,13 @@ permissions:
 
 # Serialise builds per ref without killing an in-flight one: a newer push
 # supersedes only the pending slot, so the image build that is already
-# running always finishes and publishes.
+# running always finishes and publishes. Canary TAG refs each get their
+# own group on purpose: their builds run in parallel so every published
+# canary gets its sha images regardless of merge cadence. The mutable
+# `:canary` channel tags are NOT written by the build matrix (which
+# would race across parallel runs) — each canary-tag run retags the
+# channel afterwards, only if it still matches the npm `canary`
+# dist-tag, so the channel moves monotonically and always mirrors npm.
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: false
@@ -138,6 +144,12 @@ jobs:
           echo "last=${last}" >> "$GITHUB_OUTPUT"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
 
+      # Lane tag mapping: nightly/v* tags publish `:nightly`, and only
+      # stable v* tags move `:latest` and the versioned tags.
+      # `:sha-<short>` is published on every build. `:canary` is
+      # deliberately absent here — the channel tag is moved by the
+      # dist-tag-checked retag step below, never by the build matrix,
+      # so parallel canary builds cannot race it backwards.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v6
@@ -172,12 +184,14 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # tini must stay PID 1 so the orphans agent runs leave behind are
-      # wait()ed rather than pinning as zombies until the cgroup pid limit
-      # exhausts every fork() in the container. Run against the PUSHED image:
-      # the build above is multi-arch with `push: true`, so nothing is loaded
-      # into the runner's daemon. The cloud variant is FROM production and
-      # inherits the same ENTRYPOINT, so this covers both.
+      # PID 1 must be an init that reaps adopted orphans. With node there, the
+      # orphans agent runs leave behind are never wait()ed and pin as zombies
+      # until the cgroup pid limit is exhausted and every fork() in the
+      # container fails. Run against the pushed image rather than a local
+      # build: the step above is multi-arch with `push: true`, so nothing is
+      # loaded into the runner's daemon. The cloud variant is FROM production
+      # and inherits the same ENTRYPOINT, so checking this image covers both.
+
       - name: Verify PID 1 reaps orphaned processes
         env:
           # Through the environment, not interpolated into the script body, so
@@ -338,3 +352,87 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}
+
+      # The cloud target installs @sentry/node at the version
+      # server/package.json declares, into a directory the server's own
+      # module resolution walks. Verify the image this job just pushed, not
+      # a local build, so a build-cache or layer-ordering regression is
+      # caught before any tenant runs the image.
+
+      - name: Verify the pushed image resolves the declared Sentry version
+        env:
+          IMAGE_TAGS: ${{ steps.meta-cloud.outputs.tags }}
+        run: |
+          set -euo pipefail
+          image="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
+          test -n "$image"
+
+          expected="$(node -e "process.stdout.write(require('./server/package.json').peerDependencies['@sentry/node'])")"
+          test -n "$expected"
+
+          installed="$(docker run --rm --pull always \
+            -v "$PWD/scripts/assert-cloud-image-sentry.mjs:/app/server/.ci-sentry-probe.mjs:ro" \
+            --entrypoint node "$image" /app/server/.ci-sentry-probe.mjs)"
+
+          echo "Declared optional peer version: $expected"
+          echo "Installed in the pushed image: $installed"
+          if [ "$installed" != "$expected" ]; then
+            echo "ERROR: the pushed image resolves @sentry/node@$installed, expected @sentry/node@$expected" >&2
+            exit 1
+          fi
+          echo "The pushed image resolves the declared @sentry/node version."
+
+  # Moves the mutable `:canary` / `:canary-cloud` channel tags. Kept OUT
+  # of the build jobs and serialized in its own lane, and — the load-
+  # bearing property — CONVERGENT rather than self-interested: a
+  # promotion does not promote "its own" canary, it retags the channel
+  # to whatever the npm `canary` dist-tag names at execution time,
+  # provided that version's sha images are published. GitHub's shared
+  # concurrency lane keeps one running and one pending promotion and
+  # REPLACES the pending slot with the latest enqueued — an older build
+  # finishing late can therefore evict the newest canary's pending
+  # promotion. With convergent promotion that eviction is harmless:
+  # whichever promotion survives resolves the current dist-tag fresh
+  # and lands the channel there (the current canary's images always
+  # exist by the time any later promotion runs, because per-tag build
+  # groups mean canary builds are never superseded and each run's
+  # promotion is gated on its own completed pushes). Every interleaving
+  # converges the Docker channel onto the npm channel.
+  promote_canary_channel:
+    if: startsWith(github.ref, 'refs/tags/canary/v')
+    needs: [build-and-push, build-and-push-cloud]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: docker-canary-channel-promotion
+      cancel-in-progress: false
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Converge the channel tags onto the current npm canary
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current="$(curl -fsS "https://registry.npmjs.org/-/package/@paperclipai%2Fdb/dist-tags" | jq -er .canary)"
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/$(printf 'canary/v%s' "$current" | jq -sRr @uri)" --jq .sha 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
+            echo "canary/v${current} does not resolve yet; a later promotion converges the channel"
+            exit 0
+          fi
+          short="$(printf '%s' "$sha" | cut -c1-7)"
+          if ! docker buildx imagetools inspect "$IMAGE:sha-${short}-cloud" >/dev/null 2>&1; then
+            echo "images for ${current} (sha-${short}) not published yet; its own promotion converges the channel"
+            exit 0
+          fi
+          docker buildx imagetools create -t "$IMAGE:canary" "$IMAGE:sha-${short}"
+          docker buildx imagetools create -t "$IMAGE:canary-cloud" "$IMAGE:sha-${short}-cloud"
+          echo "channel tags moved to canary ${current} (sha-${short})"

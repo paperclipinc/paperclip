@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   Agent,
@@ -380,6 +381,7 @@ vi.mock("../components/IssueChatThread", () => ({
 // the IssueChatThread stub above.
 vi.mock("../components/TaskChatThread", () => ({
   TaskChatThread: (props: {
+    workProducts?: IssueWorkProduct[];
     threadHeader?: ReactNode;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
@@ -400,6 +402,9 @@ vi.mock("../components/TaskChatThread", () => ({
       <div data-testid="task-chat-thread">
         {props.threadHeader}
         Task chat thread
+        {props.workProducts?.map((workProduct) => (
+          <RichWorkProductCard key={workProduct.id} workProduct={workProduct} href={workProduct.url} />
+        ))}
         {props.onStopRun ? (
           <button
             type="button"
@@ -1394,6 +1399,40 @@ describe("IssueDetail", () => {
     vi.restoreAllMocks();
   });
 
+  it("opens artifact cards in the shared gallery at the selected image without duplicating attachments", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listAttachments.mockResolvedValue([
+      createAttachment({ id: "chat-image", contentType: "image/png", originalFilename: "chat.png" }),
+      createAttachment({ id: "00000000-0000-4000-8000-000000000001", contentType: "image/png", originalFilename: "artifact.png" }),
+    ]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([
+      createArtifactWorkProduct({ id: "artifact-1", attachmentId: "00000000-0000-4000-8000-000000000001", contentType: "image/png", originalFilename: "artifact.png" }),
+      createArtifactWorkProduct({ id: "artifact-2", attachmentId: "00000000-0000-4000-8000-000000000002", contentType: "image/png", originalFilename: "output.png" }),
+    ]);
+    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>);
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector('button[aria-label="Open gallery: output.png"]')).not.toBeNull();
+    });
+    for (const [filename, index] of [["artifact.png", 1], ["output.png", 2]] as const) {
+      await act(async () => {
+        (container.querySelector(`button[aria-label="Open gallery: ${filename}"]`) as HTMLButtonElement).click();
+      });
+      expect(mockImageGalleryRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        open: true,
+        initialIndex: index,
+        items: [
+          { id: "chat-image" },
+          { id: "00000000-0000-4000-8000-000000000001" },
+          { id: "work-product-artifact-2", downloadPath: "/api/attachments/00000000-0000-4000-8000-000000000002/content?download=1" },
+        ],
+      });
+    }
+    expect(windowOpen).not.toHaveBeenCalled();
+  });
+
   it("loads from the pending state into issue detail without changing hook order", async () => {
     const issueRequest = createDeferred<Issue>();
     mockIssuesApi.get.mockReturnValueOnce(issueRequest.promise);
@@ -1682,7 +1721,7 @@ describe("IssueDetail", () => {
 
     await waitForAssertion(() => {
       expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toMatchObject({
         tab: "document",
@@ -1715,7 +1754,7 @@ describe("IssueDetail", () => {
         container.querySelector('[data-testid="issue-chat-thread"]'),
       ).not.toBeNull();
       expect(mockSetPanelVisible).not.toHaveBeenCalled();
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toBeNull();
     });
@@ -1733,7 +1772,7 @@ describe("IssueDetail", () => {
       );
     });
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toMatchObject({
         documentKey: "qa-evidence",
@@ -1750,7 +1789,7 @@ describe("IssueDetail", () => {
     });
 
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toBeNull();
     });
@@ -1769,7 +1808,7 @@ describe("IssueDetail", () => {
       );
     });
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toMatchObject({
         tab: "plans",
@@ -1788,7 +1827,7 @@ describe("IssueDetail", () => {
     });
     expect(mockSetPanelVisible).not.toHaveBeenCalled();
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(panel?.props?.documentDeepLink).toBeNull();
     });
@@ -1805,7 +1844,7 @@ describe("IssueDetail", () => {
       );
     });
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(
         (panel?.props?.documentDeepLink as { requestId?: number } | null)
@@ -1820,7 +1859,7 @@ describe("IssueDetail", () => {
     await act(async () => link.click());
 
     await waitForAssertion(() => {
-      const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+      const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
         { props?: Record<string, unknown> } | undefined;
       expect(
         (panel?.props?.documentDeepLink as { requestId?: number } | null)
@@ -1990,7 +2029,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+    const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
       { props?: Record<string, unknown> } | undefined;
     expect(panel?.props?.childIssues).toEqual([
       expect.objectContaining({ id: "child-1", identifier: "PAP-2" }),
@@ -2506,7 +2545,7 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    const panel = mockOpenPanel.mock.calls.at(-1)?.[0] as
+    const panel = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children as
       { props?: Record<string, unknown> } | undefined;
     expect(panel?.props?.issueLinkState).toEqual(
       expect.objectContaining({
