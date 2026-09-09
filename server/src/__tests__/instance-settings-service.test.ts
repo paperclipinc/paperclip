@@ -56,6 +56,7 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,
+      enableFirstTaskPlanProposal: false,
       autoRestartDevServerWhenIdle: true,
       cloudBilling: false,
       cloudTrialBanner: false,

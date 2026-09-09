@@ -7,13 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Card } from "@/components/ui/card";
-import { useCompany } from "@/context/CompanyContext";
+import { companyDirectoryQueryOptions, useAccountIdentity } from "@/api/companies-query";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySurfaceVisibilityCard } from "@/components/access/CompanySurfaceVisibilityCard";
 
 export function InstanceAccess() {
-  const { companies } = useCompany();
+  const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -33,6 +33,12 @@ export function InstanceAccess() {
     queryKey: queryKeys.access.adminUsers(search),
     queryFn: () => accessApi.searchAdminUsers(search),
   });
+
+  const companiesQuery = useQuery({
+    ...companyDirectoryQueryOptions(accountUserId),
+    enabled: accountSettled && usersQuery.isSuccess,
+  });
+  const companies = companiesQuery.data ?? [];
 
   const selectedUser = useMemo(
     () => usersQuery.data?.find((user) => user.id === selectedUserId) ?? null,
@@ -67,6 +73,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({ title: "Organization access updated", tone: "success" });
     },
   });
@@ -86,8 +93,8 @@ export function InstanceAccess() {
     },
   });
 
-  if (usersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading instance users…</div>;
+  if (usersQuery.isLoading || !accountSettled || (usersQuery.isSuccess && companiesQuery.isPending)) {
+    return <div className="text-sm text-muted-foreground">Loading instance access…</div>;
   }
 
   if (usersQuery.error) {
@@ -98,6 +105,15 @@ export function InstanceAccess() {
           ? usersQuery.error.message
           : "Failed to load users.";
     return <div className="text-sm text-destructive">{message}</div>;
+  }
+
+  if (companiesQuery.error) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-destructive">Failed to load organizations. Try again before changing access.</p>
+        <Button onClick={() => void companiesQuery.refetch()}>Try again</Button>
+      </div>
+    );
   }
 
   return (
