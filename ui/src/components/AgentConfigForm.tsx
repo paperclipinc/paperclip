@@ -1865,6 +1865,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </Field>
                 </>
               )}
+                  </>)}
+                  {renderAdapterFields("advanced")}
+                </div>
+              </CollapsibleSection>
+              )}
 
           </div>
         </div>

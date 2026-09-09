@@ -98,7 +98,6 @@ import {
 } from "../lib/credential-connected";
 import { cloudCompaniesApi } from "../api/cloudCompanies";
 import { healthApi } from "../api/health";
-import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -2063,121 +2062,6 @@ function OnboardingWizardInner({
     await disableRejectedCredentialSecret(secretId, envKey);
   }
 
-  // Step 2 → 3 ("Confirm mission"): create the company + its company-level
-  // goal, then advance to naming the team lead. Guarded so revisiting the
-  // mission step (e.g. via Back) doesn't create a duplicate company.
-  async function handleConfirmMission() {
-    if (createdCompanyId) {
-      // An existing company needs its mission written, not just skipped past.
-      // This branch used to advance without saving anything, which was
-      // harmless while nothing sent an existing company to the mission step -
-      // a company reached step 2 only by creating itself on step 1, one line
-      // below. The dashboard now opens an agentless company here, so the
-      // customer types a mission and presses "Confirm mission". Advancing
-      // without writing it would leave the company with no mission at all,
-      // which is the state this whole change exists to remove.
-      //
-      // A goal already in hand means update it, not skip the write. It used
-      // to mean skip, which was safe only while the field could not hold an
-      // unsaved change: the id was set by *writing* the mission, so arriving
-      // here with one meant nothing had been typed since. Hydration breaks
-      // that - the id now also arrives from the company's existing goal, with
-      // the customer's edits sitting in the field beside it - and skipping
-      // would discard exactly the answer this step asked for.
-      setLoading(true);
-      setError(null);
-      try {
-        // The company may already have a mission this step could not see.
-        // `useCompanyMission` fails open, so a goal lookup that exhausted its
-        // retries sends a company that has one here anyway. Adding a second
-        // company-level goal would leave two, and the earlier one would keep
-        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
-        //
-        // So read once more before writing, and update rather than add. The
-        // customer just answered the question on a step that asked it, so
-        // their answer is the mission. A read that fails still writes: an
-        // unwritten mission is the failure this whole change exists to remove.
-        let existingGoalId: string | null = createdCompanyGoalId;
-        try {
-          const goals = await queryClient.fetchQuery({
-            queryKey: queryKeys.goals.list(createdCompanyId),
-            queryFn: () => goalsApi.list(createdCompanyId)
-          });
-          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
-        } catch {
-          // Still cannot tell. Fall through and write.
-        }
-
-        const plan = planMissionPersistence({
-          goalInput: companyGoal,
-          existingGoalId,
-        });
-        if (plan.kind === "skip") {
-          setStep(3);
-          return;
-        }
-        const goal =
-          plan.kind === "update"
-            ? await goalsApi.update(plan.goalId, plan.payload)
-            : await goalsApi.create(createdCompanyId, plan.payload);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.goals.list(createdCompanyId)
-        });
-        if (!stillTheSameCompany(createdCompanyId)) return;
-        setCreatedCompanyGoalId(goal.id);
-        setStep(3);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to save the mission");
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    const companyIdAtStart = createdCompanyIdRef.current;
-    try {
-      const company = await companiesApi.create({ name: companyName.trim() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      // Same guard as the others, from the other end: nothing was in hand when
-      // this started, so "unchanged" means still nothing. A route that supplied
-      // a company while the request was open has taken over the wizard, and
-      // adopting the company just created would fight it — and would leave the
-      // customer on a company they never navigated to.
-      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
-      setCreatedCompanyId(company.id);
-      // Keep the mirror current here rather than waiting for the next render.
-      // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
-      // that still held the pre-create value would answer "no" to the handler
-      // that just did the creating - so the goal would never be attributed and
-      // the wizard would sit on the mission step it had just completed.
-      createdCompanyIdRef.current = company.id;
-      setCreatedCompanyPrefix(company.issuePrefix);
-      setSelectedCompanyId(company.id);
-
-      const parsedGoal = parseOnboardingGoalInput(companyGoal);
-      const goal = await goalsApi.create(company.id, {
-        title: parsedGoal.title,
-        ...(parsedGoal.description
-          ? { description: parsedGoal.description }
-          : {}),
-        level: "company",
-        status: "active"
-      });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.goals.list(company.id)
-      });
-      if (!stillTheSameCompany(company.id)) return;
-      setCreatedCompanyGoalId(goal.id);
-
-      setStep(3); // → Create your team lead
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create organization");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   // Step 1 → 3 ("Name your company"): create the company, then go straight to
   // the first agent.
   //
@@ -3297,20 +3181,6 @@ function OnboardingWizardInner({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 2 && (
-                    <Button
-                      size="sm"
-                      disabled={(!companyName.trim() && !createdCompanyId) || !companyGoal.trim() || loading}
-                      onClick={handleConfirmMission}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-3.5 w-3.5 mr-1" />
-                      )}
-                      {loading ? "Creating..." : "Confirm mission"}
-                    </Button>
-                  )}
                   {step === 3 && (
                     <Button
                       size="sm"
@@ -3327,8 +3197,7 @@ function OnboardingWizardInner({
                       disabled={
                         !agentName.trim() ||
                         loading ||
-                        adapterEnvLoading ||
-                        missionUnresolvedForHire
+                        adapterEnvLoading
                       }
                       onClick={handleGiveHeartbeat}
                     >
