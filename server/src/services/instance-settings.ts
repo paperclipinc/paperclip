@@ -33,6 +33,7 @@ import {
   DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
 } from "@paperclipai/shared";
 import {
+  INSTANCE_FEATURE_CATALOG,
   applyOperatorGeneralDefaults,
   objectWithoutDefaults,
   stripOperatorGeneralEchoes,
