@@ -32,7 +32,9 @@ interface WireInteraction {
 
 // Resolve the adapter's own pinned discord.js, not a separately installed test
 // dependency. These are actual constructors and response methods, never mocks.
-const discordJs = createRequire(import.meta.resolve("@chat-adapter/discord"))(
+const discordJs = createRequire(
+  createRequire(import.meta.url).resolve("@chat-adapter/discord"),
+)(
   "discord.js",
 ) as {
   Client: new (options: { intents: number[] }) => WireClient;
