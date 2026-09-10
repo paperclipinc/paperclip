@@ -219,6 +219,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     boardAccess?.source === "local_implicit" ||
     boardAccess?.isInstanceAdmin === true;
 
+  const { data: featureSettings } = useFeatures();
   const builtInAgentsEnabled = featureSettings?.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
@@ -254,7 +255,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const { data: featureSettings } = useFeatures();
   const environmentsEnabled = featureSettings?.enableEnvironments === true;
 
   const { data: environments } = useQuery({
