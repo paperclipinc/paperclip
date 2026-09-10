@@ -5,9 +5,8 @@ import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
-import { useFeatures } from "../hooks/useFeatures";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -16,7 +15,6 @@ import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
@@ -221,8 +219,12 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     boardAccess?.source === "local_implicit" ||
     boardAccess?.isInstanceAdmin === true;
 
-  const { data: instanceSettings } = useFeatures();
-  const builtInAgentsEnabled = instanceSettings?.enableBuiltInAgents === true;
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: !!selectedCompanyId,
+  });
+  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
     () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
@@ -408,32 +410,11 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
-        secondaryRow={
-          <div className="flex flex-col gap-2">
-            {builtInCluster && (
-              <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
-                {builtInCluster}
-              </div>
-            )}
-            {/* Actions have their own wrapping line, so names keep their width. */}
-            <div
-              className="pt-1"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-            >
-              <AgentActionButtons
-                agent={agent}
-                companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
-                showStatus={false}
-                canRunWithProviderTrace={canUseProviderTrace}
-                className="flex flex-wrap items-center gap-2"
-              />
-            </div>
+        secondaryRow={builtInCluster && (
+          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+            {builtInCluster}
           </div>
-        }
+        )}
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (

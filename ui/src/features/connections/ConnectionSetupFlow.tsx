@@ -908,9 +908,11 @@ export function ConnectionSetupFlow({
     && !entryAdvertisesManagedConnector
     ? recommendedManagedConnectorMethod(fullRequestedDefinition)
     : null;
+  const [enrollmentAuthorizationUrl, setEnrollmentAuthorizationUrl] = useState<string | null>(null);
   const connectorEnrollmentQuery = useQuery({
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
+    refetchInterval: enrollmentAuthorizationUrl ? 2_000 : false,
     enabled: Boolean(
       selectedCompanyId
       && requestedDefinitionUsesManagedConnector
@@ -918,6 +920,11 @@ export function ConnectionSetupFlow({
     ),
   });
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const closeEnrollmentPopup = useCallback(() => {
+    oauthPopupRef.current?.close();
+    oauthPopupRef.current = null;
+    setEnrollmentAuthorizationUrl(null);
+  }, []);
   const preserveEnrollmentAccess = useCallback(() => {
     if (!selectedCompanyId || !requestedAppKey) return;
     saveEnrollmentAccessState(selectedCompanyId, requestedAppKey, {
@@ -929,11 +936,31 @@ export function ConnectionSetupFlow({
   const openConnectorEnrollment = useCallback((verificationUrl: string) => {
     const target = resolveAuthorizationTarget(verificationUrl);
     if (!target.ok) {
+      closeEnrollmentPopup();
       setConnectorEnrollmentError(target.message);
       return;
     }
+    if (host === "dialog") {
+      setEnrollmentAuthorizationUrl(target.url);
+      const popup = oauthPopupRef.current;
+      if (popup && !popup.closed) {
+        popup.location.assign(target.url);
+        popup.focus();
+      } else {
+        setConnectorEnrollmentError("Open authorization in a new tab to continue.");
+      }
+      return;
+    }
     navigateTopLevel(target.url);
-  }, []);
+  }, [host, closeEnrollmentPopup]);
+  useEffect(() => {
+    if (!enrollmentAuthorizationUrl || connectorEnrollmentQuery.data?.status !== "active") return;
+    // Enrollment is only a prerequisite. Re-read the server catalog and keep
+    // the task's access selection and interaction binding in this dialog.
+    closeEnrollmentPopup();
+    setConnectorEnrollmentError(null);
+    void galleryQuery.refetch();
+  }, [enrollmentAuthorizationUrl, connectorEnrollmentQuery.data?.status, galleryQuery.refetch, closeEnrollmentPopup]);
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(
       selectedCompanyId!,
@@ -943,17 +970,19 @@ export function ConnectionSetupFlow({
             resumeConnectionId,
             reconnectConnectionId,
             interactionId: connectionIntentId,
-          })
+          }) + (host === "dialog" ? "&enrollment_host=dialog" : "")
         : undefined,
     ),
     onSuccess: (status) => {
       if (!status.verificationUrl) {
+        closeEnrollmentPopup();
         setConnectorEnrollmentError("Paperclip Cloud did not return an enrollment link. Try again.");
         return;
       }
       openConnectorEnrollment(status.verificationUrl);
     },
     onError: (error) => {
+      closeEnrollmentPopup();
       setConnectorEnrollmentError(
         error instanceof Error ? error.message : "Paperclip couldn’t reach Paperclip Cloud. Try again.",
       );
@@ -1229,7 +1258,7 @@ export function ConnectionSetupFlow({
           setGenericOAuthPending(false);
           return;
         }
-        if (host === "dialog") {
+        if (host === "dialog" || connectionIntentId) {
           setOAuthPhase("starting");
           setGenericOAuthPending(!entry);
           startOAuth(result.connection);
@@ -2087,6 +2116,14 @@ export function ConnectionSetupFlow({
               </InlineBanner>
             ) : null}
 
+            {enrollmentAuthorizationUrl ? (
+              <p className="mt-4 text-sm text-muted-foreground">
+                Finish authorization in the opened window.{' '}
+                <a className="underline" href={enrollmentAuthorizationUrl} target="_blank" rel="noopener noreferrer">
+                  Open authorization in a new tab
+                </a>
+              </p>
+            ) : null}
             <div className="mt-6 flex items-center justify-between gap-3">
               <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
                 Back
@@ -2096,6 +2133,7 @@ export function ConnectionSetupFlow({
                 disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
                 onClick={() => {
                   setConnectorEnrollmentError(null);
+                  reserveOAuthPopup();
                   preserveEnrollmentAccess();
                   // Let the server reuse a live enrollment or replace an expired
                   // one. A cached verification URL may expire while this page is open.

@@ -156,7 +156,7 @@ impl AcpxProviderDescriptor {
                 "1.6.2",
                 Some("@openai/codex"),
                 Some("0.153.4"),
-                "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
                 "ACPX agent pi is not executable through the verified runnerd provider boundary",
@@ -1776,7 +1776,7 @@ mod tests {
                     "1.6.2",
                     json!("@openai/codex"),
                     json!("0.153.4"),
-                    "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
                 )
             };
         json!({
@@ -2281,9 +2281,39 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum() {
+        let (original_candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
+        drop(original_lifetime_fence);
+        let (other_candidates, _other_lifetime_fence) = reserve_provider_lifetime_fence();
+
+        assert!(
+            original_candidates
+                .iter()
+                .all(|candidate| !other_candidates.contains(candidate)),
+            "another fixture must not impersonate a retired provider lifetime"
+        );
+        assert_eq!(
+            acquire_provider_lifetime_fence(original_candidates)
+                .expect("unrelated live fixture must not block the original cleanup proof")
+                .len(),
+            2
+        );
+    }
+
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // A fixture releases its original listeners before proving cleanup.
+        // Never give those candidate ports to another parallel fixture in that
+        // gap: its listeners would impersonate the original provider lifetime.
+        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
         let mut listeners = Vec::new();
-        for port in 49_152..=u16::MAX {
+        loop {
+            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
+            else {
+                break;
+            };
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {

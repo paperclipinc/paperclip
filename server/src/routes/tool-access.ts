@@ -59,6 +59,7 @@ import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
   isPaperclipCloudConnectorStrategy,
+  invalidatePaperclipCloudConnectorCapabilities,
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
@@ -200,6 +201,16 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
   } catch {
     return null;
   }
+}
+
+export function cloudConnectorEnrollmentOutcomeHtml(issuePrefix: string, returnTo: string, issueId?: string): string {
+  const fallbackPath = issueId
+    ? `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueId)}`
+    : cloudConnectorEnrollmentReturnPath(issuePrefix, returnTo);
+  const fallback = JSON.stringify(fallbackPath).replaceAll("<", "\\u003c");
+  // This document is served only after server-verified enrollment. The parent
+  // independently re-reads enrollment status; browser messages grant no access.
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Paperclip connected</title></head><body><p>Paperclip is connected. Return to your task to finish connecting the app.</p><script>if(window.opener&&window.opener!==window){window.close();}else{const link=document.createElement("a");link.href=${fallback};link.textContent=${JSON.stringify(issueId ? "Return to task" : "Continue setup")};document.body.append(link);}</script></body></html>`;
 }
 
 export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo?: string | null): string {
@@ -1041,7 +1052,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     }
     const [company] = pending?.companyId
       ? await db
-        .select({ issuePrefix: companies.issuePrefix })
+        .select({ id: companies.id, issuePrefix: companies.issuePrefix })
         .from(companies)
         .where(eq(companies.id, pending.companyId))
         .limit(1)
@@ -1050,6 +1061,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     let status;
     try {
       status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
+      invalidatePaperclipCloudConnectorCapabilities();
     } catch {
       throw badRequest("Invalid or expired Paperclip Cloud enrollment callback");
     }
@@ -1064,7 +1076,24 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { environment: status.environment, status: status.status },
       });
     }
-    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix, pending?.returnTo));
+    const returnTo = normalizeCloudConnectorEnrollmentReturnTo(pending?.returnTo);
+    if (returnTo && new URL(returnTo, "http://paperclip.local").searchParams.get("enrollment_host") === "dialog") {
+      res.set("Cache-Control", "no-store");
+      const intent = new URL(returnTo, "http://paperclip.local").searchParams.get("intent");
+      const parsedIntent = startToolOAuthSchema.safeParse({ interactionId: intent });
+      const interactionId = parsedIntent.success ? parsedIntent.data.interactionId : undefined;
+      const [interaction] = interactionId ? await db.select({ issueId: issueThreadInteractions.issueId })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, company.id),
+          eq(issueThreadInteractions.addresseeUserId, req.actor.userId ?? ""),
+          eq(issueThreadInteractions.kind, "connection_intent"),
+        )).limit(1) : [];
+      res.type("html").send(cloudConnectorEnrollmentOutcomeHtml(company.issuePrefix, returnTo, interaction?.issueId));
+      return;
+    }
+    res.redirect(303, cloudConnectorEnrollmentReturnPath(company.issuePrefix, returnTo));
   });
 
   const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {
@@ -1598,7 +1627,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const connections = await svc.listConnections(companyId);
+    const connections = await svc.listConnections(companyId, req.actor.userId);
     const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
     res.json({
       connections: filterVisibleToolConnections(connections, {
@@ -1638,7 +1667,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const connection = await getAccessibleResource(
       req,
       res,
-      svc.getConnection(req.params.connectionId as string),
+      svc.getConnection(req.params.connectionId as string, undefined, req.actor.userId),
       "Tool connection not found",
     );
     if (!connection) return;

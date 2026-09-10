@@ -4023,7 +4023,7 @@ describe("IssueDetail", () => {
     ).toBe("blocked");
   });
 
-  it("refreshes subtree pause state after resuming a hold", async () => {
+  it.each([false, true])("refreshes a released pause and shows partial wake failure=%s inline", async (wakeFailed) => {
     const childIssue = createIssue({
       id: "child-1",
       parentId: "issue-1",
@@ -4076,7 +4076,7 @@ describe("IssueDetail", () => {
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
     mockIssuesApi.releaseTreeHold.mockImplementation(() => {
       activePauseHoldState = null;
-      return Promise.resolve(releasedHold);
+      return Promise.resolve({ ...releasedHold, ...(wakeFailed ? { wakeFailures: [{ issueId: "child-1", message: "Agent unavailable" }] } : {}) });
     });
     mockAuthApi.getSession.mockResolvedValue({
       session: { userId: "user-1" },
@@ -4094,11 +4094,11 @@ describe("IssueDetail", () => {
     await flushReact();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Subtree pause is active.");
+      expect(container.textContent).toContain("Subtree is paused.");
     });
 
     const pauseBannerTitle = Array.from(container.querySelectorAll("span")).find(
-      (element) => element.textContent?.trim() === "Subtree pause is active.",
+      (element) => element.textContent?.trim() === "Subtree is paused.",
     );
     expect(pauseBannerTitle?.closest(".rounded-md")?.classList).toContain(
       "mt-3",
@@ -4123,7 +4123,7 @@ describe("IssueDetail", () => {
       .filter((button) => button.textContent?.trim() === "Resume subtree")
       .at(-1);
     expect(applyResumeButton).toBeTruthy();
-    expect(container.textContent).toContain("CodexCoder");
+    expect(container.textContent).toContain("Wake affected agents (1)");
 
     await act(async () => {
       applyResumeButton!.click();
@@ -4142,18 +4142,20 @@ describe("IssueDetail", () => {
     expect(
       mockIssuesApi.getTreeControlState.mock.calls.length,
     ).toBeGreaterThanOrEqual(2);
-    expect(mockPushToast).toHaveBeenCalledWith(
+    expect(mockPushToast).not.toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Subtree resumed",
-        body: "Ready to continue",
       }),
     );
     await waitForAssertion(() => {
-      expect(container.textContent).not.toContain("Subtree pause is active.");
+      expect(container.textContent).not.toContain("Subtree is paused.");
     });
+    if (wakeFailed) expect(container.querySelector('[role="alert"]')?.textContent).toContain("Pause released");
+    else expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it("uses simplified full-subtree pause controls", async () => {
+  it("pauses the subtree immediately without preview or confirmation", async () => {
+    mockIssuesApi.previewTreeControl.mockClear();
     const childIssue = createIssue({
       id: "child-1",
       parentId: "issue-1",
@@ -4211,7 +4213,7 @@ describe("IssueDetail", () => {
 
     const pauseMenuButton = Array.from(
       container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Pause subtree...");
+    ).find((button) => button.textContent?.trim() === "Pause subtree");
     expect(pauseMenuButton).toBeTruthy();
 
     await act(async () => {
@@ -4220,28 +4222,8 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
-    expect(mockIssuesApi.previewTreeControl).toHaveBeenCalledWith("PAP-1", {
-      mode: "pause",
-      releasePolicy: { strategy: "manual" },
-    });
-    expect(container.textContent).not.toContain("Pause mode");
-    expect(container.textContent).not.toContain("Release policy");
-    expect(container.textContent).not.toContain("Status breakdown");
-    expect(container.textContent).not.toContain("Active runs cancelled");
-    expect(container.textContent).toContain("Paused child");
-    expect(container.textContent).toContain("Completed child");
-    expect(container.textContent).toContain("Complete");
-
-    const pauseApplyButton = Array.from(
-      container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Pause and stop work");
-    expect(pauseApplyButton).toBeTruthy();
-
-    await act(async () => {
-      pauseApplyButton!.click();
-    });
-    await flushReact();
-
+    expect(mockIssuesApi.previewTreeControl).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-slot="dialog-content"]')).toBeNull();
     expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
       mode: "pause",
       reason: null,
@@ -4249,7 +4231,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("exposes leaf pause controls and routes issue active-run stop through Pause work", async () => {
+  it.each(["active-run", "composer"])("routes %s Stop and the menu through the same pause operation", async (control) => {
     const pausePreview = createPausePreview();
     pausePreview.totals = {
       ...pausePreview.totals,
@@ -4263,7 +4245,7 @@ describe("IssueDetail", () => {
     const pauseHold = createPauseHold({
       id: "leaf-pause-hold-1",
       mode: "pause",
-      reason: "Paused from active run controls.",
+      reason: null,
       releasePolicy: { strategy: "manual", note: "leaf_pause" },
       members: [],
     });
@@ -4281,6 +4263,10 @@ describe("IssueDetail", () => {
       preview: pausePreview,
     });
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
+      id: "run-active-1", agentId: "agent-1", status: "running", runtimeMode: "legacy",
+      issueId: "issue-1", adapterType: "process",
+    }]);
     mockAuthApi.getSession.mockResolvedValue({
       session: { userId: "user-1" },
       user: { id: "user-1" },
@@ -4304,17 +4290,21 @@ describe("IssueDetail", () => {
 
     const chatPauseButton = Array.from(
       container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Pause work");
+    ).filter((button) => button.textContent?.trim() === "Pause work").at(-1);
     expect(chatPauseButton).toBeTruthy();
 
     await act(async () => {
-      chatPauseButton!.click();
+      if (control === "composer") {
+        const stop = mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onCancelRun;
+        expect(stop).toBeTypeOf("function");
+        await stop();
+      } else chatPauseButton!.click();
     });
     await flushReact();
 
     expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
       mode: "pause",
-      reason: "Paused from active run controls.",
+      reason: null,
       releasePolicy: { strategy: "manual", note: "leaf_pause" },
       metadata: { source: "issue_active_run_control", runId: "run-active-1" },
     });
@@ -4332,8 +4322,22 @@ describe("IssueDetail", () => {
 
     const pauseMenuButton = Array.from(
       container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Pause work...");
+    ).find((button) => button.textContent?.trim() === "Pause work");
     expect(pauseMenuButton).toBeTruthy();
+    await act(async () => { pauseMenuButton!.click(); });
+    await flushReact();
+    expect(mockIssuesApi.createTreeHold).toHaveBeenLastCalledWith("PAP-1", {
+      mode: "pause", reason: null,
+      releasePolicy: { strategy: "manual", note: "leaf_pause" },
+    });
+    expect(mockPushToast).not.toHaveBeenCalled();
+    mockIssuesApi.createTreeHold.mockRejectedValueOnce(new Error("Unable to pause. Try again."));
+    await act(async () => {
+      await mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onStopRun("run-active-1");
+    });
+    await flushReact();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Unable to pause. Try again.");
+    expect(mockPushToast).not.toHaveBeenCalled();
   });
 
   it("routes live-run finalization actions through run cancellation before issue status update", async () => {
@@ -4879,7 +4883,7 @@ describe("IssueDetail", () => {
     localStorage.removeItem("paperclip:issue-comment-draft:issue-1");
   });
 
-  it("renders Paused by board distinctly and defaults leaf resume to wake the assignee", async () => {
+  it("renders a quiet task pause notice and defaults leaf resume to wake the assignee", async () => {
     const activeHold = createPauseHold();
     const releasedHold = createPauseHold({
       status: "released",
@@ -4927,9 +4931,9 @@ describe("IssueDetail", () => {
     await flushReact();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Paused by board.");
+      expect(container.textContent).toContain("Task is paused.");
       expect(container.textContent).toContain("in_review");
-      expect(container.textContent).not.toContain("Subtree pause is active.");
+      expect(container.textContent).not.toContain("Subtree is paused.");
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button")).find(
@@ -5053,14 +5057,11 @@ describe("IssueDetail", () => {
       mode: "restore",
       releasePolicy: { strategy: "manual" },
     });
-    expect(container.textContent).toContain(
-      "Restore tasks cancelled by this subtree operation so work can resume.",
-    );
-    expect(container.textContent).toContain("Cancelled child");
+    expect(container.textContent).toContain("1 task will be restored.");
 
     const restoreApplyButton = Array.from(
       container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Restore 1 tasks");
+    ).find((button) => button.textContent?.trim() === "Restore 1 task");
     expect(restoreApplyButton).toBeTruthy();
 
     await act(async () => {
@@ -5076,7 +5077,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("bounds the subtree control dialog with an internal scroll body", async () => {
+  it("confirms cancellation once without a reason, checkbox, or task inventory", async () => {
+    mockIssuesApi.createTreeHold.mockClear();
     const childIssue = createIssue({
       id: "child-1",
       parentId: "issue-1",
@@ -5108,6 +5110,9 @@ describe("IssueDetail", () => {
     await flushReact();
     await flushReact();
 
+    const moreButton = container.querySelector('button[aria-label="More task actions"]')!;
+    await act(async () => { moreButton.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    await flushReact();
     const cancelMenuButton = Array.from(
       container.querySelectorAll("button"),
     ).find((button) => button.textContent?.trim() === "Cancel subtree...");
@@ -5128,45 +5133,21 @@ describe("IssueDetail", () => {
       '[data-slot="dialog-content"]',
     ) as HTMLDivElement | null;
     expect(dialogContent).toBeTruthy();
-    expect(dialogContent!.className).toContain("max-h-(--sz-calc-18)");
-    expect(dialogContent!.className).toContain("overflow-hidden");
-    expect(dialogContent!.className).toContain("flex-col");
-
-    const bodyScrollRegion = Array.from(
-      dialogContent!.querySelectorAll("div"),
-    ).find(
-      (element) =>
-        typeof element.className === "string" &&
-        element.className.includes("overflow-y-auto") &&
-        element.textContent?.includes("Reason (optional)"),
-    );
-    expect(bodyScrollRegion?.className).toContain("min-h-0");
-    expect(bodyScrollRegion?.className).toContain("overscroll-contain");
-
-    const cancelApplyButton = Array.from(
-      dialogContent!.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Cancel 24 tasks") as
-      HTMLButtonElement | undefined;
-    expect(cancelApplyButton).toBeTruthy();
-    expect(cancelApplyButton!.disabled).toBe(true);
-
-    const confirmationCheckbox = dialogContent!.querySelector(
-      'input[type="checkbox"]',
-    ) as HTMLInputElement | null;
-    expect(confirmationCheckbox).toBeTruthy();
-    await act(async () => {
-      confirmationCheckbox!.click();
-    });
+    expect(dialogContent!.textContent).toContain("Cancel subtree?");
+    expect(dialogContent!.textContent).toContain("24 tasks will be cancelled.");
+    expect(dialogContent!.textContent).toContain("Keep tasks");
+    expect(dialogContent!.querySelector('textarea, input[type="checkbox"]')).toBeNull();
+    expect(dialogContent!.textContent).not.toContain("Cancellable child");
+    expect(mockIssuesApi.createTreeHold).not.toHaveBeenCalled();
+    const cancelApplyButton = Array.from(dialogContent!.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Cancel 24 tasks")!;
+    expect(cancelApplyButton.disabled).toBe(false);
+    mockIssuesApi.createTreeHold.mockResolvedValue({ hold: { ...createPauseHold(), mode: "cancel" }, preview: createCancelPreview(24) });
+    await act(async () => { cancelApplyButton.click(); });
     await flushReact();
-    expect(cancelApplyButton!.disabled).toBe(false);
-
-    const footer = Array.from(dialogContent!.querySelectorAll("div")).find(
-      (element) =>
-        typeof element.className === "string" &&
-        element.className.includes("border-t") &&
-        element.textContent?.includes("Close"),
-    );
-    expect(footer?.className).toContain("bg-background");
+    expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
+      mode: "cancel", reason: null, releasePolicy: { strategy: "manual" },
+    });
   });
 
   it("keeps the authoritative Paperclip queue mounted after handoff promotion", async () => {

@@ -344,6 +344,8 @@ export * from "./validators/status-card.js";
 // Zod 4 keeps `.default()` active after `.partial()`; these strip the defaults
 // so a patch/override parse keeps only the keys the caller actually sent.
 export { objectWithoutDefaults, shapeWithoutDefaults } from "./validators/partial.js";
+export * from "./types/chat-channels.js";
+export * from "./validators/chat-channels.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,
@@ -1231,6 +1233,7 @@ export type {
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,
@@ -1451,6 +1454,7 @@ export type {
   ToolConnectionCredentialSource,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -2788,3 +2792,7 @@ export {
   rewriteUrlHostToLoopback,
 } from "./runtime-exposure/loopback-bind.js";
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
+export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
+export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
+
+export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
