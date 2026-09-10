@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useFeatures } from "../hooks/useFeatures";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
@@ -259,7 +260,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
+  const { data: featureSettings } = useFeatures();
+  const environmentsEnabled = featureSettings?.enableEnvironments === true;
 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
@@ -321,13 +323,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         resolveAgentEnvironment(
           agent,
           environmentsById,
-          instanceSettings?.defaultEnvironmentId ?? null,
+          featureSettings?.defaultEnvironmentId ?? null,
           environmentCapabilities,
         ),
       );
     }
     return map;
-  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
+  }, [agents, environmentsById, environmentCapabilities, featureSettings?.defaultEnvironmentId]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
