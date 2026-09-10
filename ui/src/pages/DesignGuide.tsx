@@ -1,4 +1,7 @@
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
+import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { TaskPauseNotice, TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -448,6 +451,27 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
+function TaskExecutionControlsExample() {
+  const [running, setRunning] = useState(true);
+  const [dialogMode, setDialogMode] = useState<"resume" | "cancel" | "restore" | null>(null);
+  const [wake, setWake] = useState(true);
+  return <div className="max-w-xl space-y-4">
+    <div className="w-52 rounded-md border border-border p-1">
+      <TaskTreeControlMenuItems scope="subtree" canPause={running} canResume={!running} canCancel canRestore={!running}
+        onPause={() => setRunning(false)} onResume={() => setDialogMode("resume")}
+        onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
+    </div>
+    <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
+    {!running ? <TaskPauseNotice scope="subtree" onResume={() => setDialogMode("resume")} /> : null}
+    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
+    <TaskChatComposer onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
+      mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
+      wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
+      onApply={() => { setRunning(dialogMode !== "cancel" && wake); setDialogMode(null); }} />
+  </div>;
+}
+
 export function DesignGuide() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
@@ -517,6 +541,10 @@ export function DesignGuide() {
             </div>
           </SubSection>
         </div>
+      </Section>
+
+      <Section title="Task Execution Controls">
+        <TaskExecutionControlsExample />
       </Section>
 
       <Section title="Task Collection">
@@ -802,6 +830,8 @@ export function DesignGuide() {
           <p className="text-xs text-muted-foreground">
             Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
             Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
+            Use <code className="font-mono">variant="property"</code> for compact badges with direct navigation.
+            Pass <code className="font-mono">onRemove</code> for a separate blocker removal control with reserved space.
             Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
           </p>
           <div className="flex items-center gap-2 flex-wrap">
@@ -809,6 +839,7 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
+            <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
           </div>
         </SubSection>
@@ -2137,6 +2168,15 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Execution recovery">
+        <p className="text-sm text-muted-foreground">
+          Recovery runs in the background. Task lists keep their ordinary status without
+          execution badges. The transcript may briefly say Reconnecting, then resumes its
+          normal presentation. Recovery decisions and attempts belong in the run log;
+          there is no execution status card or reconciliation form.
+        </p>
       </Section>
 
       <Section title="Connection Intent">

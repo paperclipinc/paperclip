@@ -1,3 +1,4 @@
+import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
 import type {
   HarnessRuntimeRequest,
   HarnessThreadGoal,
@@ -13,6 +14,7 @@ import {
   harnessRuntimeRequestOutcome,
 } from "../../contracts/harness-driver.js";
 import type { CodexTaskEnvelope } from "../../contracts/codex.js";
+import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import {
   validatePrpStructuredRunResult,
   type PrpEvent,
@@ -32,21 +34,34 @@ import { canonicalJson, record } from "./codex-driver-values.js";
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   #values: T[] = [];
-  #waiters: Array<(value: IteratorResult<T>) => void> = [];
+  #waiters: Array<{
+    resolve: (value: IteratorResult<T>) => void;
+    reject: (error: Error) => void;
+  }> = [];
   #closed = false;
+  #failure: Error | null = null;
 
   push(value: T): void {
     if (this.#closed) return;
     const waiter = this.#waiters.shift();
     if (waiter === undefined) this.#values.push(value);
-    else waiter({ value, done: false });
+    else waiter.resolve({ value, done: false });
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const waiter of this.#waiters.splice(0))
-      waiter({ value: undefined, done: true });
+      waiter.resolve({ value: undefined, done: true });
+  }
+
+  fail(error: Error): void {
+    this.#failure ??= error;
+    this.#closed = true;
+    // Integrity failure takes precedence over a buffered semantic/terminal
+    // suffix, including one whose consumer has not started reading yet.
+    this.#values = [];
+    for (const waiter of this.#waiters.splice(0)) waiter.reject(this.#failure);
   }
 
   clear(): void {
@@ -56,10 +71,13 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: async () => {
+        if (this.#failure !== null) throw this.#failure;
         const value = this.#values.shift();
         if (value !== undefined) return { value, done: false };
         if (this.#closed) return { value: undefined, done: true };
-        return new Promise((resolve) => this.#waiters.push(resolve));
+        return new Promise((resolve, reject) =>
+          this.#waiters.push({ resolve, reject }),
+        );
       },
     };
   }
@@ -88,6 +106,7 @@ export class CodexSessionState {
   sourceSequence: number;
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
+  codexUsageBaseline: CodexUsageBaseline | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   resultCallId: string | null = null;
@@ -104,6 +123,7 @@ export class CodexSessionState {
   protocolFailed = false;
   protocolFailureCode: string | null = null;
   protocolFailureMessage: string | null = null;
+  protocolIntegrityFailure: NativeSessionProtocolIntegrityError | null = null;
   terminal = false;
   dispositionOnlyRecoveryAvailable = false;
   dispositionOnlyRecoveryConsumed = false;
@@ -117,6 +137,7 @@ export class CodexSessionState {
     "progress" | "final" | "summary" | "detail" | "unknown"
   >();
   readonly pendingRuntimeRequestMap = new Map<string, PendingRuntimeRequest>();
+  notificationIdentityDiagnostics = 0;
   readonly lineageByThread = new Map<string, HarnessThreadLineageEntry>();
   currentGoal: HarnessThreadGoal | null = null;
   interruptQueued = false;
@@ -135,6 +156,7 @@ export class CodexSessionState {
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
     terminalTurns?: PersistedHarnessTurnTerminal[];
+    codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
@@ -152,6 +174,8 @@ export class CodexSessionState {
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
   }) {
+    this.codexUsageBaseline = input.codexUsageBaseline ?? null;
+    if (this.codexUsageBaseline) this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
     this.transport = input.transport;
     this.runId = input.runId;
     this.sourceSequence = 0;
@@ -317,6 +341,7 @@ export class CodexSessionState {
     operation: string,
     detail: unknown,
   ): HarnessCapabilityUnavailableError {
+    this.rethrowProtocolIntegrity(detail);
     const error = new HarnessCapabilityUnavailableError(
       operation,
       redactCodexDiagnostic(String(detail)),
@@ -336,6 +361,34 @@ export class CodexSessionState {
     });
   }
 
+  assertProtocolIntegrity(): void {
+    if (this.protocolIntegrityFailure !== null)
+      throw this.protocolIntegrityFailure;
+  }
+
+  rethrowProtocolIntegrity(error: unknown): void {
+    if (!(error instanceof NativeSessionProtocolIntegrityError)) return;
+    this.failProtocolIntegrity(error);
+    this.assertProtocolIntegrity();
+  }
+
+  failProtocolIntegrity(error: NativeSessionProtocolIntegrityError): void {
+    this.protocolIntegrityFailure ??= error;
+    this.protocolFailed = true;
+    this.protocolFailureCode = this.protocolIntegrityFailure.code;
+    this.protocolFailureMessage = this.protocolIntegrityFailure.message;
+    this.terminal = true;
+    this.result = null;
+    this.resultFingerprint = null;
+    this.resultCallId = null;
+    this.resultTurnId = null;
+    // Fail the stream before settling pending local RPCs: a synthetic input
+    // expiration or terminal event must not turn corruption into a safe wait.
+    this.eventQueue.fail(this.protocolIntegrityFailure);
+    this.cancelPendingRequests("protocol_integrity_failed");
+    // The owning runtime still performs and awaits exact transport cleanup.
+  }
+
   failProtocol(code: string, message: string): void {
     if (this.protocolFailed) return;
     this.protocolFailed = true;
@@ -351,7 +404,7 @@ export class CodexSessionState {
       const turnId = this.activeTurnId;
       this.emit(
         "turn.failed",
-        { status: "failed", error: { code } },
+        { status: "failed", error: { code, message: this.protocolFailureMessage, recoverable: false } },
         { turnId },
       );
       this.terminalTurns.set(turnId, canonicalJson({ protocolFailure: code }));

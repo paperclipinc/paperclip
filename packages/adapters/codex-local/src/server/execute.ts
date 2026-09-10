@@ -115,7 +115,6 @@ import {
 } from "./process-activity-monitor.js";
 import {
   createCodexAcpExecutor,
-  formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
 
@@ -570,20 +569,20 @@ export async function ensureCodexSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeCodexAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
-      );
-    }
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
   }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
+  if (engineSelection.engine === "acp") {
+    return executeCodexAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
@@ -1279,6 +1278,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         {
           resumeSessionId,
           skipGitRepoCheck: executionTargetIsSandbox,
+          networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
         },
       );
       const args = execArgs.args;
