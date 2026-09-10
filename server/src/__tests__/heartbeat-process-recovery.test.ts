@@ -590,6 +590,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
+    resultJson?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -650,6 +651,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      resultJson: input?.resultJson ?? null,
       startedAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
@@ -2742,7 +2744,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("soft-drains: a run still running at the drain deadline is interrupted and retried", async () => {
-    const { agentId, runId } = await seedRunFixture({ agentStatus: "running" });
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    });
     const heartbeat = heartbeatService(db);
 
     // The run never finishes on its own, so the drain must hit its deadline.

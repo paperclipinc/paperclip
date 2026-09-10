@@ -259,7 +259,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const environmentsEnabled = instanceSettings?.enableEnvironments === true;
+  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
