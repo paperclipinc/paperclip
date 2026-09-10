@@ -428,7 +428,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input.scheduledRetryAttempt ? "transient_failure" : null,
-      resultJson: input.resultJson ?? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         ...(input.errorFamily ? { errorFamily: input.errorFamily } : {}),
         ...(input.retryNotBefore
           ? {
@@ -436,6 +437,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
               transientRetryNotBefore: input.retryNotBefore,
             }
           : {}),
+        ...input.resultJson,
       },
       contextSnapshot: {
         issueId: randomUUID(),
