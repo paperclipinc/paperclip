@@ -74,6 +74,11 @@ vi.mock("./codex-auth-copyback.js", () => ({
   copyBackCodexAuth,
 }));
 
+vi.mock("./acp.js", () => ({
+  createCodexAcpExecutor: () => vi.fn(),
+  resolveCodexExecutionEngineForRun: async () => ({ engine: "cli", explicit: false }),
+}));
+
 import { execute } from "./execute.js";
 
 type CapturedRestoreSeam = (ctx: {

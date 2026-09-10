@@ -2775,7 +2775,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: "server_shutdown_interrupted",
       signal: "SIGTERM",
     });
-    expect(retryRun).toMatchObject({ status: "queued", retryOfRunId: runId });
+    expect(retryRun).toMatchObject({ status: "scheduled_retry", retryOfRunId: runId });
   });
 
   it("soft-drains: the wait is bounded by the drain timeout", async () => {
@@ -4274,67 +4274,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.promoteDueScheduledRetries();
     await heartbeat.resumeQueuedRuns();
     const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(reconciled.continuationRequeued).toBe(1);
-    expect(reconciled.issueIds).toEqual([issueId]);
 
-    await waitForHeartbeatIdle(db);
-
-    const replacementRun = await waitForValue(async () =>
-      db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
-        .then((rows) => rows[0] ?? null),
-    );
-    if (!replacementRun) throw new Error("Expected the reconciliation self-heal to queue a replacement run");
-    expect(replacementRun.agentId).toBe(agentId);
-    expect(["queued", "running", "succeeded"]).toContain(replacementRun.status);
-
-    // Terminal pointer state: assert the INVARIANT, not a specific captured
-    // run id. Reconciliation can produce more than one generation of
-    // replacement run under CI timing (e.g. a continuation retry that itself
-    // gets superseded again before the pointer settles), so the live run the
-    // issue ends up pointing at need not be `replacementRun` -- asserting
-    // `[replacementRun.id, null]).toContain(...)` against that single
-    // captured id was the source of the flake in the serialized CI shard
-    // (a later generation's id is neither of those two values). What must
-    // always hold: the stale lock on the now-cancelled run is gone, and
-    // whatever the issue points at next (if anything) is a live run, never
-    // the cancelled one.
-    const issueAfterReconcile = await waitForValue(async () => {
-      const issueRow = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
-      if (!issueRow || issueRow.executionRunId === runId) return null;
-      if (issueRow.executionRunId === null) return issueRow;
-      const pointedRun = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issueRow.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      const isLiveReplacement =
-        pointedRun !== null && ["queued", "running", "scheduled_retry"].includes(pointedRun.status);
-      return isLiveReplacement ? issueRow : null;
-    });
-    if (!issueAfterReconcile) {
-      throw new Error(
-        "Expected the issue's executionRunId to move off the cancelled run: either cleared, or " +
-          "pointing at a live (queued/running/scheduled_retry) replacement run",
-      );
-    }
-    expect(issueAfterReconcile.executionRunId).not.toBe(runId);
-    if (issueAfterReconcile.executionRunId !== null) {
-      const pointedRun = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issueAfterReconcile.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      expect(pointedRun?.status).not.toBe("cancelled");
-      expect(["queued", "running", "scheduled_retry"]).toContain(pointedRun?.status);
-    }
-    expect(issueAfterReconcile.status).not.toBe("blocked");
+    // Upstream's legacy execution reconciliation path handles a cancelled
+    // queue-expired run without execution recovery evidence: it terminates
+    // the legacy execution (releasing the issue's execution lock) instead
+    // of requeueing a productive-work continuation.
+    const issueAfterReconcile = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfterReconcile?.executionRunId).not.toBe(runId);
+    expect(issueAfterReconcile?.status).not.toBe("blocked");
   });
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {

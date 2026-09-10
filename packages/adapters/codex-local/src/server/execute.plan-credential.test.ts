@@ -74,6 +74,11 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 vi.mock("./codex-auth-copyback.js", () => ({ copyBackCodexAuth }));
 
+vi.mock("./acp.js", () => ({
+  createCodexAcpExecutor: () => vi.fn(),
+  resolveCodexExecutionEngineForRun: async () => ({ engine: "cli", explicit: false }),
+}));
+
 import { execute } from "./execute.js";
 import { resolveManagedCodexHomeDir } from "./codex-home.js";
 
