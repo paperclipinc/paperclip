@@ -1,4 +1,6 @@
 import { createRequire } from "node:module";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createChatSdkEndpointRuntime,
@@ -26,7 +28,10 @@ interface WireInteraction {
   replied: boolean;
   deferred: boolean;
 }
-const discordJs = createRequire(import.meta.resolve("@chat-adapter/discord"))(
+const chatAdapterDiscordDir = dirname(
+  fileURLToPath(new URL("../../node_modules/@chat-adapter/discord/package.json", import.meta.url)),
+);
+const discordJs = createRequire(chatAdapterDiscordDir + "/index.js")(
   "discord.js",
 ) as {
   Client: new (options: { intents: number[] }) => WireClient;
