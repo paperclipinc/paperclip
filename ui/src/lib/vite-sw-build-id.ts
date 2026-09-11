@@ -56,12 +56,14 @@ export function serviceWorkerBuildIdPlugin(
   const serviceWorkerFileName = options.serviceWorkerFileName ?? "sw.js";
   let buildId: string | null = null;
   let outDir = "dist";
+  let publicDir = "public";
 
   return {
     name: "paperclip-sw-build-id",
     apply: "build",
     configResolved(config) {
       outDir = config.build.outDir;
+      publicDir = typeof config.publicDir === "string" ? config.publicDir : "public";
     },
     generateBundle(_options, bundle) {
       const entry = Object.values(bundle).find(
@@ -72,10 +74,18 @@ export function serviceWorkerBuildIdPlugin(
       }
     },
     closeBundle() {
-      const swPath = path.resolve(outDir, serviceWorkerFileName);
-      const source = fs.readFileSync(swPath, "utf8");
+      const swOutPath = path.resolve(outDir, serviceWorkerFileName);
+      let source: string;
+      if (fs.existsSync(swOutPath)) {
+        source = fs.readFileSync(swOutPath, "utf8");
+      } else {
+        // Vite/rolldown may not have copied public assets to outDir yet;
+        // read from publicDir and write the stamped file directly.
+        const swPublicPath = path.resolve(publicDir, serviceWorkerFileName);
+        source = fs.readFileSync(swPublicPath, "utf8");
+      }
       const stamped = stampServiceWorkerBuildId(source, buildId ?? "build");
-      fs.writeFileSync(swPath, stamped);
+      fs.writeFileSync(swOutPath, stamped);
     },
   };
 }

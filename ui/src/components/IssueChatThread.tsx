@@ -4687,7 +4687,6 @@ const IssueChatComposer = forwardRef<
   },
   forwardedRef,
 ) {
-  const api = useAui();
   const stopControl = useComposerStop(onStop, stopPending);
   // Initialize before StrictMode's mount cleanup can flush an empty value over
   // the stored draft. The effect below handles subsequent task-key changes.
@@ -4876,10 +4875,6 @@ const IssueChatComposer = forwardRef<
     body.trim().length === 0 &&
     composerAttachments.length === 0 &&
     Boolean(onStop || stopControl.stopping);
-
-  const showStop =
-    !submitting && !attaching && body.trim().length === 0 &&
-    composerAttachments.length === 0 && Boolean(onStop || stopControl.stopping);
 
   async function handleSubmit() {
     const trimmed = body.trim();
