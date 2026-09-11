@@ -1,1 +1,0 @@
-ALTER TABLE "adapter_auth_sessions" ADD COLUMN "result_claim" jsonb;
