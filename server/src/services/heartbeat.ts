@@ -14587,12 +14587,13 @@ export function heartbeatService(
       };
     }
 
-    // Suppress new-run dispatch before the wait so no scheduler path can
-    // race the shutdown. The flag is module-scoped so every heartbeatService
-    // instance observes the quiesce (see getSchedulingSuppression above).
-    shutdownDraining = true;
-
     if (drainOpts?.hasInflightRuns) {
+      // Suppress new-run dispatch before the wait so no scheduler path can
+      // race the shutdown. The flag is module-scoped so every heartbeatService
+      // instance observes the quiesce (see getSchedulingSuppression above).
+      // Only set when drainOpts is provided (real server shutdown), not when
+      // the function is called with just runIds (test / selective drain).
+      shutdownDraining = true;
       const sleepFn = drainOpts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
       const nowMsFn = drainOpts.nowMs ?? (() => Date.now());
       const drainTimeoutMs = drainOpts.drainTimeoutMs ?? SHUTDOWN_DRAIN_TIMEOUT_DEFAULT_MS;
