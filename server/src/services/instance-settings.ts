@@ -345,6 +345,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       // Apps graduated from Experimental. Ignore historical off values while
       // continuing to accept the compatibility key in stored settings.
       enableApps: true,
+      enableChatConnectors: parsed.data.enableChatConnectors ?? false,
       enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
@@ -390,6 +391,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
@@ -665,8 +667,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toInstanceSettings(updated ?? current);
     },
 
-    getGeneral: async (): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow();
+    getGeneral: async (
+      readOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceGeneralSettings> => {
+      const row = await getOrCreateRow(readOptions?.db);
       return toGeneralView(row.general);
     },
 

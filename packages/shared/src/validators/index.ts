@@ -847,6 +847,7 @@ export {
   toolConnectionHealthStatusSchema,
   toolConnectionKindSchema,
   toolConnectionStatusSchema,
+  toolConnectionPurposeSchema,
   toolConnectionTransportSchema,
   toolCredentialSecretRefSchema,
   toolCredentialPlacementSchema,
@@ -978,3 +979,4 @@ export {
 export * from "./skill-policy.js";
 export * from "./provider-trace.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";

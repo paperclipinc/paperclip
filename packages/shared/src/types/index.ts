@@ -301,6 +301,7 @@ export type {
   AdapterAuthSessionResponse,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionOwnerResponse,
+  CodexAccountBindingClaim,
   StartAdapterAuthSessionRequest,
   AdapterAuthPanelMode,
   ClaudeSetupTokenSessionPrompt,
@@ -881,6 +882,7 @@ export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProvi
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   AgentWakeupSkipped,
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
@@ -1071,3 +1073,4 @@ export type {
 } from "./capabilities.js";
 export { derivePublicFeatureFlags } from "./capabilities.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";
