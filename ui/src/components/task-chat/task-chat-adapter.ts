@@ -29,10 +29,18 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
 }
 
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
-  // System authorship wins over any derivable run→agent linkage (PAP-443):
-  // recovery notices carry a derivedAuthorAgentId but must not render as
-  // agent bubbles.
-  if (comment.authorType === "system") return "system";
+  // The server-authored presentation contract wins over attribution. Some
+  // control-plane notices keep the run agent as their author for audit and
+  // authorization, but they must still use the system-notice renderer.
+  // System authorship also wins over any derivable run→agent linkage
+  // (PAP-443): recovery notices carry a derivedAuthorAgentId but must not
+  // render as agent bubbles.
+  if (
+    comment.presentation?.kind === "system_notice" ||
+    comment.authorType === "system"
+  ) {
+    return "system";
+  }
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
   return "agent";
@@ -46,28 +54,12 @@ export function formatTaskChatTimestamp(value: unknown): string | undefined {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-/**
- * Follow-up inputs render at the causal slot where a runner consumed them.
- * Keep their original submission time visible as well so the reordered bubble
- * cannot look like it travelled backwards in the conversation.
- */
+/** Keep every comment footer on the same compact, user-visible timestamp. */
 export function formatTaskChatCommentTimestamp(
   comment: IssueChatComment,
-  kind: TaskChatAuthorKind,
+  _kind: TaskChatAuthorKind,
 ): string | undefined {
-  const queuedAt = formatTaskChatTimestamp(comment.createdAt);
-  const deliveredAt = formatTaskChatTimestamp(comment.conversationAnchorAt);
-  const isDeliveredFollowUp = Boolean(
-    kind === "human" &&
-    comment.conversationAnchorAt &&
-    comment.consumedByRunId &&
-    (comment.followUpRequested || comment.steeredIntoRunId),
-  );
-  if (!isDeliveredFollowUp) return queuedAt;
-
-  if (!queuedAt || !deliveredAt) return queuedAt ?? deliveredAt;
-  const action = comment.steeredIntoRunId ? "Steered" : "Delivered";
-  return `Queued ${queuedAt} · ${action} ${deliveredAt}`;
+  return formatTaskChatTimestamp(comment.createdAt);
 }
 
 export function commentsToTaskChatItems(

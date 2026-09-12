@@ -1,3 +1,4 @@
+import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
@@ -44,6 +45,7 @@ import { ApiError } from "../api/client";
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
+  listAll: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
@@ -51,6 +53,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
   listInteractions: vi.fn(),
   getQueuedComments: vi.fn(),
+  interruptQueuedComments: vi.fn(),
   editQueuedComment: vi.fn(),
   reorderQueuedComments: vi.fn(),
   steerQueuedComment: vi.fn(),
@@ -347,6 +350,7 @@ vi.mock("../components/IssueChatThread", () => ({
       label: string;
       onSelect: (runId: string) => Promise<void> | void;
     }[];
+    composerPause?: TaskComposerPause | null;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -370,6 +374,7 @@ vi.mock("../components/IssueChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
     );
@@ -398,6 +403,7 @@ vi.mock("../components/TaskChatThread", () => ({
       label: string;
       onSelect: (runId: string) => Promise<void> | void;
     }[];
+    composerPause?: TaskComposerPause | null;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -438,6 +444,7 @@ vi.mock("../components/TaskChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
     );
@@ -1302,6 +1309,7 @@ describe("IssueDetail", () => {
     } as Response);
 
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listAll.mockImplementation((...args) => mockIssuesApi.list(...args));
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
@@ -1315,6 +1323,7 @@ describe("IssueDetail", () => {
         entries: [],
       }),
     );
+    mockIssuesApi.interruptQueuedComments.mockReset().mockResolvedValue(createQueuedCommentQueue());
     mockIssuesApi.editQueuedComment.mockResolvedValue(
       createQueuedCommentQueue(),
     );
@@ -2131,8 +2140,36 @@ describe("IssueDetail", () => {
     );
     expect(panel).not.toBeNull();
     expect(panel?.className).toContain("max-h-(--sz-85dvh)");
+    expect(panel?.className).toContain("w-full");
+    expect(panel?.className).toContain("max-w-none");
     expect(panel?.textContent).toContain("Task side panel");
     expect(panel?.querySelector('[data-slot="sheet-close"]')).not.toBeNull();
+  });
+
+  it("loads subtask membership and created work independently and refreshes on issue activity", async () => {
+    const source = createIssue();
+    const child = createIssue({ id: "manual-child", parentId: source.id, title: "Manual child" });
+    const created = createIssue({ id: "created-task", parentId: null, title: "Created elsewhere" });
+    mockIssuesApi.get.mockResolvedValue(source);
+    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; createdFromIssueId?: string }) =>
+      Promise.resolve(filters?.descendantOf === source.id ? [child] : filters?.createdFromIssueId === source.id ? [created] : []),
+    );
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    await flushReact();
+    await flushReact();
+    const taskProjection = () => mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.tasksTab;
+    expect(taskProjection()?.content.props.subtasks.map((row: Issue) => row.id)).toEqual([child.id]);
+    expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toEqual([created.id]);
+    expect(taskProjection()?.count).toBe(2);
+
+    const next = createIssue({ id: "new-created-task", parentId: source.id });
+    mockIssuesApi.list.mockImplementation((_companyId, filters?: { descendantOf?: string; createdFromIssueId?: string }) =>
+      Promise.resolve(filters?.descendantOf === source.id ? [child, next] : filters?.createdFromIssueId === source.id ? [created, next] : []),
+    );
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(source.companyId) }); });
+    await flushReact();
+    expect(taskProjection()?.count).toBe(3);
+    expect(taskProjection()?.content.props.createdTasks.map((row: Issue) => row.id)).toContain(next.id);
   });
 
   it("moves subtask data into the properties panel instead of the chat center pane", async () => {
@@ -2610,7 +2647,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("keeps inbox archive actions scoped to an inbox-origin task", async () => {
+  it("archives a task-page issue with y and returns to the inbox", async () => {
     mockLocation.state = createIssueDetailLocationState(
       "Tasks",
       "/issues/all",
@@ -2621,6 +2658,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
     });
+    // Keyboard shortcuts come from board access on the fork.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: true } }),
+    );
 
     await act(async () => {
       root.render(
@@ -2646,7 +2687,10 @@ describe("IssueDetail", () => {
     document.dispatchEvent(
       new KeyboardEvent("keydown", { key: "y", bubbles: true }),
     );
-    expect(mockIssuesApi.archiveFromInbox).not.toHaveBeenCalled();
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
+      expect(mockNavigate).toHaveBeenCalledWith("/inbox", { replace: true });
+    });
   });
 
   it("arms the inbox archive shortcut only for the selected inbox row", async () => {
@@ -3642,14 +3686,19 @@ describe("IssueDetail", () => {
       body: "Queued run message",
     });
 
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      targetRunId: "run-queued", protocol: "legacy", steeringDisposition: "unsupported",
+    }));
     await act(async () => {
       await persistedProps.onInterruptQueued(
         persistedComment!.queueTargetRunId!,
       );
     });
 
-    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
-    mockHeartbeatsApi.cancel.mockClear();
+    expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledWith("PAP-1", {
+      queueId: "wake-queue-1", revision: "queue-revision-1", targetRunId: "run-queued",
+    });
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
   it("projects a native follow-up into the steering well before the post resolves", async () => {
@@ -3844,15 +3893,16 @@ describe("IssueDetail", () => {
       queueTargetRunId: "run-original",
     });
 
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      targetRunId: "run-replacement", protocol: "legacy", steeringDisposition: "unsupported",
+    }));
     await act(async () => {
-      await replacementProps.onInterruptQueued(
+      await expect(replacementProps.onInterruptQueued(
         optimisticComment!.queueTargetRunId!,
-      );
+      )).rejects.toThrow("The queued messages changed");
     });
-    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-original");
-    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalledWith(
-      "run-replacement",
-    );
+    expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
 
     await act(async () => {
       postedComment.resolve(
@@ -4330,6 +4380,8 @@ describe("IssueDetail", () => {
       expect(pauseBannerTitle?.closest(".rounded-md")?.classList).toContain(
         "mt-3",
       );
+      expect(container.querySelector('[data-testid="paused-composer-takeover"]')).toBeTruthy();
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].composerPause.scope).toBe("subtree");
       const taskChatShell = container.querySelector<HTMLElement>(
         "[data-task-chat-shell]",
       );
@@ -5187,7 +5239,7 @@ describe("IssueDetail", () => {
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Resume work",
+      (button) => button.textContent?.trim() === "Resume task",
     );
     expect(resumeButton).toBeTruthy();
 

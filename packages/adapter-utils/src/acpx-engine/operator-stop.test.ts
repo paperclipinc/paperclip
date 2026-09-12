@@ -39,7 +39,7 @@ it('stops an actual ACP process and resumes its established session with the new
   expect(params?.interruptedCheckpoint).toBe(true);
   const next = await execute({ ...ctx, runId: 'follow-up', authToken: 'follow-up-test-token', signal: undefined, context: { prompt: 'List recent Drive files' },
     runtime: { ...ctx.runtime, sessionParams: params } });
-  expect(next.exitCode).toBe(0);
+  expect(next.exitCode, JSON.stringify(next)).toBe(0);
   const prompts = (await fs.readFile(path.join(root, 'prompts'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   expect(prompts).toHaveLength(2);
   expect(prompts[1].sessionId).toBe(prompts[0].sessionId);
@@ -47,7 +47,7 @@ it('stops an actual ACP process and resumes its established session with the new
   expect(launches.map(launch => launch.runId)).toEqual(['stop-test', 'follow-up']);
   expect(launches[1].tokenHash).toBe(createHash('sha256').update('follow-up-test-token').digest('hex'));
 });
-it('stops writes but does not authorize replay when the interrupted tool has no outcome', async () => {
+it('continues after an interrupted write without replaying that write', async () => {
   const { root, ctx, abort, started, execute } = await setup('write');
   const running = execute(ctx);
   await started;
@@ -57,8 +57,11 @@ it('stops writes but does not authorize replay when the interrupted tool has no 
   expect(result.resultJson?.executionCancellation).toMatchObject({ state: 'acknowledged' });
   expect(result.executionRecovery).toBeUndefined();
   const before = await fs.readFile(path.join(root, 'writes'), 'utf8');
-  await new Promise(resolve => setTimeout(resolve, 5000));
+  const next = await execute({ ...ctx, runId: 'follow-up', signal: undefined, context: { prompt: 'What happened?' },
+    runtime: { ...ctx.runtime, sessionParams: sessionCodec.serialize(result.sessionParams ?? null) } });
+  expect(next.exitCode, JSON.stringify(next)).toBe(0);
   expect(await fs.readFile(path.join(root, 'writes'), 'utf8')).toBe(before);
+  expect((await fs.readFile(path.join(root, 'completed'), 'utf8')).trim()).toBe('follow-up');
 }, 15000);
 it('does not dispatch a provider when Stop precedes startup', async () => {
   const { root, ctx, abort, execute } = await setup();

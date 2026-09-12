@@ -1,3 +1,8 @@
+import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
+import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
+import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
@@ -86,7 +91,6 @@ import {
   readIssueDetailHeaderSeed,
   withIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
-  shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import {
   resolveIssueActiveRun,
@@ -195,7 +199,7 @@ import {
   IssueProperties,
   type IssuePropertiesDocumentDeepLink,
 } from "../components/IssueProperties";
-import { TaskSidePanel } from "../components/task-side-panel";
+import { TaskSidePanel, type TaskSidePanelProps } from "../components/task-side-panel";
 import { SidePanelToggleButton } from "../components/side-panel";
 import {
   TaskPauseNotice,
@@ -223,7 +227,6 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import {
   PluginSlotMount,
@@ -296,7 +299,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Eye,
   EyeOff,
   ScanEye,
   Flag,
@@ -1246,6 +1248,7 @@ type IssueDetailChatTabProps = {
   currentAssigneeValue: string;
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason: string | null;
   composerHint: string | null;
   queuedCommentReason: "hold" | "active_run" | "other";
@@ -1367,6 +1370,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   currentAssigneeValue,
   suggestedAssigneeValue,
   mentions,
+  composerPause,
   composerDisabledReason,
   composerHint,
   queuedCommentReason,
@@ -1454,8 +1458,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedActiveRun = useMemo(
     () =>
-      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
-    [activeRun, executionRunId, issueStatus],
+      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun, liveRuns),
+    [activeRun, executionRunId, issueStatus, liveRuns],
   );
   const assigneeUsesPaperclipRunner = Boolean(
     issueAssigneeAgentId &&
@@ -1476,7 +1480,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const queuedCommentQueueEnabled =
     !classicTaskInterfaceEnabled &&
     runtimeSelectionKnown &&
-    Boolean(liveRuntimeRun || assigneeUsesPaperclipRunner);
+    Boolean(liveRuntimeRun || issueAssigneeAgentId);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),
     queryFn: async () =>
@@ -1485,7 +1489,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         issueId,
       ),
     enabled: queuedCommentQueueEnabled,
-    refetchInterval: queuedCommentQueueEnabled ? 1000 : false,
+    refetchInterval: (query) => queuedCommentQueueEnabled &&
+      (liveRuntimeRun || query.state.data?.entries.length) ? 1000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -2283,6 +2288,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             hash: scrollLocation.hash,
           }}
         >
+          <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
             key={issueId}
             initialHistoryPending={
@@ -2377,6 +2383,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             currentAssigneeValue={currentAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentions}
+            composerPause={composerPause}
             composerDisabledReason={composerDisabledReason}
             composerHint={composerHint}
             onVote={onVote}
@@ -2441,6 +2448,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
     </div>
@@ -2806,7 +2814,7 @@ function IssueDetailActivityTab({
   );
 }
 
-export function IssueDetail() {
+export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"] }) {
   const { issueId, companyPrefix } = useParams<{
     issueId: string;
     companyPrefix: string;
@@ -3163,13 +3171,18 @@ export function IssueDetail() {
     [issueId, location.state, location.search],
   );
 
-  const { data: rawChildIssuesData, isLoading: childIssuesLoading } = useQuery({
+  const {
+    data: rawChildIssuesData,
+    isLoading: childIssuesLoading,
+    isError: childIssuesError,
+    refetch: refetchChildIssues,
+  } = useQuery({
     queryKey:
       issue?.id && resolvedCompanyId
         ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
         : ["issues", "parent", "pending"],
     queryFn: () =>
-      issuesApi.list(resolvedCompanyId!, {
+      issuesApi.listAll(resolvedCompanyId!, {
         descendantOf: issue!.id,
         includeBlockedBy: true,
       }),
@@ -3179,6 +3192,18 @@ export function IssueDetail() {
     ),
   });
   const rawChildIssues: Issue[] = rawChildIssuesData ?? EMPTY_ISSUES;
+  const createdTasksQuery = useQuery({
+    queryKey: queryKeys.issues.listCreatedFromIssue(
+      resolvedCompanyId ?? "pending",
+      issue?.id ?? "pending",
+    ),
+    queryFn: () => issuesApi.listAll(resolvedCompanyId!, {
+      createdFromIssueId: issue!.id,
+      includeRoutineExecutions: true,
+    }),
+    enabled: streamlinedTaskDetailEnabled && !!resolvedCompanyId && !!issue?.id && !tasksTab,
+  });
+
   const {
     data: rawSiblingIssuesData,
     isLoading: siblingIssuesLoading,
@@ -3348,10 +3373,10 @@ export function IssueDetail() {
     staleTime: 0,
     retry: false,
   });
-  const { data: treeControlState } = useQuery({
+  const { data: treeControlState, isPending: treeControlStatePending, error: treeControlStateError } = useQuery({
     queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
     queryFn: () => issuesApi.getTreeControlState(issueId!),
-    enabled: !!issueId && canManageTreeControl,
+    enabled: !!issueId,
     retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
@@ -3419,6 +3444,41 @@ export function IssueDetail() {
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
   }, [issue?.id, rawChildIssues]);
+  const resolvedTasksTab = useMemo(() => {
+    if (tasksTab) return tasksTab;
+    if (!streamlinedTaskDetailEnabled) return undefined;
+    const createdTasks = createdTasksQuery.data ?? EMPTY_ISSUES;
+    const hasError = createdTasksQuery.isError || childIssuesError;
+    return {
+      count: new Set([...childIssues, ...createdTasks].map((task) => task.id)).size,
+      hasError,
+      content: (
+        <TaskDetailTasksPanel
+          subtasks={childIssues}
+          createdTasks={createdTasks}
+          projects={projects ?? []}
+          isLoading={createdTasksQuery.isLoading || childIssuesLoading}
+          hasError={hasError}
+          onRetry={() => {
+            void createdTasksQuery.refetch();
+            void refetchChildIssues();
+          }}
+        />
+      ),
+    };
+  }, [
+    tasksTab,
+    streamlinedTaskDetailEnabled,
+    childIssues,
+    childIssuesLoading,
+    childIssuesError,
+    refetchChildIssues,
+    projects,
+    createdTasksQuery.data,
+    createdTasksQuery.isError,
+    createdTasksQuery.isLoading,
+    createdTasksQuery.refetch,
+  ]);
   const liveIssueIds = useMemo(
     () =>
       collectLiveIssueIds(
@@ -3565,7 +3625,7 @@ export function IssueDetail() {
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
-          size="lg"
+          className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
       ) : undefined,
@@ -4441,6 +4501,7 @@ export function IssueDetail() {
       });
     },
     onSettled: (_result, _error, variables) => {
+      if (_error) void queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
       invalidateIssueThreadLazily();
       // Binding happens when the comment saves, after the upload's earlier
       // refetch. Refresh even after an unknown response: the write may exist.
@@ -4828,6 +4889,7 @@ export function IssueDetail() {
       });
     },
     onSettled: (_result, _error, variables) => {
+      if (_error) void queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
       invalidateIssueThreadLazily();
       if (variables.attachmentIds?.length) {
         for (const ref of issueCacheRefs) {
@@ -4844,93 +4906,14 @@ export function IssueDetail() {
   });
 
   const interruptQueuedComment = useMutation({
-    mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
-    onMutate: async (runId) => {
-      await Promise.all(
-        issueCacheRefs.flatMap((ref) => [
-          queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(ref) }),
-          queryClient.cancelQueries({
-            queryKey: queryKeys.issues.liveRuns(ref),
-          }),
-          queryClient.cancelQueries({
-            queryKey: queryKeys.issues.activeRun(ref),
-          }),
-          queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) }),
-        ]),
-      );
-
-      const previousRunState = issueCacheRefs.map((ref) => ({
-        ref,
-        runs: queryClient.getQueryData<RunForIssue[]>(
-          queryKeys.issues.runs(ref),
-        ),
-        liveRuns: queryClient.getQueryData<LiveRunForIssue[]>(
-          queryKeys.issues.liveRuns(ref),
-        ),
-        activeRun: queryClient.getQueryData<ActiveRunForIssue | null>(
-          queryKeys.issues.activeRun(ref),
-        ),
-        issue: queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)),
-      }));
-      const previousLocalQueuedCommentRunIds = locallyQueuedCommentRunIds;
-      const cachedActiveRun =
-        previousRunState.find((state) => state.activeRun?.id === runId)
-          ?.activeRun ??
-        previousRunState.find((state) => state.activeRun)?.activeRun ??
-        null;
-      const liveRunList = dedupeLiveRunsById(
-        previousRunState.flatMap((state) => state.liveRuns ?? []),
-      );
-      const interruptibleIssueRun = resolveInterruptibleIssueRun(
-        cachedActiveRun,
-        liveRunList,
-      );
-      const targetRun =
-        cachedActiveRun?.id === runId
-          ? cachedActiveRun
-          : (liveRunList?.find((run) => run.id === runId) ??
-            interruptibleIssueRun ??
-            null);
-
-      if (targetRun) {
-        const interruptedAt = new Date().toISOString();
-        for (const ref of issueCacheRefs) {
-          queryClient.setQueryData<RunForIssue[] | undefined>(
-            queryKeys.issues.runs(ref),
-            (current) =>
-              upsertInterruptedRun(current, targetRun, interruptedAt),
-          );
-        }
+    mutationFn: async (runId: string) => {
+      const queue = await issuesApi.getQueuedComments(issueId!);
+      if (!queue.queueId || queue.targetRunId !== runId) {
+        throw new Error("The queued messages changed. Refresh and try again.");
       }
-
-      for (const ref of issueCacheRefs) {
-        queryClient.setQueryData(
-          queryKeys.issues.liveRuns(ref),
-          (current: LiveRunForIssue[] | undefined) =>
-            removeLiveRunById(current, runId),
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.activeRun(ref),
-          (current: ActiveRunForIssue | null | undefined) =>
-            current?.id === runId ? null : current,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.detail(ref),
-          (current: Issue | undefined) =>
-            clearIssueExecutionRun(current, runId),
-        );
-      }
-      setLocallyQueuedCommentRunIds((current) => {
-        const next = new Map(
-          [...current].filter(([, targetRunId]) => targetRunId !== runId),
-        );
-        return next.size === current.size ? current : next;
+      return issuesApi.interruptQueuedComments(issueId!, {
+        queueId: queue.queueId, revision: queue.revision, targetRunId: runId,
       });
-
-      return {
-        previousRunState,
-        previousLocalQueuedCommentRunIds,
-      };
     },
     onSuccess: () => {
       invalidateIssueDetail();
@@ -4941,25 +4924,9 @@ export function IssueDetail() {
         tone: "success",
       });
     },
-    onError: (err, _runId, context) => {
-      for (const state of context?.previousRunState ?? []) {
-        queryClient.setQueryData(queryKeys.issues.runs(state.ref), state.runs);
-        queryClient.setQueryData(
-          queryKeys.issues.liveRuns(state.ref),
-          state.liveRuns,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.activeRun(state.ref),
-          state.activeRun,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.detail(state.ref),
-          state.issue,
-        );
-      }
-      if (context?.previousLocalQueuedCommentRunIds) {
-        setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
-      }
+    onError: (err) => {
+      invalidateIssueDetail();
+      invalidateIssueRunState();
       pushToast({
         title: "Interrupt failed",
         body:
@@ -5543,6 +5510,7 @@ export function IssueDetail() {
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
             showSubtasksTab={streamlinedTaskDetailEnabled}
+            tasksTab={resolvedTasksTab}
           />
         </IssueGalleryContext.Provider>,
         { contentMode: "full-bleed" },
@@ -5579,15 +5547,13 @@ export function IssueDetail() {
     taskChatShellEnabled,
     currentUserId,
     fileViewerEnabled,
+    resolvedTasksTab,
   ]);
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
   const canQuickArchiveFromInbox =
-    keyboardShortcutsEnabled &&
-    (!streamlinedUiEnabled ||
-      (isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state))) &&
-    !issue?.hiddenAt;
+    keyboardShortcutsEnabled && !issue?.hiddenAt;
 
   useEffect(() => {
     if (!issue?.id || !canQuickArchiveFromInbox) return;
@@ -6670,7 +6636,7 @@ export function IssueDetail() {
   const reopenComposerHint = closedIsolatedWorkspaceReopenPending
     ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
     : null;
-  const composerHint = pausedComposerHint ?? reopenComposerHint;
+  const composerHint = activePauseHold ? null : reopenComposerHint;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold
     ? "hold"
     : "active_run";
@@ -6834,21 +6800,6 @@ export function IssueDetail() {
             Routine
           </Link>
         )}
-
-        {issue.productivityReview ? (
-          <ProductivityReviewBadge review={issue.productivityReview} />
-        ) : null}
-
-        {issue.originKind === "issue_productivity_review" ? (
-          <Badge
-            variant="outline"
-            className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
-            title="This task is a productivity review."
-          >
-            <Eye className="h-3 w-3" />
-            Productivity review
-          </Badge>
-        ) : null}
 
         {issue.originKind === "task_watchdog" ? (
           <Badge
@@ -7794,7 +7745,18 @@ export function IssueDetail() {
                   currentAssigneeValue={actualAssigneeValue}
                   suggestedAssigneeValue={suggestedAssigneeValue}
                   mentions={mentionOptions}
-                  composerDisabledReason={null}
+                  composerPause={activePauseHold ? {
+                    scope: activePauseHold.isRoot && childIssues.length === 0 ? "leaf" : "subtree",
+                    pending: executeTreeControl.isPending && executeTreeControl.variables?.mode === "resume",
+                    onResume: activePauseHold.isRoot && canManageTreeControl ? () => {
+                      executeTreeControl.reset();
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    } : undefined,
+                    resumeHref: !activePauseHold.isRoot ? createIssueDetailPath(activePauseHoldRoot?.identifier ?? activePauseHold.rootIssueId) : undefined,
+                  } : null}
+                  composerDisabledReason={treeControlStatePending ? "Checking task status…" : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again." : null}
                   composerHint={composerHint}
                   queuedCommentReason={queuedCommentReason}
                   onVote={handleCommentVote}
@@ -8015,7 +7977,7 @@ export function IssueDetail() {
               showCloseButton={!taskChatShellEnabled}
               className={cn(
                 taskChatShellEnabled
-                  ? "h-(--sz-85dvh) max-h-(--sz-85dvh) gap-0 p-0 pb-(--sz-safe-bottom)"
+                  ? "h-(--sz-85dvh) max-h-(--sz-85dvh) w-full max-w-none gap-0 p-0 pb-(--sz-safe-bottom)"
                   : documentDeepLink?.documentKey === "plan"
                     ? "inset-0 h-dvh w-screen max-w-none gap-0 border-0 p-0 sm:max-w-none"
                     : "max-h-(--sz-85dvh) pb-(--sz-safe-bottom)",
@@ -8072,6 +8034,7 @@ export function IssueDetail() {
                     fileTabsEnabled={fileViewerEnabled}
                     streamlinedTabs={streamlinedTaskDetailEnabled}
                     showSubtasksTab={streamlinedTaskDetailEnabled}
+                    tasksTab={resolvedTasksTab}
                     documentDeepLink={
                       documentDeepLink?.issueId === issue.id
                         ? documentDeepLink
