@@ -139,6 +139,10 @@ async function runReleaseDrain(
   const issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
 
+  if (locked.recoveryOnly) {
+    return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+
   // Each `continue` path below leaves the wake row off the
   // `deferred_issue_execution` status, so the next queue read cannot
   // return that same row again. That invariant is what ends this loop.
@@ -553,6 +557,19 @@ async function runReleaseRecoveryTail(
     throw new Error(
       "wake-queue: queued a recovery run with no invokable recovery agent",
     );
+
+  if (run.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status)) {
+    // Do not create an uncounted immediate successor inside the issue lock.
+    // The host's idempotent scheduler claims it after commit with the same
+    // retry counter used by restart and process-loss recovery.
+    postCommitEffects.push({
+      kind: "conversation_retry_requested",
+      companyId: run.companyId,
+      runId: run.id,
+      reviewParticipant: decision.kind === "queue_review_participant_recovery",
+    });
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
 
   const sessionBefore = await host.resolveSessionBeforeForWakeup({
     companyId: issue.companyId,

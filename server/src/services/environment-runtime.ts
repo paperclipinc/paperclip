@@ -1,3 +1,4 @@
+import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -632,9 +633,10 @@ export interface EnvironmentRuntimeDriver {
    * current environment provider, so a provider change or an environment delete
    * cannot strand the teardown. `environment` is null when a delete already
    * removed the environment row. The method throws when the teardown fails, so
-   * the cleanup sweep keeps the row for a later retry.
+   * the cleanup sweep keeps the row for a later retry. Any returned provider
+   * receipt must be validated and persisted by the caller at lease release.
    */
-  retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<void>;
+  retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<unknown>;
   /**
    * Report whether the provider worker can run an orphan teardown now. A plugin
    * sandbox provider worker can be briefly down during its own restart window.
@@ -1525,9 +1527,12 @@ function createSandboxEnvironmentDriver(
   const releaseCleanedUpOrphanRow = async (
     leaseId: string,
     diagnosticFields: Record<string, unknown>,
+    receipt: unknown,
   ): Promise<void> => {
     try {
+      const lease = await environmentsSvc.getLeaseById(leaseId);
       await environmentsSvc.releaseLease(leaseId, "expired", {
+        ...(lease ? { remoteExecutionTermination: remoteTerminationReceipt(lease, receipt) } : {}),
         cleanupStatus: "success",
         failureReason: "acquire_rejected_teardown_succeeded",
       });
@@ -1603,13 +1608,14 @@ function createSandboxEnvironmentDriver(
     record: DeferredOrphanCleanupRecord;
     cause: unknown;
     canTeardown: boolean;
-    teardown: () => Promise<void>;
+    teardown: () => Promise<unknown>;
   }): Promise<void> => {
     const durable = await tryWriteDurablePendingCleanup(input.record);
     let teardownFailed = !input.canTeardown;
+    let receipt: unknown;
     if (!teardownFailed) {
       try {
-        await input.teardown();
+        receipt = await input.teardown();
       } catch {
         teardownFailed = true;
       }
@@ -1617,7 +1623,7 @@ function createSandboxEnvironmentDriver(
     if (!teardownFailed) {
       // The teardown removed the orphan, so drop the durable row if we wrote one.
       if (durable.leaseId !== null) {
-        await releaseCleanedUpOrphanRow(durable.leaseId, orphanDiagnosticFields(input.record));
+        await releaseCleanedUpOrphanRow(durable.leaseId, orphanDiagnosticFields(input.record), receipt);
       }
       return;
     }
@@ -2192,7 +2198,7 @@ function createSandboxEnvironmentDriver(
               cause: error,
               canTeardown: pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id),
               teardown: async () => {
-                await pluginWorkerManager.call(
+                return await pluginWorkerManager.call(
                   pluginProvider.resolved.plugin.id,
                   "environmentDestroyLease",
                   {
@@ -2555,7 +2561,7 @@ function createSandboxEnvironmentDriver(
           { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
         );
         const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-        await pluginWorkerManager.call(
+        return await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
           "environmentDestroyLease",
           {
@@ -2572,7 +2578,6 @@ function createSandboxEnvironmentDriver(
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
-        return;
       }
 
       // Built-in provider path. Resolve the recorded config secrets through the
@@ -3072,6 +3077,7 @@ function createSandboxEnvironmentDriver(
     const providerKey = readString(metadata.provider);
 
     let cleanupStatus: "success" | "failed" = "success";
+    let termination: ReturnType<typeof remoteTerminationReceipt>;
     if (
       pluginId &&
       providerKey &&
@@ -3084,7 +3090,7 @@ function createSandboxEnvironmentDriver(
           lease: input.lease,
           provider: providerKey,
         });
-        await runLeaseReleaseWithRunParent(input.lease.id, () =>
+        const receipt = await runLeaseReleaseWithRunParent(input.lease.id, () =>
           pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
@@ -3095,6 +3101,7 @@ function createSandboxEnvironmentDriver(
             leaseMetadata: metadata,
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
         );
+        termination = remoteTerminationReceipt(input.lease, receipt);
       } catch {
         cleanupStatus = "failed";
       }
@@ -3123,6 +3130,7 @@ function createSandboxEnvironmentDriver(
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
       failureReason,
       cleanupStatus,
+      ...(cleanupStatus === "success" && termination ? { remoteExecutionTermination: termination } : {}),
     });
   }
 
@@ -3132,6 +3140,7 @@ function createSandboxEnvironmentDriver(
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     let cleanupStatus: "success" | "failed" = "success";
+    let termination: ReturnType<typeof remoteTerminationReceipt>;
     const metadata = input.lease.metadata ?? {};
 
     try {
@@ -3151,7 +3160,7 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          await runLeaseReleaseWithRunParent(input.lease.id, () =>
+          const receipt = await runLeaseReleaseWithRunParent(input.lease.id, () =>
             pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
               driverKey: providerKey,
               companyId: input.lease.companyId,
@@ -3162,6 +3171,7 @@ function createSandboxEnvironmentDriver(
               leaseMetadata: metadata,
             }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
           );
+          termination = remoteTerminationReceipt(input.lease, receipt);
         }
       } else {
         const metadataConfig = sandboxConfigFromLeaseMetadata(input.lease);
@@ -3191,6 +3201,7 @@ function createSandboxEnvironmentDriver(
       {
         failureReason: input.failureReason,
         cleanupStatus,
+        ...(cleanupStatus === "success" && termination ? { remoteExecutionTermination: termination } : {}),
       },
     );
   }
@@ -3881,14 +3892,14 @@ export function environmentRuntimeService(
     async retryPendingSandboxTeardown(input: {
       environment: Environment | null;
       lease: EnvironmentLease;
-    }): Promise<void> {
+    }): Promise<unknown> {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.retryPendingSandboxTeardown) {
         throw new Error(
           `Environment driver "${driver.driver}" does not support orphan sandbox teardown.`,
         );
       }
-      await driver.retryPendingSandboxTeardown(input);
+      return await driver.retryPendingSandboxTeardown(input);
     },
 
     // Report whether the provider worker can run an orphan teardown now. The
