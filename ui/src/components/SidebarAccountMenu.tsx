@@ -285,7 +285,7 @@ export function SidebarAccountMenu({
             </div>
           </PopoverContent>
         </Popover>
-        {!rail && !cloudBilling ? (
+        {!rail && !isCloud && !cloudBilling ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a
