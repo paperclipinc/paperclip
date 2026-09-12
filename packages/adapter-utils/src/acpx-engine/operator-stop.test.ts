@@ -70,7 +70,7 @@ it('does not dispatch a provider when Stop precedes startup', async () => {
   await expect(fs.access(path.join(root, 'prompts'))).rejects.toThrow();
 });
 
-it.each(['missing session', 'changed configuration'])('starts a new turn when the interrupted session cannot resume: %s', async (change) => {
+it.each(['missing session', 'changed configuration'])('refuses fresh-session fallback after Stop: %s', async (change) => {
   const { root, ctx, abort, started, execute } = await setup();
   const running = execute(ctx);
   await started;
@@ -78,17 +78,12 @@ it.each(['missing session', 'changed configuration'])('starts a new turn when th
   const result = await running;
   expect(result.executionRecovery?.kind).toBe('interrupted');
   if (change === 'missing session') await fs.rm(path.join(root, 'session'));
-  let next = await execute({ ...ctx, signal: undefined,
+  const next = await execute({ ...ctx, signal: undefined,
     config: change === 'changed configuration' ? { ...ctx.config, env: { ...(ctx.config.env as object), SETTING: 'changed' } } : ctx.config,
     runtime: { ...ctx.runtime, sessionParams: sessionCodec.serialize(result.sessionParams ?? null) },
   });
-  if (change === 'missing session') {
-    expect(next.clearSession, JSON.stringify(next)).toBe(true);
-    next = await execute({ ...ctx, runId: 'fresh-follow-up', signal: undefined,
-      runtime: { ...ctx.runtime, sessionParams: null } });
-  }
-  expect(next.exitCode, JSON.stringify(next)).toBe(0);
-  expect((await fs.readFile(path.join(root, 'prompts'), 'utf8')).trim().split('\n')).toHaveLength(2);
+  expect(next.exitCode).not.toBe(0);
+  expect((await fs.readFile(path.join(root, 'prompts'), 'utf8')).trim().split('\n')).toHaveLength(1);
 });
 
 it('keeps the Stop deadline active after cancellation returns until provider exit', async () => {
