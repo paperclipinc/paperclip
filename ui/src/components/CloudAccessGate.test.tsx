@@ -21,8 +21,12 @@ const mockAccessApi = vi.hoisted(() => ({
 vi.mock("@/api/health", () => ({ healthApi: mockHealthApi }));
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+const mockLocation = vi.hoisted(() => ({
+  current: { pathname: "/PAP/issues/PAP-1", search: "", hash: "", state: null },
+}));
+
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/PAP/issues/PAP-1", search: "", hash: "", state: null }),
+  useLocation: () => mockLocation.current,
   Outlet: () => <div data-testid="gate-content">Protected content</div>,
 }));
 
@@ -93,6 +97,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   container = document.createElement("div");
   document.body.appendChild(container);
+  mockLocation.current = { pathname: "/PAP/issues/PAP-1", search: "", hash: "", state: null };
   replaceMock = vi.fn();
   Object.defineProperty(window, "location", {
     configurable: true,
@@ -123,6 +128,37 @@ describe("CloudAccessGate session-check handling", () => {
       "/auth/sign-in?next=%2FPAP%2Fissues%2FPAP-1",
     );
     expect(container.querySelector('[data-testid="gate-content"]')).toBeNull();
+  });
+
+  // Regression: paperclipinc/paperclip#311. On a self-hosted deploy the SPA
+  // itself serves /auth/sign-in, so redirecting an unauthenticated visitor to
+  // sign-in while they are ALREADY on sign-in re-enters this gate, nesting
+  // `next` one level per pass until the request line hits HTTP 414.
+  it("does not redirect to sign-in when the visitor is already on the sign-in route", async () => {
+    mockLocation.current = { pathname: "/auth/sign-in", search: "", hash: "", state: null };
+    mockAuthApi.getSession.mockResolvedValue(null);
+
+    const { renderPromise } = render();
+    await renderPromise;
+    await flushReact();
+
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it("does not nest `next` when already on sign-in with a next param", async () => {
+    mockLocation.current = {
+      pathname: "/auth/sign-in",
+      search: "?next=%2FPAP%2Fissues%2FPAP-1",
+      hash: "",
+      state: null,
+    };
+    mockAuthApi.getSession.mockResolvedValue(null);
+
+    const { renderPromise } = render();
+    await renderPromise;
+    await flushReact();
+
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it("retries a 429 and never redirects once the session check eventually succeeds", async () => {
