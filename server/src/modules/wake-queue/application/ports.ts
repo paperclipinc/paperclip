@@ -12,6 +12,8 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 
 /** The primary issue a locked release resolves to, plus the finishing run the lock step already loaded. */
 export type LockedIssueExecution = {
+  /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
+  recoveryOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };
@@ -426,6 +428,8 @@ export interface WakeAdmissionWriter {
       existingDeferredWakeId: string;
       mergedPayload: Record<string, unknown>;
       nextCoalescedCount: number;
+      /** A fresh manual click replaces the merged queue's execution requester. */
+      manualUserWakeActorId?: string;
       /** Persist each durable input's own receipt atomically with the merge. */
       coalescedReceipt?: CoalescedDeferredAdmissionReceipt;
     },

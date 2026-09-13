@@ -6,7 +6,7 @@ on:
 
 permissions: {}
 
-# Independent SHAs can build immediately on separate existing hosted runners.
+# Independent SHAs can build immediately on separate runners.
 # Repeated requests for the same source serialize without cancelling a build.
 # No mutable canary channel is promoted here; docker.yml owns that operation.
 concurrency:
@@ -15,8 +15,12 @@ concurrency:
 
 jobs:
   build-and-push-cloud:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Only canonical master builds can consume the release Fleet. The runner
+    # group must also allow this workflow only at refs/heads/master.
+    # Keep an operator switch for a full-run retry on GitHub-hosted runners.
+    runs-on: ${{ vars.AWS_CLOUD_BUILDS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-cloud-build-x64/env=public-ci' || 'ubuntu-latest' }}
+    # Fleet instances expire after 45 minutes, including bootstrap and cleanup.
+    timeout-minutes: ${{ vars.AWS_CLOUD_BUILDS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 40 || 60 }}
     permissions:
       contents: read
       packages: write
@@ -60,24 +64,6 @@ jobs:
       - name: Compute tool cache epoch
         id: tools-epoch
         run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-
-      # Each SHA exports its own cache. Import recent first-parent caches so
-      # a late older build cannot overwrite a newer build's cache manifest.
-      # The legacy ref keeps the first builds warm during the transition.
-      - name: Select cloud cache ancestry
-        id: cloud-cache
-        env:
-          CACHE_IMAGE: ghcr.io/${{ github.repository }}
-        run: |
-          set -euo pipefail
-          {
-            echo 'sources<<CACHE_SOURCES'
-            for commit in $(git rev-list --first-parent --max-count=10 HEAD); do
-              echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud-$commit"
-            done
-            echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud"
-            echo 'CACHE_SOURCES'
-          } >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -157,6 +143,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
+      # Mixing several historical manifests missed otherwise reusable native
+      # layers on fresh builders. Import the nearest available complete cache.
+      - name: Select cloud cache ancestry
+        id: cloud-cache
+        env:
+          CACHE_IMAGE: ghcr.io/${{ github.repository }}
+        run: node scripts/select-cloud-cache.mjs
+
       # Deployment tooling reads these labels from the registry to verify an
       # image's schema expectations against a migrator before deploying it,
       # without pulling the image. The server refuses to start when the
@@ -205,6 +199,8 @@ jobs:
           # variant installs from server/package.json's declared version;
           # add another name there when a managed tenant needs it.
           build-args: |
+            USER_UID=1001
+            USER_GID=1001
             CLOUD_BUNDLED_PLUGINS=daytona
             CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
@@ -219,7 +215,7 @@ jobs:
           # Same-SHA builds serialize above; different SHAs never share a
           # writable cache ref. Registry layers are content-addressed and
           # shared even when cache manifests have separate tags.
-          cache-from: ${{ steps.cloud-cache.outputs.sources }}
+          cache-from: ${{ steps.cloud-cache.outputs.source }}
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud-${{ github.sha }},mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}
@@ -250,6 +246,26 @@ jobs:
             exit 1
           fi
           echo "The pushed image resolves the declared @sentry/node version."
+
+      # Managed hosts run node as 1001:1001. Bake that identity into the image
+      # so usermod does not walk the mounted home on every container start.
+      # Check before the entrypoint can repair a wrongly built identity.
+      - name: Verify cloud runtime user
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "$IMAGE" -ec '
+            test "$(id -u node)" = 1001
+            test "$(id -g node)" = 1001
+            test "$USER_UID" = 1001
+            test "$USER_GID" = 1001
+          '
+          docker run --rm -e USER_UID=1001 -e USER_GID=1001 "$IMAGE" sh -ec '
+            test "$(id -u)" = 1001
+            test "$(id -g)" = 1001
+            test -w "$PAPERCLIP_HOME"
+          '
 
       # Verify the independently published cloud image without waiting for
       # the self-hosted manifest job. The Sentry check already pulled it.

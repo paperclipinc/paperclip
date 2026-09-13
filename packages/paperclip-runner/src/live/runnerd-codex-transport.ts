@@ -1,3 +1,4 @@
+import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -1134,6 +1135,9 @@ export interface CapabilityRunnerdCodexTransportOptions {
   turnStartTimeoutMs?: number;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;
+  /** Persist process ownership immediately after spawn, before waiting for
+   * provider bootstrap or activating a deferred PRP registration. */
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   stateDirectory?: string;
   lifecyclePolicy?:
     | { mode: "per_turn"; idleTimeoutMs: null }
@@ -1509,34 +1513,8 @@ type PendingTraceRehydration = {
 
 type PendingDriverTraceInterpretation = CodexTraceInterpretation;
 
-function locateRunnerdTraceFrame(
-  tracePath: string,
-  sourceEventId: string,
-): { frameId: number | null; nativeChannelSettled: boolean } {
-  const lines = readFileSync(tracePath, "utf8").split("\n");
-  let frameId: number | null = null;
-  let nativeChannelSettled = false;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index]?.trim()) continue;
-    const entry = record(JSON.parse(lines[index]!));
-    if (entry.kind === "trace_status" && entry.debugChannel === "rust_native") {
-      nativeChannelSettled = true;
-    }
-    if (
-      entry.kind !== "interpretation" ||
-      !Array.isArray(entry.emittedEventIds)
-    ) {
-      continue;
-    }
-    if ((entry.emittedEventIds as unknown[]).includes(sourceEventId)) {
-      frameId = typeof entry.frameId === "number" ? entry.frameId : null;
-      break;
-    }
-  }
-  return { frameId, nativeChannelSettled };
-}
-
 function appendRunnerdRehydrationTrace(
+  index: RunnerdTraceFrameIndex,
   tracePath: string | undefined,
   sourceEventId: string,
   eventType: string,
@@ -1546,7 +1524,7 @@ function appendRunnerdRehydrationTrace(
   if (!tracePath) return "not_applicable";
   if (!existsSync(tracePath)) return "retry";
   try {
-    const { frameId, nativeChannelSettled } = locateRunnerdTraceFrame(
+    const { frameId, nativeChannelSettled } = index.locate(
       tracePath,
       sourceEventId,
     );
@@ -1598,6 +1576,7 @@ function appendRunnerdRehydrationTrace(
 }
 
 function appendCodexDriverInterpretationTrace(
+  index: RunnerdTraceFrameIndex,
   tracePath: string | undefined,
   input: PendingDriverTraceInterpretation,
   debugSequence: number,
@@ -1605,7 +1584,7 @@ function appendCodexDriverInterpretationTrace(
   if (!tracePath) return "not_applicable";
   if (!existsSync(tracePath)) return "retry";
   try {
-    const { frameId, nativeChannelSettled } = locateRunnerdTraceFrame(
+    const { frameId, nativeChannelSettled } = index.locate(
       tracePath,
       input.sourceEventId,
     );
@@ -3343,6 +3322,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #runAttachTemplate: Record<string, unknown> | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
+  #controllerDetachedForRestart = false;
   #failure: Error | null = null;
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
@@ -3355,6 +3335,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #controlPlaneRelease: (() => Promise<void> | void) | null = null;
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
+  readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
   #pendingTraceRehydrations: PendingTraceRehydration[] = [];
   #pendingDriverTraceInterpretations: PendingDriverTraceInterpretation[] = [];
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string }>();
@@ -3909,6 +3890,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const tracePath = this.options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH;
     if (!tracePath) return;
     const traceResult = appendCodexDriverInterpretationTrace(
+      this.#traceFrameIndex,
       tracePath,
       input,
       this.#nextTraceDebugSequence,
@@ -3934,6 +3916,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       exitCode: this.#evidence.runnerExitCode,
       signal: this.#evidence.runnerSignal,
     };
+  }
+
+  async #publishSpawnedProcess(handle: RunnerProcessHandle): Promise<void> {
+    this.#evidence.runnerPid = handle.child.pid ?? null;
+    this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
+    this.#publish();
+    if (handle.child.pid !== undefined) {
+      await this.options.onSpawn?.({
+        pid: handle.child.pid,
+        processGroupId: handle.processGroupId ?? null,
+        startedAt: this.#startedAt,
+      });
+    }
   }
 
   async #readDurableRunnerState(): Promise<Record<string, unknown>> {
@@ -4054,13 +4049,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // A failed drain still proceeds through bounded suspension/containment,
       // but can never authorize a reusable checkpoint or deletion of evidence.
     }
+    const lastDrain = [...core.store.state.commands]
+      .reverse()
+      .find((command) => command.type === "runner.drain");
     this.#diagnostic(
-      "provider suffix did not prove durable drain before bounded runner suspension",
+      "provider suffix did not prove durable drain before bounded runner suspension: " +
+        JSON.stringify({
+          providerState: this.#providerDrainState(),
+          semanticResultsSettled: core.semanticToolResultsSettled(),
+          drainStatus: lastDrain?.status ?? null,
+          retainedEventsDrained:
+            record(record(lastDrain?.result).result).retainedEventsDrained ?? null,
+        }),
     );
     return false;
   }
 
   close(reason?: string): Promise<void> {
+    // Detachment relinquishes process ownership. A late execution finalizer
+    // must not suspend or signal the runner now owned by the next controller.
+    if (this.#controllerDetachedForRestart) return Promise.resolve();
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -4072,6 +4080,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async detachControllerForRestart(): Promise<void> {
     if (this.#closed) return;
+    this.#controllerDetachedForRestart = true;
     this.#closed = true;
     this.#turnStartAdmission?.resolve(false);
     if (this.#pump !== null) clearInterval(this.#pump);
@@ -4219,6 +4228,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       this.#pendingTraceRehydrations = [];
       this.#pendingDriverTraceInterpretations = [];
+      this.#traceFrameIndex.clear();
     }
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
@@ -4273,6 +4283,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   ): Promise<Record<string, unknown>> {
     if (this.#core !== null)
       throw new Error("PRP provider thread is already started");
+    if (this.options.adoptExistingRunner) {
+      // A crash can precede the first driver checkpoint even though runnerd
+      // already opened the provider. Exact process adoption must reuse that
+      // authority instead of enqueueing another run.prepare/session.open pair.
+      await this.#resume();
+      return this.#openedThreadResponse(params);
+    }
     const token = randomUUID().replaceAll("-", "");
     const identity = this.options.prpIdentity ?? {
       runnerInstanceId: `runner_lab_${token}`,
@@ -4642,7 +4659,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ticket: core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
       maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
       p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
-      maxRuntimeMs: 60 * 60 * 1_000,
+      maxRuntimeMs: 0,
       reconnectGraceMs: this.options.runnerReconnectGraceMs,
       lifecyclePolicy: this.options.lifecyclePolicy,
       runnerBinaryPath,
@@ -4671,6 +4688,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#handle = handle;
     this.#watchRunner(handle);
+    await this.#publishSpawnedProcess(handle);
     await registration?.activate?.();
     if (registration?.failure) {
       void registration.failure.catch((error: unknown) => {
@@ -4689,6 +4707,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");
+    return this.#openedThreadResponse(params);
+  }
+
+  #openedThreadResponse(params: Record<string, unknown>): Record<string, unknown> {
+    const provider = this.options.provider ?? "codex";
+    const acpxAgent = this.options.acpxAgent ?? "codex";
     return {
       thread: {
         id: this.#threadId,
@@ -5265,7 +5289,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ticket: bootstrapTicket!,
           maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
           p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
-          maxRuntimeMs: 60 * 60 * 1_000,
+          maxRuntimeMs: 0,
           reconnectGraceMs: this.options.runnerReconnectGraceMs,
           lifecyclePolicy: this.options.lifecyclePolicy,
           runnerBinaryPath,
@@ -5294,6 +5318,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (handle) {
       this.#handle = handle;
       this.#watchRunner(handle);
+      await this.#publishSpawnedProcess(handle);
     }
     if (oldTransitionRegistration && newTransitionRegistration) {
       await oldTransitionRegistration.activate?.();
@@ -6038,6 +6063,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           visibleNotificationCount: notifications.length,
         };
         const traceResult = appendRunnerdRehydrationTrace(
+          this.#traceFrameIndex,
           this.options.environment.PAPERCLIP_PROVIDER_TRACE_PATH,
           pending.sourceEventId,
           pending.eventType,
@@ -6188,6 +6214,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const retry: PendingTraceRehydration[] = [];
     for (const pending of this.#pendingTraceRehydrations) {
       const traceResult = appendRunnerdRehydrationTrace(
+        this.#traceFrameIndex,
         tracePath,
         pending.sourceEventId,
         pending.eventType,
@@ -6202,6 +6229,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const driverRetry: PendingDriverTraceInterpretation[] = [];
     for (const pending of this.#pendingDriverTraceInterpretations) {
       const traceResult = appendCodexDriverInterpretationTrace(
+        this.#traceFrameIndex,
         tracePath,
         pending,
         this.#nextTraceDebugSequence,

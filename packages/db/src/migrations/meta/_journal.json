@@ -1912,6 +1912,48 @@
                   "when": 1788999440971,
                   "tag": "0274_woozy_silver_surfer",
                   "breakpoints": true
+            },
+            {
+                  "idx": 275,
+                  "version": "7",
+                  "when": 1789137216452,
+                  "tag": "0275_light_kate_bishop",
+                  "breakpoints": true
+            },
+            {
+                  "idx": 276,
+                  "version": "7",
+                  "when": 1789164595203,
+                  "tag": "0276_aromatic_moondragon",
+                  "breakpoints": true
+            },
+            {
+                  "idx": 277,
+                  "version": "7",
+                  "when": 1789219070888,
+                  "tag": "0277_agent_chat",
+                  "breakpoints": true
+            },
+            {
+                  "idx": 278,
+                  "version": "7",
+                  "when": 1789221632037,
+                  "tag": "0278_easy_dragon_man",
+                  "breakpoints": true
+            },
+            {
+                  "idx": 279,
+                  "version": "7",
+                  "when": 1789245055965,
+                  "tag": "0279_hard_mandroid",
+                  "breakpoints": true
+            },
+            {
+                  "idx": 280,
+                  "version": "7",
+                  "when": 1789260211664,
+                  "tag": "0280_uneven_lady_deathstrike",
+                  "breakpoints": true
             }
       ]
 }

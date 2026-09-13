@@ -1,7 +1,6 @@
-import {
-  canBrowseProjectRepositoryGrant,
-  mergeProjectRepository,
-} from "./project-repositories.js";
+import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
+import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -15,8 +14,10 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   max,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -203,6 +204,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   readSignedToolArgumentsPayload,
@@ -232,6 +234,8 @@ import {
   createComposioSessionManager,
 } from "./composio-session-manager.js";
 import {
+  appWithPaperclipCloudConnectorAvailability,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
   paperclipCloudConnectorConfigFromEnv,
@@ -996,9 +1000,15 @@ function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
     app.slug === "gmail" && methodKey === "paperclip-id-oauth"
       ? "paperclip-draft"
       : methodKey;
-  const toolMethods = getAvailableConnectionMethods(app).filter(
+  // Stored managed connections must remain recognizable for callback, refresh,
+  // and revoke even though static definitions omit instance availability. New
+  // setup passes a definition filtered by signed profiles before reaching here;
+  // the broker independently enforces availability on authorization and refresh.
+  const availableMethods = new Set(getAvailableConnectionMethods(app));
+  const toolMethods = app.methods.filter(
     (candidate) =>
-      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk",
+      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+      && (availableMethods.has(candidate) || isPaperclipCloudConnectorStrategy(candidate.oauthStrategy)),
   );
   const method = normalizedMethodKey
     ? (toolMethods.find((candidate) => candidate.key === normalizedMethodKey) ??
@@ -1561,9 +1571,8 @@ function assertClass3ToolCredentialRefAllowed(ref: {
   }
 }
 
-function toConnection(
-  row: typeof toolConnections.$inferSelect,
-): ToolConnection {
+function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection {
+  connectionPurposeTransportSchema.parse(row);
   return {
     id: row.id,
     companyId: row.companyId,
@@ -2767,8 +2776,16 @@ function healthFailureHttpStatus(failure: {
 }): number {
   if (failure.status === "missing_secret") return 422;
   if (failure.code === "composio_api_key_rejected") return 422;
+  if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
   return 502;
+}
+
+function unsupportedToolConnectionTransport() {
+  return unprocessable(
+    "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.",
+    { code: "tool_connection_transport_unsupported" },
+  );
 }
 
 function sanitizeHttpFailure(error: unknown): {
@@ -2788,6 +2805,9 @@ function sanitizeHttpFailure(error: unknown): {
   }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "tool_connection_transport_unsupported") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "composio_connected_account_inactive") {
       return { status: "degraded", message: error.message, code };
     }
@@ -2979,6 +2999,15 @@ export function toolAccessService(
       : null;
     return cachedCloudConnector;
   };
+  async function appForConnectionSetup(app: AppDefinition): Promise<AppDefinition> {
+    if (!app.methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy))) {
+      return app;
+    }
+    const profiles = connectorWasProvided
+      ? (await currentCloudConnector()?.getCapabilities() ?? [])
+      : await paperclipCloudConnectorCapabilitiesFromEnv();
+    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+  }
   let nextGitHubContinuitySweepAt = 0;
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -7361,19 +7390,76 @@ export function toolAccessService(
     };
   }
 
+  function isAgentMailConnection(connection: typeof toolConnections.$inferSelect) {
+    return connection.transport === "rest_api" && connection.config.provider === "agentmail";
+  }
+
+  async function validateAgentMailConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const configPath = connection.config.emailCredential
+      ? "credentials.controlKey"
+      : "credentials.apiKey";
+    const ref = connection.credentialSecretRefs.find(
+      (candidate) => candidate.configPath === configPath,
+    );
+    if (!ref) {
+      throw unprocessable("Reconnect AgentMail to restore its API key", {
+        code: "missing_secret",
+      });
+    }
+    const key = await secrets.resolveSecretValue(
+      connection.companyId,
+      ref.secretId,
+      ref.versionSelector ?? "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      },
+    );
+    await agentmailApi(key).whoami();
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
+    if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
+    if (isAgentMailConnection(connection)) {
+      await validateAgentMailConnection(connection);
+      return [];
+    }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor);
     if (isComposioConnection(connection)) {
       await validateComposioConnection(connection);
       return [];
     }
+    if (connection.transport !== "local_stdio") {
+      throw unsupportedToolConnectionTransport();
+    }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
+  }
+
+  async function annotateAiGrantHealth(connections: ToolConnection[]) {
+    const aiConnections = connections.filter(connection => connection.connectionPurpose === "ai");
+    if (!aiConnections.length) return;
+    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status })
+      .from(connectionGrants).where(and(eq(connectionGrants.companyId, aiConnections[0].companyId),
+        inArray(connectionGrants.connectionId, aiConnections.map(connection => connection.id))));
+    for (const connection of aiConnections) {
+      const identities = grants.filter(grant => grant.connectionId === connection.id);
+      if (identities.length && identities.every(grant => grant.status === "revoked")) {
+        connection.healthStatus = "missing_secret";
+        connection.healthMessage = "This credential was revoked. Reconnect the account to restore access.";
+        connection.requiresReauthorization = true;
+      }
+    }
   }
 
   async function annotateGitHubAuthorization(
@@ -7453,6 +7539,7 @@ export function toolAccessService(
     actor?: ActorInfo,
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
     try {
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
@@ -7493,6 +7580,8 @@ export function toolAccessService(
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
+      } else if (isAgentMailConnection(connection)) {
+        await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
         const credentialHeaders =
@@ -7504,9 +7593,11 @@ export function toolAccessService(
         await remoteTools(connection, credentialHeaders, actor);
       } else if (isComposioConnection(connection)) {
         await validateComposioConnection(connection);
-      } else {
+      } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
+      } else {
+        throw unsupportedToolConnectionTransport();
       }
       const updated = await updateConnectionHealth(
         connection,
@@ -7514,11 +7605,13 @@ export function toolAccessService(
         config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
-          : isComposioConnection(connection)
-            ? "Composio accepted the API key and returned its toolkits."
-            : connection.transport === "local_stdio"
-              ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+          : isAgentMailConnection(connection)
+            ? "AgentMail API key is connected."
+            : isComposioConnection(connection)
+              ? "Composio accepted the API key and returned its toolkits."
+              : connection.transport === "local_stdio"
+                ? "Approved stdio template is ready."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -7578,6 +7671,7 @@ export function toolAccessService(
     } = {},
   ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
@@ -7757,7 +7851,9 @@ export function toolAccessService(
         config: normalizedConfig,
         transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
-        healthMessage: "Tool catalog refreshed.",
+        healthMessage: isAgentMailConnection(connection)
+          ? "AgentMail API key is connected."
+          : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,
@@ -8015,26 +8111,33 @@ export function toolAccessService(
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
     const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
-    const connections = await db
-      .select()
+    // Legacy plugin backfills use a remote transport as a placeholder, but
+    // their tools run in the plugin worker and have no remote MCP endpoint.
+    // Select only due IDs in SQL so each scheduler tick does not decode every
+    // active connection's config and credential metadata.
+    const due = await db
+      .select({ id: toolConnections.id })
       .from(toolConnections)
+      .innerJoin(toolApplications, and(
+        eq(toolApplications.id, toolConnections.applicationId),
+        eq(toolApplications.companyId, toolConnections.companyId),
+      ))
       .where(
         and(
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
           ne(toolConnections.transport, "chat_sdk"),
+          ne(toolConnections.transport, "runtime_auth"),
+          ne(toolApplications.type, "paperclip_plugin"),
+          or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )
       .orderBy(
-        asc(toolConnections.healthCheckedAt),
+        sql`${toolConnections.healthCheckedAt} asc nulls first`,
         asc(toolConnections.createdAt),
-      );
-    const due = connections
-      .filter(
-        (connection) =>
-          !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff,
+        asc(toolConnections.id),
       )
-      .slice(0, limit);
+      .limit(limit);
     let healthy = 0;
     let failed = 0;
     const failedConnectionIds: string[] = [];
@@ -12062,11 +12165,13 @@ export function toolAccessService(
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    const galleryEntry = input.galleryKey
+    const definition = input.galleryKey
       ? getConnectableAppDefinition(input.galleryKey)
       : null;
-    if (input.galleryKey && !galleryEntry)
+    if (input.galleryKey && !definition)
       throw notFound("Tool app gallery entry not found");
+
+    const galleryEntry = definition ? await appForConnectionSetup(definition) : null;
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
     let requestedResumeConnection: typeof toolConnections.$inferSelect | null =
@@ -17356,6 +17461,7 @@ export function toolAccessService(
       for (const connection of connections) {
         connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
       }
+      await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       return connections;
     },
@@ -17481,6 +17587,7 @@ export function toolAccessService(
         connection.id,
         connection.companyId,
       );
+      await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
       return connection;
     },
@@ -17746,6 +17853,9 @@ export function toolAccessService(
       ownerUserId: string,
     ) => {
       const connection = await getConnectionRow(idOrUid);
+      if (connection.connectionPurpose === "ai") {
+        throw badRequest("AI credentials use the connection's human access settings, not agent delegation");
+      }
       return db.transaction(async (tx) => {
         // Membership removal/suspension takes this same row lock before sweeping
         // personal grants. Whichever operation wins is therefore authoritative:
@@ -18233,7 +18343,7 @@ export function toolAccessService(
             })),
           );
         }
-        if (requested.size > 0) {
+        if (requested.size > 0 && connection.connectionPurpose !== "ai") {
           const profile = await appProfileForConnection(tx, connection);
           for (const install of requested.values()) {
             const [binding] = await tx
@@ -18313,6 +18423,7 @@ export function toolAccessService(
       input: UpdateToolConnection,
     ): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
+      if (existing.connectionPurpose === "ai" && (input.config || input.transportConfig || input.credentialRefs || input.credentialSecretRefs || (input.credentialPolicy && input.credentialPolicy !== existing.credentialPolicy))) throw badRequest("Use AI account reconnect to change credentials. Provider, sign-in method, and ownership cannot be changed.");
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? existing.config,
       );
@@ -19422,6 +19533,7 @@ export function toolAccessService(
         input.connectionId,
         input.companyId,
       );
+      if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);
       const path = brokerEnabled
