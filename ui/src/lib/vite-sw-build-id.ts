@@ -85,6 +85,7 @@ export function serviceWorkerBuildIdPlugin(
         source = fs.readFileSync(swPublicPath, "utf8");
       }
       const stamped = stampServiceWorkerBuildId(source, buildId ?? "build");
+      fs.mkdirSync(path.dirname(swOutPath), { recursive: true });
       fs.writeFileSync(swOutPath, stamped);
     },
   };
