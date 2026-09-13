@@ -19,7 +19,11 @@ export interface PublicFeatureFlags {
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
+  enableChatConnectors: boolean;
   enableConferenceRoomChat: boolean;
+  enableAgentChat: boolean;
+  enableStreamlinedLeftNavigation: boolean;
+  enableStreamlinedUi: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
@@ -76,7 +80,11 @@ export function derivePublicFeatureFlags(input: {
     enableApps: experimental.enableApps === true,
     enablePipelines: experimental.enablePipelines === true,
     enableCases: experimental.enableCases === true,
+    enableChatConnectors: experimental.enableChatConnectors === true,
     enableConferenceRoomChat: experimental.enableConferenceRoomChat === true,
+    enableAgentChat: experimental.enableAgentChat === true,
+    enableStreamlinedLeftNavigation: experimental.enableStreamlinedLeftNavigation === true,
+    enableStreamlinedUi: experimental.enableStreamlinedUi === true,
     enableClassicTaskInterface: experimental.enableClassicTaskInterface === true,
     enableIssuePlanDecompositions: experimental.enableIssuePlanDecompositions === true,
     enableExperimentalFileViewer: experimental.enableExperimentalFileViewer === true,
