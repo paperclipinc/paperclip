@@ -228,6 +228,7 @@ export function publishLiveEvent(input: {
     return event;
   }
   emitter.emit(input.companyId, event);
+  transport?.publish(event);
   emitter.emit(allCompanyEvents, event);
   return event;
 }
