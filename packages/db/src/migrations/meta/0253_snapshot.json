@@ -1,6 +1,6 @@
 {
-  "id": "fce4d95e-e30c-48cb-9784-c3f6174a7265",
-  "prevId": "6c70adb4-ec3f-4625-9640-d9409f0e3451",
+  "id": "034ca81e-d021-480f-a4ea-39b0ced315f1",
+  "prevId": "c80449f1-0b82-4e28-8008-25644b2ba9c5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -11560,6 +11560,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "execution_control_deadline_at": {
+          "name": "execution_control_deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_status_delivery_id": {
+          "name": "execution_status_delivery_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "error": {
           "name": "error",
           "type": "text",
@@ -11902,6 +11914,28 @@
         }
       },
       "indexes": {
+        "heartbeat_runs_native_replacement_predecessor_uq": {
+          "name": "heartbeat_runs_native_replacement_predecessor_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_of_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"heartbeat_runs\".\"scheduled_retry_reason\" = 'native_safe_replacement'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_agent_started_idx": {
           "name": "heartbeat_runs_company_agent_started_idx",
           "columns": [

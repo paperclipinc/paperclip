@@ -1,3 +1,5 @@
+import { instanceSettingsService } from "../instance-settings.js";
+import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
   asc,
@@ -186,6 +188,10 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
 };
 
 type RecoveryWakeup = (
@@ -705,14 +711,6 @@ export function classifyContinuationFailure(
       kind: "non_retryable",
       maxAttempts: 0,
       baseBackoffMs: 0,
-      errorCode,
-    };
-  }
-  if (errorCode && SANDBOX_CAPACITY_CONTINUATION_ERROR_CODES.has(errorCode)) {
-    return {
-      kind: "transient_infra",
-      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
-      baseBackoffMs: CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS,
       errorCode,
     };
   }
@@ -1944,6 +1942,17 @@ export function recoveryService(
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      // The sweep can combine an old in-progress issue snapshot with a newer
+      // successful run. Validate eligibility under the enqueue issue lock so
+      // completion or reassignment cannot create a redundant continuation.
+      ...(input.source === "issue.productive_terminal_continuation_recovery"
+        ? {
+            issueStateGuard: {
+              statuses: ["in_progress"],
+              assigneeAgentId: input.agentId,
+            },
+          }
+        : {}),
       payload: withRecoveryContext(
         {
           issueId: input.issueId,
@@ -2501,7 +2510,9 @@ export function recoveryService(
                       ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
                       : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
                   : recoveryCause === "configuration_incomplete"
-                    ? readConfigurationIncompletePayload(input.latestRun)
+                    ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
+                      ? "Reconnect the selected AI account or choose an available connection, then continue the task."
+                      : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
                           readNonEmptyString(
@@ -4202,12 +4213,24 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
-      const executionState =
-        issue.status === "in_review"
-          ? parseIssueExecutionState(issue.executionState)
-          : null;
-      const pendingExecutionState =
-        executionState?.status === "pending" ? executionState : null;
+      if (issue.conversationAgentId) {
+        const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
+        if (lastRun?.status === "succeeded") {
+          if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
+            const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+            if (current) Object.assign(issue, current);
+          }
+        }
+        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
+        {
+          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+        }
+      }
+      if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
+      const executionState = issue.status === "in_review"
+        ? parseIssueExecutionState(issue.executionState)
+        : null;
+      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
@@ -4236,6 +4259,18 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      // A native chat can finish between the earlier settlement read and this
+      // fresh run read, before its response is materialized. Its trusted
+      // finalizer owns that settlement; generic productive-work recovery must
+      // not invent another conversation turn during the publication window.
+      if (
+        issue.conversationAgentId &&
+        latestRun?.status === "succeeded" &&
+        parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
 
       const agent = await getAgent(agentId);
       const agentInvokable =
@@ -5196,6 +5231,7 @@ export function recoveryService(
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
         eq(issues.status, "blocked"),
+        isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
       ];

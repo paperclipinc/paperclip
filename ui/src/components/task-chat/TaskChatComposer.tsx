@@ -20,6 +20,7 @@ import {
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
+  settleDraftSubmission,
   type ComposerDraftSubmission,
 } from "@/lib/composer-draft";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
@@ -72,6 +73,8 @@ import type { RunnerGoalCapability } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
+import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
+
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -100,7 +103,9 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) => Promise<void> | void;
+  confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -116,6 +121,7 @@ interface TaskChatComposerProps {
   /** Mentionable entities for the editor's @-autocomplete. */
   mentions?: MentionOption[];
   enableReassign?: boolean;
+  conversationMode?: boolean;
   reassignOptions?: InlineEntityOption[];
   agentMap?: ReadonlyMap<string, { icon?: string | null }>;
   userProfileMap?: ReadonlyMap<
@@ -134,6 +140,7 @@ interface TaskChatComposerProps {
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
   onCancelQueuedEdit?: () => void;
+  pause?: TaskComposerPause | null;
   takeover?: TaskChatComposerTakeover | null;
   pendingTakeover?: {
     count: number;
@@ -376,9 +383,9 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  confirmedSubmissionIds,
   onStop,
   stopPending = false,
-  stopScope = "leaf",
   workMode,
   onWorkModeChange,
   disabled = false,
@@ -388,6 +395,7 @@ export function TaskChatComposer({
   onImageUpload,
   mentions,
   enableReassign = false,
+  conversationMode = false,
   reassignOptions,
   agentMap,
   userProfileMap,
@@ -400,6 +408,7 @@ export function TaskChatComposer({
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
+  pause = null,
   takeover = null,
   pendingTakeover = null,
   runnerGoalCapability = null,
@@ -453,6 +462,12 @@ export function TaskChatComposer({
       typeof update === "function" ? update(attachmentsRef.current) : update;
     attachmentsRef.current = next;
     setAttachmentState(next);
+    const pending = pendingDraftRef.current;
+    if (pending && pending.draftKey === draftKey) {
+      saveDraftAttachments(pending.draftKey, next
+        .filter(item => item.status === "attached" && item.attachmentId)
+        .map(item => ({ ...item, inline: item.inline === true })), pending.attemptId);
+    }
   }
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
@@ -462,6 +477,29 @@ export function TaskChatComposer({
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const pendingDraftRef = useRef<{
+    draftKey: string;
+    attemptId: string;
+    submittedBody: string;
+    submittedAttachmentIds: string[];
+  } | null>(null);
+  function changeBody(value: string) {
+    bodyRef.current = value;
+    setBody(value);
+    const pending = pendingDraftRef.current;
+    if (!pending || pending.draftKey !== draftKey ||
+        loadDraftSubmission(pending.draftKey)?.attemptId !== pending.attemptId) return;
+    // Keep text typed during delivery durable too. Navigation may happen before
+    // either the request promise or the matching live server receipt arrives.
+    saveDraft(pending.draftKey,
+      value ? `${pending.submittedBody}\n\n${value}` : pending.submittedBody,
+      pending.attemptId);
+    saveDraftSubmission(pending.draftKey, {
+      attemptId: pending.attemptId, reviewed: false,
+      nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
+      submittedAttachmentIds: pending.submittedAttachmentIds,
+    });
+  }
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedEditRef = useRef(queuedEdit);
   queuedEditRef.current = queuedEdit;
@@ -587,6 +625,7 @@ export function TaskChatComposer({
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles =
+    !pause &&
     !queuedEdit &&
     !uncertainSubmission &&
     Boolean(onAttachImage || onImageUpload);
@@ -759,7 +798,7 @@ export function TaskChatComposer({
    * the paste when it carries no images the plugin should handle.
    */
   function handlePasteCapture(evt: ReactClipboardEvent<HTMLDivElement>) {
-    if (!canAcceptFiles) return;
+    if (pause || !canAcceptFiles) return;
     const files = Array.from(evt.clipboardData?.files ?? []);
     if (files.length === 0) return;
     const nonImages = files.filter((file) => !file.type.startsWith("image/"));
@@ -793,7 +832,7 @@ export function TaskChatComposer({
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
-    takeover && !queuedEdit && !submitting && !uploadPending,
+    takeover && !pause && !queuedEdit && !submitting && !uploadPending,
   );
   const previousTakeoverVisibleRef = useRef(takeoverVisible);
   useEffect(() => {
@@ -803,7 +842,10 @@ export function TaskChatComposer({
     previousTakeoverVisibleRef.current = takeoverVisible;
   }, [queuedEdit, takeoverVisible]);
 
+  const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
+
   async function submit() {
+    if (disabled || (pause && !canResetPausedConversation)) return;
     const retained =
       draftKey && !queuedEdit ? loadDraftSubmission(draftKey) : null;
     if (retained && !submitting) {
@@ -817,6 +859,10 @@ export function TaskChatComposer({
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
+    if (goalCommand.matched && conversationMode) {
+      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      return;
+    }
     if (goalCommand.matched) {
       if ("error" in goalCommand) {
         setActionError(goalCommand.error);
@@ -956,18 +1002,16 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
-      if (attachmentIds.length > 0)
-        await onAdd(fullBody, reopen, reassignment, attachmentIds);
-      else await onAdd(fullBody, reopen, reassignment);
-      if (mountedTaskKey.current !== draftKey) return;
-      if (draftKey) clearDraftSubmission(draftKey, attemptId);
-      if (draftKey && bodyRef.current) {
-        // The editor stays writable while the request is pending. Preserve
-        // text entered after this submission started as the next draft.
-        saveDraft(draftKey, bodyRef.current);
-      } else if (draftKey) {
-        clearDraft(draftKey);
+      if (draftKey) {
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds };
+        changeBody(bodyRef.current);
       }
+      await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      // Navigation does not invalidate the server receipt. Settle the captured
+      // task before checking whether this composer is still on screen.
+      if (draftKey) settleDraftSubmission(draftKey, attemptId,
+        mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
+      if (mountedTaskKey.current !== draftKey) return;
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -977,8 +1021,13 @@ export function TaskChatComposer({
       }
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
+      const nextDraft = bodyRef.current;
       if (attemptId && error instanceof CommentSubmissionUnknownError) {
-        const uncertain = { attemptId, reviewed: false };
+        const uncertain = {
+          attemptId, reviewed: false,
+          nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
+          submittedAttachmentIds: submittedAttachments.flatMap(item => item.attachmentId ? [item.attachmentId] : []),
+        };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
@@ -986,7 +1035,6 @@ export function TaskChatComposer({
         clearDraftSubmission(draftKey, attemptId);
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
-      const nextDraft = bodyRef.current;
       const restoredBody = nextDraft
         ? `${submittedBody}\n\n${nextDraft}`
         : submittedBody;
@@ -998,9 +1046,24 @@ export function TaskChatComposer({
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
+      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    if (!uncertainSubmission || !confirmedSubmissionIds?.has(uncertainSubmission.attemptId)) return;
+    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
+      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
+    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
+    setUncertainSubmission(null);
+    bodyRef.current = nextDraft;
+    setBody(nextDraft);
+    const submittedIds = uncertainSubmission.submittedAttachmentIds;
+    setAttachments(current => submittedIds
+      ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
+      : []);
+  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
 
   async function reviewUncertainSubmission() {
     if (!uncertainSubmission) return;
@@ -1059,13 +1122,17 @@ export function TaskChatComposer({
     </Button>
   ) : null;
 
+  if (pause && (!conversationMode || queuedEdit)) {
+    return <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />;
+  }
+
   return (
     <div
       className={cn(
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
-        mobile && "p-3",
+        mobile && "p-2",
       )}
       onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -1234,11 +1301,17 @@ export function TaskChatComposer({
               </span>
             </button>
           ) : null}
+          {pause && conversationMode ? (
+            <div className="space-y-2">
+              <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
+              <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
+            </div>
+          ) : null}
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
               value={body}
-              onChange={setBody}
+              onChange={changeBody}
               placeholder={
                 disabled
                   ? (disabledReason ?? "Composer disabled")
@@ -1246,7 +1319,11 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission}
               mentions={mentions}
-              actionCommands={[goalCommandOption]}
+              actionCommands={conversationMode ? [{
+                id: "action:new", kind: "action", command: "new", name: "New session",
+                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                disabled,
+              }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
@@ -1495,6 +1572,7 @@ export function TaskChatComposer({
                 showStop
                   ? disabled || stopControl.stopping
                   : disabled ||
+                    (Boolean(pause) && !canResetPausedConversation) ||
                     submitting ||
                     !!uncertainSubmission ||
                     uploadPending ||
@@ -1505,9 +1583,7 @@ export function TaskChatComposer({
                 showStop
                   ? stopControl.stopping
                     ? "Stopping…"
-                    : stopScope === "subtree"
-                      ? "Stop and pause subtree"
-                      : "Stop and pause task"
+                    : "Stop response"
                   : queuedEdit
                     ? queuedEdit.stale
                       ? "Queue as new message"

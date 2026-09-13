@@ -1,6 +1,6 @@
 {
-  "id": "a266e368-bf57-47ae-ad2a-f3a9d8d5d0c1",
-  "prevId": "fce4d95e-e30c-48cb-9784-c3f6174a7265",
+  "id": "680b1067-b197-49dd-89d7-4fa5da8183e4",
+  "prevId": "034ca81e-d021-480f-a4ea-39b0ced315f1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -11560,6 +11560,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "execution_control_deadline_at": {
+          "name": "execution_control_deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_status_delivery_id": {
+          "name": "execution_status_delivery_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "error": {
           "name": "error",
           "type": "text",
@@ -11902,6 +11914,38 @@
         }
       },
       "indexes": {
+        "heartbeat_runs_execution_status_delivery_idx": {
+          "name": "heartbeat_runs_execution_status_delivery_idx",
+          "columns": [
+            {
+              "expression": "execution_status_delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"execution_status_delivery_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_execution_control_deadline_idx": {
+          "name": "heartbeat_runs_execution_control_deadline_idx",
+          "columns": [
+            {
+              "expression": "execution_control_deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"execution_control_deadline_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_native_replacement_predecessor_uq": {
           "name": "heartbeat_runs_native_replacement_predecessor_uq",
           "columns": [
@@ -13885,7 +13929,24 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "native_run_finalizations_control_deadline_idx": {
+          "name": "native_run_finalizations_control_deadline_idx",
+          "columns": [
+            {
+              "expression": "control_deadline_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"native_run_finalizations\".\"control_deadline_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "native_run_finalizations_company_id_companies_id_fk": {
           "name": "native_run_finalizations_company_id_companies_id_fk",

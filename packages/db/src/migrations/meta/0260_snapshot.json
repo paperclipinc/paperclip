@@ -1,6 +1,6 @@
 {
-  "id": "f9c47e49-21af-4744-8bcb-d949e39663b9",
-  "prevId": "4004d3fa-4522-4568-af4e-0a3c2df05604",
+  "id": "140a2ba4-8d1e-4053-99a3-1c041ecd68c1",
+  "prevId": "194dc0a9-e6dd-4f91-889b-d5b429d268a8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1863,7 +1863,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'question-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
+          "where": "(\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'question-response:%' OR \"agent_wakeup_requests\".\"idempotency_key\" LIKE 'interaction:%') AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6155,7 +6155,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "allow_unlinked_people": {
           "name": "allow_unlinked_people",
@@ -7223,7 +7223,7 @@
       "checkConstraints": {
         "chat_publications_state_check": {
           "name": "chat_publications_state_check",
-          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'failed', 'cancelled')"
+          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'delivery_unknown', 'failed', 'cancelled')"
         }
       },
       "isRLSEnabled": false

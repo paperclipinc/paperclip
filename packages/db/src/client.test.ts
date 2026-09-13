@@ -172,9 +172,9 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     const connectionString = await createTempDatabase();
     await applyPendingMigrations(connectionString);
     const recoveryFiles = [
-      "0253_exotic_dakota_north.sql", "0254_narrow_mastermind.sql",
-      "0255_friendly_kate_bishop.sql", "0256_real_firebrand.sql",
-      "0257_military_calypso.sql",
+      "0250_exotic_dakota_north.sql", "0251_narrow_mastermind.sql",
+      "0252_friendly_kate_bishop.sql", "0253_real_firebrand.sql",
+      "0254_military_calypso.sql",
     ];
     const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
     try {
@@ -188,7 +188,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           if (statement.trim()) await sql.unsafe(statement);
         }
       }
-      for (const file of ["0251_small_manta.sql", "0252_fast_silverclaw.sql"]) {
+      for (const file of ["0248_small_manta.sql", "0249_fast_silverclaw.sql"]) {
         const hash = await migrationHash(file);
         await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
       }

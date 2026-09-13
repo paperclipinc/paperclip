@@ -4,6 +4,7 @@ import { planArtifacts } from "./preview-artifacts.mjs";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
 import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
@@ -197,10 +198,33 @@ test("cloud builds start per commit and preserve tag promotion dependencies", ()
   assert.ok(reaping < cloud.indexOf("      - name: Publish verified full-SHA cloud tag"));
 });
 
+test("cloud builds bake the managed runtime identity and verify it before publication", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  const build = workflow.split("      - name: Build and push (cloud)")[1].split("      - name:")[0];
+  assert.match(build, /build-args: \|\n\s+USER_UID=1001\n\s+USER_GID=1001\n/);
+  const verify = workflow.indexOf("      - name: Verify cloud runtime user");
+  assert.ok(verify > workflow.indexOf("      - name: Verify the pushed image resolves the declared Sentry version"));
+  assert.ok(verify < workflow.indexOf("      - name: Publish verified full-SHA cloud tag"));
+  const step = workflow.slice(verify).split("\n      - name:")[0];
+  assert.match(step, /IMAGE: ghcr.io\/\$\{\{ github.repository \}\}@\$\{\{ steps.build-cloud.outputs.digest \}\}/);
+  assert.doesNotMatch(step, /continue-on-error:|if:/);
+  assert.ok(step.indexOf('--entrypoint sh "$IMAGE"') < step.indexOf('-e USER_UID=1001 -e USER_GID=1001'));
+  for (const flag of ["u", "g"]) {
+    assert.ok(step.includes(`test "$(id -${flag} node)" = 1001`));
+    assert.ok(step.includes(`test "$(id -${flag})" = 1001`));
+  }
+  assert.ok(step.includes('test -w "$PAPERCLIP_HOME"'));
+});
+
 test("cloud cache imports are bounded, follow master ancestry, and retain the legacy fallback", () => {
   const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
-  const step = workflow.split("      - name: Select cloud cache ancestry")[1].split("      - name: Setup pnpm")[0];
-  const script = step.split("        run: |\n")[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+  const selector = workflow.indexOf("      - name: Select cloud cache ancestry");
+  assert.ok(selector > workflow.indexOf("      - name: Login to GitHub Container Registry"));
+  assert.ok(selector > workflow.indexOf("      - name: Set up Docker Buildx"));
+  assert.ok(selector < workflow.indexOf("      - name: Build and push (cloud)"));
+  assert.match(workflow, /run: node scripts\/select-cloud-cache.mjs/);
+  assert.match(workflow, /cache-from: \$\{\{ steps.cloud-cache.outputs.source \}\}/);
+  const script = fileURLToPath(new URL("./select-cloud-cache.mjs", import.meta.url));
   const dir = mkdtempSync(path.join(tmpdir(), "cloud-cache-test-"));
   const output = path.join(dir, "output");
   const env = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.test", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.test" };
@@ -217,14 +241,25 @@ test("cloud cache imports are bounded, follow master ancestry, and retain the le
     git("checkout", "master");
     git("merge", "--no-ff", "topic", "-m", "merge topic");
     commits.unshift(git("rev-parse", "HEAD"));
-    const result = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8", env: { ...env, CACHE_IMAGE: "ghcr.io/paperclipai/paperclip", GITHUB_OUTPUT: output } });
+    const available = `ghcr.io/paperclipai/paperclip:buildcache-cloud-${commits[2]}`;
+    const inspections = path.join(dir, "inspections");
+    writeFileSync(path.join(dir, "docker"), `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(process.env.CACHE_INSPECTIONS, process.argv.at(-1) + "\\n");
+if (process.argv.at(-1) !== process.env.AVAILABLE_CACHE) {
+  process.stderr.write("manifest unknown");
+  process.exit(1);
+}
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, [script], {
+      cwd: dir, encoding: "utf8", env: {
+        ...env, PATH: `${dir}${path.delimiter}${env.PATH}`, CACHE_IMAGE: "ghcr.io/paperclipai/paperclip",
+        GITHUB_OUTPUT: output, AVAILABLE_CACHE: available, CACHE_INSPECTIONS: inspections,
+      },
+    });
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), [
-      "sources<<CACHE_SOURCES",
-      ...commits.slice(0, 10).map((commit) => `type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud-${commit}`),
-      "type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud",
-      "CACHE_SOURCES",
-    ]);
+    assert.equal(readFileSync(output, "utf8"), `source=type=registry,ref=${available}\n`);
+    assert.deepEqual(readFileSync(inspections, "utf8").trim().split("\n"), commits.slice(0, 3).map((commit) => `ghcr.io/paperclipai/paperclip:buildcache-cloud-${commit}`));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -1,6 +1,4 @@
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Modal, Select, SelectOption, TextInput } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,10 +32,7 @@ interface WireInteraction {
 
 // Resolve the adapter's own pinned discord.js, not a separately installed test
 // dependency. These are actual constructors and response methods, never mocks.
-const chatAdapterDiscordDir = dirname(
-  fileURLToPath(new URL("../../node_modules/@chat-adapter/discord/package.json", import.meta.url)),
-);
-const discordJs = createRequire(chatAdapterDiscordDir + "/index.js")(
+const discordJs = createRequire(import.meta.resolve("@chat-adapter/discord"))(
   "discord.js",
 ) as {
   Client: new (options: { intents: number[] }) => WireClient;

@@ -19,6 +19,24 @@ pub struct NormalizedProviderEvent {
     pub payload: Value,
 }
 
+/// The facade closes provider-turn authority on its terminal notification.
+/// Commit any result synthesized at that boundary before the turn terminal,
+/// then publish the run terminal. Already committed semantic results and
+/// active goals supply no new result and keep their existing event order.
+pub(crate) fn with_terminal_outcome(
+    provider_events: Vec<NormalizedProviderEvent>,
+    outcome_events: Vec<NormalizedProviderEvent>,
+) -> Vec<NormalizedProviderEvent> {
+    let (results, terminals): (Vec<_>, Vec<_>) = outcome_events
+        .into_iter()
+        .partition(|event| event.event_type == "run.result.proposed");
+    results
+        .into_iter()
+        .chain(provider_events)
+        .chain(terminals)
+        .collect()
+}
+
 pub(crate) fn normalized_codex_terminal_event_type(
     method: &str,
     params: &Value,
@@ -86,6 +104,16 @@ impl AcpxEventProjectionContext {
         self.provider_turn_id.as_deref().unwrap_or(&self.turn_id)
     }
 
+    fn assistant_item_id(&self) -> String {
+        // Recovery can submit multiple provider turns within one PRP run. Keep
+        // each delivered answer distinct while coalescing its streaming deltas.
+        acpx_message_item_id(
+            "",
+            &format!("{}:{}", self.item_id, self.active_provider_turn_id()),
+            "assistant",
+        )
+    }
+
     fn correlation(&self) -> Value {
         json!({
             "runId": self.run_id,
@@ -129,11 +157,10 @@ pub fn project_acpx_state_event(
                 {
                     payload.insert("providerItemId".to_owned(), Value::String(provider_item_id));
                 }
-                // PRP exposes one canonical assistant item for the turn. This
-                // lets streamed deltas and the completed provider response
-                // coalesce by identity while retaining the opaque ACP message
-                // identity as trace metadata above.
-                payload.insert("itemId".to_owned(), Value::String(context.item_id.clone()));
+                payload.insert(
+                    "itemId".to_owned(),
+                    Value::String(context.assistant_item_id()),
+                );
             }
             Ok(vec![event])
         }
@@ -237,7 +264,7 @@ pub fn project_acpx_state_event(
                 EventPriority::P1,
                 json!({
                     "provider": "acpx",
-                    "itemId": context.item_id,
+                    "itemId": context.assistant_item_id(),
                     "kind": "agentMessage",
                     "status": "completed",
                     "channel": "final",

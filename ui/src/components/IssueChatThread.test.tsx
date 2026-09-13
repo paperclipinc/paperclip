@@ -426,6 +426,45 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("labels incoming iMessage bubbles without labeling board replies", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={["imessage", "board"].map((source) => ({
+              id: `comment-${source}`,
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              authorType: "user" as const,
+              body: `Reply from ${source}`,
+              presentation: null,
+              metadata: source === "imessage" ? {
+                version: 1 as const,
+                sourceChannel: "imessage-photon" as const,
+                sections: [{ title: "iMessage Photon sender", rows: [{ type: "text" as const, text: "Linked person" }] }],
+              } : null,
+              createdAt: new Date("2026-09-12T12:00:00Z"),
+              updatedAt: new Date("2026-09-12T12:00:00Z"),
+            }))}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(container.querySelector("#comment-comment-imessage")?.textContent).toContain("Sent from iMessage");
+    expect(container.querySelector("#comment-comment-board")?.textContent).not.toContain("Sent from iMessage");
+    act(() => root.unmount());
+  });
+
   it("uses accent-safe markdown color in the current user's blue message bubble", () => {
     const root = createRoot(container);
 
@@ -3125,6 +3164,48 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("hides queued interrupt and cancel actions until the task resumes", () => {
+    const root = createRoot(container);
+    const comments = [{
+      id: "comment-paused-queue", companyId: "company-1", issueId: "issue-1",
+      authorAgentId: null, authorUserId: "user-1", authorType: "user" as const,
+      body: "Keep this queued message", presentation: null, metadata: null,
+      queueState: "queued" as const, queueTargetRunId: "run-1",
+      createdAt: new Date(), updatedAt: new Date(),
+    }];
+    for (const paused of [false, true, false]) {
+      act(() => root.render(<MemoryRouter><IssueChatThread
+        comments={comments} onAdd={async () => {}}
+        onInterruptQueued={async () => {}} onCancelQueued={() => {}}
+        composerPause={paused ? { scope: "leaf", onResume: () => {} } : null}
+        enableLiveTranscriptPolling={false}
+      /></MemoryRouter>));
+      const labels = [...container.querySelectorAll("button")].map((button) => button.textContent);
+      expect(labels.includes("Interrupt")).toBe(!paused);
+      expect(labels.includes("Cancel")).toBe(!paused);
+      expect(container.textContent).toContain("Keep this queued message");
+    }
+    act(() => root.unmount());
+  });
+
+  it("dispatches queued messages with Interrupt after the target run has stopped", () => {
+    const root = createRoot(container);
+    const onInterruptQueued = vi.fn(async () => {});
+    act(() => root.render(<MemoryRouter><IssueChatThread
+      comments={[{ id: "comment-queue", companyId: "company-1", issueId: "issue-1",
+        authorAgentId: null, authorUserId: "user-1", authorType: "user", body: "Pending input",
+        presentation: null, metadata: null, queueState: "queued", queueTargetRunId: null,
+        createdAt: new Date(), updatedAt: new Date() }]}
+      onAdd={async () => {}} onInterruptQueued={onInterruptQueued} showComposer={false}
+      enableLiveTranscriptPolling={false}
+    /></MemoryRouter>));
+    const interrupt = [...container.querySelectorAll("button")].find(button => button.textContent === "Interrupt");
+    expect(interrupt).toBeDefined();
+    act(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledWith(null);
+    act(() => root.unmount());
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 
@@ -3530,13 +3611,7 @@ describe("IssueChatThread", () => {
     expect(send().disabled).toBe(false);
     await act(async () => send().click());
     const expectedBody = `Inspect the file\n\n[fresh.txt](/api/attachments/${id}/content)`;
-    expect(onAdd).toHaveBeenNthCalledWith(
-      1,
-      expectedBody,
-      undefined,
-      undefined,
-      [id],
-    );
+    expect(onAdd).toHaveBeenNthCalledWith(1, expectedBody, undefined, undefined, [id], expect.any(String));
     expect(appendMock).not.toHaveBeenCalled();
     await act(async () => root.unmount());
     root = createRoot(container);
@@ -3548,13 +3623,7 @@ describe("IssueChatThread", () => {
     ).toBe("Inspect the file");
     expect(container.textContent).toContain("fresh.txt");
     await act(async () => send().click());
-    expect(onAdd).toHaveBeenNthCalledWith(
-      2,
-      expectedBody,
-      undefined,
-      undefined,
-      [id],
-    );
+    expect(onAdd).toHaveBeenNthCalledWith(2, expectedBody, undefined, undefined, [id], expect.any(String));
     expect(onAttachImage).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   });
@@ -3625,6 +3694,64 @@ describe("IssueChatThread", () => {
     },
   );
 
+  it.each(["late receipt", "reload receipt", "navigation success"])(
+    "preserves a newer legacy draft after %s",
+    async (outcome) => {
+      const key = `legacy-next-draft-${outcome}`;
+      let resolveSend!: () => void;
+      let rejectSend!: (error: Error) => void;
+      const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve, reject) => {
+        resolveSend = resolve;
+        rejectSend = reject;
+      }));
+      const attachmentId = "aaf8228f-0be7-45ae-a104-6fbe0af6f1d3";
+      const onAttachImage = vi.fn().mockResolvedValue({
+        id: attachmentId, contentPath: `/api/attachments/${attachmentId}/content`, originalFilename: "next-draft.txt",
+      });
+      let root = createRoot(container);
+      const element = (requestId?: string) => (
+        <MemoryRouter>
+          <IssueChatThread
+            comments={requestId ? [{
+              ...issueChatLongThreadComments[0]!,
+              id: "confirmed-legacy-comment", body: "Earlier message",
+              authorAgentId: null, authorUserId: "user-1", clientRequestId: requestId,
+            }] : []}
+            currentUserId="user-1"
+            linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+            onAdd={onAdd} onAttachImage={onAttachImage} draftKey={key} enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>
+      );
+      const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+      const type = (value: string) => act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => root.render(element()));
+      type("Earlier message");
+      await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Send")!.click());
+      const requestId = onAdd.mock.calls[0]![4] as string;
+      type("Newer unsent draft");
+      await act(async () => container.querySelector('[data-testid="issue-chat-composer"]')!
+        .dispatchEvent(createFileDragEvent("drop", [new File(["next"], "next-draft.txt", { type: "text/plain" })])));
+      if (outcome !== "late receipt") await act(async () => root.unmount());
+      if (outcome === "navigation success") await act(async () => resolveSend());
+      else if (outcome === "late receipt") await act(async () => rejectSend(new CommentSubmissionUnknownError()));
+      if (outcome !== "late receipt") root = createRoot(container);
+      await act(async () => root.render(element(requestId)));
+      expect(editor().value).toBe("Newer unsent draft");
+      expect(localStorage.getItem(key)).toBe("Newer unsent draft");
+      expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
+      expect(localStorage.getItem(`${key}:attachments:v1`)).toContain(attachmentId);
+      expect(container.textContent).toContain("next-draft.txt");
+      expect(container.textContent).not.toContain("We couldn’t confirm");
+      await act(async () => root.unmount());
+      await act(async () => resolveSend());
+      expect(localStorage.getItem(key)).toBe("Newer unsent draft");
+    },
+  );
+
   it("keeps a reassigned legacy comment pending until its actual mutation promise settles", async () => {
     let resolveSend!: () => void;
     const onAdd = vi.fn().mockReturnValue(
@@ -3673,7 +3800,7 @@ describe("IssueChatThread", () => {
     expect(onAdd).toHaveBeenCalledWith("Please review the result", undefined, {
       assigneeAgentId: null,
       assigneeUserId: "reviewer",
-    });
+    }, undefined, expect.any(String));
     expect(appendMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Posting...");
     expect(localStorage.getItem("legacy-awaited-reassignment")).toBe(
@@ -3924,11 +4051,7 @@ describe("IssueChatThread", () => {
       submitButton?.click();
     });
 
-    expect(onAdd).toHaveBeenCalledWith(
-      "Please pick this back up",
-      true,
-      undefined,
-    );
+    expect(onAdd).toHaveBeenCalledWith("Please pick this back up", true, undefined, undefined, expect.any(String));
 
     act(() => {
       root.unmount();
@@ -4001,11 +4124,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(onAdd).toHaveBeenCalledTimes(1);
-    expect(onAdd).toHaveBeenCalledWith(
-      "Reply without assignee",
-      undefined,
-      undefined,
-    );
+    expect(onAdd).toHaveBeenCalledWith("Reply without assignee", undefined, undefined, undefined, expect.any(String));
     expect(
       document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]'),
     ).toBeNull();

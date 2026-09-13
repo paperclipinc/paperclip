@@ -738,9 +738,6 @@ describe("Layout", () => {
 
   it("mounts the Apps secondary sidebar regardless of the retired experimental flag", async () => {
     currentPathname = "/PAP/apps";
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
-    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: false,
     });
