@@ -1,6 +1,6 @@
 {
-  "id": "9c7c9e05-e663-4a29-8b46-63733f62da9b",
-  "prevId": "d1a3e2cb-5f5f-4bb2-98ec-8475b445d6e6",
+  "id": "d01dd077-2ab3-494b-962c-02b219026b64",
+  "prevId": "cad9198b-f814-4ed9-b364-e8677eab5c23",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -266,30 +266,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "ai_connection": {
-          "name": "ai_connection",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_grant_id": {
-          "name": "connection_grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_method": {
-          "name": "connection_method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "adapter_type": {
           "name": "adapter_type",
@@ -2271,135 +2247,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.ai_connection_defaults": {
-      "name": "ai_connection_defaults",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "method": {
-          "name": "method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "grant_id": {
-          "name": "grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "ai_connection_defaults_owner_method_uq": {
-          "name": "ai_connection_defaults_owner_method_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "method",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "ai_connection_defaults_company_id_companies_id_fk": {
-          "name": "ai_connection_defaults_company_id_companies_id_fk",
-          "tableFrom": "ai_connection_defaults",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_defaults_company_grant_fk": {
-          "name": "ai_connection_defaults_company_grant_fk",
-          "tableFrom": "ai_connection_defaults",
-          "tableTo": "connection_grants",
-          "columnsFrom": [
-            "company_id",
-            "grant_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "ai_connection_defaults_provider_check": {
-          "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
-        },
-        "ai_connection_defaults_method_check": {
-          "name": "ai_connection_defaults_method_check",
-          "value": "\"ai_connection_defaults\".\"method\" in ('subscription','api_key')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.approval_comments": {
@@ -6658,22 +6505,6 @@
           "method": "btree",
           "with": {}
         },
-        "chat_endpoints_photon_number_uq": {
-          "name": "chat_endpoints_photon_number_uq",
-          "columns": [
-            {
-              "expression": "bot_external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"provider\" = 'imessage-photon' and \"chat_endpoints\".\"status\" <> 'archived' and \"chat_endpoints\".\"bot_external_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_endpoints_live_discord_bot_external_uq": {
           "name": "chat_endpoints_live_discord_bot_external_uq",
           "columns": [
@@ -6832,7 +6663,7 @@
         },
         "chat_endpoints_provider_check": {
           "name": "chat_endpoints_provider_check",
-          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')"
+          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_endpoints_status_check": {
           "name": "chat_endpoints_status_check",
@@ -7017,7 +6848,7 @@
       "checkConstraints": {
         "chat_external_principals_provider_check": {
           "name": "chat_external_principals_provider_check",
-          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')"
+          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_external_principals_kind_check": {
           "name": "chat_external_principals_kind_check",
@@ -24548,18 +24379,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "client_request_id": {
-          "name": "client_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "conversation_session_generation": {
-          "name": "conversation_session_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
         "body": {
           "name": "body",
           "type": "text",
@@ -24858,15 +24677,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "issue_comments_client_request_uq": {
-          "name": "issue_comments_client_request_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "issue_id",
-            "author_user_id",
-            "client_request_id"
-          ]
-        },
         "issue_comments_company_id_uq": {
           "name": "issue_comments_company_id_uq",
           "nullsNotDistinct": false,
@@ -28940,37 +28750,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "conversation_agent_id": {
-          "name": "conversation_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "conversation_user_id": {
-          "name": "conversation_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "conversation_state": {
-          "name": "conversation_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "conversation_session_generation": {
-          "name": "conversation_session_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "conversation_boundary_comment_id": {
-          "name": "conversation_boundary_comment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "project_id": {
           "name": "project_id",
           "type": "uuid",
@@ -29307,33 +29086,6 @@
         }
       },
       "indexes": {
-        "issues_conversation_identity_idx": {
-          "name": "issues_conversation_identity_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "conversation_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "conversation_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issues_company_status_idx": {
           "name": "issues_company_status_idx",
           "columns": [
@@ -29976,19 +29728,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "issues_conversation_agent_id_agents_id_fk": {
-          "name": "issues_conversation_agent_id_agents_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "conversation_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
         "issues_project_id_projects_id_fk": {
           "name": "issues_project_id_projects_id_fk",
           "tableFrom": "issues",
@@ -30119,12 +29858,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "issues_conversation_identity_check": {
-          "name": "issues_conversation_identity_check",
-          "value": "(\n      \"issues\".\"conversation_agent_id\" is null and \"issues\".\"conversation_user_id\" is null and \"issues\".\"conversation_state\" is null\n    ) or (\n      \"issues\".\"conversation_agent_id\" is not null and \"issues\".\"conversation_user_id\" is not null\n      and \"issues\".\"assignee_agent_id\" = \"issues\".\"conversation_agent_id\" and \"issues\".\"assignee_agent_id\" is not null\n      and \"issues\".\"assignee_user_id\" is null and \"issues\".\"conversation_state\" is not null\n      and \"issues\".\"conversation_state\" in ('active', 'waiting')\n      and \"issues\".\"status\" not in ('done', 'cancelled')\n    )"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.join_requests": {
@@ -42324,15 +42058,15 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
-          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel', 'ai')"
+          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel')"
         },
         "tool_connections_channel_transport_check": {
           "name": "tool_connections_channel_transport_check",
-          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" not in ('chat_sdk', 'runtime_auth'))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'ai' and \"tool_connections\".\"transport\" = 'runtime_auth')\n    )"
+          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n    )"
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",

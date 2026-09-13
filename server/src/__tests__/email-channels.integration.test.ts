@@ -190,7 +190,7 @@ describe("AgentMail durable email pipeline", () => {
   });
 
   it("can replay the additive email migration without losing existing data", async () => {
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0275_light_kate_bishop.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw(migration));
     expect(await db.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);

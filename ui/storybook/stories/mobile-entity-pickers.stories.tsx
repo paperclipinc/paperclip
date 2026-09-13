@@ -42,8 +42,8 @@ const meta = {
   title: "Components/Entity pickers/Mobile",
   parameters: {
     layout: "fullscreen",
-    viewport: { defaultViewport: "mobile1" },
   },
+  globals: { viewport: { value: "mobile1" } },
 } satisfies Meta;
 
 export default meta;

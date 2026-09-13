@@ -1,6 +1,6 @@
 {
-  "id": "90b33e29-6867-4caa-8a13-198eca079bb9",
-  "prevId": "49453b29-7f09-4a92-a9d6-144a2d1ea763",
+  "id": "ea31f607-d08b-42be-a396-fc6797c53f7e",
+  "prevId": "140a2ba4-8d1e-4053-99a3-1c041ecd68c1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6348,50 +6348,6 @@
           ],
           "isUnique": true,
           "where": "\"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"provider_account_id\" is not null\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_endpoints_live_discord_bot_external_uq": {
-          "name": "chat_endpoints_live_discord_bot_external_uq",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "bot_external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"provider\" = 'discord'\n          and \"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_endpoints_live_global_app_bot_external_uq": {
-          "name": "chat_endpoints_live_global_app_bot_external_uq",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "bot_external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"provider\" in ('github', 'microsoft-teams')\n          and \"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -22041,12 +21997,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "originating_run_id": {
-          "name": "originating_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -22089,21 +22039,6 @@
           "columns": [
             {
               "expression": "issue_comment_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_attachments_originating_run_idx": {
-          "name": "issue_attachments_originating_run_idx",
-          "columns": [
-            {
-              "expression": "originating_run_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -22176,19 +22111,6 @@
           "tableTo": "issue_comments",
           "columnsFrom": [
             "issue_comment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "issue_attachments_originating_run_id_heartbeat_runs_id_fk": {
-          "name": "issue_attachments_originating_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "issue_attachments",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "originating_run_id"
           ],
           "columnsTo": [
             "id"

@@ -1,6 +1,6 @@
 {
-  "id": "2554d3f8-4867-4868-af6c-4dcb3ee4de4a",
-  "prevId": "f9c47e49-21af-4744-8bcb-d949e39663b9",
+  "id": "1c882592-8728-4d72-a002-f2df6c44589b",
+  "prevId": "680b1067-b197-49dd-89d7-4fa5da8183e4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5284,13 +5284,6 @@
           "notNull": true,
           "default": "''"
         },
-        "session_generation": {
-          "name": "session_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
         "external_label": {
           "name": "external_label",
           "type": "text",
@@ -5377,12 +5370,6 @@
             },
             {
               "expression": "external_thread_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "session_generation",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -6323,62 +6310,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "chat_endpoints_live_bot_external_uq": {
-          "name": "chat_endpoints_live_bot_external_uq",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "bot_external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"provider_account_id\" is not null\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "chat_endpoints_live_bot_username_uq": {
-          "name": "chat_endpoints_live_bot_username_uq",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "bot_username",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"provider_account_id\" is not null\n          and \"chat_endpoints\".\"bot_username\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -6892,12 +6823,6 @@
               "nulls": "last"
             },
             {
-              "expression": "conversation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
               "expression": "provider_message_id",
               "isExpression": false,
               "asc": true,
@@ -7223,7 +7148,7 @@
       "checkConstraints": {
         "chat_publications_state_check": {
           "name": "chat_publications_state_check",
-          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'delivery_unknown', 'failed', 'cancelled')"
+          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'failed', 'cancelled')"
         }
       },
       "isRLSEnabled": false
