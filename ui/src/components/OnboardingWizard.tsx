@@ -1,9 +1,3 @@
-import { healthApi } from "@/api/health";
-import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
-import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
-import { aiConnectionsApi } from "@/api/ai-connections";
-import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
-import type { AiConnectionBinding } from "@paperclipai/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { useEffect, useState, useMemo, useRef } from "react";
@@ -752,7 +746,7 @@ function OnboardingWizardInner({
     effectiveOnboardingOpen && step === 4,
   );
   const [subscriptionId, setSubscriptionId] = useState<{ companyId: string; id: string } | null>(null);
-  const savedSubscription = savedKeys.subscriptions.length > 0
+  const savedSubscription = adapterType === "codex_local"
     ? savedKeys.subscriptions.find((option) => option.id === (
         subscriptionId?.companyId === createdCompanyId
           ? subscriptionId.id
@@ -765,8 +759,8 @@ function OnboardingWizardInner({
     : savedKeys.options[0]?.id;
   const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
   const credentialMode = credentialModeChoice ?? (
-    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+    (adapterType === "claude_local" ? savedKeys.storedLogin.data : adapterType === "codex_local" && savedKeys.subscriptions.length)
+      ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
@@ -813,15 +807,7 @@ function OnboardingWizardInner({
    * customer on the step to try again — and without this each press would store
    * another copy of the same credential.
    */
-  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
-  const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
-  const managedProvider = aiProviderForAdapter(adapterType);
-  function managedBindingForStep(): AiConnectionBinding | undefined {
-    if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
-      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
-        ? apiKeySecretRef.current.aiConnection : undefined);
-    return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
-  }
+  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"] } | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The step the request wants, mirrored for the same reason. `initialStep` is
@@ -1116,15 +1102,6 @@ function OnboardingWizardInner({
   // full adapter test result. The cheap auth signal below stands in for that
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
-  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
-  const localLogin = useLocalAiLogin(createdCompanyId, {
-    provider: managedProvider ?? "anthropic", method: "subscription",
-    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
-    ownership: "personal", agentIds: [], allAgents: true,
-  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
-  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&
@@ -1296,18 +1273,14 @@ function OnboardingWizardInner({
    * The same four conditions the card itself renders on, named once so the
    * footer button and the card cannot disagree about whether a login is
    * happening. When it is false — an API key, a source already signed in on the
-   * sandbox, or a local CLI account — Connect verifies credentials before the hire.
+   * sandbox, no sandbox to sign in against — Connect goes straight to the hire,
+   * exactly as it did before.
    */
   const connectStepNeedsLogin = Boolean(
     credentialMode !== "api" &&
-      // Connection-list invalidation can arrive before the login's completion
-      // poll. Keep its controller mounted until it reports success; otherwise
-      // the saved account replaces the panel and "Connecting" never finishes.
-      (connectAuthUrl || (
-        (showAdapterLoginPanel || (canShowAdapterLogin && adapterType === "codex_local" && subscriptionId?.companyId === createdCompanyId && subscriptionId.id === "")) &&
-        !savedSubscription &&
-        !(adapterType === "claude_local" && savedKeys.storedLogin.data)
-      )) &&
+      (showAdapterLoginPanel || (canShowAdapterLogin && adapterType === "codex_local" && subscriptionId?.companyId === createdCompanyId && subscriptionId.id === "")) &&
+      !savedSubscription &&
+      !(adapterType === "claude_local" && savedKeys.storedLogin.data) &&
       !savedKeys.loading &&
       createdCompanyId &&
       resolvedLoginEnvironmentId,
@@ -1326,7 +1299,17 @@ function OnboardingWizardInner({
   const loginSubmitsBrowserCode =
     adapterCaps.login?.panelMode === "submitted_browser_code";
 
-  /** Without browser login, show instructions for the selected execution environment. */
+  /**
+   * The one thing that can be wrong here before anything is pressed: there is
+   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
+   * on arrival rather than after a press that goes nowhere.
+   *
+   * Its two neighbours in the old canvas are not worth the same. "Checking this
+   * source's credentials…" narrated a request nothing was waiting on, and "this
+   * source is already signed in" answered a question the customer had not asked
+   * yet — both were written for a canvas that opened on selection, and the
+   * press is what opens it now.
+   */
   const connectStepHasNoSandbox =
     credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
 
@@ -1888,11 +1871,6 @@ function OnboardingWizardInner({
     const envKey = apiKeyEnvKeyFor(adapterType);
     if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
-      if (managedProvider) {
-        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
-        apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
-        return true;
-      }
       const stored = await storeProviderApiKey(companyId, envKey, key);
       apiKeySecretRef.current = { key, companyId, envKey, binding: stored.binding };
       return true;
@@ -1958,7 +1936,7 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
-    if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)) {
+    if (credentialMode === "api" && (bindApiKey || selectedApiKey)) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
           ? { ...(config.env as Record<string, unknown>) }
@@ -1966,7 +1944,7 @@ function OnboardingWizardInner({
       env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
     }
-    if (credentialMode === "subscription" && savedSubscription?.binding) {
+    if (credentialMode === "subscription" && savedSubscription) {
       config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
     }
     return config;
@@ -2039,7 +2017,6 @@ function OnboardingWizardInner({
         adapterType,
         {
           adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
-          ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
           environmentId,
         }
       );
@@ -2282,15 +2259,10 @@ function OnboardingWizardInner({
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored) return;
       }
-      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
-        await localLogin.connect();
-        managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
-      }
-      const managedBinding = managedBindingForStep();
       const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
-        !managedBinding && adapterType === "claude_local" &&
+        adapterType === "claude_local" &&
         !adapterConfigHasAnthropicApiKey(baseAdapterConfig)
       ) {
         try {
@@ -2387,7 +2359,7 @@ function OnboardingWizardInner({
         // the chief-of-staff persona over the agent's entry instruction file.
         // The wizard no longer composes or overwrites it.
         onboardingFirstAgent: true,
-        runtimeConfig: { ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
+        runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {
         await approvalsApi.approve(
@@ -2416,13 +2388,6 @@ function OnboardingWizardInner({
     } finally {
       hiringAgentRef.current = false;
       setLoading(false);
-      // Authentication is already saved. A failed probe or hire must offer a
-      // retry with that account, rather than keep the completed login busy.
-      if (connectCredentialStored && stillTheSameCompany(createdCompanyId)) {
-        connectingSinceRef.current = null;
-        setConnectAuthUrl(null);
-        setConnectPhase((phase) => phase === "connecting" ? "ready" : phase);
-      }
     }
   }
 
@@ -2847,7 +2812,7 @@ function OnboardingWizardInner({
                       }}
                     />
 
-                    {credentialMode === "subscription" && savedKeys.subscriptions.length > 0 && (
+                    {credentialMode === "subscription" && adapterType === "codex_local" && savedKeys.subscriptions.length > 0 && (
                       <div className="mt-5">
                         <SavedProviderKeySelect
                           options={savedKeys.subscriptions}
@@ -2974,7 +2939,6 @@ function OnboardingWizardInner({
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
-                        aiConnection={managedProvider ? { provider: managedProvider, method: "subscription", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`, ownership: "personal", agentIds: [], allAgents: true } : undefined}
                         autoStart
                         onPromptReady={(url) => {
                           setConnectAuthUrl(url);
@@ -3009,8 +2973,6 @@ function OnboardingWizardInner({
                           );
                         }}
                         onConnected={() => {
-                          if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
-                          setConnectAuthUrl(null);
                           // Not into a card the customer has left. The panel is
                           // still mounted through Back's exit, and a login that
                           // finished there pulled the step back into "Connecting"
@@ -3050,9 +3012,12 @@ function OnboardingWizardInner({
                     ) : adapterType === "claude_local" && savedKeys.storedLogin.data ? (
                       <p className="text-sm text-muted-foreground">Use your saved Claude subscription for this agent.</p>
                     ) : connectStepHasNoSandbox ? (
-                      canUseLocalLogin && managedProvider ? (
-                        <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
-                      ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
+                      /* The one thing that can be wrong here before anything is
+                         pressed, and the one worth saying out loud: without a
+                         sandbox there is nothing to sign in against. */
+                      <p className="text-xs text-muted-foreground">
+                        No managed sandbox is available to sign in against yet.
+                      </p>
                     ) : null}
                   </motion.div>
 

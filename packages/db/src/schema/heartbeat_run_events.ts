@@ -5,6 +5,7 @@ import {
   text,
   timestamp,
   integer,
+  jsonb,
   index,
   bigserial,
   bigint,
@@ -13,7 +14,6 @@ import {
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
-import { runEventPayload } from "../run-event-payload.js";
 
 export const heartbeatRunEvents = pgTable(
   "heartbeat_run_events",
@@ -28,7 +28,7 @@ export const heartbeatRunEvents = pgTable(
     level: text("level"),
     color: text("color"),
     message: text("message"),
-    payload: runEventPayload("payload"),
+    payload: jsonb("payload").$type<Record<string, unknown>>(),
     sourceInstanceId: text("source_instance_id"),
     sourceEventId: text("source_event_id"),
     sourceSeq: bigint("source_seq", { mode: "number" }),

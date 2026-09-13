@@ -182,7 +182,8 @@ describe("Sidebar", () => {
     const sidebar = container.querySelector("aside");
     expect(sidebar?.classList).not.toContain("border-r");
     expect(sidebar?.classList).not.toContain("border-border");
-    expect(sidebar?.classList).toContain("primary-sidebar-surface");
+    expect(sidebar?.classList).toContain("bg-border/50");
+    expect(sidebar?.classList).toContain("dark:bg-muted");
 
     flushSync(() => {
       root.unmount();

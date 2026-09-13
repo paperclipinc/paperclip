@@ -1,5 +1,4 @@
 import { test, expect, type Page } from "@playwright/test";
-import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 import {
   expectLandsOnFirstTaskWithoutDashboardBounce,
   instrumentNavLog,
@@ -22,12 +21,11 @@ import {
 const FIRST_TASK_TITLE = "Paperclip onboarding";
 
 /**
- * Intercept authentication, environment checks, and hiring so no real CLI check
+ * Intercept the two side-effecting calls the wizard makes so no real CLI check
  * runs and no real agent process spawns (the hire still happens server-side
  * with an inert http adapter).
  */
 async function installLaunchIntercepts(page: Page, baseURL?: string) {
-  await mockOnboardingLocalAiConnection(page);
   await page.route("**/test-environment", (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -108,8 +106,9 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   await source.click();
 
   // "Connect", not "Next": this step's button starts the sign-in where there
-  // is one to start, so it is named for what it does. This test simulates
-  // successful local account connection before the environment check and hire.
+  // is one to start, so it is named for what it does. Here there is none —
+  // this instance has no sandbox environment, so the step has no login to
+  // offer and Connect goes straight to the hire.
   //
   // Waited on for enabled rather than for visible: it is already on screen,
   // disabled, and clicking a disabled button raises nothing and does nothing.

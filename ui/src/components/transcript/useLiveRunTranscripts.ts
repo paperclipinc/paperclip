@@ -1,4 +1,3 @@
-import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
@@ -103,7 +102,6 @@ export function useLiveRunTranscripts({
 }: UseLiveRunTranscriptsOptions) {
   // Ticker consumers opt into the silent chunk-count cap; full task views use a
   // byte budget that collapses (not discards) the oldest output when exceeded.
-  const { visible } = usePageVisibility();
   const retentionBudget: ChunkRetentionBudget = useMemo(
     () =>
       typeof maxChunksPerRun === "number"
@@ -292,7 +290,6 @@ export function useLiveRunTranscripts({
   }, [normalizedRuns, pruneTick]);
 
   useEffect(() => {
-    if (!visible) return;
     const readableRuns = normalizedRuns.filter(canReadPersistedLog);
     if (readableRuns.length === 0) return;
 
@@ -383,10 +380,10 @@ export function useLiveRunTranscripts({
       controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
+  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
 
   useEffect(() => {
-    if (!visible || !enableRealtimeUpdates) return;
+    if (!enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
@@ -515,7 +512,7 @@ export function useLiveRunTranscripts({
         }
       }
     };
-  }, [visible, activeRunIds, companyId, enableRealtimeUpdates, runById]);
+  }, [activeRunIds, companyId, enableRealtimeUpdates, runById]);
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();

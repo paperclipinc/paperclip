@@ -727,7 +727,7 @@ export async function seedManagedCodexHome(
   // deleting it would silently sign the company out right after a successful
   // device login.
   let keepPromotedAuth = false;
-  if (!apiKey && seedFromShared && !credentialStoreEntry) {
+  if (!apiKey && !authJson && seedFromShared && !credentialStoreEntry) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
@@ -832,6 +832,13 @@ export async function seedManagedCodexHome(
         `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
       );
     }
+  } else if (authJson) {
+    await writeSubscriptionAuthJson(targetHome, authJson);
+    // Never log the payload or any part of it: it carries a live refresh token.
+    await onLog(
+      "stdout",
+      `[paperclip] Wrote subscription auth.json into Codex home "${targetHome}" from the configured Codex plan credential.\n`,
+    );
   }
 }
 

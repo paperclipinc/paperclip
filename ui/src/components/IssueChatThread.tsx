@@ -1,5 +1,3 @@
-import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
-import { useEmailComment } from "./EmailMessageCard";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type {
   ReasoningMessagePart,
@@ -64,7 +62,6 @@ import {
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
-  settleDraftSubmission,
   type ComposerDraftSubmission,
 } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
@@ -272,7 +269,7 @@ interface IssueChatMessageContext {
   stoppingRunLabel?: string;
   stopRunVariant?: "stop" | "pause";
   runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
-  onInterruptQueued?: (runId: string | null) => Promise<void>;
+  onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
@@ -503,7 +500,6 @@ export interface IssueChatComposerHandle {
 
 interface IssueChatComposerProps {
   onSend: IssueChatThreadProps["onAdd"];
-  confirmedSubmissionIds: ReadonlySet<string>;
   onReviewConversation?: () => Promise<void>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
@@ -521,7 +517,6 @@ interface IssueChatComposerProps {
   hasActiveRun?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
-  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
@@ -604,7 +599,6 @@ interface IssueChatThreadProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
-    clientRequestId?: string,
   ) => Promise<void>;
   onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
@@ -623,7 +617,6 @@ interface IssueChatThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
-  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
@@ -651,7 +644,7 @@ interface IssueChatThreadProps {
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
-  onInterruptQueued?: (runId: string | null) => Promise<void>;
+  onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   /** Authoritative PRP queue. The classic thread intentionally ignores it. */
   queuedCommentQueue?: IssueQueuedCommentQueue | null;
@@ -2033,8 +2026,6 @@ function IssueChatUserMessage({
     ? custom.sourceTrust
     : null;
   const followUpRequested = custom.followUpRequested === true;
-  const sentFromIMessage = isIssueCommentMetadata(custom.commentMetadata) &&
-    custom.commentMetadata.sourceChannel === "imessage-photon";
   const queueReason =
     typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel =
@@ -2130,7 +2121,7 @@ function IssueChatUserMessage({
             >
               {queueBadgeLabel}
             </Badge>
-            {onInterruptQueued ? (
+            {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -2167,11 +2158,6 @@ function IssueChatUserMessage({
         )}
       </div>
 
-      {sentFromIMessage && !deleted ? (
-        <div className="mt-1 px-1 text-xs text-muted-foreground">
-          Sent from iMessage
-        </div>
-      ) : null}
       {pending ? (
         <div
           className={cn(
@@ -3511,12 +3497,7 @@ function CompactSystemNoticeRow({
   );
 }
 
-function SystemNoticeCommentRow(props: { message: ThreadMessage; anchorId?: string }) {
-  const custom = props.message.metadata.custom as Record<string, unknown>;
-  const email = useEmailComment(typeof custom.commentId === "string" ? custom.commentId : props.message.id);
-  return email ?? <SystemNoticeCommentContent {...props} />;
-}
-function SystemNoticeCommentContent({
+function SystemNoticeCommentRow({
   message,
   anchorId,
 }: {
@@ -4682,7 +4663,6 @@ const IssueChatComposer = forwardRef<
 >(function IssueChatComposer(
   {
     onSend,
-    confirmedSubmissionIds,
     onReviewConversation,
     onStop,
     stopPending,
@@ -4699,7 +4679,6 @@ const IssueChatComposer = forwardRef<
     hasActiveRun = false,
     currentUserId = null,
     userLabelMap = null,
-    composerPause = null,
     composerDisabledReason = null,
     composerHint = null,
     issueStatus,
@@ -4728,30 +4707,6 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
   const bodyRef = useRef(body);
   bodyRef.current = body;
-  const pendingDraftRef = useRef<{
-    draftKey: string;
-    attemptId: string;
-    submittedBody: string;
-    submittedAttachmentIds: string[];
-  } | null>(null);
-  function changeBody(update: string | ((current: string) => string)) {
-    const value = typeof update === "function" ? update(bodyRef.current) : update;
-    bodyRef.current = value;
-    setBody(value);
-    const pending = pendingDraftRef.current;
-    if (!pending || pending.draftKey !== draftKey ||
-        loadDraftSubmission(pending.draftKey)?.attemptId !== pending.attemptId) return;
-    // Persist the next draft while delivery is pending, before navigation or a
-    // lost response can turn the original submission into an uncertain one.
-    saveDraft(pending.draftKey,
-      value ? `${pending.submittedBody}\n\n${value}` : pending.submittedBody,
-      pending.attemptId);
-    saveDraftSubmission(pending.draftKey, {
-      attemptId: pending.attemptId, reviewed: false,
-      nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
-      submittedAttachmentIds: pending.submittedAttachmentIds,
-    });
-  }
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
   const [attaching, setAttaching] = useState(false);
@@ -4780,12 +4735,6 @@ const IssueChatComposer = forwardRef<
         : update;
     composerAttachmentsRef.current = next;
     setComposerAttachmentState(next);
-    const pending = pendingDraftRef.current;
-    if (pending && pending.draftKey === draftKey) {
-      saveDraftAttachments(pending.draftKey, next
-        .filter(item => item.status === "attached" && item.attachmentId)
-        .map(item => ({ ...item, inline: item.inline === true })), pending.attemptId);
-    }
   }
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue =
@@ -4854,22 +4803,6 @@ const IssueChatComposer = forwardRef<
       })),
     );
   }, [draftKey]);
-
-  // A server receipt for this exact request settles a restored submission.
-  // Text equality is not delivery proof: users may intentionally repeat text.
-  useEffect(() => {
-    if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
-    const nextDraft = uncertainSubmission.nextDraftOffset === undefined
-      ? "" : bodyRef.current.slice(uncertainSubmission.nextDraftOffset);
-    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId, nextDraft);
-    setUncertainSubmission(null);
-    setBody(nextDraft);
-    bodyRef.current = nextDraft;
-    const submittedIds = uncertainSubmission.submittedAttachmentIds;
-    setComposerAttachments(current => submittedIds
-      ? current.filter(item => !item.attachmentId || !submittedIds.includes(item.attachmentId))
-      : []);
-  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
 
   useEffect(() => {
     if (
@@ -4944,7 +4877,6 @@ const IssueChatComposer = forwardRef<
     Boolean(onStop || stopControl.stopping);
 
   async function handleSubmit() {
-    if (composerPause) return;
     const trimmed = body.trim();
     if (
       (!trimmed && attachedFiles.length === 0) ||
@@ -4968,7 +4900,6 @@ const IssueChatComposer = forwardRef<
   }
 
   async function submitComment() {
-    if (composerPause) return;
     const trimmed = body.trim();
     if (
       (!trimmed && attachedFiles.length === 0) ||
@@ -5021,7 +4952,6 @@ const IssueChatComposer = forwardRef<
     const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     if (draftKey) saveDraft(draftKey, trimmed);
     setSubmitting(true);
-    bodyRef.current = "";
     setBody("");
     let attemptId: string | null = null;
     try {
@@ -5038,45 +4968,37 @@ const IssueChatComposer = forwardRef<
       if (draftKey) {
         saveDraft(draftKey, trimmed);
         saveDraftSubmission(draftKey, { attemptId, reviewed: false });
-        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds };
-        changeBody(bodyRef.current);
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
       // mutation; it already owns optimistic echo and durable error handling.
-      const sendPromise = onSend(
-        submittedBody, reopen, reassignment,
-        attachmentIds.length ? attachmentIds : undefined, attemptId,
-      );
+      const sendPromise = attachmentIds.length
+        ? onSend(submittedBody, reopen, reassignment, attachmentIds)
+        : onSend(submittedBody, reopen, reassignment);
       queueViewportRestore(viewportSnapshot);
       await sendPromise;
-      // Settle the captured task even if the user navigated away. The exact
-      // attempt guard preserves any newer submission in this or another tab.
-      if (draftKey) settleDraftSubmission(draftKey, attemptId,
-        mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
+      if (draftKey) clearDraftSubmission(draftKey, attemptId);
+      if (draftKey) clearDraft(draftKey);
       setComposerAttachments((current) =>
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
-      const nextDraft = bodyRef.current;
       if (attemptId && error instanceof CommentSubmissionUnknownError) {
-        const uncertain = {
-          attemptId, reviewed: false,
-          nextDraftOffset: trimmed.length + (nextDraft ? 2 : 0),
-          submittedAttachmentIds: attachmentIds,
-        };
+        const uncertain = { attemptId, reviewed: false };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
       } else if (draftKey && attemptId)
         clearDraftSubmission(draftKey, attemptId);
-      const restoredBody = nextDraft ? `${trimmed}\n\n${nextDraft}` : trimmed;
+      const restoredBody = restoreSubmittedCommentDraft({
+        currentBody: bodyRef.current,
+        submittedBody: trimmed,
+      });
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
-      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
       queueViewportRestore(viewportSnapshot);
     }
@@ -5111,7 +5033,7 @@ const IssueChatComposer = forwardRef<
         const safeName = file.name.replace(/[[\]]/g, "\\$&");
         const markdown = `![${safeName}](${url})`;
         if (insertInline)
-          changeBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
+          setBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
         setComposerAttachments((prev) =>
           prev.map((item) =>
             item.id === attachmentId
@@ -5132,7 +5054,7 @@ const IssueChatComposer = forwardRef<
           return undefined;
         if (inline && insertInline) {
           const markdown = `![${file.name.replace(/[[\]]/g, "\\$&")}](${attachment.contentPath})`;
-          changeBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
+          setBody((prev) => (prev ? `${prev}\n\n${markdown}` : markdown));
         }
         setComposerAttachments((prev) =>
           prev.map((item) =>
@@ -5313,16 +5235,12 @@ const IssueChatComposer = forwardRef<
       `(?<![\\w@/])${plainNameCandidate.matchedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`,
       "i",
     );
-    changeBody((current) => {
+    setBody((current) => {
       if (tokenRe.test(current))
         return current.replace(tokenRe, markdown.trimEnd());
       return current ? `${current} ${markdown}` : markdown;
     });
     setDismissedCoachToken(plainNameCandidate.matchedText);
-  }
-
-  if (composerPause) {
-    return <TaskChatPausedTakeover {...composerPause} hasDraft={Boolean(body.trim() || attachedFiles.length)} />;
   }
 
   if (composerDisabledReason) {
@@ -5455,7 +5373,7 @@ const IssueChatComposer = forwardRef<
         ref={editorRef}
         readOnly={!!uncertainSubmission}
         value={body}
-        onChange={changeBody}
+        onChange={setBody}
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
@@ -5711,7 +5629,11 @@ const IssueChatComposer = forwardRef<
             disabled={stopControl.stopping}
             onClick={() => void stopControl.stop()}
             aria-label={stopControl.stopping ? "Stopping…" : "Stop"}
-            title="Stop response"
+            title={
+              stopScope === "subtree"
+                ? "Stop and pause subtree"
+                : "Stop and pause task"
+            }
           >
             {stopControl.stopping ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -5837,7 +5759,6 @@ export function IssueChatThread({
   currentAssigneeValue = "",
   suggestedAssigneeValue,
   mentions = [],
-  composerPause = null,
   composerDisabledReason = null,
   composerHint = null,
   showComposer = true,
@@ -6119,9 +6040,11 @@ export function IssueChatThread({
   }
 
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    (body, reopen, reassignment, attachmentIds, clientRequestId) => {
+    (body, reopen, reassignment, attachmentIds) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
+      return attachmentIds?.length
+        ? onAdd(body, reopen, reassignment, attachmentIds)
+        : onAdd(body, reopen, reassignment);
     },
     [onAdd],
   );
@@ -6524,8 +6447,8 @@ export function IssueChatThread({
       stoppingRunLabel,
       stopRunVariant,
       runFinalizationActions,
-      onInterruptQueued: composerPause ? undefined : stableOnInterruptQueued,
-      onCancelQueued: composerPause ? undefined : stableOnCancelQueued,
+      onInterruptQueued: stableOnInterruptQueued,
+      onCancelQueued: stableOnCancelQueued,
       onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
@@ -6553,7 +6476,6 @@ export function IssueChatThread({
       stoppingRunLabel,
       stopRunVariant,
       runFinalizationActions,
-      composerPause,
       stableOnInterruptQueued,
       stableOnCancelQueued,
       stableOnDeleteComment,
@@ -6787,10 +6709,6 @@ export function IssueChatThread({
                 onImageUpload={imageUploadHandler}
                 onAttachImage={onAttachImage}
                 draftKey={draftKey}
-                confirmedSubmissionIds={new Set(comments.filter((comment) =>
-                  comment.authorUserId === currentUserId && comment.clientRequestId &&
-                  !("clientStatus" in comment && comment.clientStatus)
-                ).map((comment) => comment.clientRequestId!))}
                 enableReassign={enableReassign}
                 reassignOptions={reassignOptions}
                 currentAssigneeValue={currentAssigneeValue}
@@ -6803,7 +6721,6 @@ export function IssueChatThread({
                 stopScope={stopScope}
                 currentUserId={currentUserId}
                 userLabelMap={userLabelMap}
-                composerPause={composerPause}
                 composerDisabledReason={composerDisabledReason}
                 composerHint={composerHint}
                 issueStatus={issueStatus}

@@ -123,13 +123,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableAgentChat: {
-    title: "Agent Chat",
-    description: "Persistent task-backed conversations that clarify goals and hand work off to tasks.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
     description:

@@ -83,7 +83,6 @@ async function prepareCodexHelloProbe(input: {
   args: string[];
   env: Record<string, string>;
   probeApiKey: string | null;
-  managedAiConnection?: boolean;
 }): Promise<{
   command: string;
   args: string[];
@@ -119,7 +118,7 @@ async function prepareCodexHelloProbe(input: {
     const configuredHomeIsManaged =
       configuredCodexHome != null &&
       isManagedCodexHomePath(process.env, input.companyId, configuredCodexHome);
-    if (!input.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+    if (isCodexAuthCacheEnabled(process.env)) {
       // Identity-anchored cache vend, exactly as execute runs it before the
       // seeding below. Best-effort: a vend failure never blocks the probe, and
       // the probe then stages the shared credential as-is.
@@ -254,9 +253,6 @@ export async function testEnvironment(
         code: "adapter_engine_unavailable",
         level: "error",
         message: engineSelection.unavailableReason,
-        hint: ctx.executionTarget?.kind === "remote"
-          ? "In the agent’s runtime settings, select the CLI engine, or use a sandbox image with the Codex ACP server installed."
-          : undefined,
       }],
       testedAt: new Date().toISOString(),
     };
@@ -424,7 +420,6 @@ export async function testEnvironment(
           ? hostOpenAiKey
           : null;
       const preparedProbe = await prepareCodexHelloProbe({
-        managedAiConnection: Boolean(config.managedAiConnection),
         runId,
         companyId: ctx.companyId,
         target,

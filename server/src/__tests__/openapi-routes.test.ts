@@ -19,7 +19,6 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
-  "ai-connections.ts": "/api",
   "attention.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
@@ -27,7 +26,6 @@ const apiPrefixes: Record<string, string> = {
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
-  "email.ts": "/api",
   "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -57,7 +55,6 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
-  "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
@@ -85,13 +82,15 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
+const explicitOpenApiCoverageExclusions = new Set([
+  // Cloud upstream routes are fork-specific and not in the public OpenAPI document.
+  "cloud-upstreams.ts",
+]);
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
-  "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
 
@@ -129,7 +128,7 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (
-    (file === "chat-channels.ts" || file === "email.ts") &&
+    file === "chat-channels.ts" &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
     return routePath;
@@ -255,10 +254,12 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
-    expect(res.body.paths["/api/mcp/project-tools"].post.security).toEqual([{ AgentRunAuth: [] }]);
-    expect(res.body.paths["/api/mcp/project-tools"].post["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, taskBound: true });
-    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
-    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
+    expect(
+      res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security,
+    ).toEqual([]);
+    expect(
+      res.body.paths["/api/mcp/gateways/{gatewayPublicId}"],
+    ).toBeUndefined();
     expect(res.body.paths["/api/companies"].get.parameters).toContainEqual({
       name: "scope",
       in: "query",
@@ -386,7 +387,6 @@ describe("openapi routes", () => {
       ["post", "/api/chat-endpoints/{endpointId}/setup"],
       ["post", "/api/chat-endpoints/{endpointId}/setup-secret"],
       ["post", "/api/chat-endpoints/{endpointId}/test"],
-      ["post", "/api/chat-endpoints/{endpointId}/photon/inspect"],
       ["get", "/api/chat-endpoints/{endpointId}/resources"],
       ["put", "/api/chat-endpoints/{endpointId}/resources"],
       ["get", "/api/chat-endpoints/{endpointId}/principals"],
@@ -451,7 +451,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
+            enum: ["slack", "github", "discord", "microsoft-teams", "telegram"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -511,21 +511,6 @@ describe("openapi routes", () => {
     );
     expect(setup.responses["409"]).toBeDefined();
     expect(setup.responses["422"]).toBeDefined();
-    expect(setup.responses["502"]).toBeDefined();
-    expect(setup.responses["503"]).toBeDefined();
-
-    const photon = spec.paths["/api/chat-endpoints/{endpointId}/photon/inspect"].post;
-    expect(photon.requestBody.content["application/json"].schema.required).toEqual([
-      "projectId", "projectSecret",
-    ]);
-    const photonResponse = photon.responses["200"].content["application/json"].schema;
-    expect(photonResponse.properties.allocation.enum).toEqual(["dedicated", "shared"]);
-    expect(photonResponse.properties.lines.items.additionalProperties).toBe(false);
-    expect(JSON.stringify(photonResponse)).not.toMatch(/projectSecret|token/);
-    expect(photon.responses["422"]).toBeDefined();
-    expect(photon.responses["429"]).toBeDefined();
-    expect(photon.responses["502"]).toBeDefined();
-    expect(photon.responses["503"]).toBeDefined();
 
     const setupSecret =
       spec.paths["/api/chat-endpoints/{endpointId}/setup-secret"].post;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { findCompanyByUrlSegment } from "@/lib/company-routes";
@@ -77,7 +77,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+export function Layout() {
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -236,7 +236,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: false,
+    refetchIntervalInBackground: true,
   });
   const keyboardShortcutsEnabled = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -657,7 +657,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 {hasSecondarySidebar ? (
                   <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
                 ) : (
-                  <Sidebar>{sidebarSections}</Sidebar>
+                  <Sidebar />
                 )}
               </div>
             </div>
@@ -681,7 +681,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               {replacesPrimarySidebar ? (
                 <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
               ) : (
-                <Sidebar>{sidebarSections}</Sidebar>
+                <Sidebar />
               )}
             </div>
             <SidebarAccountMenu

@@ -104,16 +104,12 @@ describe("opencode remote execution", () => {
   const cleanupDirs: string[] = [];
   const originalOpenCodeAllowAllModels = process.env.OPENCODE_ALLOW_ALL_MODELS;
 
-  beforeEach(async () => {
-    const configHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
-    cleanupDirs.push(configHome);
-    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+  beforeEach(() => {
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
   });
 
   afterEach(async () => {
     vi.clearAllMocks();
-    vi.unstubAllEnvs();
     if (originalOpenCodeAllowAllModels === undefined) {
       delete process.env.OPENCODE_ALLOW_ALL_MODELS;
     } else {
@@ -126,7 +122,7 @@ describe("opencode remote execution", () => {
     }
   });
 
-  it.each([false, true])("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution (managed=%s)", async (managed) => {
+  it("prepares the workspace, syncs OpenCode skills, and restores workspace changes for remote SSH execution", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -153,13 +149,9 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
-        ...(managed ? {
-          managedAiConnection: { provider: "openrouter", method: "api_key" },
-        } : {}),
-        env: {
-          XDG_CONFIG_HOME: path.join(rootDir, "config"),
-          ...(managed ? { HOME: "/var/folders/qa-managed", XDG_DATA_HOME: "/var/folders/qa-managed/data" } : {}),
-        },
+        // Explicit credential so the preflight outcome never depends on the
+        // host machine running the tests.
+        env: { OPENAI_API_KEY: "test-preflight-key" },
       },
       context: {
         paperclipWorkspace: {
@@ -240,17 +232,6 @@ describe("opencode remote execution", () => {
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
-    if (managed) {
-      const home = `${managedRemoteWorkspace}/.paperclip-runtime/opencode/managed-auth/run-1`;
-      expect(call?.[3].env.HOME).toBe(home);
-      expect(call?.[3].env.XDG_DATA_HOME).toBe(`${home}/data`);
-      expect(modelProbeCall?.[3].env.XDG_DATA_HOME).toBe(`${home}/data`);
-      expect(runSshCommand).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.stringContaining(`${home}/.claude/skills`),
-        expect.anything(),
-      );
-    }
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
         workspaceId: "workspace-1",
