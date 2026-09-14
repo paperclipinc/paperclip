@@ -1251,4 +1251,3 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).toHaveBeenCalledOnce();
   });
 });
-});
