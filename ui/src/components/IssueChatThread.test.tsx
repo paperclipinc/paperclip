@@ -3723,7 +3723,7 @@ describe("IssueChatThread", () => {
           />
         </MemoryRouter>
       );
-      const editor = () => container.querySelector<HTMLTextAreaElement>(‘textarea[aria-label="Issue chat editor"]’)!;
+      const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
       const type = (value: string) => act(() => {
         Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
         editor().dispatchEvent(new Event("input", { bubbles: true }));
@@ -3733,7 +3733,7 @@ describe("IssueChatThread", () => {
       await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Send")!.click());
       const requestId = onAdd.mock.calls[0]![4] as string;
       type("Newer unsent draft");
-      await act(async () => container.querySelector(‘[data-testid="issue-chat-composer"]’)!
+      await act(async () => container.querySelector('[data-testid="issue-chat-composer"]')!
         .dispatchEvent(createFileDragEvent("drop", [new File(["next"], "next-draft.txt", { type: "text/plain" })])));
       if (outcome !== "late receipt") await act(async () => root.unmount());
       if (outcome === "navigation success") await act(async () => resolveSend());
@@ -3745,7 +3745,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
       expect(localStorage.getItem(`${key}:attachments:v1`)).toContain(attachmentId);
       expect(container.textContent).toContain("next-draft.txt");
-      expect(container.textContent).not.toContain("We couldn’t confirm");
+      expect(container.textContent).not.toContain("We couldn't confirm");
       await act(async () => root.unmount());
       await act(async () => resolveSend());
       expect(localStorage.getItem(key)).toBe("Newer unsent draft");
