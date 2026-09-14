@@ -234,7 +234,6 @@ function makeInstanceSettings({
       executionMode: "any",
       enableEnvironments,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
       enableAgentChat: false,
       enableConferenceRoomChat: false,
       enableIssuePlanDecompositions: true,
