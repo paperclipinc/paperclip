@@ -4464,7 +4464,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 }),
               });
             } catch (err) {
-              if (!resumeSessionId || !isResumeFailure(err) || previousParams.interruptedCheckpoint === true) throw err;
+              if (!resumeSessionId || !isResumeFailure(err)) throw err;
               clearSession = true;
               resumedSession = false;
               await ctx.onLog(
@@ -4516,9 +4516,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             clearSession = true;
           }
           // A compatible warm handle reuses the already-running ACP agent and does
-          if (previousParams.interruptedCheckpoint === true && handle?.backendSessionId !== resumeSessionId) {
-            throw new Error("The provider did not restore the interrupted session; refusing a fresh-session fallback.");
-          }
           // not emit another spawn event. Persist its known identity on this run
           // before the next prompt starts so every running heartbeat is adoptable.
           if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
