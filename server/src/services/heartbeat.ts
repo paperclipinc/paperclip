@@ -844,7 +844,6 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
 class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
     super(
-      "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.",
       "Run admission could not acquire its database locks after bounded retries. No provider work started. Review database contention and send a fresh request; this attempt will not automatically retry.",
     );
   }
@@ -20155,9 +20154,6 @@ export function heartbeatService(
           await issuesSvc.checkout(
             issueId,
             agent.id,
-            context.interactionKind === "connection_intent"
-              ? ["in_progress", "in_review"]
-              : ["in_progress"],
             [...resolvedInteractionCheckoutExpectedStatuses()],
             run.id,
           );
