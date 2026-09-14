@@ -21079,8 +21079,6 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
-      const { resolvedConfig, secretKeys, secretManifest } =
-        await resolveExecutionRunAdapterConfig({
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
@@ -22957,7 +22955,6 @@ export function heartbeatService(
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 });
-          const taskNativeSessionId = readNonEmptyString(
           const taskNativeSessionId = managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
@@ -23080,8 +23077,6 @@ export function heartbeatService(
             executionTarget.transport === "sandbox"
               ? (executionTarget.runnerLifecyclePolicy ?? null)
               : null;
-          const effectiveLifecyclePolicy =
-            environmentLifecyclePolicy ?? agentLifecyclePolicy;
           const effectiveLifecyclePolicy = managedAiRuntime ? { mode: "per_turn" as const, idleTimeoutMs: null } : environmentLifecyclePolicy ?? agentLifecyclePolicy;
           if (
             effectiveLifecyclePolicy.mode === "warm" &&
@@ -26180,7 +26175,6 @@ export function heartbeatService(
       ...(opts.contextSnapshot ?? {}),
     };
     const reason = opts.reason ?? null;
-    const payload = opts.payload ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an
     // existing receipt. Never accept this internal marker from a wake caller.
@@ -28333,16 +28327,6 @@ export function heartbeatService(
               queuedCommentIdsFromWakePayload(wake.payload).length > 0
             );
           });
-          const adoptedCommentIds = [
-              // Durable chat work must keep its receipt, actor, source, and
-              // session contract through normal promotion and authorization.
-              !wake.idempotencyKey?.startsWith("chat-inbound:") &&
-              !isInteractionResolutionWakePayload(deferredPayload) &&
-              !hasInteractionContinuationWakeContext(deferredContext) &&
-              ["issue_commented", "issue_reopened_via_comment"].includes(String(deferredContext.wakeReason ?? wake.reason)) &&
-              queuedCommentIdsFromWakePayload(wake.payload).length > 0
-            );
-          });
           let adoptedCommentIds = [
             ...new Set([
               ...adoptedComments.flatMap((wake) =>
@@ -29254,11 +29238,6 @@ export function heartbeatService(
         ? captureAdapterStopOwnership(run.id)
         : undefined;
     const control = stopOwnership?.control;
-    try {
-      let releaseProcessCancellation: (() => void) | undefined;
-      const processCancellationSettlement =
-        agent?.adapterType === "process" &&
-        run.runtimeMode !== "native" &&
     try {
       let releaseProcessCancellation: (() => void) | undefined;
       const processCancellationSettlement =
