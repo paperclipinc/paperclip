@@ -4264,9 +4264,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         const previousParams = parseObject(ctx.runtime.sessionParams);
         const canResume = isCompatibleSession(previousParams, prepared);
-        if (previousParams.interruptedCheckpoint === true && !canResume) {
-          throw new Error("The interrupted session is no longer compatible. Its action history must be checked before starting a new session.");
-        }
         const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
         // Borrow the warm entry without removing it, so an overlapping run of the
         // same session still sees it. The borrow clears the entry's idle timer, so
