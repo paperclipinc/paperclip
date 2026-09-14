@@ -1218,7 +1218,6 @@ function registerCurrentRoute(input: {
 }
 
 type OpenApiAuthLevel =
-  "public" | "runtime_tools" | "authenticated" | "board" | "instance_admin";
   | "public"
   | "agent_run"
   | "runtime_tools"
@@ -2148,7 +2147,6 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Configure or change chat endpoint lifecycle state",
   description:
-    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
     "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`; iMessage Photon: `projectSecret`, with nonsecret `photon.projectId` and `photon.lineId` configuration). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
   request: {
     params: z.object({ endpointId: z.string().uuid() }),
@@ -2227,7 +2225,6 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Complete a chat endpoint setup test",
   description:
-    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary.",
     "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary. iMessage Photon additionally requires a fresh linked sender's task and a successful outbound agent publication.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
@@ -2245,7 +2242,6 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "List destinations discovered for a chat endpoint",
   description:
-    "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, and Telegram chats. Direct-message resources are intentionally omitted.",
     "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, Telegram chats, and iMessage Photon groups. Direct-message resources are intentionally omitted.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
