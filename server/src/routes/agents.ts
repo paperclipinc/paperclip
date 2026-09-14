@@ -3406,19 +3406,6 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const result = await adapter.testEnvironment({
-          companyId,
-          adapterType: type,
-          config: effectiveAdapterConfig,
-          executionTarget,
-          environmentName,
-          // A cloud tenant reaches this server through the gateway and has no
-          // shell on it, so adapters must not answer with host-login advice
-          // ("run `codex login`") or report a host credential file as theirs.
-          // Every other actor source is a local/self-hosted operator for whom
-          // the host genuinely is their own machine.
-          callerControlsHost: req.actor?.source !== "cloud_tenant",
-        });
         const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }) : null;
         let result;
         try {
@@ -6563,7 +6550,6 @@ export function agentRoutes(
 
       const rows = [...liveRuns, ...recentRuns];
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-      res.json(await Promise.all(rows.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
       res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
         execution: projections.get(run.id) ?? null,
@@ -6573,7 +6559,6 @@ export function agentRoutes(
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
-    res.json(await Promise.all(liveRuns.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
     res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
         execution: projections.get(run.id) ?? null,
