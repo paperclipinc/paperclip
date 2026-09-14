@@ -1,0 +1,5 @@
+-- no-op: fork-specific tables (activation_events, cloud_upstream_connections,
+-- cloud_upstream_runs, etc.) already exist from earlier fork migrations.
+-- This migration exists only to bring the drizzle snapshot into sync with
+-- the fork schema after the upstream rebase landed snapshots 0275-0280
+-- that do not include fork-only tables.
