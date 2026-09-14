@@ -2518,7 +2518,6 @@ export function recoveryService(
                       ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
                       : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
                   : recoveryCause === "configuration_incomplete"
-                    ? readConfigurationIncompletePayload(input.latestRun)
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)
@@ -4222,12 +4221,6 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
-      const executionState =
-        issue.status === "in_review"
-          ? parseIssueExecutionState(issue.executionState)
-          : null;
-      const pendingExecutionState =
-        executionState?.status === "pending" ? executionState : null;
       if (issue.conversationAgentId) {
         const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
         if (lastRun?.status === "succeeded") {
