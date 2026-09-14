@@ -15105,7 +15105,6 @@ export function heartbeatService(
         continue;
       }
       const message = `Interrupted by graceful server shutdown (${signal}); recovery requires verified provider continuity`;
-      const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
       try {
         if (run.runtimeMode === "native") {
@@ -16912,9 +16911,6 @@ export function heartbeatService(
     }
     let terminal: typeof heartbeatRuns.$inferSelect | null = null;
     try {
-      const result = await db.transaction(async (tx) => {
-        // Same queue-edit lock order, then the close committer's conversation
-        // row. NOWAIT makes contention a scoped deferral, never authority.
       const attempt = () => db.transaction(async (tx) => {
         terminal = null;
         // Same queue-edit lock order, then the close committer's conversation
