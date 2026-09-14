@@ -643,6 +643,8 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+  });
+
   it("restores a saved agent's redacted CODEX_HOME before testing its adapter", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const storedHome = "/paperclip/companies/company-1/agents/agent-1/codex-home";
