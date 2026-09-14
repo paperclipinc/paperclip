@@ -1,11 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "@/api/instanceSettings";
-import { queryKeys } from "@/lib/queryKeys";
+import { useFeatures } from "./useFeatures";
+
 export function useAgentChatEnabled() {
-  const query = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const query = useFeatures();
   return {
     enabled: query.data?.enableAgentChat === true,
     loaded: query.isFetched,

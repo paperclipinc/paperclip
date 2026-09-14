@@ -1360,28 +1360,16 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
-      companyIds: ["company-1"],
-      isInstanceAdmin: true,
-      source: "session",
-      keyId: null,
-      user: null,
-      userId: null,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+      }),
+    );
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
     mockDecisionsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: true,
-    });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
     mockOpenPanel.mockClear();
@@ -1733,12 +1721,6 @@ describe("IssueDetail", () => {
   });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         ancestors: [
@@ -1776,12 +1758,6 @@ describe("IssueDetail", () => {
   });
 
   it("lifts the redesigned desktop thread into the side-panel header band", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: false,
-    });
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
@@ -1821,12 +1797,6 @@ describe("IssueDetail", () => {
   it("retains the production breadcrumb side-panel toggle when Streamlined UI is off", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockPanelState.panelVisible = false;
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: false,
-    });
 
     await act(async () => {
       root.render(
@@ -1945,12 +1915,12 @@ describe("IssueDetail", () => {
   it("leaves ordinary document links to the classic center-column surface", async () => {
     mockPanelState.panelVisible = false;
     mockLocation.hash = "#document-qa-evidence";
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        isInstanceAdmin: true,
+        features: { enableClassicTaskInterface: true },
+      }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
@@ -2729,10 +2699,12 @@ describe("IssueDetail", () => {
       "issues",
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
-      feedbackDataSharingPreference: "prompt",
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        isInstanceAdmin: true,
+        features: { keyboardShortcuts: true },
+      }),
+    );
 
     await act(async () => {
       root.render(
@@ -2769,11 +2741,6 @@ describe("IssueDetail", () => {
       createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox"),
     );
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: true,
-      feedbackDataSharingPreference: "prompt",
-    });
-    // Keyboard shortcuts come from board access on the fork.
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
       buildCurrentBoardAccess({ isInstanceAdmin: true, features: { keyboardShortcuts: true } }),
     );
@@ -4133,11 +4100,6 @@ describe("IssueDetail", () => {
   });
 
   it("hides the properties sidebar on the first onboarding task until a plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
@@ -4164,11 +4126,6 @@ describe("IssueDetail", () => {
   it("starts a planning-mode task as chat-only until its plan document exists", async () => {
     mockSetBreadcrumbToolbar.mockClear();
     mockSetBreadcrumbPanelControl.mockClear();
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         originKind: "manual",
@@ -4206,11 +4163,6 @@ describe("IssueDetail", () => {
   });
 
   it("reveals the planning-mode task sidebar when its plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         originKind: "manual",
@@ -4235,11 +4187,6 @@ describe("IssueDetail", () => {
   it("keeps the Show properties button clickable on the first task and reveals the sidebar on demand", async () => {
     mockSetBreadcrumbToolbar.mockClear();
     mockSetBreadcrumbPanelControl.mockClear();
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
@@ -4284,11 +4231,6 @@ describe("IssueDetail", () => {
   });
 
   it("reveals the properties sidebar on the first onboarding task once a plan document exists", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(
       createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
     );
@@ -4308,11 +4250,6 @@ describe("IssueDetail", () => {
   });
 
   it("shows the properties sidebar immediately on a non-first task", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.get.mockResolvedValue(createIssue({ originKind: "manual" }));
 
     await act(async () => {
@@ -5047,13 +4984,12 @@ describe("IssueDetail", () => {
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: true,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        isInstanceAdmin: true,
+        features: { enableClassicTaskInterface: true },
+      }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockIssuesApi.listInteractions.mockResolvedValue([
       {
@@ -5113,13 +5049,6 @@ describe("IssueDetail", () => {
   });
 
   it("restores master's task chat thread when Streamlined UI is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: false,
-      enableClassicTaskInterface: false,
-    });
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {
@@ -5141,13 +5070,12 @@ describe("IssueDetail", () => {
   });
 
   it("still honors Classic Task Interface when Streamlined UI is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-      enableStreamlinedUi: false,
-      enableClassicTaskInterface: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        isInstanceAdmin: true,
+        features: { enableClassicTaskInterface: true },
+      }),
+    );
     mockIssuesApi.get.mockResolvedValue(createIssue());
 
     await act(async () => {

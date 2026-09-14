@@ -22,6 +22,8 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableServerInfoDebugView: false,
   enableSummaries: false,
   enableStatusCards: false,
+  enableAgentChat: false,
+  enableChatConnectors: false,
   cloudBilling: false,
   cloudTrialBanner: false,
   keyboardShortcuts: false,

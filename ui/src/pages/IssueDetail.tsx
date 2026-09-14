@@ -48,7 +48,7 @@ import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   canBoardManageRuntime,
@@ -3350,28 +3350,16 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
     enabled: !!issueId && !!currentUserId,
   });
-  const { data: instanceGeneralSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-    enabled: !!issueId,
-    retry: false,
-  });
-  const { data: instanceExperimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: !!issueId,
-    retry: false,
-  });
-  const keyboardShortcutsEnabled =
-    instanceGeneralSettings?.keyboardShortcuts === true;
+  const { data: features } = useFeatures();
+  const keyboardShortcutsEnabled = features?.keyboardShortcuts === true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
-  const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
+  const casesChipsEnabled = features?.enableCases === true;
   const feedbackDataSharingPreference =
-    instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
+    features?.feedbackDataSharingPreference ?? "prompt";
   const showPlanDecompositionsSection =
-    instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
+    features?.enableIssuePlanDecompositions === true;
   const fileViewerEnabled =
-    instanceExperimentalSettings?.enableExperimentalFileViewer === true;
+    features?.enableExperimentalFileViewer === true;
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -5112,7 +5100,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.instance.generalSettings,
+        queryKey: queryKeys.access.currentBoardAccess,
       });
       pushToast({
         title:
@@ -7624,7 +7612,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
-                  threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
+                  threadHeader={<>{taskChatThreadHeader}{features?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
                     // task: its description is agent instructions, not something the
@@ -7768,7 +7756,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     } : undefined,
                     resumeHref: !activePauseHold.isRoot ? createIssueDetailPath(activePauseHoldRoot?.identifier ?? activePauseHold.rootIssueId) : undefined,
                   } : null}
-                  composerDisabledReason={issue.conversationAgentId && !instanceExperimentalSettings?.enableAgentChat ? "Agent Chat is disabled in Experimental settings." : issueId && treeControlStatePending ? "Checking task status…" : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again." : null}
+                  composerDisabledReason={issue.conversationAgentId && !features?.enableAgentChat ? "Agent Chat is disabled in Experimental settings." : issueId && treeControlStatePending ? "Checking task status…" : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again." : null}
                   composerHint={composerHint}
                   queuedCommentReason={queuedCommentReason}
                   onVote={handleCommentVote}
