@@ -9658,7 +9658,6 @@ export function heartbeatService(
   // issue's activity entry.
   async function applyWakeQueuePostCommitEffects(effects: WakeQueuePostCommitEffect[]) {
     for (const effect of effects) {
-      if (effect.kind === "run_queued") {
       if (effect.kind === "conversation_retry_requested") {
         const [source] = await db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, effect.companyId), eq(heartbeatRuns.id, effect.runId),
@@ -18630,7 +18629,6 @@ export function heartbeatService(
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
@@ -23011,8 +23009,6 @@ export function heartbeatService(
                   .then((rows) => rows.length > 0)
               : false;
           const compatibleLegacyRetrySource =
-            context.forceFreshSession !== true &&
-            isUnusedLegacyNativeRetryReplacement({
             !managedAiRuntime && !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
               replacement: run,
               source: legacyRetrySource,
@@ -23550,12 +23546,6 @@ export function heartbeatService(
                 nativeRuntimeResolution.resolverVersion,
               runtimeModeReason: nativeRuntimeResolution.reason,
               runtimeModeResolvedAt: run.runtimeModeResolvedAt ?? new Date(),
-              // Preserve only this row's server-owned admission field at the
-              // atomic write, never an input or previous runner's profile.
-              runnerProfileJson: sql`case when ${heartbeatRuns.runnerProfileJson} ? ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}
-                then ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb
-                  || jsonb_build_object(${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}::text, ${heartbeatRuns.runnerProfileJson} -> ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY})
-                else ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : null)}::jsonb end`,
               // Preserve server-owned admission and dispatch evidence on this
               // row; never copy another run's execution profile.
               runnerProfileJson: sql`(case when ${heartbeatRuns.runnerProfileJson} ? ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}
@@ -25932,6 +25922,8 @@ export function heartbeatService(
               );
             },
           );
+        }
+      }
       try {
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
           await db
@@ -26108,14 +26100,6 @@ export function heartbeatService(
           adapterExecutionControls.delete(run.id);
         }
       }
-      activeRunExecutions.delete(run.id);
-      // A failed owned Stop remains visible until this exact executor settles,
-      // including a graceful exit result arriving after the cancellation error.
-      // It is never retained beyond the active execution's cleanup.
-      failedProcessRunCancellations.delete(run.id);
-      executionControl.finish();
-      if (adapterExecutionControls.get(run.id) === executionControl) {
-        adapterExecutionControls.delete(run.id);
       // Terminalization precedes lease and adapter cleanup. Only now is the
       // owner gone; retry pending input for ordinary completions as well as Stop.
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
@@ -26340,7 +26324,6 @@ export function heartbeatService(
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
       waitCondition?: Record<string, unknown>,
     ) => {
-      await db.insert(agentWakeupRequests).values({
       if (executionWaitRequestId) {
         await db.update(agentWakeupRequests).set({
           payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
@@ -26881,8 +26864,6 @@ export function heartbeatService(
               const [chatBinding] = await tx
                 .select({ id: chatConversations.id })
                 .from(chatConversations)
-                .where(
-                  and(
                 .innerJoin(chatEndpoints, eq(chatEndpoints.id, chatConversations.endpointId))
                 .where(
                   and(
@@ -27493,352 +27474,6 @@ export function heartbeatService(
             !dependencyReadiness.isDependencyReady &&
             !blockedInteractionWake
           ) {
-            await tx.insert(agentWakeupRequests).values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_dependencies_blocked",
-              payload: {
-                ...(payload ?? {}),
-                issueId,
-                unresolvedBlockerIssueIds:
-                  dependencyReadiness.unresolvedBlockerIssueIds,
-              payload: {
-                ...(payload ?? {}),
-                heartbeatSkip: {
-                  reason:
-                    "Issue status or assignee changed before the wake could be queued.",
-                  issueId: issue.id,
-                  expectedStatuses: issueStateGuard.statuses,
-                  actualStatus: issue.status,
-                  expectedAssigneeAgentId: issueStateGuard.assigneeAgentId,
-                  actualAssigneeAgentId: issue.assigneeAgentId,
-                },
-              },
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
-            });
-            return { kind: "skipped" as const };
-          }
-
-          if (
-            worktreeExecutionCutoff &&
-            issue.createdAt < worktreeExecutionCutoff
-          ) {
-            await tx.insert(agentWakeupRequests).values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "heartbeat.worktree_execution_cutoff",
-              payload: {
-                ...(payload ?? {}),
-                heartbeatSkip: {
-                  reason: "worktree_execution_cutoff",
-                  cutoff: worktreeExecutionCutoff.toISOString(),
-                  issueId: issue.id,
-                },
-              },
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
-            });
-            return { kind: "skipped" as const };
-          }
-
-          const cancelStaleScheduledRetry = async (
-            scheduledRun: typeof heartbeatRuns.$inferSelect,
-          ) => {
-            const issueCancelled = issue.status === "cancelled";
-            if (
-              scheduledRun.status !== "scheduled_retry" ||
-              (scheduledRun.agentId === issue.assigneeAgentId &&
-                !issueCancelled)
-            ) {
-              return false;
-            }
-
-            const now = new Date();
-            const reason = issueCancelled
-              ? "Cancelled because the issue was cancelled before the scheduled retry became due"
-              : "Cancelled because the issue was reassigned before the scheduled retry became due";
-            const cancelled = await tx
-              .update(heartbeatRuns)
-              .set({
-                status: "cancelled",
-                finishedAt: now,
-                error: reason,
-                errorCode: issueCancelled
-                  ? "issue_cancelled"
-                  : "issue_reassigned",
-                updatedAt: now,
-              })
-              .where(
-                and(
-                  eq(heartbeatRuns.id, scheduledRun.id),
-                  eq(heartbeatRuns.status, "scheduled_retry"),
-                ),
-              )
-              .returning()
-              .then((rows) => rows[0] ?? null);
-
-            if (!cancelled) return false;
-
-            if (scheduledRun.wakeupRequestId) {
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  status: "cancelled",
-                  finishedAt: now,
-                  error: reason,
-                  updatedAt: now,
-                })
-                .where(
-                  eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId),
-                );
-            }
-
-            if (issue.executionRunId === scheduledRun.id) {
-              await tx
-                .update(issues)
-                .set({
-                  executionRunId: null,
-                  executionAgentNameKey: null,
-                  executionLockedAt: null,
-                  updatedAt: now,
-                })
-                .where(
-                  and(
-                    eq(issues.id, issue.id),
-                    eq(issues.executionRunId, scheduledRun.id),
-                  ),
-                );
-            }
-
-            const eventSeq = await allocateHeartbeatRunEventSeq(
-              tx as unknown as Db,
-              cancelled.id,
-            );
-
-            await tx.insert(heartbeatRunEvents).values({
-              companyId: cancelled.companyId,
-              runId: cancelled.id,
-              agentId: cancelled.agentId,
-              seq: eventSeq,
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: issueCancelled
-                ? "Scheduled retry cancelled because issue was cancelled before it became due"
-                : "Scheduled retry cancelled because issue ownership changed before it became due",
-              payload: {
-                issueId: issue.id,
-                issueStatus: issue.status,
-                scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
-                scheduledRetryAt: cancelled.scheduledRetryAt
-                  ? new Date(cancelled.scheduledRetryAt).toISOString()
-                  : null,
-                scheduledRetryReason: cancelled.scheduledRetryReason,
-                previousRetryAgentId: cancelled.agentId,
-                currentAssigneeAgentId: issue.assigneeAgentId,
-              },
-            });
-            await tx
-              .update(heartbeatRuns)
-              .set({ nextEventSeq: eventSeq + 1, updatedAt: now })
-              .where(eq(heartbeatRuns.id, cancelled.id));
-
-            cancelledRunsToEmit.push(cancelled);
-
-            return true;
-          };
-
-          let activeExecutionRun = issue.executionRunId
-            ? await tx
-                .select()
-                .from(heartbeatRuns)
-                .where(eq(heartbeatRuns.id, issue.executionRunId))
-                .then((rows) => rows[0] ?? null)
-            : null;
-
-          if (
-            activeExecutionRun &&
-            !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
-              activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
-            )
-          ) {
-            activeExecutionRun = null;
-          }
-
-          if (
-            activeExecutionRun &&
-            (await cancelStaleScheduledRetry(activeExecutionRun))
-          ) {
-            activeExecutionRun = null;
-          }
-
-          // A queued/scheduled run holding the lock for an agent that is
-          // no longer the issue's assignee is stale by design — the issue
-          // has been re-routed (e.g. blocked → in_review with a different
-          // assignee). Cancel it and release the lock; otherwise the new
-          // assignee's wake gets parked in `deferred_issue_execution`
-          // forever, because the original queued holder will never run
-          // (the issue's status / target now belongs to someone else).
-          //
-          // Race guard: pin the cancel UPDATE to the exact non-running
-          // status we read above. A worker could transition the holder
-          // from `queued` → `running` between the SELECT and this UPDATE;
-          // the status predicate ensures we never clobber a freshly-
-          // claimed running run. If zero rows matched, leave
-          // `activeExecutionRun` populated so the defer path runs
-          // normally against the now-running holder.
-          if (
-            activeExecutionRun &&
-            activeExecutionRun.status !== "running" &&
-            issue.assigneeAgentId &&
-            activeExecutionRun.agentId !== issue.assigneeAgentId
-          ) {
-            const cancelled = await tx
-              .update(heartbeatRuns)
-              .set({
-                status: "cancelled",
-                finishedAt: new Date(),
-                error:
-                  "Execution lock released after issue reassigned to a different agent",
-                errorCode: "lock_released_on_reassignment",
-                updatedAt: new Date(),
-              })
-              .where(
-                and(
-                  eq(heartbeatRuns.id, activeExecutionRun.id),
-                  eq(heartbeatRuns.status, activeExecutionRun.status),
-                ),
-              )
-              .returning();
-            if (cancelled.length > 0) {
-              cancelledRunsToEmit.push(cancelled[0]);
-              if (activeExecutionRun.wakeupRequestId) {
-                await tx
-                  .update(agentWakeupRequests)
-                  .set({
-                    status: "cancelled",
-                    finishedAt: new Date(),
-                    error:
-                      "Execution lock released after issue reassigned to a different agent",
-                    updatedAt: new Date(),
-                  })
-                  .where(
-                    eq(
-                      agentWakeupRequests.id,
-                      activeExecutionRun.wakeupRequestId,
-                    ),
-                  );
-              }
-              activeExecutionRun = null;
-            }
-          }
-
-          if (!activeExecutionRun && issue.executionRunId) {
-            await tx
-              .update(issues)
-              .set({
-                executionRunId: null,
-                executionAgentNameKey: null,
-                executionLockedAt: null,
-                updatedAt: new Date(),
-              })
-              .where(eq(issues.id, issue.id));
-          }
-
-          if (!activeExecutionRun) {
-            const legacyRun = await tx
-              .select()
-              .from(heartbeatRuns)
-              .where(
-                and(
-                  eq(heartbeatRuns.companyId, issue.companyId),
-                  inArray(heartbeatRuns.status, [
-                    ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
-                  ]),
-                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-                ),
-              )
-              .orderBy(
-                sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-                asc(heartbeatRuns.createdAt),
-              )
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-
-            if (legacyRun) {
-              if (await cancelStaleScheduledRetry(legacyRun)) {
-                activeExecutionRun = null;
-              } else {
-                activeExecutionRun = legacyRun;
-                const legacyAgent = await tx
-                  .select({ name: agents.name })
-                  .from(agents)
-                  .where(eq(agents.id, legacyRun.agentId))
-                  .then((rows) => rows[0] ?? null);
-                await tx
-                  .update(issues)
-                  .set({
-                    executionRunId: legacyRun.id,
-                    executionAgentNameKey: normalizeAgentNameKey(
-                      legacyAgent?.name,
-                    ),
-                    executionLockedAt: new Date(),
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(issues.id, issue.id));
-              }
-            }
-          }
-
-          const dependencyReadiness = await issuesSvc
-            .listDependencyReadiness(issue.companyId, [issue.id], tx)
-            .then((rows) => rows.get(issue.id) ?? null);
-
-          // Blocked descendants should stay idle until the final blocker resolves.
-          // Human comment/mention wakes are the exception: they may run in a
-          // bounded interaction mode so the assignee can answer or triage.
-          const blockedInteractionWake =
-            dependencyReadiness &&
-            !dependencyReadiness.isDependencyReady &&
-            allowsIssueInteractionWake(
-              enrichedContextSnapshot,
-              ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-            );
-
-          if (blockedInteractionWake) {
-            enrichedContextSnapshot.dependencyBlockedInteraction = true;
-            enrichedContextSnapshot.unresolvedBlockerIssueIds =
-              dependencyReadiness.unresolvedBlockerIssueIds;
-            enrichedContextSnapshot.unresolvedBlockerCount =
-              dependencyReadiness.unresolvedBlockerCount;
-            enrichedContextSnapshot.unresolvedBlockerSummaries =
-              await listUnresolvedBlockerSummaries(
-                tx,
-                issue.companyId,
-                issue.id,
-                dependencyReadiness.unresolvedBlockerIssueIds,
-              );
-          }
-
-          if (
-            !activeExecutionRun &&
-            dependencyReadiness &&
-            !dependencyReadiness.isDependencyReady &&
-            !blockedInteractionWake
-          ) {
             await recordExecutionWait(tx as unknown as Db, {
               issueId: issue.id,
               coalesce: coalesceExecutionWait,
@@ -28033,7 +27668,6 @@ export function heartbeatService(
                   contextSnapshot: activeExecutionRun.contextSnapshot,
                   wakeupRequestId: activeExecutionRun.wakeupRequestId,
                 },
-                allowRunCoalescing: opts.allowRunCoalescing,
                 allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
                 durableReceipt: durableRequest
                   ? {
@@ -28279,8 +27913,6 @@ export function heartbeatService(
             .returning()
             .then((rows) => rows[0]);
 
-          const pendingComments =
-            opts.allowRunCoalescing !== false &&
           // A handoff changes the executor, not the owner of saved user input.
           // Validate its exact stopped source while the issue row is locked;
           // unrelated agents and dedicated continuations keep their own wakes.
@@ -28335,65 +27967,6 @@ export function heartbeatService(
               ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
             ]),
           ];
-          const newRun = await tx
-            .insert(heartbeatRuns)
-            .values({
-              companyId: agent.companyId,
-              agentId,
-              invocationSource: source,
-              triggerDetail,
-              status: "queued",
-              responsibleUserId: await resolveQueuedResponsibleUserId(),
-              wakeupRequestId: wakeupRequest.id,
-              retryOfRunId: failedChatRetry
-                ? durableRequest!.failedRunRetry!.failedRunId
-                : automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                  )
-                : enrichedContextSnapshot,
-              sessionIdBefore: sessionBefore,
-              continuationAttempt,
-              ...(reconciledSourceRunId
-                ? { retryOfRunId: reconciledSourceRunId }
-                : {}),
-            })
-            .returning()
-            .then((rows) => rows[0]);
-
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              runId: newRun.id,
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-
-          if (adoptedComments.length) {
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                status: "coalesced",
-                runId: newRun.id,
-                finishedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(
-                inArray(
-                  agentWakeupRequests.id,
-                  adoptedComments.map((wake) => wake.id),
-                ),
-              );
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                payload: withQueuedCommentIdsInWakePayload(payload, adoptedCommentIds),
-              })
-              .where(eq(agentWakeupRequests.id, wakeupRequest.id));
-          }
-
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but
           // doesn't start it). It will be stamped in claimQueuedRun() once the run
           // transitions to "running" — Fix A (lazy locking).
@@ -29223,21 +28796,6 @@ export function heartbeatService(
         }
       : options.resultJson;
 
-    const pendingProcessCancellation = processRunCancellationSettlements.get(
-      run.id,
-    );
-    if (pendingProcessCancellation) {
-      await pendingProcessCancellation.settled;
-      if (pendingProcessCancellation.failed)
-        throw pendingProcessCancellation.error;
-      return getRun(run.id);
-    }
-    const running = runningProcesses.get(run.id);
-    const stopOwnership =
-      run.runtimeMode !== "native"
-        ? captureAdapterStopOwnership(run.id)
-        : undefined;
-    const control = stopOwnership?.control;
     try {
       let releaseProcessCancellation: (() => void) | undefined;
       const processCancellationSettlement =
