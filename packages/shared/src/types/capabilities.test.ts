@@ -31,6 +31,8 @@ describe("derivePublicFeatureFlags", () => {
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableBuiltInAgents: false,
+      enableChatConnectors: false,
+      enableAgentChat: false,
       enableDecisions: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
