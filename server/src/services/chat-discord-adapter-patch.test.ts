@@ -1703,6 +1703,9 @@ const chatAdapterDiscordDir = dirname(
   fileURLToPath(new URL("../../node_modules/@chat-adapter/discord/package.json", import.meta.url)),
 );
 const discordRequire = createRequire(chatAdapterDiscordDir + "/index.js");
+const discordRequire = createRequire(
+  import.meta.resolve("@chat-adapter/discord"),
+);
 const { Client, Events } = discordRequire("discord.js") as {
   Client: {
     prototype: DiscordClientForLifecycleTest;

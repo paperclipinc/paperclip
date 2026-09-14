@@ -1,4 +1,5 @@
-import { useContext, useState, type ReactNode } from "react";
+import { useCallback, useContext, useState, type ReactNode } from "react";
+import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
@@ -140,7 +141,11 @@ function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
   );
 }
 
-export function TaskChatBubble({
+export function TaskChatBubble(props: TaskChatBubbleProps) {
+  const email = useEmailComment(props.item.id);
+  return email ?? <TaskChatBubbleContent {...props} />;
+}
+function TaskChatBubbleContent({
   item,
   animateEntry = true,
   queuedAction,
@@ -156,9 +161,11 @@ export function TaskChatBubble({
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const openImage = (src: string) => {
+  // Keep MarkdownBody's memo boundary intact when only the live tail changes.
+  // A fresh callback here reparses every historical response on every update.
+  const openImage = useCallback((src: string) => {
     if (!openIssueGallery?.(src)) setLightboxSrc(src);
-  };
+  }, [openIssueGallery]);
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -179,6 +186,7 @@ export function TaskChatBubble({
   }
 
   const isHuman = item.author === "human";
+  const sentFromIMessage = isHuman && item.sourceChannel === "imessage-photon";
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
   const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
@@ -411,9 +419,11 @@ export function TaskChatBubble({
             ) : null}
           </div>
         )
-      ) : item.timestamp ? (
+      ) : item.timestamp || sentFromIMessage ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+          {sentFromIMessage ? "Sent from iMessage" : null}
+          {sentFromIMessage && item.timestamp ? " · " : null}
           {item.timestamp}
         </span>
       ) : null}

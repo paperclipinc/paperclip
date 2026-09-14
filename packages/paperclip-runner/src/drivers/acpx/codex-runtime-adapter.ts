@@ -265,6 +265,7 @@ export async function openQualifiedAcpxRuntime(
       update.goal === null ? null : structuredClone(update.goal),
     );
   };
+  const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
     sessionStore,
@@ -317,7 +318,14 @@ export async function openQualifiedAcpxRuntime(
     spawnEnvironment: () => ({
       ...definedEnvironment(options.launchEnvironment),
       ...(options.profile.agent === "claude"
-        ? { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }
+        ? {
+            PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            // This URL comes from the runner-owned authenticated tool bridge,
+            // never provider-supplied permission-request metadata.
+            PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
+              (server) => server.runnerOwned && server.name === "paperclip",
+            )?.url ?? "",
+          }
         : {}),
     }),
     spawnCwd: options.cwd,
@@ -327,6 +335,7 @@ export async function openQualifiedAcpxRuntime(
       // handshake cannot create a provider process after authority is gone.
       options.signal?.throwIfAborted();
       options.assertWorkspaceHeld?.();
+      commandLaunches.count += 1;
       return children.add(
         options.command.spawn(input.args, input.options, {
           credentialFenceFds,
@@ -431,6 +440,7 @@ export async function openQualifiedAcpxRuntime(
       children,
       runtimeCloseTimeoutMs,
       goalState,
+      commandLaunches,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -857,6 +867,7 @@ function runtimePort(
   children: SpawnedChildSet,
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
+  commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
 ): AcpxRuntimePort {
   type RuntimeCloseAttempt = {
     readonly outcome: Promise<unknown | null>;
@@ -1156,11 +1167,26 @@ function runtimePort(
     ...(runtime.setConfigOption
       ? {
           async setModel(model: string) {
-            await runtime.setConfigOption?.({
-              handle,
-              key: "model",
-              value: model,
-            });
+            // A restored handle can be lazy: selecting the pinned model may
+            // launch its first provider before any prompt. Admit that spawn
+            // only for this control call, and verify ownership before return.
+            const finishOwnershipAdmission =
+              children.beginLifetimeOwnershipAdmission();
+            const spawnsBeforeControl = commandLaunches.count;
+            try {
+              await runtime.setConfigOption?.({
+                handle,
+                key: "model",
+                value: model,
+              });
+            } finally {
+              await finishOwnershipAdmission();
+            }
+            // Cold ACP config calls open and close a temporary connection.
+            // A later prompt needs a newly verified single-use launch snapshot.
+            if (commandLaunches.count > spawnsBeforeControl) {
+              await commandLaunches.refreshConsumedCommand?.();
+            }
           },
         }
       : {}),
@@ -1212,11 +1238,20 @@ function turnWithVerifiedLifetimeOwnership(
     finishOwnershipAdmission(),
   );
   void ownershipVerified.catch(() => undefined);
+  const promptStarted = ownershipVerified.then(() => turn.promptStarted);
+  const result = ownershipVerified.then(() => turn.result);
+  // Some consumers (including the sidecar) drain events and await the result
+  // without awaiting this optional admission signal. Observe its rejection
+  // immediately so a failed cold start cannot terminate the host process as an
+  // unhandled rejection. Keep the original rejected promise for consumers.
+  void promptStarted.catch(() => undefined);
+  // Event drains can fail before their caller reaches the result promise.
+  void result.catch(() => undefined);
   return {
     requestId: turn.requestId,
-    promptStarted: ownershipVerified.then(() => turn.promptStarted),
+    promptStarted,
     events: eventsAfterLifetimeOwnership(turn.events, ownershipVerified),
-    result: ownershipVerified.then(() => turn.result),
+    result,
     cancel: (input) => turn.cancel(input),
     closeStream: (input) => turn.closeStream(input),
   };

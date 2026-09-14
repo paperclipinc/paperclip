@@ -32,6 +32,7 @@ const chatAdapterDiscordDir = dirname(
   fileURLToPath(new URL("../../node_modules/@chat-adapter/discord/package.json", import.meta.url)),
 );
 const discordJs = createRequire(chatAdapterDiscordDir + "/index.js")(
+const discordJs = createRequire(import.meta.resolve("@chat-adapter/discord"))(
   "discord.js",
 ) as {
   Client: new (options: { intents: number[] }) => WireClient;

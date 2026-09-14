@@ -4058,6 +4058,7 @@ describe("AgentConfigForm guided credential connect", () => {
   });
 });
 
+
 describe("subtractPersistedOverlay", () => {
   const overlayWith = (adapterConfig: Record<string, unknown>) => ({
     identity: {},
