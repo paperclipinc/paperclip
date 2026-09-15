@@ -27,6 +27,23 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Conversation tasks
+
+When the task context says **Chat mode** (the issue has `conversationAgentId`),
+follow that directive for the conversation lifecycle. Research, clarify, and
+revise the conversation's `plan` document here. On an authorized handoff, create
+ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
+relationship back to the conversation. Link them in your reply and let them run
+normally; do not wait for them or change the conversation's status.
+
+Copy the relevant approved plan into each execution task **at creation**, using
+`create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.
+Include an `idempotencyKey`. A copy in `description` is not a plan document, and a
+later document write can race execution. Verify the created task's `plan`
+document before claiming handoff. Preserve the source plan in this conversation.
+The ordinary completion, child-task, and blocker instructions below apply to
+execution tasks; they do not override chat mode.
+
 ## Server-Verified External Chat Turns
 
 Paperclip may identify an ordinary external-chat turn as already checked out and
