@@ -82,18 +82,6 @@ export interface CommandManagedRuntimeRunner {
     stdin?: string;
     timeoutMs?: number;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-    // Optional live-output sink. When the runner supports it, this is invoked
-    // per stdout/stderr chunk AS the command produces output (instead of only
-    // after it exits), letting the caller live-tail progress. A runner that
-    // delivers chunks here MUST set `streamed: true` on its RunProcessResult so
-    // the caller can suppress the trailing buffered dump and avoid double
-    // logging. Runners that cannot stream may ignore this and leave `streamed`
-    // unset — the caller then falls back to the buffered result unchanged.
-    onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-    // Run correlation id. A streaming runner forwards this to the sandbox
-    // provider so worker-emitted output chunks can be routed back to `onOutput`
-    // over the plugin worker RPC boundary (the callback itself can't cross it).
-    runId?: string;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     /**
      * Run this command through the lease's persistent session even when no run
@@ -350,7 +338,26 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      let sizeResult;
+      try {
+        sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
+      } catch (error) {
+        // Shell-backed sandbox reads need the same absent-file contract as fs.
+        // Confirm the parent is searchable so permission/transport failures are
+        // never silently converted into a missing optional credential file.
+        const parent = shellQuote(path.posix.dirname(remotePath));
+        const missing = await runShell(
+          `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${shellQuote(remotePath)} ]; ` +
+            `then printf 'missing'; fi`,
+        ).catch(() => null);
+        if (missing?.stdout === "missing") {
+          throw Object.assign(new Error(`No such file: ${remotePath}`), {
+            code: "ENOENT",
+            path: remotePath,
+          });
+        }
+        throw error;
+      }
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);

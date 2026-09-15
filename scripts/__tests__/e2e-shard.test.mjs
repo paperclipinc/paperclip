@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { loadShardDurations } from "../general-server-shard.mjs";
+import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
 import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -23,11 +23,6 @@ function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim().split(/\s+/).filter(Boolean);
-}
-
-function hasTrustedWorkflowPin() {
-  const caller = readFileSync(prCallerWorkflow, "utf8");
-  return /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@[0-9a-f]{40}/.test(caller);
 }
 
 function readPinnedTrustedPrWorkflow() {
@@ -133,8 +128,10 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
+  // New specs use the scheduler's median estimate until measured durations exist.
+  const fallbackWeight = defaultSuiteWeight(durations);
   const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? 0), 0),
+    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
   );
 
   const heaviest = Math.max(...weights);
@@ -145,7 +142,7 @@ test("the weighted partition keeps the shards close to balanced", () => {
   // of on the PR critical path. A single indivisible spec (smoke-lab) can
   // legitimately exceed the even cut on its own, so the bound is floored at
   // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? 0));
+  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
   const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
   assert.ok(
     heaviest <= bound,
@@ -164,11 +161,11 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow at an immutable SHA", { skip: !hasTrustedWorkflowPin() }, () => {
+test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
   assert.ok(readPinnedTrustedPrWorkflow().length > 0);
 });
 
-test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
@@ -214,7 +211,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("the trusted PR workflow limits full CI to merge-relevant stack layers", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
   const gate = jobs.get("gate");
@@ -293,7 +290,7 @@ test("the stacked PR scope selector runs full CI only where intended", () => {
   );
 });
 
-test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
   const workflow = readPinnedTrustedPrWorkflow();
@@ -319,10 +316,11 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
-  assert.match(
-    workflow,
-    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
-    "the policy job must restore the pnpm cache before dependency resolution",
+  const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
+  assert.doesNotMatch(
+    policy,
+    /cache: pnpm|uses: actions\/cache/,
+    "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
     workflow,

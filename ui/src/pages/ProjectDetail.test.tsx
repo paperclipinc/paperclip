@@ -7,7 +7,6 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectDetail } from "./ProjectDetail";
-import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -24,7 +23,7 @@ const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockHeartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn() }));
 const mockBudgetsApi = vi.hoisted(() => ({ overview: vi.fn(), upsertPolicy: vi.fn() }));
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
 const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
@@ -51,7 +50,7 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: mockHeartbeatsApi }));
 vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
-vi.mock("../api/access", () => ({ accessApi: mockAccessApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
 vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
 vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResourceMembershipsApi }));
 
@@ -191,9 +190,7 @@ describe("ProjectDetail", () => {
     mockAgentsApi.list.mockResolvedValue([]);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockBudgetsApi.overview.mockResolvedValue({ policies: [] });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},

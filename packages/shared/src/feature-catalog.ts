@@ -77,6 +77,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableIsolatedWorkspacesByDefault: {
+    title: "Isolated Workspaces By Default",
+    description:
+      "Treat a project that has no execution workspace policy of its own as if it selected isolated workspaces, so its tasks get a per-task worktree instead of sharing the project checkout. Requires Isolated Workspaces. A project that carries its own policy keeps it.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableStreamlinedLeftNavigation: {
     title: "Streamlined Left Navigation",
     description: "Use the streamlined main sidebar navigation layout.",
@@ -119,6 +127,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Cases",
     description:
       "Durable work products that tasks create and iterate on. Adds the Cases tab and the agent case API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableAgentChat: {
+    title: "Agent Chat",
+    description: "Persistent task-backed conversations that clarify goals and hand work off to tasks.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

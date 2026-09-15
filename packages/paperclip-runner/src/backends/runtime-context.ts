@@ -27,7 +27,7 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
   const finalResponseConstraint =
-    "Invoke paperclip_finish or paperclip_block exactly once before writing the complete user-facing final response. Use paperclip_finish with yielded and a response_wake continuation only when explicitly waiting for the next response. After the semantic tool succeeds, write that response exactly once and do not call another tool.";
+    "Obtain one accepted result from paperclip_finish or paperclip_block before writing the complete user-facing final response. Use paperclip_finish with yielded and a response_wake continuation only when explicitly waiting for the next response. If the tool rejects an incomplete report, correct it and retry. When it succeeds, read its outcome and explain any pending approval with the supplied link and required action. Do not claim the task is done when completion is still gated. Then write the final response exactly once and do not call another tool.";
   const answeredQuestions = Array.isArray(input.interactionResponses)
     ? input.interactionResponses.flatMap((response, responseIndex) => {
         if (
@@ -100,6 +100,7 @@ export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
   return [
     "Use only the assigned skills and provider-native tools.",
     "Use Paperclip semantic tools for coordination and finalization.",
+    "When the requested result is a file, use register_deliverable before paperclip_finish. Compute its exact byte size and SHA-256, register the workspace-relative file, cite deliverable:<attachmentId> from the receipt as completion evidence, and include /api/attachments/<attachmentId>/content as the download link in your answer. A bare workspace filename is not a delivered result. For repository edits, cite an accessible PR or registered work product. Preserve existing work; do not upload unrelated files. If file publication fails, fix it or report the concrete blocker instead of claiming the file is delivered.",
     ...(answeredQuestionConstraint ? [answeredQuestionConstraint] : []),
     finalResponseConstraint,
   ];

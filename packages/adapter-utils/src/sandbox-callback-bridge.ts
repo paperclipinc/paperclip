@@ -125,6 +125,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/agents\/[^/]+\/skills\/sync$/ },
   { method: "PATCH", path: /^\/api\/agents\/[^/]+\/instructions-path$/ },
 
+  // Read-only schema discovery for validated control-plane requests.
+  { method: "GET", path: /^\/api\/openapi\.json$/ },
+
   // Company-level reads used to discover work and context
   { method: "GET", path: /^\/api\/companies\/[^/]+$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/dashboard$/ },
@@ -138,6 +141,13 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  // Task-bound email actions. Company, inbox ownership, task/run authority,
+  // and action policies are enforced by the controller; mailbox setup stays denied.
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/inboxes$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/tasks\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/deliveries\/[^/]+$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/email\/send$/ },
 
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
@@ -164,18 +174,6 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
 
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
-
-  // Hiring (paperclip-create-agent skill): adapter/icon discovery, comparing
-  // existing agent configs, submitting the hire request, and linking the
-  // resulting approval to its source issue. Direct agent creation
-  // (POST /api/companies/:id/agents) stays denied — hires must go through the
-  // approval-gated agent-hires endpoint, which the server still permission-checks.
-  { method: "GET", path: /^\/llms\/agent-configuration\.txt$/ },
-  { method: "GET", path: /^\/llms\/agent-configuration\/[^/]+\.txt$/ },
-  { method: "GET", path: /^\/llms\/agent-icons\.txt$/ },
-  { method: "GET", path: /^\/api\/companies\/[^/]+\/agent-configurations$/ },
-  { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
 
   // Hiring (paperclip-create-agent skill): adapter/icon discovery, comparing
   // existing agent configs, submitting the hire request, and linking the
@@ -226,9 +224,6 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
-  // Exactly-once semantics for retried mutating calls (e.g. routine runs, hires).
-  // Without this the server can't dedupe an agent's retry and may double-execute.
-  "idempotency-key",
   "x-paperclip-github-capability",
 ] as const;
 

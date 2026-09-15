@@ -42,9 +42,6 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForAgentAccess: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
-const mockInstanceSettingsService = vi.hoisted(() => ({
-  getVisibility: vi.fn(),
-}));
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
@@ -53,7 +50,6 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   secretService: () => mockSecretService,
   logActivity: mockLogActivity,
-  instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
 vi.mock("../services/access.js", () => ({
@@ -84,16 +80,6 @@ describe("secret routes", () => {
       mock.mockReset();
     }
     mockLogActivity.mockReset();
-    mockInstanceSettingsService.getVisibility.mockReset();
-    mockInstanceSettingsService.getVisibility.mockResolvedValue({
-      companySurfaces: [
-        "company.general",
-        "company.members",
-        "company.invites",
-        "company.secrets",
-        "company.plugins",
-      ],
-    });
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,

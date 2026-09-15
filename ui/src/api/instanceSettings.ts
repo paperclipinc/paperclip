@@ -2,11 +2,9 @@ import type {
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
-  InstanceVisibilitySettings,
   PatchInstanceSettings,
   PatchInstanceGeneralSettings,
   PatchInstanceExperimentalSettings,
-  PatchInstanceVisibilitySettings,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -23,8 +21,4 @@ export const instanceSettingsApi = {
     api.get<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental"),
   updateExperimental: (patch: PatchInstanceExperimentalSettings) =>
     api.patch<InstanceExperimentalSettingsWithManaged>("/instance/settings/experimental", patch),
-  getVisibility: () =>
-    api.get<InstanceVisibilitySettings>("/instance/settings/visibility"),
-  updateVisibility: (patch: PatchInstanceVisibilitySettings) =>
-    api.patch<InstanceVisibilitySettings>("/instance/settings/visibility", patch),
 };

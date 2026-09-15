@@ -5,7 +5,6 @@ import {
   text,
   timestamp,
   integer,
-  jsonb,
   index,
   bigserial,
   bigint,
@@ -14,13 +13,14 @@ import {
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { runEventPayload } from "../run-event-payload.js";
 
 export const heartbeatRunEvents = pgTable(
   "heartbeat_run_events",
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    runId: uuid("run_id").notNull().references(() => heartbeatRuns.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").notNull().references(() => heartbeatRuns.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
     seq: bigint("seq", { mode: "number" }).notNull(),
     eventType: text("event_type").notNull(),
@@ -28,7 +28,7 @@ export const heartbeatRunEvents = pgTable(
     level: text("level"),
     color: text("color"),
     message: text("message"),
-    payload: jsonb("payload").$type<Record<string, unknown>>(),
+    payload: runEventPayload("payload"),
     sourceInstanceId: text("source_instance_id"),
     sourceEventId: text("source_event_id"),
     sourceSeq: bigint("source_seq", { mode: "number" }),

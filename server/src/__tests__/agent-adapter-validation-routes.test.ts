@@ -172,7 +172,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp(options: { agentRows?: Array<Record<string, unknown>> } = {}) {
+async function createApp() {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -190,19 +190,14 @@ async function createApp(options: { agentRows?: Array<Record<string, unknown>> }
     next();
   });
   const db = {
-    // Field-selects (`select({...})`) are agent-row lookups; bare selects return the company row.
-    select: vi.fn((fields?: unknown) => ({
+    select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(async () =>
-          fields
-            ? options.agentRows ?? []
-            : [
-                {
-                  id: "company-1",
-                  requireBoardApprovalForNewAgents: false,
-                },
-              ],
-        ),
+        where: vi.fn(async () => [
+          {
+            id: "company-1",
+            requireBoardApprovalForNewAgents: false,
+          },
+        ]),
       })),
     })),
   };
@@ -399,95 +394,6 @@ describe("agent routes adapter validation", () => {
     expect(env.CODEX_HOME).toBeUndefined();
   });
 
-  it("inherits a same-adapter company agent's secret_ref env when creating an agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        {
-          role: "ceo",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({
-          name: "Second Agent",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
-    });
-  });
-
-  it("skips donors without secret_ref bindings so an empty-env ceo does not shadow a credentialed agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        { role: "ceo", adapterConfig: { env: {} } },
-        {
-          role: "general",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({
-          name: "Second Agent",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
-    });
-  });
-
-  it("inherits a same-adapter company agent's secret_ref env when hiring an agent", async () => {
-    const app = await createApp({
-      agentRows: [
-        {
-          role: "general",
-          adapterConfig: {
-            env: { MY_TOKEN: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333" } },
-          },
-        },
-      ],
-    });
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agent-hires")
-        .send({
-          name: "Hired Agent",
-          role: "general",
-          adapterType: "codex_local",
-          adapterConfig: {},
-        }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
-    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
-    expect(adapterConfig.env).toMatchObject({
-      MY_TOKEN: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333", version: "latest" },
-    });
-  });
-
   it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -630,19 +536,50 @@ describe("agent routes adapter validation", () => {
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
-  it("does not materialize a default instructions bundle for an inert process agent", async () => {
+  it("restores a saved agent's redacted CODEX_HOME before testing its adapter", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const storedHome = "/paperclip/companies/company-1/agents/agent-1/codex-home";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { env: { CODEX_HOME: storedHome } },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
-        .post("/api/companies/company-1/agents")
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
         .send({
-          name: "Inert Worker",
-          adapterType: "process",
+          agentId,
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
         }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      { env: { CODEX_HOME: storedHome } },
+      expect.objectContaining({ adapterType: "external_test" }),
+    );
+  });
+
+  it("rejects redacted-value restoration from an incompatible saved agent", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId: "11111111-1111-4111-8111-111111111111",
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {

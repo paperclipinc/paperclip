@@ -55,7 +55,6 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       setActionError(null);
       signOutMutation.reset();
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to update general settings.");

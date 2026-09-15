@@ -201,6 +201,42 @@ describe("TaskChatProtocolCard", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
+  it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.textContent).toContain("Download");
+    expect(container.textContent).not.toContain("Open preview");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
+  it.each(["application/pdf", "text/plain", "text/markdown", "application/json", "text/csv"])("downloads %s artifacts through the download route", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    const downloadPath = `${contentPath}?download=1`;
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath, openPath: contentPath, downloadPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(downloadPath);
+  });
+
+  it("downloads a legacy attachment with only a content href", () => {
+    const contentPath = "/api/attachments/legacy-file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType: "application/pdf" } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
   it("opens standalone artifact media in a modal with a download", async () => {
     const contentPath = "/api/attachments/media/content";
     flushSync(() => root.render(
@@ -604,14 +640,13 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
-    // Picking only selects; the primary button reads Next until the last
-    // question, where it takes the set's submit label.
+    // Single selection advances; multi-selection waits for Next.
     const nextButton = () =>
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "Next",
       );
-    expect(container.textContent).toContain("Where should we deploy?");
-    await act(async () => nextButton()?.click());
+    expect(container.textContent).toContain("2 of 3");
+    expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       "Which regions should receive the release?",
     );

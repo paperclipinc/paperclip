@@ -5,7 +5,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { COMPANY_SETTINGS_SURFACES } from "@paperclipai/shared";
 
 const logActivityMock = vi.fn();
 
@@ -26,18 +25,6 @@ function registerModuleMocks() {
       revokeBoardApiKey: vi.fn(),
     }),
     deduplicateAgentName: vi.fn(),
-    // The fork's accessRoutes reads instance settings at construction (for the
-    // company-surface exposure gate and board capabilities); expose every
-    // company surface so the invite routes under test are not hidden.
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        general: {},
-        experimental: {},
-        defaultEnvironmentId: null,
-        visibility: { companySurfaces: [...COMPANY_SETTINGS_SURFACES] },
-      })),
-      getVisibility: vi.fn(async () => ({ companySurfaces: [...COMPANY_SETTINGS_SURFACES] })),
-    }),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),
   }));

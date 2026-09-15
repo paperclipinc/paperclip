@@ -2,17 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  firstMeaningfulStderrLine,
-  inferOpenAiCompatibleBiller,
-  type AdapterExecutionContext,
-  type AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -55,9 +45,11 @@ import {
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -238,7 +230,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
@@ -593,7 +587,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-          DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+          (context.conversationMode === true
+            ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+            : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
       } catch (err) {
         instructionsReadFailed = true;
         const reason = err instanceof Error ? err.message : String(err);
@@ -623,7 +619,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !canResumeSession && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canResumeSession });
+    const taskContextNote = context.conversationMode === true
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: canResumeSession })
+      : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      conversationMode: context.conversationMode === true,
+      resumedSession: canResumeSession,
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
     const shouldUseResumeDeltaPrompt = canResumeSession && wakePrompt.length > 0;
     const renderedHeartbeatPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
@@ -632,6 +635,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const userPrompt = joinPromptSections([
       renderedBootstrapPrompt,
       wakePrompt,
+      taskContextNote,
       sessionHandoffNote,
       renderedHeartbeatPrompt,
     ]);
@@ -640,6 +644,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptChars: userPrompt.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      taskContextChars: taskContextNote.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedHeartbeatPrompt.length,
     };
@@ -758,15 +763,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -787,7 +788,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         : null;
 
-      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
       const effectiveExitCode = (rawExitCode ?? 0) === 0 && parsedError ? 1 : rawExitCode;

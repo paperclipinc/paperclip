@@ -19,9 +19,7 @@ import {
   resolveAdapterExecutionTargetCommandForLogs,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
-  detectClaudeAuthRetryStorm,
   detectClaudeLoginRequired,
-  isClaudeInvalidCredentialError,
   isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
@@ -54,24 +52,6 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-// Pure decision for the (non-Bedrock) auth advice check: given the adapter's
-// config env, is there a recognizable auth signal beyond ANTHROPIC_API_KEY
-// (handled by the caller) that we should surface to the operator? Extracted
-// so the CLAUDE_CODE_OAUTH_TOKEN detection contract can be unit tested
-// without exercising the full probe pipeline.
-export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
-  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
-  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
-    return {
-      code: "claude_subscription_token_detected",
-      level: "info",
-      message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
-    };
-  }
-  return null;
 }
 
 function localExecutablesMatch(
@@ -155,6 +135,7 @@ export async function testEnvironment(
     : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
       runId,
       target,
       cwd,
@@ -197,7 +178,7 @@ export async function testEnvironment(
   // reflect what the agent will actually see at runtime. Only consider env
   // vars from the adapter config in that case; the probe itself will surface
   // any auth issues on the remote box.
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -224,13 +205,14 @@ export async function testEnvironment(
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_anthropic_api_key_overrides_subscription",
-      level: "warn",
+      level: selectedApiKey ? "info" : "warn",
       message:
-        "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
+        selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -370,6 +352,7 @@ export async function testEnvironment(
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (config.managedAiConnection) args.push("--setting-sources", "user");
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,
@@ -420,48 +403,12 @@ export async function testEnvironment(
         stderr: probe.stderr,
       });
 
-      if (probe.timedOut && detectClaudeAuthRetryStorm(probe.stdout)) {
-        // The Claude CLI does not fail fast on an invalid credential: it retries
-        // the provider's 401 with backoff until the probe window closes. The
-        // retry events on stdout are the provider rejecting the credential, so
-        // this timeout is a hard credential rejection, not an infra timeout.
-        logSandboxProbeDiagnostic(
-          "Claude CLI hello probe timed out retrying an authentication failure",
-          "credential_rejected",
-        );
-        checks.push({
-          code: "claude_hello_probe_credential_rejected",
-          level: "error",
-          message: "Claude rejected the provided credential.",
-          authFailure: true,
-          hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
-        });
-      } else if (probe.timedOut) {
+      if (probe.timedOut) {
         checks.push({
           code: "claude_hello_probe_timed_out",
           level: "warn",
           message: "Claude hello probe timed out.",
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
-        });
-      } else if (loginMeta.requiresLogin && loginMeta.credentialRejected && !loginMeta.parsedTokenFailure) {
-        // The CLI's "Invalid API key · Please run /login" wording: a credential
-        // was presented and the provider said it is invalid. This is a hard
-        // failure (authFailure closes the credential-connect gate), not the
-        // soft "please log in" nudge below. A token failure reported in the
-        // parsed result fields keeps upstream's login-gate path below, which
-        // emits the canonical adapter_auth_missing signal so the interface can
-        // offer the sandbox login flow. The raw output stays untrusted: fixed
-        // message and hint only.
-        logSandboxProbeDiagnostic(
-          "Claude CLI hello probe reported a rejected credential",
-          "credential_rejected",
-        );
-        checks.push({
-          code: "claude_hello_probe_credential_rejected",
-          level: "error",
-          message: "Claude rejected the provided credential.",
-          authFailure: true,
-          hint: "Paste a fresh, valid Claude API key or subscription token, then retry.",
         });
       } else if (loginMeta.requiresLogin) {
         // The raw probe output is untrusted. Log only the fixed context and the
@@ -533,17 +480,6 @@ export async function testEnvironment(
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
-        // A raw 401 / authentication_error payload that never matched the
-        // login-prompt wording is still the provider rejecting the credential:
-        // keep the generic failure code but mark it authFailure so the
-        // credential-connect gate closes on it.
-        const invalidCredential =
-          loginMeta.credentialRejected ||
-          isClaudeInvalidCredentialError({
-            parsed,
-            stdout: probe.stdout,
-            stderr: probe.stderr,
-          });
         checks.push(
           usageLimited
             ? {
@@ -563,10 +499,7 @@ export async function testEnvironment(
                   code: "claude_hello_probe_failed",
                   level: "error",
                   message: "Claude hello probe failed.",
-                  ...(invalidCredential ? { authFailure: true } : {}),
-                  hint: invalidCredential
-                    ? "Paste a fresh, valid Claude API key or subscription token, then retry."
-                    : `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+                  hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
                 },
         );
       }

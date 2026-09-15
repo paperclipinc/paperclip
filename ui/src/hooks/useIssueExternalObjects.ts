@@ -10,7 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
 import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import type { ExternalObjectPillData } from "../components/ExternalObjectPill";
-import { useFeatures } from "./useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 
 export const EXTERNAL_OBJECT_SUMMARY_BATCH_SIZE = 500;
 
@@ -68,7 +68,11 @@ export interface IssueExternalObjectsResult {
 }
 
 function useExternalObjectsFeature() {
-  const query = useFeatures();
+  const query = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
   return {
     isEnabled: query.data?.enableExternalObjects === true,
     isLoaded: query.data !== undefined || query.isError,

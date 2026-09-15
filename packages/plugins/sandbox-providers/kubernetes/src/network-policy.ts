@@ -13,13 +13,6 @@ export interface BuildNetworkPolicyInput {
    * "cilium"` for exact FQDN allow-listing in production.
    */
   egressAllowFqdns?: string[];
-  /**
-   * "allowlist" (default): egress restricted to egressAllowFqdns/egressAllowCidrs
-   * (plus the public-IPv4 FQDN fallback below when applicable). "open-internet":
-   * always apply the hardened public-internet fallback regardless of FQDN/CIDR
-   * configuration.
-   */
-  egressPolicy?: "allowlist" | "open-internet";
   name?: string;
   podSelector?: Record<string, string>;
   includeBaseRules?: boolean;
@@ -33,7 +26,7 @@ export interface BuildNetworkPolicyInput {
  * cluster loopback (127.0.0.0/8), CGNAT (100.64.0.0/10), this-network
  * (0.0.0.0/8), and multicast (224.0.0.0/4).
  */
-export const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
+const PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS = [
   "0.0.0.0/8",
   "10.0.0.0/8",
   "100.64.0.0/10",
@@ -115,8 +108,8 @@ export function buildNetworkPolicyManifests(input: BuildNetworkPolicyInput): Rec
         // the box for cloud LLM APIs without inadvertently exposing
         // cluster internals or link-local metadata endpoints. Operators
         // who want exact FQDN enforcement should use `egressMode: "cilium"`.
-        ...(input.egressPolicy === "open-internet" ||
-          (input.egressAllowCidrs.length === 0 && (input.egressAllowFqdns?.length ?? 0) > 0)
+        ...(input.egressAllowCidrs.length === 0 &&
+          (input.egressAllowFqdns?.length ?? 0) > 0
           ? [
               {
                 to: [

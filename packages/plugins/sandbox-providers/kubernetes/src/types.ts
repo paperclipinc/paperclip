@@ -19,7 +19,6 @@ export const kubernetesProviderConfigSchema = z
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),
-    egressPolicy: z.enum(["allowlist", "open-internet"]).default("allowlist"),
 
     defaultResources: z
       .object({
@@ -35,26 +34,6 @@ export const kubernetesProviderConfigSchema = z
     podActivityDeadlineSec: z.number().int().positive().default(3600),
 
     /**
-     * How long a sandbox pod may sit with PodScheduled=False reason
-     * Unschedulable before the readiness wait fails fast with a distinct
-     * scheduling error (sandbox-cr backend only). A pod the scheduler cannot
-     * place (cluster out of capacity, autoscaler outage) will never become
-     * Ready by waiting inside the same exec budget; the grace period only
-     * absorbs normal autoscaler scale-up latency.
-     */
-    podUnschedulableGraceSec: z.number().int().positive().default(120),
-
-    /**
-     * Budget for the wait-for-Ready phase on the first exec of a lease
-     * (sandbox-cr backend only). Independent of the exec budget: a pod that
-     * needs longer than this to come up is an infrastructure problem, and
-     * failing the readiness wait early keeps most of the caller's exec budget
-     * out of the blast radius. The exec/streaming phase continues to use the
-     * remaining share of the caller's overall budget.
-     */
-    podReadyTimeoutSec: z.number().int().positive().default(300),
-
-    /**
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
@@ -68,48 +47,11 @@ export const kubernetesProviderConfigSchema = z
       }),
 
     /**
-     * Explicit override to require a per-run adapter type on EVERY lease, even in
-     * a single-adapter environment: a run that does not carry its harness is
-     * rejected instead of falling back to `adapterType` above.
-     *
-     * A mixed-harness pool does NOT need this flag: when the `adapters` registry
-     * below enables more than one adapter, an absent per-run adapter is rejected
-     * automatically (the safe default), so a run can never land on a different
-     * harness's runtime image. Set this only to force the same strictness for a
-     * single-adapter environment. Defaults to false, which preserves
-     * single-adapter environments and connectivity probes (which legitimately
-     * acquire a lease with no per-run adapter).
-     */
-    requireRunAdapterType: z.boolean().default(false),
-
-    /**
      * Optional declarative adapter registry. When present it is authoritative
      * for runtime image / envKeys / allowFqdns / probe / defaultEnv resolution
      * (replace semantics). Absent = built-in defaults.
      */
     adapters: adapterRegistrySchema.optional(),
-
-    /**
-     * Optional cloud control-plane URL for resolving a per-company inference
-     * key (Bifrost virtual key). When set, the plugin resolves the company's
-     * own virtual key from the control-plane immediately before writing the
-     * per-run Secret and overrides the secret inference auth env vars
-     * (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) with it, so each
-     * company's runs use a key scoped to that company (separate cache bucket /
-     * spend ledger). Resolution is FAIL-CLOSED: if this is configured but the
-     * control-plane call fails or returns no key, the lease is rejected — the
-     * run is NEVER allowed to fall back to the shared platform key (which would
-     * place it in the shared inference cache bucket = a cross-tenant leak).
-     *
-     * The control-plane must expose `POST <url>/internal/bifrost-key` accepting
-     * JSON `{ "companyId": "<id>" }` and returning `200 { "keyValue": "<vk>" }`.
-     *
-     * When UNSET (OSS / local / non-cloud), the plugin behaves exactly as
-     * before: the inherited process-env keys (the shared platform key, if any)
-     * are used unchanged. This keeps the per-company behavior strictly
-     * cloud-gated and upstream-safe.
-     */
-    cloudInferenceKeyResolverUrl: z.string().url().optional(),
 
     /**
      * The sandbox backend to use.
@@ -148,41 +90,6 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
-  /**
-   * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
-   * acquisition. Lets the execution target resolve the correct cwd from the
-   * lease itself, matching the SSH/Daytona providers. Optional for backward
-   * compatibility with leases acquired before this field existed.
-   */
-  remoteCwd?: string;
-  /**
-   * Capability signal surfaced to the server: this plugin's runtime images are
-   * pre-baked / contractually complete — the adapter CLI is already on PATH in
-   * the image, which runs behind a locked (sovereign) egress. The server reads
-   * this specific flag (NOT the generic "plugin-backed" marker) to disable the
-   * in-sandbox network-install shim and instead fail fast with a typed
-   * `adapter_runtime_image_mismatch` when the CLI is missing (the run landed on
-   * the wrong image). A provider plugin that ships a GENERIC sandbox and relies
-   * on runtime installation must NOT set this, so its install path is preserved.
-   */
-  runtimeImagePrebaked: true;
-  /**
-   * The adapter type this lease's pod was actually provisioned for (the
-   * per-run adapterType when supplied, otherwise the resolved environment
-   * default, see resolveRunAdapterType). Surfaced so the server's reusable
-   * sandbox lease scope is never null for a plugin-backed lease: a null scope
-   * has no positive proof of which runtime image the pod carries and can be
-   * matched by any run's reuse lookup, which is exactly the wrong-harness
-   * warm-pool bug this closes. Optional only for leases resumed from
-   * metadata predating this field.
-   */
-  adapterType?: string;
-  /**
-   * The runtime image resolved for this lease's pod (mirrors adapterType:
-   * persisted at acquire time and carried forward unchanged on resume, since
-   * a Kubernetes pod's image cannot change in place).
-   */
-  image?: string;
   scopedNetworkPolicyName: string | null;
   scopedNetworkEgress: {
     allowFqdns: string[];

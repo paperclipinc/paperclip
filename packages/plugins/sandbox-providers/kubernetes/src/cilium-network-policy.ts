@@ -1,11 +1,8 @@
-import { PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS } from "./network-policy.js";
-
 export interface BuildCiliumNetworkPolicyInput {
   namespace: string;
   paperclipServerNamespace: string;
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
-  egressPolicy?: "allowlist" | "open-internet";
   name?: string;
   endpointSelector?: Record<string, string>;
   includeBaseRules?: boolean;
@@ -38,23 +35,6 @@ export function buildCiliumNetworkPolicyManifest(input: BuildCiliumNetworkPolicy
     egress.push({
       toFQDNs: input.egressAllowFqdns.map((fqdn) => ({ matchName: fqdn })),
       toPorts: [{ ports: [{ port: "443", protocol: "TCP" }] }],
-    });
-  }
-
-  if (input.egressPolicy === "open-internet") {
-    // Hardened public internet: HTTP(S) only, with private ranges,
-    // link-local metadata (cloud IMDS), loopback, CGNAT, this-network,
-    // and multicast carved out. DNS stays pinned to kube-dns above.
-    egress.push({
-      toCIDRSet: [{ cidr: "0.0.0.0/0", except: [...PRIVATE_AND_LINK_LOCAL_EXCEPT_CIDRS] }],
-      toPorts: [
-        {
-          ports: [
-            { port: "443", protocol: "TCP" },
-            { port: "80", protocol: "TCP" },
-          ],
-        },
-      ],
     });
   }
 

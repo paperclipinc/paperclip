@@ -1,13 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -40,11 +34,13 @@ import {
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
   refreshPaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
@@ -208,7 +204,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
@@ -315,12 +313,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     // Held before the remote block below, so the remote lane can stage this
     // same host home into the sandbox without re-resolving it.
-    const hostGrokHome = resolveManagedGrokHomeDir(process.env, agent.companyId);
+    const hostGrokHome = config.managedAiConnection ? asString(env.GROK_HOME, "") : resolveManagedGrokHomeDir(process.env, agent.companyId);
     // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
     // Grok home a completed device login wrote. Leaves the API-key path below
     // (`resolveBillingType`) unchanged when the key exists.
     const isGrokSubscriptionMode =
-      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY");
+      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && (Boolean(config.managedAiConnection) || !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY"));
     if (isGrokSubscriptionMode) {
       env.GROK_HOME = hostGrokHome;
     }
@@ -480,7 +478,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const taskContextNote = context.conversationMode === true
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
+      : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      conversationMode: context.conversationMode === true,
+      resumedSession: Boolean(sessionId),
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
@@ -490,6 +495,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const apiAccessNote = renderApiAccessNote(env);
     const prompt = joinPromptSections([
       wakePrompt,
+      taskContextNote,
       sessionHandoffNote,
       paperclipEnvNote,
       apiAccessNote,
@@ -498,6 +504,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const promptMetrics = {
       promptChars: prompt.length,
       wakePromptChars: wakePrompt.length,
+      taskContextChars: taskContextNote.length,
       sessionHandoffChars: sessionHandoffNote.length,
       runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
       heartbeatPromptChars: renderedPrompt.length,
@@ -571,22 +578,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isRetry = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
 
       const failed = (attempt.proc.exitCode ?? 0) !== 0;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||

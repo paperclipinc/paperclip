@@ -1,6 +1,6 @@
 {
-  "id": "ab855f2b-4847-427f-bad6-320e9a988a76",
-  "prevId": "46b78d2a-bb6b-454c-820d-fd51dcf65885",
+  "id": "79a857e0-0d4a-45a0-a0f0-d4cd485cf4fe",
+  "prevId": "84cd6342-47c7-4a9d-9e0d-c0b713c76af7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -24796,6 +24796,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "continuation_identity_context_id": {
+          "name": "continuation_identity_context_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_fingerprint": {
           "name": "origin_fingerprint",
           "type": "text",
@@ -33678,19 +33684,6 @@
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "run_identity_contexts_run_id_heartbeat_runs_id_fk": {
-          "name": "run_identity_contexts_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "run_identity_contexts",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
           ],
           "columnsTo": [
             "id"

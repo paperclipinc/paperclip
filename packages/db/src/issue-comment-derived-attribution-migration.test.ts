@@ -11,7 +11,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const DERIVED_ATTRIBUTION_MIGRATION = "0134_issue_comment_derived_attribution_fast.sql";
+const DERIVED_ATTRIBUTION_MIGRATION = "0132_issue_comment_derived_attribution_fast.sql";
 
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

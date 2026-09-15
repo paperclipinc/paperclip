@@ -1,6 +1,6 @@
 {
-  "id": "1e06c040-9de8-4fb0-974a-7487f64abd00",
-  "prevId": "ab855f2b-4847-427f-bad6-320e9a988a76",
+  "id": "783697c3-158d-42c2-a958-942061519e58",
+  "prevId": "79a857e0-0d4a-45a0-a0f0-d4cd485cf4fe",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9254,6 +9254,100 @@
         "connection_event_deliveries_company_id_companies_id_fk": {
           "name": "connection_event_deliveries_company_id_companies_id_fk",
           "tableFrom": "connection_event_deliveries",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.connection_intent_deliveries": {
+      "name": "connection_intent_deliveries",
+      "schema": "",
+      "columns": {
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "delivered_at": {
+          "name": "delivered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "connection_intent_deliveries_pending_idx": {
+          "name": "connection_intent_deliveries_pending_idx",
+          "columns": [
+            {
+              "expression": "delivered_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "connection_intent_deliveries_interaction_id_issue_thread_interactions_id_fk": {
+          "name": "connection_intent_deliveries_interaction_id_issue_thread_interactions_id_fk",
+          "tableFrom": "connection_intent_deliveries",
+          "tableTo": "issue_thread_interactions",
+          "columnsFrom": [
+            "interaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connection_intent_deliveries_company_id_companies_id_fk": {
+          "name": "connection_intent_deliveries_company_id_companies_id_fk",
+          "tableFrom": "connection_intent_deliveries",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -33684,19 +33778,6 @@
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "run_identity_contexts_run_id_heartbeat_runs_id_fk": {
-          "name": "run_identity_contexts_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "run_identity_contexts",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
           ],
           "columnsTo": [
             "id"

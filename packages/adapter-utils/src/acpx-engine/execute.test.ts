@@ -26,7 +26,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
-  AcpxSessionInitError,
   buildAcpxRunSummary,
   createAcpxEngineExecutor,
   findAncestorBin,
@@ -162,6 +161,7 @@ async function runExecutor(
   config: Record<string, unknown>,
   options: {
     context?: Record<string, unknown>;
+    runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     executionTarget?: Record<string, unknown>;
@@ -195,7 +195,7 @@ async function runExecutor(
       id: "agent-1",
       companyId: "company-1",
     },
-      runtime: {},
+      runtime: options.runtime ?? {},
       config,
       context: options.context ?? {},
       executionTransport: options.executionTransport,
@@ -591,6 +591,52 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["claude", false], ["codex", false], ["claude", true], ["codex", true],
+  ] as const)("keeps %s ACP conversation policy on fresh, resumed, and reset turns (custom=%s)", async (agent, custom) => {
+    const root = await makeTempRoot();
+    const config = { agent, cwd: root, stateDir: path.join(root, "state"), mode: "persistent",
+      ...(custom ? { promptTemplate: "Custom agent instructions." } : {}),
+    };
+    const chatDirective = "Chat mode: clarify goals and hand accepted plans off to ordinary project tasks.";
+    const context = {
+      conversationMode: true,
+      taskId: "chat-1",
+      paperclipTaskMarkdown: chatDirective,
+      paperclipTaskMarkdownCompact: chatDirective,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "chat-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        comments: [],
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        fallbackFetchNeeded: false,
+      },
+    };
+    const fresh = await runExecutor(config, { context });
+    const resumed = await runExecutor(config, {
+      context,
+      runtime: { sessionParams: fresh.result.sessionParams },
+    });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    const reset = await runExecutor(config, { context });
+    expect(reset.sessionInputs[0]?.resumeSessionId).toBeUndefined();
+    for (const { meta } of [fresh, resumed, reset]) {
+      const prompt = String(meta[0]?.prompt ?? "");
+      expect(prompt).toContain(chatDirective);
+      expect(prompt).not.toContain("Execution contract:");
+      expect(prompt).not.toContain("clear final disposition");
+      expect(prompt).not.toContain("Create child issues");
+      expect(prompt).not.toContain("Use child issues");
+    }
+    expect(String(fresh.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "Continue your Paperclip conversation");
+    expect(String(reset.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "Continue your Paperclip conversation");
+    const ordinary = await runExecutor({ ...config, promptTemplate: "" }, { context: { ...context, conversationMode: false } });
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Execution contract:");
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Create child issues from the approved plan");
   });
 
   it("uses only the guarded external-chat contract for a default ACPX prompt", async () => {
@@ -1549,6 +1595,59 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it.each(["OPENAI_API_KEY", "CODEX_API_KEY"] as const)(
+    "selects Codex ACP API-key authentication when %s is configured",
+    async (apiKeyName) => {
+      const root = await makeTempRoot();
+      const codexHome = path.join(root, "codex-home");
+      await fs.mkdir(codexHome, { recursive: true });
+
+      const { sessionInputs } = await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        env: {
+          CODEX_HOME: codexHome,
+          [apiKeyName]: "sk-acp-test-key",
+        },
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+
+      const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+      expect(env[apiKeyName]).toBe("sk-acp-test-key");
+      expect(env.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
+    },
+  );
+
+  it.each(["OPENAI_API_KEY", "CODEX_API_KEY"] as const)(
+    "selects Codex ACP API-key authentication when only the host process provides %s",
+    async (apiKeyName) => {
+      const root = await makeTempRoot();
+      const codexHome = path.join(root, "codex-home");
+      await fs.mkdir(codexHome, { recursive: true });
+
+      // Simulate a local launch that inherits a provider key from the host
+      // process environment. No adapter config sets the key directly, so the
+      // launched env only receives it through host projection.
+      vi.stubEnv(apiKeyName, "sk-host-inherited-key");
+      try {
+        const { sessionInputs } = await runExecutor({
+          agent: "codex",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: codexHome },
+          paperclipRuntimeSkills: [],
+          paperclipSkillSync: { desiredSkills: [] },
+        });
+
+        const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+        expect(env[apiKeyName]).toBe("sk-host-inherited-key");
+        expect(env.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -2008,288 +2107,6 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stderrLog!.text).toContain(stderrTail);
   });
 
-  it("throws AcpxSessionInitError (so the adapter can fall back) when session init fails and lane fallback is allowed", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    // A JSON-RPC -32603 handshake failure: the throw carries the bare
-    // "Internal error" message; the real cause lives only in child stderr.
-    const stderrTail = "session/new failed: -32603 backend unavailable while starting agent process";
-    await fs.writeFile(path.join(runStderrDir, "run-fallback-1.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => true,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const thrown = await execute({
-      runId: "run-fallback-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never).then(
-      () => null,
-      (err: unknown) => err,
-    );
-
-    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
-    const sessionErr = thrown as AcpxSessionInitError;
-    expect(sessionErr.errorCode).toBe("acpx_session_init_failed");
-    // The bare "Internal error" is folded together with the real child stderr.
-    expect(sessionErr.message).toContain("Internal error");
-    expect(sessionErr.message).toContain(stderrTail);
-    expect(sessionErr.childStderrTail).toContain(stderrTail);
-  });
-
-  it("returns the terminal failed result (no lane switch) for an explicit ACP run", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    const stderrTail = "session/new failed: -32603 backend unavailable while starting agent process";
-    await fs.writeFile(path.join(runStderrDir, "run-explicit-1.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const result = await execute({
-      runId: "run-explicit-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("acpx_session_init_failed");
-    // Requirement 2: the real child stderr is folded into the tenant-facing text.
-    expect(result.errorMessage).toContain(stderrTail);
-    expect(result.summary).toContain(stderrTail);
-  });
-
-  it("redacts secrets from the child stderr before surfacing it in the tenant-facing message", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    const secret = "sk-ant-api03-SUPERSECRETVALUE0123456789";
-    const stderrTail = `session/new failed: request used Authorization: Bearer ${secret}`;
-    await fs.writeFile(path.join(runStderrDir, "run-redact-1.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const result = await execute({
-      runId: "run-redact-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.exitCode).toBe(1);
-    // The secret must not leak into the persisted, tenant-facing fields...
-    expect(result.errorMessage).not.toContain(secret);
-    expect(result.summary).not.toContain(secret);
-    expect(result.errorMessage).toContain("***REDACTED***");
-    // ...but the non-secret diagnostic context is still surfaced.
-    expect(result.errorMessage).toContain("session/new failed");
-  });
-
-  it("classifies an auth-indicating session-init stderr as acpx_auth_required (returned result)", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    const stderrTail = "AI_APICallError: 401 status: invalid x-api-key credential";
-    await fs.writeFile(path.join(runStderrDir, "run-auth-1.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const result = await execute({
-      runId: "run-auth-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.errorCode).toBe("acpx_auth_required");
-  });
-
-  it("classifies a genuine credential rejection (no HTTP status) as acpx_auth_required", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    const stderrTail = "authentication failed: invalid api key for provider";
-    await fs.writeFile(path.join(runStderrDir, "run-auth-3.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const result = await execute({
-      runId: "run-auth-3",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.errorCode).toBe("acpx_auth_required");
-  });
-
-  it("does NOT classify a backend outage as auth just because stderr mentions api key/credential", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    // Mentions "api key" and "credential" (setup logging) but the terminal
-    // error is a 5xx backend outage, not a credential rejection.
-    const stderrTail =
-      "loading api key from credential store; upstream backend returned 503 Service Unavailable";
-    await fs.writeFile(path.join(runStderrDir, "run-outage-1.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => false,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const result = await execute({
-      runId: "run-outage-1",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never);
-
-    expect(result.errorCode).toBe("acpx_session_init_failed");
-  });
-
-  it("carries the auth classification on the thrown error for a fallback-eligible run", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const runStderrDir = path.join(stateDir, "run-stderr");
-    await fs.mkdir(runStderrDir, { recursive: true });
-    const stderrTail = "Unauthorized (401): missing credential for provider";
-    await fs.writeFile(path.join(runStderrDir, "run-auth-2.log"), `${stderrTail}\n`, "utf8");
-
-    const execute = createAcpxEngineExecutor({
-      allowSessionInitLaneFallback: () => true,
-      createRuntime: () => ({
-        ensureSession: async () => {
-          throw new Error("Internal error");
-        },
-        startTurn: () => ({
-          events: (async function* () {})(),
-          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-          cancel: async () => {},
-        }),
-        close: async () => {},
-      }) as never,
-    });
-
-    const thrown = await execute({
-      runId: "run-auth-2",
-      agent: { id: "agent-1", companyId: "company-1" },
-      runtime: {},
-      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
-      context: {},
-      onLog: async () => {},
-      onMeta: async () => {},
-    } as never).then(
-      () => null,
-      (err: unknown) => err,
-    );
-
-    expect(thrown).toBeInstanceOf(AcpxSessionInitError);
-    expect((thrown as AcpxSessionInitError).errorCode).toBe("acpx_auth_required");
-  });
-
   it("configures in-process child stderr capture without forcing verbose mode", async () => {
     const root = await makeTempRoot();
     const { runtimeOptions } = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") });
@@ -2351,6 +2168,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(runtimeOptions[0]!.cwd).toBe(remoteCwd);
     expect(sessionInputs[0]!.cwd).toBe(remoteCwd);
     expect(runtimeOptions[0]!.spawnCwd).toBe(localCwd);
+    const proxyCommand = (runtimeOptions[0]!.agentRegistry as { resolve(name: string): string }).resolve("custom");
+    expect(proxyCommand.startsWith(`${JSON.stringify(process.execPath.replaceAll("\\", "/"))} `)).toBe(true);
+    expect(proxyCommand).toContain("paperclip-process-session-proxy.mjs");
     expect(runtimeOptions[0]!.spawnCwd).not.toBe(sessionInputs[0]!.cwd);
     const payloadEnv = ((sessionPayload as Record<string, unknown> | null)?.env ?? {}) as Record<string, unknown>;
     expect(payloadEnv).toMatchObject({
@@ -3651,6 +3471,279 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
   });
 });
 
+describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  // A stand-in for the real Claude seam (`claude-local/server/acp.ts`): stage
+  // the bundle the engine hands it, at the same asset key and
+  // `followSymlinks` value the real seam uses. This isolates the ENGINE's own
+  // contract — computing and threading `skillsBundleDir`, then rewriting the
+  // prompt/identity once staging resolves — from the real seam, which has its
+  // own test in `claude-local/server/acp.test.ts`.
+  function stagingClaudeSeam(): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] {
+    return async (input) => {
+      const stagedRuntime = await input.stage(
+        input.skillsBundleDir
+          ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+          : [],
+      );
+      return { stagedRuntime };
+    };
+  }
+
+  it("rewrites the prompt and skill identity onto the in-sandbox skill root once the bundle is staged", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skill = await createSkill(path.join(localCwd, "skills"), "review");
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [skill],
+        paperclipSkillSync: { desiredSkills: [skill.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toMatch(/Skill root: (\S+)/);
+    expect(prompt).not.toContain(hostSkillsHome);
+
+    const inSandboxSkillsRoot = prompt.match(/Skill root: (\S+)/)![1]!;
+    expect(inSandboxSkillsRoot).not.toBe(hostSkillsHome);
+    await expect(
+      fs.readFile(path.join(inSandboxSkillsRoot, skill.runtimeName, "SKILL.md"), "utf8"),
+    ).resolves.toContain("# review");
+
+    const skillsIdentity = result.sessionParams?.skills as { skillRoot?: string } | undefined;
+    expect(skillsIdentity?.skillRoot).toBe(inSandboxSkillsRoot);
+  });
+
+  it("keeps the session fingerprint stable across two different in-sandbox skill roots", async () => {
+    // Same session (same execution target, same config) both times, so the
+    // fingerprint's other 16 fields cannot explain a difference — only the
+    // seam's reported in-sandbox skill path varies, by direct override.
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skill = await createSkill(path.join(localCwd, "skills"), "review");
+    const baseConfig = {
+      agent: "claude",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      cwd: localCwd,
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    };
+    const seamWithOverriddenSkillsDir = (
+      overridePath: string,
+    ): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] =>
+      async (input) => {
+        const stagedRuntime = await input.stage(
+          input.skillsBundleDir
+            ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+            : [],
+        );
+        stagedRuntime.assetDirs.skills = overridePath;
+        return { stagedRuntime };
+      };
+
+    const runA = await runExecutor(baseConfig, {
+      authToken: "real-run-jwt",
+      executionTarget,
+      prepareRemoteManagedHome: seamWithOverriddenSkillsDir("/sandbox/path-a/skills"),
+    });
+    const runB = await runExecutor(baseConfig, {
+      authToken: "real-run-jwt",
+      executionTarget,
+      prepareRemoteManagedHome: seamWithOverriddenSkillsDir("/sandbox/path-b/skills"),
+    });
+
+    expect(String(runA.meta[0]?.prompt ?? "")).toContain("Skill root: /sandbox/path-a/skills");
+    expect(String(runB.meta[0]?.prompt ?? "")).toContain("Skill root: /sandbox/path-b/skills");
+    // The session fingerprint, which only ever saw the host-independent skill
+    // identity, stays the same across the two different in-sandbox paths.
+    expect(runA.result.sessionParams?.configFingerprint).toBe(runB.result.sessionParams?.configFingerprint);
+  });
+
+  it("stages no skills asset and leaves the prompt untouched when no skill is selected", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  });
+
+  it("drops a skill that fails to materialize from the prompt, the identity, and the staged bundle", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const review = await createSkill(skillsRoot, "review");
+
+    // A skill whose source is a symlink. `materializePaperclipSkillCopy`
+    // refuses a symlinked skill root, so this skill's copy fails while its
+    // source still exists (it does not hit the separate missing-source
+    // filter).
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [review, broken],
+        paperclipSkillSync: { desiredSkills: [review.key, broken.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Selected skills: review");
+    expect(prompt).not.toContain("broken");
+
+    const skillsIdentity = result.sessionParams?.skills as { selectedSkills?: string[] } | undefined;
+    expect(skillsIdentity?.selectedSkills).toEqual(["review"]);
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+    await expect(pathExists(path.join(hostSkillsHome, "broken"))).resolves.toBe(false);
+  });
+
+  it("stages no skills asset when every selected skill fails to materialize", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [broken],
+        paperclipSkillSync: { desiredSkills: [broken.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  });
+
+  it("drops a skill whose staged copy has no usable SKILL.md from the prompt, the identity, and the staged bundle", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const review = await createSkill(skillsRoot, "review");
+
+    // A skill root that is a real directory (so the copy itself does not
+    // throw), but whose `SKILL.md` is a symlink. `materializePaperclipSkillCopy`
+    // skips a symlinked file entry instead of copying it, so the staged
+    // directory ends up with no `SKILL.md`.
+    const linkedSkillMdTarget = path.join(skillsRoot, "linked-skill-md-target.md");
+    await fs.writeFile(linkedSkillMdTarget, "# linked\n", "utf8");
+    const symlinkedSkillMdSource = path.join(skillsRoot, "symlinked-skill-md");
+    await fs.mkdir(symlinkedSkillMdSource, { recursive: true });
+    await fs.symlink(linkedSkillMdTarget, path.join(symlinkedSkillMdSource, "SKILL.md"), "file");
+    const symlinkedSkillMd = {
+      key: "paperclipai/test/symlinked-skill-md",
+      runtimeName: "symlinked-skill-md",
+      source: symlinkedSkillMdSource,
+      required: false,
+    };
+
+    // A skill root that is a real directory with no `SKILL.md` at all.
+    const noSkillMdSource = path.join(skillsRoot, "no-skill-md");
+    await fs.mkdir(noSkillMdSource, { recursive: true });
+    await fs.writeFile(path.join(noSkillMdSource, "notes.md"), "# notes\n", "utf8");
+    const noSkillMd = {
+      key: "paperclipai/test/no-skill-md",
+      runtimeName: "no-skill-md",
+      source: noSkillMdSource,
+      required: false,
+    };
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [review, symlinkedSkillMd, noSkillMd],
+        paperclipSkillSync: { desiredSkills: [review.key, symlinkedSkillMd.key, noSkillMd.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Selected skills: review");
+    expect(prompt).not.toContain("symlinked-skill-md");
+    expect(prompt).not.toContain("no-skill-md");
+
+    const skillsIdentity = result.sessionParams?.skills as { selectedSkills?: string[] } | undefined;
+    expect(skillsIdentity?.selectedSkills).toEqual(["review"]);
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+    await expect(pathExists(path.join(hostSkillsHome, "symlinked-skill-md"))).resolves.toBe(false);
+    await expect(pathExists(path.join(hostSkillsHome, "no-skill-md"))).resolves.toBe(false);
+  });
+});
+
 describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / reuse on compatible resume)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -3728,6 +3821,63 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
       onMeta: async () => {},
     };
   }
+
+  it("cancels a stalled remote startup without waiting for the command or launching the provider", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const controller = new AbortController();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const stopRemoteStartup = vi.fn(async () => {});
+    const createRuntime = vi.fn(() => recordingRuntime({ ensureInputs: [] }) as never);
+    const originalExecute = executionTarget.runner.execute;
+    executionTarget.runner.execute = async input => {
+      if (input.command === "stalled-auth-setup") {
+        entered();
+        await blocked;
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: new Date().toISOString() };
+      }
+      return originalExecute(input);
+    };
+    const execute = createAcpxEngineExecutor({
+      createRuntime,
+      prepareRemoteManagedHome: async input => {
+        const target = input.executionTarget;
+        if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+          throw new Error("Expected sandbox target");
+        }
+        await target.runner.execute({ command: "stalled-auth-setup" });
+        return { stagedRuntime: await input.stage([]) };
+      },
+    });
+    let settled = false;
+    const run = execute({
+      runId: "cancel-startup", runtime: {},
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget }),
+      signal: controller.signal, stopRemoteStartup,
+    } as never).catch(error => error).finally(() => { settled = true; });
+    await started;
+    controller.abort(new Error("Stopped by user"));
+    try {
+      await vi.waitFor(() => expect(stopRemoteStartup).toHaveBeenCalledTimes(1), { timeout: 500 });
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 500 });
+      expect(createRuntime).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await run;
+    }
+    // A provider RPC completing late must not resume the cancelled startup.
+    expect(createRuntime).not.toHaveBeenCalled();
+    // A subsequent run can acquire the same local staging/auth preparation
+    // resources; cancellation must not leave the staging lease held.
+    const retry = await execute({
+      runId: "retry-after-cancel", runtime: {},
+      ...baseExecuteArgs({ stateDir, localCwd, executionTarget }),
+    } as never);
+    expect(retry.exitCode).toBe(0);
+    expect(createRuntime).toHaveBeenCalledOnce();
+  });
 
   it("test_acp_resume_compatible_session_does_not_restage", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
@@ -4864,13 +5014,13 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     const { traceContext, spans } = createRecordingStartupTrace();
 
     // A codex bring-up runs the codex-home.seed step, which nests skills.reconcile.
-    const { events } = await runExecutor(
+    const { events, sessionInputs } = await runExecutor(
       {
         agent: "codex",
         agentCommand: "node ./fake-acp.js",
         stateDir,
         cwd: localCwd,
-        env: { CODEX_HOME: codexHome },
+        env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "sk-acp-test-key" },
       },
       { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
     );
@@ -5436,13 +5586,13 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       runner: createLocalSandboxRunner(),
     };
 
-    const { events } = await runExecutor(
+    const { events, sessionInputs } = await runExecutor(
       {
         agent: "codex",
         agentCommand: "node ./fake-acp.js",
         stateDir,
         cwd: localCwd,
-        env: { CODEX_HOME: codexHome },
+        env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "sk-acp-test-key" },
       },
       { authToken: "real-run-jwt", executionTarget },
     );
@@ -5464,6 +5614,9 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       expect(typeof event!.payload?.durationMs).toBe("number");
       expect(event!.payload?.durationMs as number).toBeGreaterThanOrEqual(0);
     }
+    const sessionEnv = (sessionInputs[0]?.sessionOptions as { env: Record<string, string> }).env;
+    expect(sessionEnv.OPENAI_API_KEY).toBe("sk-acp-test-key");
+    expect(sessionEnv.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
   });
 
   it("emits the 5 non-codex boundaries for a custom-agent sandbox bring-up (no codex steps)", async () => {

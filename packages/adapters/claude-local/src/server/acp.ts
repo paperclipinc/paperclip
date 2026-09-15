@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -35,11 +36,8 @@ import {
   asBoolean,
   asNumber,
   asString,
-  asStringArray,
-  ensurePathInEnv,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
-import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
@@ -230,7 +228,7 @@ async function prepareClaudeRemoteManagedHome(
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
       ? envConfig.CLAUDE_CONFIG_DIR.trim()
       : "";
-  if (explicitClaudeConfigDir) {
+  if (explicitClaudeConfigDir && !input.config.managedAiConnection) {
     // User-managed escape hatch. Unlike the Claude CLI lane
     // (`claude-local/execute.ts`), which runs the process on the same host and can
     // forward the operator's path verbatim, the remote ACP lane spawns Claude
@@ -270,9 +268,24 @@ async function prepareClaudeRemoteManagedHome(
 
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
-  const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  const claudeConfigSeedDir = input.config.managedAiConnection
+    ? explicitClaudeConfigDir
+    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  // Ship the per-run skill bundle, staged only when the run selected at
+  // least one skill. The bundle directory holds a plain copy of each
+  // selected skill's files (`materializePaperclipSkillCopy` never copies a
+  // symbolic link, at the root or at any depth). So the bundle asset stages
+  // with `followSymlinks: false`: staging never needs to carry a symbolic
+  // link's target content, and refusing to follow one stops a link planted
+  // in the bundle directory after materialization (for example by a
+  // concurrent writer) from pulling an arbitrary host file into the sandbox.
+  // The engine rewrites the prompt onto the in-sandbox copy once this asset
+  // is staged.
   const stagedRuntime = await input.stage([
     { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+    ...(input.skillsBundleDir
+      ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+      : []),
   ]);
 
   const remoteClaudeRuntimeRoot =
@@ -304,10 +317,6 @@ async function prepareClaudeRemoteManagedHome(
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
-    // Auto-selected (non-explicit) ACP runs may throw on session-init failure so
-    // execute() falls back to the proven CLI lane; explicit engine=acp runs keep
-    // the terminal failed result instead of silently switching lanes.
-    allowSessionInitLaneFallback: (ctx) => !normalizeEngine(ctx.config.engine).explicit,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     ...options,
     adapterType: "claude_local",
@@ -619,6 +628,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
   }
 
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+  if (config.managedAiConnection) args.push("--setting-sources", "user");
   args.push(
     ...buildClaudeProbePermissionArgs({
       dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
@@ -678,106 +688,6 @@ export async function probeClaudeAcpSandboxLogin(input: {
   return [];
 }
 
-// ACP-lane mirror of the CLI-lane auth advice helper in test.ts: same
-// CLAUDE_CODE_OAUTH_TOKEN recognition contract, ACP-prefixed check code to
-// match this file's existing `claude_acp_*` naming.
-export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
-  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
-  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
-    return {
-      code: "claude_acp_subscription_token_detected",
-      level: "info",
-      message:
-        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
-    };
-  }
-  return null;
-}
-
-/**
- * Runs the shared CLI-binary hello probe (see hello-probe.ts) from the ACP
- * lane. Permissive by design for anything that isn't a definitive provider
- * rejection: if the `claude` CLI binary itself isn't resolvable in this
- * environment, or the probe throws for an unrelated infra reason, that's
- * the "check cannot run" case — surface a warning, never a hard error, and
- * never claim the credential is invalid when we simply couldn't test it.
- */
-async function runClaudeAcpCredentialProbe(input: {
-  config: Record<string, unknown>;
-  envConfig: Record<string, unknown>;
-  target: ReturnType<typeof readAdapterExecutionTarget>;
-  cwd: string;
-  targetIsRemote: boolean;
-}): Promise<AdapterEnvironmentCheck[]> {
-  const { config, envConfig, target, cwd, targetIsRemote } = input;
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
-  }
-  // The probe needs the `claude` CLI itself, distinct from the
-  // `claude-agent-acp` server binary this lane otherwise resolves — the
-  // former is what actually talks to Anthropic for a "say hello" round
-  // trip, present in the runtime image regardless of engine choice.
-  const command = asString(config.command, "claude");
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  try {
-    await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
-  } catch (err) {
-    return [
-      {
-        code: "claude_acp_credential_probe_unavailable",
-        level: "warn",
-        message: "Could not run a live credential probe: the `claude` CLI is not resolvable in this environment.",
-        detail: err instanceof Error ? err.message : String(err),
-        hint: "Install the Claude CLI, or set command to a valid `claude` binary path, to enable live credential validation for ACP.",
-      },
-    ];
-  }
-
-  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
-  const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const extraArgs = (() => {
-    const fromExtraArgs = asStringArray(config.extraArgs);
-    if (fromExtraArgs.length > 0) return fromExtraArgs;
-    return asStringArray(config.args);
-  })();
-  const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45));
-
-  try {
-    return await runClaudeCredentialHelloProbe({
-      runId,
-      target,
-      command,
-      cwd,
-      env,
-      model: asString(config.model, "").trim(),
-      effort: asString(config.effort, "").trim(),
-      chrome: asBoolean(config.chrome, false),
-      maxTurns: asNumber(config.maxTurnsPerRun, 0),
-      dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
-      extraArgs,
-      hasBedrock: false,
-      targetIsSandbox,
-      targetIsRemote,
-      helloProbeTimeoutSec,
-    });
-  } catch (err) {
-    // A genuinely unexpected exception (the process runner itself throwing,
-    // not a classified provider outcome — every branch inside
-    // runClaudeCredentialHelloProbe already resolves to a check). Treat as
-    // infra, not a rejection.
-    return [
-      {
-        code: "claude_acp_credential_probe_failed",
-        level: "warn",
-        message: "The live credential probe could not run.",
-        detail: err instanceof Error ? err.message : String(err),
-        hint: "This is usually a transient/infra issue, not a rejected credential. Retry the check.",
-      },
-    ];
-  }
-}
-
 export async function testClaudeAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -785,7 +695,6 @@ export async function testClaudeAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
 
   checks.push({
@@ -810,9 +719,13 @@ export async function testClaudeAcpEnvironment(
     });
   }
 
-  const cwd = asString(config.cwd, process.cwd());
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    await ensureAdapterExecutionTargetDirectory(`claude-acp-envtest-${Date.now()}`, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_acp_cwd_valid",
       level: "info",
@@ -855,7 +768,7 @@ export async function testClaudeAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     envConfig.CLAUDE_CODE_USE_BEDROCK === "1" ||
     envConfig.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -877,12 +790,13 @@ export async function testClaudeAcpEnvironment(
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_acp_anthropic_api_key_detected",
-      level: "warn",
-      message: "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
+      level: selectedApiKey ? "info" : "warn",
+      message: selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -898,52 +812,12 @@ export async function testClaudeAcpEnvironment(
         "CLAUDE_CODE_OAUTH_TOKEN is set. Claude ACP will authenticate with the configured subscription token; no stored login is needed on the execution target.",
       detail: `Detected in ${source}.`,
     });
-  } else {
-    const authAdvice = resolveClaudeAuthAdvice(envConfig);
-    if (authAdvice) {
-      checks.push(authAdvice);
-    } else if (!callerControlsHost) {
-      // ACP-lane mirror of the CLI-lane branch in test.ts: name the token
-      // route, which the user can actually complete from their own machine.
-      checks.push({
-        code: "claude_acp_subscription_mode_possible",
-        level: "info",
-        message: "No Claude credentials are configured for this agent yet.",
-        hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
-      });
-    } else if (!targetIsRemote) {
-      checks.push({
-        code: "claude_acp_subscription_mode_possible",
-        level: "info",
-        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
-      });
-    }
-  }
-
-  // ACP has no protocol-level credential-validation step of its own — unlike
-  // the CLI lane, testClaudeAcpEnvironment above only ever emits static
-  // presence checks, so a rejected BYOK key would otherwise sail through as
-  // "Connected" with no error anywhere (the exact staging bug this closes).
-  // When a credential is actually configured on the agent (BYOK API key or
-  // subscription token in the adapter env), borrow the CLI lane's live
-  // "say hello" probe (hello-probe.ts) to get a real provider verdict
-  // instead. Bedrock is excluded — its auth is AWS-credential-based, not
-  // something this Anthropic API-key/token probe can validate. A host-only
-  // credential (no config credential) is covered by upstream's sandbox login
-  // probe below, which seeds the host env; the two probes are mutually
-  // exclusive so an environment test spawns exactly one hello run.
-  const configOauthToken = envConfig.CLAUDE_CODE_OAUTH_TOKEN;
-  const hasConfigCredentialToProbe =
-    !hasBedrock && (isNonEmpty(configApiKey) || isNonEmpty(configOauthToken));
-  if (hasConfigCredentialToProbe) {
-    const probeChecks = await runClaudeAcpCredentialProbe({
-      config,
-      envConfig,
-      target,
-      cwd,
-      targetIsRemote,
+  } else if (!targetIsRemote) {
+    checks.push({
+      code: "claude_acp_subscription_mode_possible",
+      level: "info",
+      message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
     });
-    checks.push(...probeChecks);
   }
 
   // Run a real hello probe for every target when Bedrock and a config API key
@@ -961,11 +835,7 @@ export async function testClaudeAcpEnvironment(
   // a sandbox target, and a distinct warn check when the probe cannot run. The
   // user interface reads the canonical signal to offer login on the sandbox ACP
   // path.
-  // A config credential (API key or subscription token) was already probed
-  // by the BYOK hello probe above; only the host-inherited / no-credential
-  // cases reach this sandbox login probe, so one environment test never
-  // spawns two hello runs.
-  if (!hasBedrock && !isNonEmpty(configApiKey) && !isNonEmpty(configOauthToken)) {
+  if (!hasBedrock && !isNonEmpty(configApiKey)) {
     const probeEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(envConfig)) {
       if (typeof value === "string") probeEnv[key] = value;
@@ -999,6 +869,7 @@ export async function testClaudeAcpEnvironment(
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(
       ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
         runId,
         target,
         cwd,

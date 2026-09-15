@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
-import { findCompanyByUrlSegment } from "@/lib/company-routes";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
@@ -19,10 +18,10 @@ import { NewGoalDialog } from "./NewGoalDialog";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
+import { AnnouncementWell } from "./AnnouncementWell";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
-import { CloudTrialBanner } from "./CloudTrialBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
@@ -77,7 +76,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-export function Layout() {
+export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -138,10 +137,11 @@ export function Layout() {
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const matchedCompany = useMemo(
-    () => findCompanyByUrlSegment(companies, companyPrefix),
-    [companies, companyPrefix],
-  );
+  const matchedCompany = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
+  }, [companies, companyPrefix]);
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
@@ -236,7 +236,7 @@ export function Layout() {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   });
   const keyboardShortcutsEnabled = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -293,7 +293,7 @@ export function Layout() {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
       return;
     }
 
@@ -334,7 +334,6 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
-    location.hash,
     navigate,
     pushToast,
     selectionSource,
@@ -634,7 +633,6 @@ export function Layout() {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <CloudTrialBanner />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
@@ -657,7 +655,7 @@ export function Layout() {
                 {hasSecondarySidebar ? (
                   <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
                 ) : (
-                  <Sidebar />
+                  <Sidebar>{sidebarSections}</Sidebar>
                 )}
               </div>
             </div>
@@ -681,7 +679,7 @@ export function Layout() {
               {replacesPrimarySidebar ? (
                 <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
               ) : (
-                <Sidebar />
+                <Sidebar>{sidebarSections}</Sidebar>
               )}
             </div>
             <SidebarAccountMenu
@@ -786,6 +784,7 @@ export function Layout() {
       <NewAgentDialog />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
+      <AnnouncementWell health={health} />
       </div>
     </GeneralSettingsProvider>
   );

@@ -17,7 +17,7 @@ import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
 import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
-import { useFeatures } from "../../hooks/useFeatures";
+import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
@@ -244,7 +244,10 @@ export function IssueProperties({
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
   // Managed-sandbox-only policy: the workspace folder is a host filesystem
   // path, so the Folder row disappears. The Branch row above it stays. The gate
   // fails closed whenever the policy is unknown — in flight and also on a failed
@@ -2329,7 +2332,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
-            size="lg"
+            className="size-3"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
@@ -2639,7 +2642,11 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        {showScheduledRetryRow && scheduledRetryContent ? (
+        {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
+          <PropertyRow label="Workspace">
+            <span className="text-sm text-muted-foreground">Waiting for workspace</span>
+          </PropertyRow>
+        ) : showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker
             inline={inline}
             label="Scheduled retry"

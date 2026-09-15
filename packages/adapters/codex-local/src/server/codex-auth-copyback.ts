@@ -1,4 +1,4 @@
-import { open, rename, rm } from "node:fs/promises";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -63,13 +63,7 @@ export interface CopyBackCodexAuthInput {
  *      resolves to `kept-host` (benign no-op, host untouched); every other read
  *      error stays fail-loud.
  *   2. Stage them to a `0600` temp file on the **same filesystem** as the host
- *      target (its directory), which doubles as the predicate `source`. A host
- *      directory whose path is missing at any depth (ENOENT from the lock
- *      acquisition when an ancestor is absent, or from staging when the host
- *      directory itself is) resolves to `kept-host`: there is no shared store
- *      to merge into, and no part of the missing tree is ever created here (on
- *      a multi-tenant server that would leak one tenant's credential into the
- *      store every other managed home is seeded from).
+ *      target (its directory), which doubles as the predicate `source`.
  *   3. Run the Phase-3 decision predicate (`source` = sandbox temp, `destination`
  *      = host). Exit 10 → adopt the sandbox copy; exit 20 → keep the host copy.
  *   4. On exit 10, `rename` the staged temp over the host target — an atomic
@@ -101,9 +95,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
   }
 
   const hostDir = path.dirname(hostAuthPath);
-  // Deliberately NOT `mkdir`: creating the shared host directory here would
-  // leak this run's credential into the store every other tenant's managed
-  // home is seeded from. A missing host store is handled below as keep-host.
+  await mkdir(hostDir, { recursive: true });
   const hostOutcome = await withDirectoryMergeLock(
     hostDir,
     async () => {
@@ -144,29 +136,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       }
     },
     env,
-  ).catch(async (error: unknown) => {
-    // ENOENT anywhere in the locked host-side sequence means some part of the
-    // shared host store's path is missing: the lock `mkdir` when an ANCESTOR of
-    // the host directory is absent (the lock lives in a sibling of `hostDir`,
-    // so a missing ancestor fails lock acquisition before staging even runs),
-    // the staging `open` when the host directory itself is the missing leaf, or
-    // the writeFile/rename if the directory vanishes mid-sequence. All shapes
-    // mean the same thing: a shared codex home that never existed (e.g. a
-    // multi-tenant cloud server whose credentials live only in managed
-    // per-company homes) or one deleted between the caller's launch-time check
-    // and teardown. There is nothing to merge into, so treat it exactly like
-    // the absent-sandbox-auth branch above and keep the host. The decision
-    // predicate never surfaces a coded ENOENT (it rewraps spawn failures into
-    // plain Errors), so every non-ENOENT failure stays fail-loud.
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
-      await log(
-        "[paperclip] Codex auth copy-back: no shared host credential store (host codex home path is absent); nothing to merge into, host left untouched.",
-      );
-      return null;
-    }
-    throw error;
-  });
-  if (hostOutcome === null) return "kept-host";
+  );
 
   // Additive cache write. Independent of the host default overwrite above: it
   // runs on its own directory lock, keys the slot by the real sandbox

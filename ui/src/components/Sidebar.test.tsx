@@ -7,7 +7,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
@@ -15,10 +14,6 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 
 const mockAttentionApi = vi.hoisted(() => ({
   list: vi.fn(),
-}));
-
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -77,10 +72,6 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/attention", () => ({
   attentionApi: mockAttentionApi,
-}));
-
-vi.mock("../api/access", () => ({
-  accessApi: mockAccessApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -182,8 +173,7 @@ describe("Sidebar", () => {
     const sidebar = container.querySelector("aside");
     expect(sidebar?.classList).not.toContain("border-r");
     expect(sidebar?.classList).not.toContain("border-border");
-    expect(sidebar?.classList).toContain("bg-border/50");
-    expect(sidebar?.classList).toContain("dark:bg-muted");
+    expect(sidebar?.classList).toContain("primary-sidebar-surface");
 
     flushSync(() => {
       root.unmount();
@@ -194,7 +184,7 @@ describe("Sidebar", () => {
     // The header's spare width goes to the workspace name (which otherwise
     // truncates at ~78px), so search lives in the nav list — still
     // exactly one pointer affordance, just relocated.
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();
@@ -208,9 +198,10 @@ describe("Sidebar", () => {
   });
 
   it("renders plugin sidebar launchers inside the Work section", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-    } }));
+      enableStreamlinedLeftNavigation: true,
+    });
     const root = await renderSidebar();
 
     const workSection = [...container.querySelectorAll("nav [data-plugin-launcher-zone]")]
@@ -232,9 +223,10 @@ describe("Sidebar", () => {
   });
 
   it("uses the simplified work navigation with one Agents destination", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-    } }));
+      enableStreamlinedLeftNavigation: true,
+    });
     const root = await renderSidebar();
 
     expect(container.textContent).toContain("New Task");
@@ -261,7 +253,7 @@ describe("Sidebar", () => {
   });
 
   it("keeps the simplified navigation while experimental settings are loading", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
@@ -277,9 +269,10 @@ describe("Sidebar", () => {
   it("ignores the retired streamlined navigation opt-out", async () => {
     // PAP-12472 retired the experimental opt-out; the streamlined sidebar is the
     // only path, so an old `false` setting no longer restores classic mode.
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-    } }));
+      enableStreamlinedLeftNavigation: false,
+    });
     const root = await renderSidebar();
 
     const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
@@ -331,7 +324,7 @@ describe("Sidebar", () => {
   });
 
   it("renders plugin sidebar slots in Work below Workspaces", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
     const sidebarSlot = [...container.querySelectorAll("nav [data-plugin-slot-types]")]
@@ -353,7 +346,7 @@ describe("Sidebar", () => {
   });
 
   it("does not flash the Workspaces link while experimental settings are loading", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Workspaces");
@@ -364,7 +357,7 @@ describe("Sidebar", () => {
   });
 
   it("does not poll attention until Decisions is enabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableDecisions: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: false });
     const root = await renderSidebar();
 
     expect(mockAttentionApi.list).not.toHaveBeenCalled();
@@ -375,9 +368,10 @@ describe("Sidebar", () => {
   });
 
   it("shows Status directly below Decisions in primary navigation", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({
-      features: { enableDecisions: true, enableStatusCards: true },
-    }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableDecisions: true,
+      enableStatusCards: true,
+    });
     const root = await renderSidebar();
 
     const primaryNavLinks = [...container.querySelectorAll("nav > div:first-child a")];
@@ -398,11 +392,10 @@ describe("Sidebar", () => {
   });
 
   it("groups and orders the streamlined Work and Org navigation", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableApps: true,
-    } }));
+    });
     const root = await renderSidebar();
 
     const sections = [...container.querySelectorAll("nav > div")];
@@ -424,10 +417,10 @@ describe("Sidebar", () => {
   });
 
   it("hides the Goals nav item by default", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableGoalsSidebarLink: false,
-    } }));
+    });
     const root = await renderSidebar();
 
     expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
@@ -438,7 +431,7 @@ describe("Sidebar", () => {
   });
 
   it("reserves the Goals nav slot while experimental settings are loading", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
@@ -450,10 +443,10 @@ describe("Sidebar", () => {
   });
 
   it("shows the Goals nav item when the experimental setting is enabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableGoalsSidebarLink: true,
-    } }));
+    });
     const root = await renderSidebar();
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Goals");
@@ -468,8 +461,7 @@ describe("Sidebar", () => {
   });
 
   it("keeps Timeline out of the global navigation", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     const sections = [...container.querySelectorAll("nav > div")];
@@ -484,10 +476,10 @@ describe("Sidebar", () => {
   });
 
   it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableConferenceRoomChat: true,
-    } }));
+    });
     const root = await renderSidebar();
 
     const link = [...container.querySelectorAll("nav a")].find(
@@ -501,10 +493,10 @@ describe("Sidebar", () => {
   });
 
   it("hides the Conference Room nav item when conference room chat is off (PAP-137)", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enableConferenceRoomChat: false,
-    } }));
+    });
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Conference Room");
@@ -515,7 +507,7 @@ describe("Sidebar", () => {
   });
 
   it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Conference Room");
@@ -526,10 +518,10 @@ describe("Sidebar", () => {
   });
 
   it("hides the Pipelines nav item when pipelines are disabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: false,
-    } }));
+    });
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Pipelines");
@@ -540,8 +532,7 @@ describe("Sidebar", () => {
   });
 
   it("always shows Connectors in the Org section", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableApps: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = await renderSidebar();
 
     const links = [...container.querySelectorAll("a")];
@@ -561,10 +552,10 @@ describe("Sidebar", () => {
   });
 
   it("shows the Pipelines nav item when pipelines are enabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: true,
-    } }));
+    });
     const root = await renderSidebar();
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
@@ -576,7 +567,7 @@ describe("Sidebar", () => {
   });
 
   it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Pipelines");
@@ -587,7 +578,7 @@ describe("Sidebar", () => {
   });
 
   it("shows the Workspaces link when isolated workspaces are enabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Workspaces");
@@ -599,7 +590,7 @@ describe("Sidebar", () => {
   });
 
   it("does not render a global navigation collapse affordance", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
@@ -614,7 +605,7 @@ describe("Sidebar", () => {
 
   it("hides the collapse affordance on mobile (drawer handles it)", async () => {
     mockSidebar.isMobile = true;
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }));
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();

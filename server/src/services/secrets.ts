@@ -190,6 +190,31 @@ export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
   return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
 }
 
+/**
+ * Reads the `CLAUDE_CODE_OAUTH_TOKEN` binding from an adapter config, or
+ * `null` when the config carries no such key.
+ */
+export function readClaudeOAuthBinding(config: unknown): unknown {
+  const value = readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY];
+  return value === undefined ? null : value;
+}
+
+/**
+ * Returns true when both bindings are the exact fixed Claude Code OAuth
+ * reference and select the exact same secret version. The hire-inheritance
+ * gate compares the parent's current reference, re-read inside the write
+ * transaction, against the reference already copied onto the child before the
+ * transaction started. A concurrent version change on the parent must fail
+ * this check, so the child never keeps a stale version under a claim the gate
+ * treats as current.
+ */
+export function claudeOAuthBindingsMatchExactly(parentBinding: unknown, childBinding: unknown): boolean {
+  if (!isFixedClaudeOAuthBinding(parentBinding) || !isFixedClaudeOAuthBinding(childBinding)) return false;
+  const parentVersion = (parentBinding as Record<string, unknown>).version;
+  const childVersion = (childBinding as Record<string, unknown>).version;
+  return parentVersion === childVersion;
+}
+
 /** True when the config carries the exact fixed OAuth binding. */
 function hasFixedClaudeOAuthBinding(config: unknown): boolean {
   return isFixedClaudeOAuthBinding(readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY]);
@@ -681,11 +706,6 @@ export type RuntimeSecretManifestEntry = {
   version: number;
   provider: SecretProvider;
   providerVersionRef?: string | null;
-  // Non-reversible hash of the resolved secret VALUE for the version. Lets the
-  // effective-run-config fingerprint detect an in-place re-encryption that keeps
-  // the same version number but changes the underlying value, forcing a session/
-  // sandbox refresh. Never the plaintext or ciphertext material.
-  valueFingerprint?: string | null;
   outcome: "success" | "failure";
   errorCode?: string | null;
 };
@@ -1411,7 +1431,6 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
           provider: providerId,
           providerVersionRef: versionRow.providerVersionRef,
-          valueFingerprint: versionRow.fingerprintSha256 ?? versionRow.valueSha256,
           outcome: "success",
         },
       };

@@ -25,13 +25,6 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
-        /** Trusted-gateway stack context; set only when source === "cloud_tenant". */
-        cloudStack?: {
-          stackId: string;
-          stackRole: "owner" | "admin" | "member" | "support";
-          /** Optional gateway URL slug for the stack (x-paperclip-cloud-stack-slug). */
-          stackSlug?: string;
-        };
         keyId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;

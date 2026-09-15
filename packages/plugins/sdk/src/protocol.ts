@@ -662,8 +662,18 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Explicit operator cancellation: terminate active work instead of waiting
+   * for command/sync activity to drain. Still requires a provider receipt. */
+  cancelActiveWork?: boolean;
   providerLeaseId: string | null;
   leaseMetadata?: Record<string, unknown>;
+}
+
+/** Returned only after the provider confirms that execution has ended. A queued
+ * stop request or successful local cleanup is not a termination receipt. */
+export interface PluginEnvironmentTerminationReceipt {
+  providerLeaseId: string;
+  state: "stopped" | "destroyed";
 }
 
 export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentReleaseLeaseParams {}
@@ -711,9 +721,6 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
    * command opens and reuses the session as before.
    */
   bypassSession?: boolean;
-  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-  runId?: string | null;
-  streamOutput?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -723,7 +730,6 @@ export interface PluginEnvironmentExecuteResult {
   stdout: string;
   stderr: string;
   metadata?: Record<string, unknown>;
-  streamed?: boolean;
 }
 
 /**
@@ -823,29 +829,6 @@ export interface PluginPostUploadCommand {
   cwd?: string;
   /** Optional per-command timeout in milliseconds. */
   timeoutMs?: number;
-  // Optional live-output sink. When present, the provider should forward each
-  // stdout/stderr chunk here AS the command produces it (in addition to
-  // returning the buffered output) and set `streamed: true` on the result so
-  // the caller can suppress the trailing buffered log dump. This callback is
-  // NOT serializable across the plugin worker RPC boundary, so it is only
-  // delivered on in-process execute paths; over RPC it is absent and the
-  // provider falls back to buffered-at-end behavior (streamed stays unset).
-  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
-  // Run correlation id for this execution. Serializable, so unlike `onOutput`
-  // it DOES cross the plugin worker RPC boundary. A provider that runs in a
-  // worker uses it (together with `streamOutput`) to name a `ctx.streams`
-  // output channel the host subscribes to, so stdout/stderr can be tailed live
-  // even though the `onOutput` callback itself cannot be serialized. Null when
-  // the caller has no run context (then live streaming is skipped).
-  runId?: string | null;
-  // Set by the host over RPC to request live output streaming: the provider
-  // should open a `ctx.streams` channel named `env-exec-output:${runId}` and
-  // emit each `{ stream, text }` chunk on it as the command produces output,
-  // then set `streamed: true` on the result. When absent/false (or `runId` is
-  // null), the provider falls back to buffered-at-end output. This is the
-  // serializable signal that replaces the non-serializable `onOutput` callback
-  // on the worker RPC path.
-  streamOutput?: boolean;
 }
 
 /**
@@ -913,10 +896,6 @@ export interface PluginEnvironmentInteractiveSetupConnectionSummary {
   commandRedacted?: boolean;
   expiresAt?: string | null;
   metadata?: Record<string, unknown>;
-  // True when the provider already delivered stdout/stderr live via
-  // `onOutput`. Callers use this to avoid logging the buffered output a second
-  // time. Unset/false preserves the legacy buffered-dump behavior.
-  streamed?: boolean;
 }
 
 export interface PluginEnvironmentInteractiveSetupConnectionPayload {
@@ -1394,11 +1373,11 @@ export interface HostToWorkerMethods {
   ];
   environmentReleaseLease: [
     params: PluginEnvironmentReleaseLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
   ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
-    result: void,
+    result: PluginEnvironmentTerminationReceipt | void,
   ];
   environmentRealizeWorkspace: [
     params: PluginEnvironmentRealizeWorkspaceParams,

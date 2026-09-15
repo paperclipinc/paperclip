@@ -6,7 +6,6 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { ApiError } from "@/api/client";
 
 const xtermMocks = vi.hoisted(() => {
@@ -144,8 +143,9 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   relinkCustomImageTemplate: vi.fn(),
   disableCustomImageTemplate: vi.fn(),
 }));
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -153,16 +153,6 @@ const mockSecretsApi = vi.hoisted(() => ({
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  get: vi.fn(),
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
-}));
-
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -186,8 +176,8 @@ vi.mock("@/api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/api/secrets", () => ({
@@ -469,9 +459,8 @@ describe("CompanyEnvironments — test provider button", () => {
     FakeWebSocket.instances = [];
     xtermMocks.reset();
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { defaultEnvironmentId: null, enableEnvironments: true } }),
-    );
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
     mockEnvironmentsApi.secretRefs.mockResolvedValue({ refs: [] });
     mockSecretsApi.list.mockResolvedValue([]);
@@ -1690,12 +1679,6 @@ describe("CompanyEnvironments — test provider button", () => {
       enableEnvironments: true,
       enableManagedSandboxOnly: true,
     });
-    // The page reads the policy from board access on the fork.
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({
-        features: { enableEnvironments: true, enableManagedSandboxOnly: true },
-      }),
-    );
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 

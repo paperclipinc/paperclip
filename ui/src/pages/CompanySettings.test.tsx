@@ -8,7 +8,6 @@ import { AGENT_ADAPTER_TYPES, getEnvironmentCapabilities } from "@paperclipai/sh
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   update: vi.fn(),
@@ -17,7 +16,6 @@ const mockCompaniesApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   createOpenClawInvitePrompt: vi.fn(),
   getInviteOnboarding: vi.fn(),
-  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockAssetsApi = vi.hoisted(() => ({
@@ -32,6 +30,11 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   probe: vi.fn(),
   probeConfig: vi.fn(),
   archive: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockSecretsApi = vi.hoisted(() => ({
@@ -56,6 +59,10 @@ vi.mock("../api/assets", () => ({
 
 vi.mock("../api/environments", () => ({
   environmentsApi: mockEnvironmentsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/secrets", () => ({
@@ -161,9 +168,10 @@ describe("CompanyEnvironments", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
 
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableEnvironments: true, defaultEnvironmentId: null } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+    });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockEnvironmentsApi.capabilities.mockResolvedValue(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES),

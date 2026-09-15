@@ -6,7 +6,6 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SmokeLabTab } from "./SmokeLabTab";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const getExperimentalMock = vi.hoisted(() => vi.fn());
 const listServicesMock = vi.hoisted(() => vi.fn());
@@ -15,8 +14,8 @@ const getRunMock = vi.hoisted(() => vi.fn());
 const createRunMock = vi.hoisted(() => vi.fn());
 const startServicesMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/api/access", () => ({
-  accessApi: { getCurrentBoardAccess: () => getExperimentalMock() },
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: { getExperimental: () => getExperimentalMock() },
 }));
 
 vi.mock("@/api/smokeLab", () => ({
@@ -108,7 +107,7 @@ describe("SmokeLabTab", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    getExperimentalMock.mockResolvedValue(buildCurrentBoardAccess({ features: { enableSmokeLab: true } }));
+    getExperimentalMock.mockResolvedValue({ enableSmokeLab: true });
     listServicesMock.mockResolvedValue({
       services: [
         {
@@ -146,7 +145,7 @@ describe("SmokeLabTab", () => {
   }
 
   it("hides the lab and shows a flag-off notice when the flag is disabled", async () => {
-    getExperimentalMock.mockResolvedValue(buildCurrentBoardAccess({ features: { enableSmokeLab: false } }));
+    getExperimentalMock.mockResolvedValue({ enableSmokeLab: false });
     await render();
 
     expect(container.textContent).toContain("Smoke Lab is turned off");

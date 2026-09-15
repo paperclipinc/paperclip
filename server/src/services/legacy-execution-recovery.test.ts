@@ -9,6 +9,20 @@ const stopped = {
   },
 };
 
+it("permits subscription waits only with explicit evidence that provider work never started", () => {
+  const waiting = {
+    runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 12,
+    resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+  };
+  expect(legacyExecutionNeedsReconciliation(waiting)).toBe(false);
+  expect(legacyExecutionNeedsReconciliation({ ...waiting, status: "failed" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...waiting, errorCode: "cancelled" })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {} })).toBe(true);
+  expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {
+    executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: true },
+  } })).toBe(true);
+});
+
 it("allows a confirmed interrupted checkpoint without treating ordinary cancellation as replay permission", () => {
   expect(legacyExecutionNeedsReconciliation(stopped)).toBe(false);
   expect(legacyExecutionNeedsReconciliation({ ...stopped, resultJson: {} })).toBe(true);
@@ -29,3 +43,20 @@ it("retains the hold until the provider actually acknowledges cancellation", () 
     ...stopped.resultJson, executionCancellation: { state: "requested" },
   } })).toBe(true);
 });
+
+ it("continues a conversation without requiring receipts, even after automatic attempts are exhausted", () => {
+  for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy", status, errorCode: "process_lost", scheduledRetryAttempt: 2,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    })).toBe(false);
+  }
+});
+
+it("retries a busy AI subscription only when no provider work started", () => {
+   const waiting = { runtimeMode: "legacy", status: "cancelled", errorCode: "ai_connection_busy", scheduledRetryAttempt: 10,
+     resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } };
+   expect(legacyExecutionNeedsReconciliation(waiting)).toBe(false);
+   expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: {} })).toBe(true);
+   expect(legacyExecutionNeedsReconciliation({ ...waiting, resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: true } } })).toBe(true);
+ });

@@ -114,10 +114,6 @@ export {
   RunnerGoalActionError,
   RunnerGoalConflictError,
 } from "./runner-goals.js";
-export {
-  productivityReviewService,
-  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-} from "./productivity-review.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
@@ -211,7 +207,6 @@ export {
   type CodexAuthReconciliationSummary,
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
-export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export {
   managedAgentProfileService,

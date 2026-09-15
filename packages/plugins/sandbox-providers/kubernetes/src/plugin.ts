@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
-  PluginContext,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
@@ -31,20 +30,15 @@ import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
-import {
-  resolveCompanyInferenceKey,
-  applyCompanyInferenceKey,
-} from "./inference-key-resolver.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
-  SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
-import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
+import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
@@ -66,30 +60,15 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota + LimitRange defaults applied to every tenant namespace.
-// Defaults match the historical hard-coded values, so when none of the
-// PAPERCLIP_K8S_QUOTA_* / PAPERCLIP_K8S_LIMITRANGE_* env vars are set the
-// emitted manifests are byte-for-byte unchanged (self-host parity). Operators
-// may override individual fields via env without touching code.
-function envQuota() {
-  return {
-    pods: process.env.PAPERCLIP_K8S_QUOTA_PODS ?? "20",
-    requestsCpu: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_CPU ?? "10",
-    requestsMemory: process.env.PAPERCLIP_K8S_QUOTA_REQUESTS_MEMORY ?? "20Gi",
-    limitsCpu: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_CPU ?? "20",
-    limitsMemory: process.env.PAPERCLIP_K8S_QUOTA_LIMITS_MEMORY ?? "40Gi",
-  };
-}
-function envLimitRange() {
-  return {
-    defaultCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_CPU ?? "1",
-    defaultMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_MEMORY ?? "2Gi",
-    defaultRequestCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_CPU ?? "250m",
-    defaultRequestMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_DEFAULT_REQUEST_MEMORY ?? "512Mi",
-    maxCpu: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_CPU ?? "4",
-    maxMemory: process.env.PAPERCLIP_K8S_LIMITRANGE_MAX_MEMORY ?? "8Gi",
-  };
-}
+// Resource quota defaults applied to every tenant namespace (tunable via
+// config in a future iteration).
+const DEFAULT_RESOURCE_QUOTA = {
+  pods: "20",
+  requestsCpu: "10",
+  requestsMemory: "20Gi",
+  limitsCpu: "20",
+  limitsMemory: "40Gi",
+};
 
 function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: string): string {
   // TODO: future versions could thread companyName through AcquireLeaseParams
@@ -139,17 +118,6 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
-
-// The default realized workspace cwd. The agent pod mounts /workspace as an
-// emptyDir at scheduling time (see pod-spec-builder); onEnvironmentRealizeWorkspace
-// hands this back and the lease metadata carries it from acquisition.
-const REALIZED_WORKSPACE_CWD = "/workspace";
-
-// Captured at setup() so the environment handlers (which receive only their
-// params, not the context) can reach `ctx.streams` to push live output back to
-// the host over the plugin worker RPC boundary. One worker process runs a
-// single plugin instance, so a module-level singleton is correct here.
-let pluginContext: PluginContext | null = null;
 
 // The workspace remote dir is the confinement root for native file sync. It is
 // recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
@@ -235,7 +203,6 @@ async function resolveSyncPodExec(
 
 const plugin = definePlugin({
   async setup(ctx) {
-    pluginContext = ctx;
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
   },
 
@@ -340,23 +307,7 @@ const plugin = definePlugin({
     // to the environment's configured default adapter. getAdapterDefaults validates
     // it is a registered adapter (throws otherwise), so a curated-out adapter fails
     // the lease as before.
-    //
-    // Drive the fallback safety off the configured adapter set: the env-default
-    // fallback for an absent per-run adapter is permitted ONLY when the `adapters`
-    // registry positively proves a single-adapter environment (exactly one enabled
-    // adapter). An absent/empty registry proves nothing (the built-in registry
-    // still exposes every harness) and a registry with more than one enabled
-    // adapter is a mixed-harness pool — both reject an adapter-less lease
-    // automatically (a gemini run must never fall back to the opencode image), no
-    // operator flag required. `requireRunAdapterType` remains an explicit override
-    // that also requires the per-run adapter in a single-adapter environment.
-    const configuredAdapterTypes = config.adapters
-      ?.filter((entry) => entry.enabled !== false)
-      .map((entry) => entry.adapterType);
-    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType, {
-      requireRunAdapter: config.requireRunAdapterType,
-      configuredAdapterTypes,
-    });
+    const effectiveAdapterType = resolveRunAdapterType(params.adapterType, config.adapterType);
 
     // Emit a runtime warning if FQDNs are configured but egressMode=standard
     // cannot enforce them. Mirrors the validateConfig warning so operators see
@@ -391,11 +342,9 @@ const plugin = definePlugin({
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
-      egressPolicy: config.egressPolicy,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
-      resourceQuota: envQuota(),
-      limitRange: envLimitRange(),
+      resourceQuota: DEFAULT_RESOURCE_QUOTA,
     });
 
     const jobName = `pc-${newRunUlidDns()}`;
@@ -472,29 +421,11 @@ const plugin = definePlugin({
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
-    let adapterEnv = buildAdapterEnv(adapterDefaults);
+    const adapterEnv = buildAdapterEnv(adapterDefaults);
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = "kubernetes-default-deny";
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_GRANT_PATH = NETWORK_EGRESS_GRANT_PATH;
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_FQDNS = scopedNetworkEgress.allowFqdns.join(",");
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_CIDRS = scopedNetworkEgress.allowCidrs.join(",");
-
-    // Cloud per-company inference key (Bifrost virtual key). When a control-plane
-    // resolver URL is configured, replace the shared platform inference auth keys
-    // (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY) with the company's OWN
-    // virtual key so each company's runs land in their own inference cache bucket /
-    // spend ledger. FAIL-CLOSED: a configured-but-failing resolve throws (rejects
-    // the lease); we NEVER fall back to the shared key here (that would put this
-    // run in the shared cache bucket = a cross-tenant leak). When the resolver URL
-    // is unset (OSS / local / non-cloud), this block is skipped and the inherited
-    // env is used unchanged.
-    if (config.cloudInferenceKeyResolverUrl) {
-      const companyKey = await resolveCompanyInferenceKey({
-        resolverUrl: config.cloudInferenceKeyResolverUrl,
-        companyId: params.companyId,
-      });
-      adapterEnv = applyCompanyInferenceKey(adapterEnv, companyKey);
-    }
-
     const bootstrapToken = generateBootstrapToken();
 
     // Secret ownerRef: for job backend, the Job owns the Secret (cascade delete).
@@ -523,23 +454,6 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
-      // Carry the realized workspace cwd on the lease from acquisition, matching
-      // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
-      // Daytona providers do the same: a lease that knows its own cwd makes the
-      // execution target correct even if the orchestrator's separate cwd
-      // threading regresses. Defense-in-depth for the C1 remoteCwd fix.
-      remoteCwd: REALIZED_WORKSPACE_CWD,
-      // This plugin's per-adapter runtime images ship the adapter CLI and run
-      // behind a locked egress: declare them pre-baked so the server disables
-      // the network-install shim and fails fast on a wrong-image mismatch.
-      runtimeImagePrebaked: true,
-      // The adapter/image this pod was actually provisioned for (resolved
-      // above, never the possibly-absent per-run hint), so the server's
-      // reusable-lease scope is never null for this lease: a null scope has
-      // no positive proof of which image the pod carries and would otherwise
-      // be matched by any run's reuse lookup.
-      adapterType: effectiveAdapterType,
-      image,
       scopedNetworkPolicyName,
       scopedNetworkEgress,
       // Native file sync streams over a pod exec; only the sandbox-cr backend
@@ -608,16 +522,6 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
-    // A Kubernetes pod's image cannot change in place, so the adapter/image
-    // this resumed pod is running is whatever was resolved at its original
-    // acquireLease: carry it forward unchanged rather than re-deriving it.
-    // Leases resumed from metadata that predates this field simply omit it
-    // (matching pre-existing behavior; the strict scope-matching rule on the
-    // server treats an absent value as never-a-wildcard, same as null).
-    const priorAdapterType =
-      typeof params.leaseMetadata?.adapterType === "string" ? params.leaseMetadata.adapterType : undefined;
-    const priorImage =
-      typeof params.leaseMetadata?.image === "string" ? params.leaseMetadata.image : undefined;
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
@@ -625,11 +529,6 @@ const plugin = definePlugin({
       secretName,
       phase: check.phase,
       backend: leaseBackend,
-      // Pre-baked runtime images (see acquire path); the resumed lease carries
-      // the same capability so the server keeps the network-install shim off.
-      runtimeImagePrebaked: true,
-      adapterType: priorAdapterType,
-      image: priorImage,
       scopedNetworkPolicyName:
         typeof params.leaseMetadata?.scopedNetworkPolicyName === "string"
           ? params.leaseMetadata.scopedNetworkPolicyName
@@ -660,7 +559,7 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : REALIZED_WORKSPACE_CWD;
+        : "/workspace";
     return {
       cwd,
       metadata: {
@@ -692,12 +591,6 @@ const plugin = definePlugin({
         : config.backend;
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
-    // acquireLease names the per-run Secret `${jobName}-env` and uses jobName as
-    // the providerLeaseId, so the suffix fallback reconstructs it exactly.
-    const secretName =
-      typeof params.leaseMetadata?.secretName === "string"
-        ? params.leaseMetadata.secretName
-        : `${params.providerLeaseId}-env`;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -713,13 +606,6 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
-
-    // Explicitly delete the per-run Secret on release too. Normal release relies
-    // on the Sandbox CR / Job ownerRef cascade to remove it, but a wedged
-    // controller or broken ownerRef would otherwise strand per-run inference-vk
-    // Secrets in tenant namespaces. Best-effort + 404-tolerant so release never
-    // fails on a cleanup race. SECURITY-relevant. See deleteLeaseSecretBestEffort.
-    await deleteLeaseSecretBestEffort(clients, namespace, secretName);
   },
 
   async onEnvironmentDestroyLease(
@@ -771,70 +657,6 @@ const plugin = definePlugin({
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult> {
     const { lease, timeoutMs } = params;
-
-    // Live-output streaming. Two independent sinks, either or both of which may
-    // be active for a single exec:
-    //
-    // 1. In-process `params.onOutput` callback. Only present when the plugin is
-    //    called in-process (not over the worker RPC boundary — a function can't
-    //    be serialized), e.g. some tests. Called per chunk.
-    //
-    // 2. Worker→host `ctx.streams` bridge. On the real cloud path the plugin
-    //    runs in a worker, so `onOutput` is absent; instead the host passes the
-    //    serializable `runId` + `streamOutput: true` and subscribes to the
-    //    stream channel `env-exec-output:${runId}`. We open that channel, emit
-    //    each chunk on it (delivered to the host as a `streams.emit` JSON-RPC
-    //    notification), and close it in a finally. This is the RPC-safe
-    //    replacement for the callback.
-    //
-    // `onChunk` is a sync, fire-and-forget shim: it must not be awaited inside
-    // the exec data handler (that would stall the stream) and a throwing
-    // consumer must never break capture — hence the guards. Whenever a chunk
-    // sink is active the result is flagged `streamed: true` so the caller
-    // suppresses the trailing buffered log dump (no double logging).
-    const onOutput = params.onOutput;
-    const streams = pluginContext?.streams;
-    const streamViaCtx = Boolean(
-      params.streamOutput && params.runId && params.companyId && streams,
-    );
-    const outputChannel = streamViaCtx ? `env-exec-output:${params.runId}` : null;
-    const onChunk =
-      onOutput || streamViaCtx
-        ? (stream: "stdout" | "stderr", text: string) => {
-            if (onOutput) {
-              try {
-                void onOutput(stream, text);
-              } catch {
-                /* best-effort live streaming; buffered result is authoritative */
-              }
-            }
-            if (streamViaCtx && streams && outputChannel) {
-              try {
-                streams.emit(outputChannel, { stream, text });
-              } catch {
-                /* best-effort live streaming; buffered result is authoritative */
-              }
-            }
-          }
-        : undefined;
-    const openOutputChannel = () => {
-      if (streamViaCtx && streams && outputChannel) {
-        try {
-          streams.open(outputChannel, params.companyId);
-        } catch {
-          /* best-effort; a failed open must not abort execution */
-        }
-      }
-    };
-    const closeOutputChannel = () => {
-      if (streamViaCtx && streams && outputChannel) {
-        try {
-          streams.close(outputChannel);
-        } catch {
-          /* best-effort; close is idempotent on the host side */
-        }
-      }
-    };
 
     if (!lease.providerLeaseId) {
       return {
@@ -892,68 +714,27 @@ const plugin = definePlugin({
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
-      // The readiness wait has its OWN budget (podReadyTimeoutSec), never
-      // more than the caller's whole exec budget. Before this cap the wait
-      // shared the full exec budget, so a pod that was never coming up burned
-      // the entire window before the (host-side) timer produced a contentless
-      // RPC timeout. The exec/streaming phase below keeps the remaining share
-      // of the caller's budget.
-      const readyTimeoutMs = Math.min(
-        config.podReadyTimeoutSec * 1000,
-        effectiveTimeoutMs,
-      );
-
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
-            {
-              timeoutMs: readyTimeoutMs,
-              pollMs: 2000,
-              unschedulableGraceMs: config.podUnschedulableGraceSec * 1000,
-            },
+            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
           );
           readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
-          if (err instanceof SandboxSchedulingError) {
-            // The scheduler cannot place the pod (cluster out of capacity /
-            // autoscaler outage). Fail fast with an actionable message and a
-            // distinct error code instead of burning the whole exec budget.
-            // NOTE: the stderr marker below is classified server-side (see
-            // adapter-utils sandbox-infra-failure) — keep them in sync.
-            return {
-              exitCode: 1,
-              timedOut: false,
-              stdout: "",
-              stderr:
-                "Sandbox pod could not be scheduled: cluster has no capacity for it. " +
-                "This is an infrastructure issue, not a problem with your task. " +
-                `(${err.message})`,
-              metadata: {
-                provider: "kubernetes",
-                backend: "sandbox-cr",
-                namespace,
-                sandboxName: lease.providerLeaseId,
-                errorCode: "sandbox_unschedulable",
-              },
-            };
-          }
           if (err instanceof SandboxCrTimeoutError) {
-            // NOTE: the stderr marker below is classified server-side (see
-            // adapter-utils sandbox-infra-failure) — keep them in sync.
             return {
               exitCode: null,
               timedOut: true,
               stdout: "",
-              stderr: `Sandbox pod did not become Ready within ${readyTimeoutMs}ms`,
+              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
                 namespace,
                 sandboxName: lease.providerLeaseId,
-                errorCode: "sandbox_not_ready",
               },
             };
           }
@@ -1107,75 +888,25 @@ const plugin = definePlugin({
         effectiveTimeoutMs - (Date.now() - executeStartedAt),
       );
 
-      // Open the live-output channel just before the exec (chunks only flow
-      // from execInPod) and close it in a finally so it is torn down on the
-      // success, timeout, and error return paths alike — no leaked channel.
-      openOutputChannel();
+      let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
-        let execResult: { exitCode: number; stdout: string; stderr: string };
-        try {
-          execResult = await execInPod(
-            kc,
-            namespace,
-            podName,
-            "agent",
-            execCommand,
-            typeof params.stdin === "string" ? params.stdin : undefined,
-            remainingTimeoutMs,
-            onChunk,
-          );
-        } catch (err) {
-          // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-          // the caller can retry instead of hanging forever.
-          return {
-            exitCode: null,
-            timedOut: true,
-            stdout: "",
-            stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
-            metadata: {
-              provider: "kubernetes",
-              backend: "sandbox-cr",
-              namespace,
-              sandboxName: lease.providerLeaseId,
-              podName,
-            },
-          };
-        }
-
-        // OBSERVABILITY: every harness command (opencode run, the callback-bridge
-        // poll, the workspace tar) flows through this single execInPod. Failures
-        // bubble up to the adapter as an opaque "exit code N" with the detail often
-        // lost (restoreWorkspace teardown masks the real result; opencode wraps its
-        // own errors). Log the full exec result (command + exit + stdout/stderr
-        // tails) server-side so the actual cause — why a build makes 0 inference, why
-        // tar exits 2 — is greppable from server logs without racing the ephemeral
-        // sandbox pod. Always on for non-zero exits; full dumps (incl. exit 0) gated
-        // behind PAPERCLIP_K8S_EXEC_DEBUG to avoid noise.
-        const execDebug = ["1", "true", "yes"].includes(
-          (process.env.PAPERCLIP_K8S_EXEC_DEBUG ?? "").toLowerCase(),
+        execResult = await execInPod(
+          kc,
+          namespace,
+          podName,
+          "agent",
+          execCommand,
+          typeof params.stdin === "string" ? params.stdin : undefined,
+          remainingTimeoutMs,
         );
-        if (execResult.exitCode !== 0 || execDebug) {
-          const tail = (s: string, n: number) =>
-            typeof s === "string" && s.length > n ? s.slice(-n) : (s ?? "");
-          console.warn(
-            `[paperclip][k8s-exec] sandbox=${lease.providerLeaseId} pod=${podName} ns=${namespace} ` +
-              `exit=${execResult.exitCode} cmd=${JSON.stringify(execCommand).slice(0, 400)} ` +
-              `stdoutLen=${execResult.stdout?.length ?? 0} stderrLen=${execResult.stderr?.length ?? 0}\n` +
-              `  stdoutTail=${JSON.stringify(tail(execResult.stdout, 1500))}\n` +
-              `  stderrTail=${JSON.stringify(tail(execResult.stderr, 3000))}`,
-          );
-        }
-
-
+      } catch (err) {
+        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
+        // the caller can retry instead of hanging forever.
         return {
-          exitCode: execResult.exitCode,
-          timedOut: false,
-          stdout: execResult.stdout,
-          stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
-          // Output was delivered live via onChunk (params.onOutput and/or the
-          // ctx.streams bridge); flag it so the caller suppresses the trailing
-          // buffered log dump (no double logging).
-          ...(onChunk ? { streamed: true } : {}),
+          exitCode: null,
+          timedOut: true,
+          stdout: "",
+          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",
@@ -1184,9 +915,21 @@ const plugin = definePlugin({
             podName,
           },
         };
-      } finally {
-        closeOutputChannel();
       }
+
+      return {
+        exitCode: execResult.exitCode,
+        timedOut: false,
+        stdout: execResult.stdout,
+        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          namespace,
+          sandboxName: lease.providerLeaseId,
+          podName,
+        },
+      };
     } else {
       // ── Job backend (legacy / stable fallback) ──────────────────────────────
       // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
@@ -1195,77 +938,63 @@ const plugin = definePlugin({
       //
       // params.command / params.args / params.stdin are intentionally ignored.
 
-      // Open the live-output channel around the whole wait+log-scrape region so
-      // it is closed on the success and timeout paths and if the orchestrator
-      // throws — no leaked channel.
-      openOutputChannel();
+      let status;
+      let timedOut = false;
       try {
-        let status;
-        let timedOut = false;
-        try {
-          status = await jobOrchestrator.waitForCompletion(
-            clients,
-            namespace,
-            lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
-          );
-        } catch (err) {
-          if (err instanceof JobTimeoutError) {
-            timedOut = true;
-            status = null;
-          } else {
-            throw err;
-          }
+        status = await jobOrchestrator.waitForCompletion(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+        );
+      } catch (err) {
+        if (err instanceof JobTimeoutError) {
+          timedOut = true;
+          status = null;
+        } else {
+          throw err;
         }
-
-        // Collect logs from the pod.
-        const podName =
-          typeof lease.metadata?.podName === "string"
-            ? lease.metadata.podName
-            : await jobOrchestrator.findPod(
-                clients,
-                namespace,
-                lease.providerLeaseId,
-              );
-
-        const stdoutChunks: string[] = [];
-        const stderrChunks: string[] = [];
-
-        if (podName) {
-          await jobOrchestrator.streamLogs(
-            clients,
-            namespace,
-            podName,
-            async (stream, text) => {
-              if (stream === "stdout") stdoutChunks.push(text);
-              else stderrChunks.push(text);
-              // Forward each streamed log chunk live so the caller can tail Job
-              // output as it arrives, not only after the Job completes.
-              onChunk?.(stream, text);
-            },
-          );
-        }
-
-        return {
-          exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
-          timedOut,
-          stdout: stdoutChunks.join(""),
-          stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
-          // Chunks were forwarded live above; flag it so the caller does not log
-          // the buffered output a second time.
-          ...(onChunk ? { streamed: true } : {}),
-          metadata: {
-            provider: "kubernetes",
-            backend: "job",
-            namespace,
-            jobName: lease.providerLeaseId,
-            podName: podName ?? null,
-            phase: status?.phase ?? null,
-          },
-        };
-      } finally {
-        closeOutputChannel();
       }
+
+      // Collect logs from the pod.
+      const podName =
+        typeof lease.metadata?.podName === "string"
+          ? lease.metadata.podName
+          : await jobOrchestrator.findPod(
+              clients,
+              namespace,
+              lease.providerLeaseId,
+            );
+
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+
+      if (podName) {
+        await jobOrchestrator.streamLogs(
+          clients,
+          namespace,
+          podName,
+          async (stream, text) => {
+            if (stream === "stdout") stdoutChunks.push(text);
+            else stderrChunks.push(text);
+          },
+        );
+      }
+
+      return {
+        exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+        timedOut,
+        stdout: stdoutChunks.join(""),
+        stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
+        metadata: {
+          provider: "kubernetes",
+          backend: "job",
+          namespace,
+          jobName: lease.providerLeaseId,
+          podName: podName ?? null,
+          phase: status?.phase ?? null,
+        },
+      };
     }
   },
 

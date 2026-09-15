@@ -2,20 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  classifyInferenceFailure,
-  firstMeaningfulStderrLine,
-  inferenceFailureErrorCode,
-  inferenceFailureRetryPolicy,
-  inferOpenAiCompatibleBiller,
-  type AdapterExecutionContext,
-  type AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -53,22 +40,17 @@ import {
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   runChildProcess,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
-  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
-  PAPERCLIP_COORDINATION_SKILL_KEY,
-  PARA_MEMORY_FILES_SKILL_KEY,
 } from "@paperclipai/adapter-utils/server-utils";
-import {
-  OPENCODE_MISSING_CREDENTIAL_MESSAGE,
-  evaluateOpenCodeCredentialPreflight,
-} from "./credential-preflight.js";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
@@ -77,7 +59,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
@@ -239,31 +221,6 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
   return target;
 }
 
-/**
- * Whether to pass `--print-logs` to OpenCode.
- *
- * OpenCode reports a rejected model, a key that does not serve it, and several
- * other upstream faults as the same opaque "Unexpected server error. Check
- * server logs for details.", with the real cause only in its own log file. On a
- * managed sandbox that file is unreachable by construction: the pod is
- * destroyed with the lease, so the advice the message gives is impossible to
- * follow and the run's recorded error names no cause at all. Default the
- * diagnostic ON there, where the logs have nowhere else to go.
- *
- * A local run keeps the old default: the operator can read the log file, and
- * OpenCode's logs on stderr would be noise in an interactive session. An
- * explicit PAPERCLIP_OPENCODE_PRINT_LOGS still wins either way.
- */
-export function resolveOpenCodePrintLogs(input: {
-  configured: string | undefined;
-  usesManagedSandbox: boolean;
-}): boolean {
-  if (typeof input.configured === "string" && input.configured.trim().length > 0) {
-    return isTruthyEnvFlag(input.configured);
-  }
-  return input.usesManagedSandbox;
-}
-
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -274,7 +231,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
@@ -378,34 +337,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    // Credential preflight: a run with no chance to authenticate against any
-    // model provider must fail fast with the permanent errorCode
-    // `inference_auth_invalid` (the heartbeat pauses the agent on it) instead of
-    // launching OpenCode, which wraps the missing credential as an opaque
-    // transient "Unexpected server error" and feeds an endless retry storm.
-    // Host-level auth (`opencode auth login`), host config providers, injected
-    // gateway providers, and env keys all pass, so self-hosted setups that
-    // authenticate on the host are unaffected.
-    const credentialPreflight = await evaluateOpenCodeCredentialPreflight({ env: runtimeEnv });
-    if (!credentialPreflight.ready) {
-      await onLog("stderr", `[paperclip] ${OPENCODE_MISSING_CREDENTIAL_MESSAGE}\n`);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: OPENCODE_MISSING_CREDENTIAL_MESSAGE,
-        errorCode: inferenceFailureErrorCode("AUTH_INVALID"),
-        errorMeta: {
-          inferenceErrorCode: "AUTH_INVALID",
-          inferenceCause: "credential preflight found no provider credential for this run",
-        },
-        resultJson: {
-          inferenceErrorCode: "AUTH_INVALID",
-          credentialPreflight: "missing_provider_credential",
-        },
-      };
-    }
-
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
       asNumber(config.timeoutSec, 0),
@@ -505,9 +436,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
         preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
       }
-      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-        ? preparedExecutionTargetRuntime.runtimeRootDir
-        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+      prepareManagedOpenCodeRemoteHomes({
+        env: preparedRuntimeConfig.env,
+        config,
+        runtimeRootDir: preparedExecutionTargetRuntime.runtimeRootDir,
+        runId,
+        configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
+      });
+      const remoteHomeDir = config.managedAiConnection
+        ? preparedRuntimeConfig.env.HOME
+        : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+          ? preparedExecutionTargetRuntime.runtimeRootDir
+          : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
             cwd,
             env: preparedRuntimeConfig.env,
             timeoutSec,
@@ -633,7 +573,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !sessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const taskContextNote = context.conversationMode === true
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
+      : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      conversationMode: context.conversationMode === true,
+      resumedSession: Boolean(sessionId),
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
@@ -643,6 +590,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      taskContextNote,
       sessionHandoffNote,
       renderedPrompt,
     ]);
@@ -651,18 +599,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsChars: instructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      taskContextChars: taskContextNote.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 
-    // Surface OpenCode's own logs on stderr (captured into the run result) so
-    // failures OpenCode wraps as the opaque "Unexpected server error. Check
-    // server logs for details." can actually be diagnosed. See
-    // resolveOpenCodePrintLogs for why a managed sandbox defaults this on.
-    const printLogs = resolveOpenCodePrintLogs({
-      configured: env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
-      usesManagedSandbox: adapterExecutionTargetUsesManagedHome(executionTarget),
-    });
+    // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
+    // run result) so failures that OpenCode otherwise wraps as an opaque
+    // "Unexpected server error" can be diagnosed in remote/sandbox runs where the
+    // log file is unreachable. Toggle via PAPERCLIP_OPENCODE_PRINT_LOGS (run env,
+    // then process env).
+    const printLogs = isTruthyEnvFlag(
+      env.PAPERCLIP_OPENCODE_PRINT_LOGS ?? process.env.PAPERCLIP_OPENCODE_PRINT_LOGS,
+    );
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
@@ -717,15 +666,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -749,7 +694,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
 
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
       const fallbackErrorMessage =
@@ -757,39 +702,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
-      const failed = (synthesizedExitCode ?? 0) !== 0;
-
-      // OpenCode wraps upstream inference errors (Bifrost vk 401, Tensorix
-      // budget exceeded, model timeout/000/504, 429, 5xx) as one opaque
-      // failure. Classify them so retry can be correct and the user message
-      // can be plain. We keep the raw cause; we just stop discarding the class.
-      const inferenceFailure = failed
-        ? classifyInferenceFailure({
-            errorMessage: fallbackErrorMessage,
-            stdout: attempt.proc.stdout,
-            stderr: attempt.proc.stderr,
-            exitCode: synthesizedExitCode,
-          })
-        : null;
-      const inferenceRetry = inferenceFailure
-        ? inferenceFailureRetryPolicy(inferenceFailure.code)
-        : null;
 
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: failed ? fallbackErrorMessage : null,
-        ...(inferenceFailure
-          ? {
-              errorCode: inferenceFailureErrorCode(inferenceFailure.code),
-              errorFamily: inferenceRetry?.family ?? null,
-              errorMeta: {
-                inferenceErrorCode: inferenceFailure.code,
-                inferenceCause: inferenceFailure.cause,
-              },
-            }
-          : {}),
+        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
         // code; every other result carries no code here.
@@ -810,15 +728,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
-          ...(inferenceFailure
-            ? {
-                inferenceErrorCode: inferenceFailure.code,
-                ...(inferenceRetry?.family ? { errorFamily: inferenceRetry.family } : {}),
-                ...(inferenceRetry?.retry
-                  ? { transientRetryMaxAttempts: inferenceRetry.maxAttempts }
-                  : {}),
-              }
-            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

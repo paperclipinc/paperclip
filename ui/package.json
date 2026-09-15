@@ -59,7 +59,6 @@
     "cmdk": "^1.1.1",
     "i18next": "^26.4.0",
     "lexical": "0.48.0",
-    "posthog-js": "^1.407.2",
     "lucide-react": "^1.38.0",
     "mermaid": "^11.17.2",
     "motion": "^13.1.1",

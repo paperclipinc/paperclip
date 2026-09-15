@@ -80,7 +80,7 @@ import {
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
@@ -2110,7 +2110,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryFn: () => issuesApi.listFeedbackVotes(conversationIssueId!),
     enabled: Boolean(conversationIssueId),
   });
-  const { data: instanceGeneralSettings } = useFeatures();
+  const { data: instanceGeneralSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    enabled: Boolean(conversationIssueId),
+    retry: false,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({
@@ -2404,10 +2409,17 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(conversationIssueId) });
   }, [conversationIssueId, queryClient]);
 
-  const handleInterruptConversationQueuedRun = useCallback(async (runId: string) => {
-    await heartbeatsApi.cancel(runId);
-    await invalidateConversation();
-  }, [invalidateConversation]);
+  const handleInterruptConversationQueuedRun = useCallback(async (runId: string | null) => {
+    if (!conversationIssueId) return;
+    try {
+      await issuesApi.interruptLatestQueuedComments(conversationIssueId, runId);
+      pushToast({ title: "Interrupt requested", body: "Queued messages will be sent when the previous run has stopped.", tone: "success" });
+    } catch (error) {
+      pushToast({ title: "Interrupt failed", body: error instanceof Error ? error.message : "Unable to send queued messages", tone: "error" });
+    } finally {
+      await invalidateConversation();
+    }
+  }, [conversationIssueId, invalidateConversation, pushToast]);
 
   const handleCancelConversationQueuedComment = useCallback(async (commentId: string) => {
     if (!conversationIssueId) return;

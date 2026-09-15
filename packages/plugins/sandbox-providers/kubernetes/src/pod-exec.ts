@@ -62,14 +62,6 @@ export async function execInPod(
   command: string[],
   stdin?: string | Buffer,
   timeoutMs?: number,
-  // Optional live-output sink. Called once per stdout/stderr data frame as it
-  // arrives, in addition to the frame being accumulated into the buffered
-  // result. Lets callers stream command output to the UI as it happens instead
-  // of only seeing it in the resolved `{stdout, stderr}` at the end. Sync,
-  // best-effort, fire-and-forget: it MUST NOT be awaited here (awaiting inside
-  // the data handler would stall the stream) and a throwing consumer must never
-  // break output capture — hence the try/catch guard below.
-  onChunk?: (stream: "stdout" | "stderr", text: string) => void,
   // Optional host-side bound on accumulated stdout. The pod is an untrusted,
   // attacker-controlled endpoint: a malicious pod can emit unbounded stdout
   // during an exec (e.g. a native file-sync `syncOut` tarball), which would grow
@@ -119,16 +111,6 @@ export async function execInPod(
   let stderrData = "";
   let stdoutBytes = 0;
   let stderrBytes = 0;
-
-  const forwardChunk = (stream: "stdout" | "stderr", text: string) => {
-    if (!onChunk) return;
-    try {
-      onChunk(stream, text);
-    } catch {
-      // A throwing live-output consumer must never break output capture or the
-      // exec result. Swallow it; the buffered {stdout, stderr} is authoritative.
-    }
-  };
 
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(
     (resolve, reject) => {
@@ -200,9 +182,7 @@ export async function execInPod(
           }
         }
         try {
-          const text = chunk.toString("utf-8");
-          stdoutData += text;
-          forwardChunk("stdout", text);
+          stdoutData += chunk.toString("utf-8");
         } catch (err) {
           // Belt-and-suspenders: even under an explicit cap (or with none set),
           // never let a `+=` RangeError at V8's max string length escape this
@@ -226,9 +206,7 @@ export async function execInPod(
           }
         }
         try {
-          const text = chunk.toString("utf-8");
-          stderrData += text;
-          forwardChunk("stderr", text);
+          stderrData += chunk.toString("utf-8");
         } catch (err) {
           failClosed(err instanceof Error ? err : new Error(String(err)));
         }
