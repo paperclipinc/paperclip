@@ -207,7 +207,6 @@ export {
   type CodexAuthReconciliationSummary,
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
-export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
 export {
   managedAgentProfileService,

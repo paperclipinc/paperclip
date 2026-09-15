@@ -1,9 +1,4 @@
-import type {
-  AgentAdapterType,
-  BoardCapabilities,
-  JoinRequest,
-  PermissionKey,
-} from "@paperclipai/shared";
+import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -249,14 +244,6 @@ export type CurrentBoardAccess = {
   }>;
   source: string;
   keyId: string | null;
-  /** Trusted-gateway stack context; null outside cloud-tenant requests. */
-  cloudStack?: {
-    stackId: string;
-    stackRole: "owner" | "admin" | "member" | "support";
-  } | null;
-  /** Server-derived UI capabilities: exposed settings surfaces, public
-   *  feature flags, and (from PR-3) effective company standings. */
-  capabilities: BoardCapabilities;
 };
 
 function buildInviteListQuery(options: {
@@ -280,7 +267,6 @@ export const accessApi = {
       humanRole?: HumanCompanyRole | null;
       defaultsPayload?: Record<string, unknown> | null;
       agentMessage?: string | null;
-      email?: string | null;
     } = {},
   ) =>
     api.post<CompanyInviteCreated>(`/companies/${companyId}/invites`, input),

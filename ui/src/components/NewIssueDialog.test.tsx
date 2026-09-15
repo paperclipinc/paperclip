@@ -6,7 +6,6 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewIssueDialog } from "./NewIssueDialog";
-import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
@@ -72,8 +71,8 @@ const mockAssetsApi = vi.hoisted(() => ({
   uploadImage: vi.fn(),
 }));
 
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 const mockMissingUserSecretsBannerRender = vi.hoisted(() => vi.fn());
 
@@ -113,8 +112,8 @@ vi.mock("../api/assets", () => ({
   assetsApi: mockAssetsApi,
 }));
 
-vi.mock("../api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../pages/secrets/MissingUserSecretsBanner", async () => {
@@ -359,9 +358,7 @@ describe("NewIssueDialog", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
@@ -468,9 +465,7 @@ describe("NewIssueDialog", () => {
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
@@ -756,9 +751,7 @@ describe("NewIssueDialog", () => {
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       title: "Follow-up issue",
       projectId: "project-1",
@@ -834,9 +827,7 @@ describe("NewIssueDialog", () => {
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       title: "Follow-up issue",
       projectId: "project-1",
@@ -1393,9 +1384,7 @@ describe("NewIssueDialog", () => {
         lastUsedAt: new Date("2026-04-06T16:01:00.000Z"),
       },
     ]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
       parentIdentifier: "PAP-1",
@@ -1430,9 +1419,9 @@ describe("NewIssueDialog", () => {
   });
 
   it("reveals the watchdog editor from the overflow menu", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
 
     const { root } = renderDialog(container);
     await flush();
@@ -1456,9 +1445,9 @@ describe("NewIssueDialog", () => {
   });
 
   it("submits the configured watchdog from a restored draft", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
     localStorage.setItem(
       "paperclip:issue-draft",
       JSON.stringify({

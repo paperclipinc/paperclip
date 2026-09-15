@@ -11,7 +11,6 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -28,15 +27,6 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  // Drain per-test heartbeat instances before deleting rows / closing the client
-  // so detached executeRun chains never query a torn-down socket.
-  const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
-
-  function makeHeartbeat(...args: Parameters<typeof heartbeatService>) {
-    const heartbeat = heartbeatService(...args);
-    heartbeats.push(heartbeat);
-    return heartbeat;
-  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-archived-company-guard-");
@@ -44,9 +34,6 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   }, 20_000);
 
   afterEach(async () => {
-    while (heartbeats.length > 0) {
-      await heartbeats.pop()?.drain();
-    }
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -56,7 +43,6 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   });
 
   afterAll(async () => {
-    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 
@@ -150,7 +136,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   it("does not iterate archived-company agents in tickTimers", async () => {
     const { agentId } = await insertArchivedAgent();
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const result = await heartbeat.tickTimers(new Date("2026-06-04T00:10:00Z"));
 
     expect(result).toMatchObject({
@@ -169,7 +155,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   it("skips background wakeups for non-active companies with a company.inactive reason", async () => {
     const { agentId } = await insertArchivedAgent();
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -213,7 +199,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       monitorAttemptCount: 0,
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     await heartbeat.tickTimers(new Date("2026-06-04T00:10:00Z"));
 
     const row = await db
@@ -244,7 +230,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       status: "queued",
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
 
     const status = await db
@@ -257,7 +243,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   it("rejects explicit user invokes for non-active companies", async () => {
     const { agentId } = await insertArchivedAgent();
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(agentId, {
       source: "on_demand",
@@ -279,7 +265,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
   it("rejects explicit user invokes for invalid-org-chain agents", async () => {
     const { childId } = await insertInvalidOrgChainAgent();
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
 
     await expect(heartbeat.wakeup(childId, {
       source: "on_demand",
@@ -322,7 +308,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       wakeupRequestId,
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
 
     const run = await db
@@ -375,7 +361,7 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
       scheduledRetryAttempt: 1,
     });
 
-    const heartbeat = makeHeartbeat(db);
+    const heartbeat = heartbeatService(db);
     const promoted = await heartbeat.promoteDueScheduledRetries(now);
 
     expect(promoted).toEqual({ promoted: 0, runIds: [] });

@@ -369,7 +369,7 @@ function availableToolConnectionMethods(
   entry: AppDefinition,
 ): ConnectionMethodDef[] {
   return getAvailableConnectionMethods(entry).filter(
-    (method) => (method.purpose ?? "tool") === "tool",
+    (method) => (method.purpose ?? "tool") !== "channel",
   );
 }
 

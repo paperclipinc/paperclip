@@ -614,18 +614,7 @@ export const queryKeys = {
     settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
-    visibilitySettings: ["instance", "visibility-settings"] as const,
-    schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
   },
-  cloudBilling: {
-    summary: ["cloud-billing", "summary"] as const,
-  },
-  activation: {
-    status: (companyId: string) =>
-      ["activation", "status", companyId] as const,
-  },
-  // cloud: the fork keeps its own upstream-sync surface (ui/src/pages/CloudUpstream.tsx).
-  cloudUpstreams: (companyId: string) => ["cloud-upstreams", companyId] as const,
   health: ["health"] as const,
   cloud: {
     stacks: ["cloud", "stacks"] as const,
@@ -733,9 +722,5 @@ export const queryKeys = {
   },
   adapters: {
     all: ["adapters"] as const,
-  },
-  decisionTraining: {
-    list: (companyId: string) => ["decisionTraining", companyId] as const,
-    detail: (exampleId: string) => ["decisionTraining", "detail", exampleId] as const,
   },
 };

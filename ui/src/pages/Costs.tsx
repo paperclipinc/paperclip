@@ -28,11 +28,6 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import {
-  companyBudgetStatSubtitle,
-  companyBudgetStatValue,
-  resolveCompanyBudgetDisplay,
-} from "../lib/company-budget-display";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -553,13 +548,6 @@ export function Costs({
     agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
     project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
   }), [budgetPolicies]);
-  // The header tile must reflect the LIFETIME company policy (the cloud wallet)
-  // when one exists — the spend summary only knows the monthly cap, and "Open -
-  // no cap" on a capped company contradicts the Budgets tab.
-  const companyBudgetDisplay = resolveCompanyBudgetDisplay(budgetData?.policies, {
-    budgetCents: spendData?.summary.budgetCents ?? 0,
-    utilizationPercent: spendData?.summary.utilizationPercent ?? 0,
-  });
 
   if (!selectedCompanyId) {
     return <EmptyState icon={DollarSign} message="Select an organization to view costs." />;
@@ -626,13 +614,17 @@ export function Costs({
             />
             <MetricTile
               label="Budget"
-              value={activeBudgetIncidents.length > 0
-                ? String(activeBudgetIncidents.length)
-                : companyBudgetStatValue(companyBudgetDisplay)}
+              value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
+                spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
+                  ? `${spendData.summary.utilizationPercent}%`
+                  : "Open"
+              )}
               subtitle={
                 activeBudgetIncidents.length > 0
                   ? `${budgetData?.pausedAgentCount ?? 0} agents paused · ${budgetData?.pausedProjectCount ?? 0} projects paused`
-                  : companyBudgetStatSubtitle(companyBudgetDisplay, spendData?.summary.spendCents ?? 0)
+                  : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
+                    ? `${formatCents(spendData.summary.spendCents)} of ${formatCents(spendData.summary.budgetCents)}`
+                    : "No monthly cap configured"
               }
               icon={Coins}
             />

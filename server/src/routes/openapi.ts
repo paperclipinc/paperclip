@@ -189,7 +189,6 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  patchInstanceVisibilitySettingsSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -271,6 +270,9 @@ import {
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
+  inspectPhotonProjectSchema,
+  photonProjectIdSchema,
+  photonLineIdSchema,
   publishChatPublicationSchema,
   resolveChatActionSchema,
   resolveChatPublicationSchema,
@@ -784,6 +786,8 @@ const chatEndpointResponseSchema = z
     id: z.string().uuid(),
     companyId: z.string().uuid(),
     connectionId: z.string().uuid(),
+    publicationMode: z.enum(["automatic", "explicit"]),
+    externalExecutionPolicy: z.enum(["restricted", "agent"]),
     provider: chatProviderSchema,
     publicId: z.string(),
     status: chatEndpointStatusSchema,
@@ -794,6 +798,7 @@ const chatEndpointResponseSchema = z
     providerAccountId: z.string().nullable(),
     providerAccountLabel: z.string().nullable(),
     botExternalId: z.string().nullable(),
+    photonAllocation: z.enum(["dedicated", "shared"]).optional(),
     botUsername: z.string().nullable(),
     botLabel: z.string().nullable(),
     botAvatarUrl: z.string().nullable(),
@@ -827,6 +832,7 @@ const chatEndpointResourceResponseSchema = z
     availability: chatResourceAvailabilitySchema,
     enabled: z.boolean(),
     metadata: z.record(z.string(), z.unknown()),
+    participants: z.array(z.string()).optional(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -1215,7 +1221,12 @@ function registerCurrentRoute(input: {
 }
 
 type OpenApiAuthLevel =
-  "public" | "runtime_tools" | "authenticated" | "board" | "instance_admin";
+  | "public"
+  | "agent_run"
+  | "runtime_tools"
+  | "authenticated"
+  | "board"
+  | "instance_admin";
 
 const BOARD_SESSION_AUTH_SCHEME = "BoardSessionAuth";
 const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
@@ -1313,7 +1324,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
-  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -1445,6 +1455,13 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
+  "POST /api/companies/{companyId}/email/inspect",
+  "POST /api/companies/{companyId}/email/inboxes",
+  "POST /api/companies/{companyId}/email/connections",
+  "POST /api/companies/{companyId}/email/connections/{connectionId}/inspect",
+  "POST /api/email/inboxes/{endpointId}/control",
+  "POST /api/email/inboxes/{endpointId}/reconnect",
+  "POST /api/companies/{companyId}/email/deliveries/{publicationId}/resolve",
   // Chat endpoints expose provider credentials, identity mappings, access
   // policy, and replay controls. Every mounted handler asserts a board actor;
   // keep the generated security contract equally restrictive.
@@ -1455,6 +1472,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/setup",
   "POST /api/chat-endpoints/{endpointId}/setup-secret",
   "POST /api/chat-endpoints/{endpointId}/test",
+  "POST /api/chat-endpoints/{endpointId}/photon/inspect",
   "GET /api/chat-endpoints/{endpointId}/resources",
   "PUT /api/chat-endpoints/{endpointId}/resources",
   "GET /api/chat-endpoints/{endpointId}/principals",
@@ -1499,7 +1517,6 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
-  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -2030,6 +2047,28 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// Explicit task-bound email. Board setup and agent actions share the same vaulted
+// connection, while automatic chat publication never applies to these endpoints.
+for (const [method, path, summary, body, success] of [
+  ["post", "/api/companies/{companyId}/email/connections", "Save AgentMail credential and access", emailConnectionSchema, 201],
+  ["post", "/api/companies/{companyId}/email/connections/{connectionId}/inspect", "Inspect inboxes using a saved AgentMail credential", undefined, 200],
+  ["get", "/api/companies/{companyId}/email/inboxes", "List authorized AgentMail inboxes", undefined, 200],
+  ["post", "/api/companies/{companyId}/email/inspect", "Inspect AgentMail inboxes and verified domains for setup", z.object({ apiKey: z.string().min(1).max(4096) }).strict(), 200],
+  ["post", "/api/companies/{companyId}/email/inboxes", "Create or attach an agent email inbox", emailEndpointSetupSchema, 201],
+  ["post", "/api/email/inboxes/{endpointId}/control", "Pause, resume or disconnect an email inbox", z.object({ action: z.enum(["pause", "resume", "remove"]) }).strict(), 200],
+  ["post", "/api/email/inboxes/{endpointId}/reconnect", "Reconnect the same email inbox", z.object({ apiKey: z.string().min(1).max(4096), receiveMode: z.enum(["websocket", "webhook"]) }).strict(), 200],
+  ["post", "/api/companies/{companyId}/email/send", "Explicitly send email: start a child task or reply to a bound conversation", emailSendSchema, 202],
+  ["get", "/api/companies/{companyId}/email/tasks/{issueId}", "Read a task's email thread, full text context, recipients and delivery outcomes", undefined, 200],
+  ["get", "/api/companies/{companyId}/email/deliveries/{publicationId}", "Check queued, sent, delivered, failed or uncertain email delivery", undefined, 200],
+  ["post", "/api/companies/{companyId}/email/deliveries/{publicationId}/resolve", "Resolve uncertain email after checking the provider", z.object({ outcome: z.enum(["sent", "failed"]), providerMessageId: z.string().min(1).max(998).optional() }).strict(), 200],
+] as const) {
+  registry.registerPath({ method, path, tags: ["Email"], summary,
+    description: "Experimental AgentMail channel. Internal comments never send email. Agent sends require assigned inbox and task ownership, active run authority, and configured action policies. Preserve the same idempotencyKey and payload across retries. New conversations create an email child task; replies require conversationId and replyToMessageId. Reply-all is deliberate and never includes Bcc.",
+    request: { params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(match => [match[1], z.string().uuid()]))), ...(body ? { body: jsonBody(body) } : {}) },
+    responses: { [success]: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+
 // ─── Chat Channels ─────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -2110,7 +2149,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "Configure or change chat endpoint lifecycle state",
   description:
-    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
+    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey` after Paperclip generates the webhook secret; Discord: `applicationId`, `guildId`, `botToken`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`; iMessage Photon: `projectSecret`, with nonsecret `photon.projectId` and `photon.lineId` configuration). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
   request: {
     params: z.object({ endpointId: z.string().uuid() }),
     body: jsonBody(configureChatEndpointSchema),
@@ -2123,6 +2162,9 @@ registry.registerPath({
     404: r.notFound,
     409: r.conflict,
     422: r.unprocessable,
+    429: { description: "Provider request limit reached; retry later" },
+    502: { description: "Provider returned an invalid response; inspect provider health" },
+    503: { description: "Provider temporarily unavailable; retry later" },
   },
 });
 
@@ -2146,11 +2188,46 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/chat-endpoints/{endpointId}/photon/inspect",
+  tags: ["chat-channels"],
+  summary: "Inspect Photon shared project or dedicated numbers for channel setup",
+  description:
+    "Requires a board user with connection-management access. The project secret is write-only input. Returns the project's actual allocation and eligibility for shared DMs or dedicated lines, never project secrets or minted line tokens. Responses are not cached. Inspection alone does not activate the channel.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(inspectPhotonProjectSchema),
+  },
+  responses: {
+    200: r.ok(z.object({
+      projectId: photonProjectIdSchema,
+      projectName: z.string(),
+      allocation: z.enum(["dedicated", "shared"]),
+      eligible: z.boolean(),
+      lines: z.array(z.object({
+        lineId: photonLineIdSchema,
+        phoneNumber: z.string(),
+        eligible: z.boolean(),
+        unavailableReason: z.string().optional(),
+      }).strict()),
+    }).strict()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: { description: "Photon request limit reached; retry later" },
+    502: { description: "Photon returned an invalid response; inspect provider health" },
+    503: { description: "Photon temporarily unavailable; retry later" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/chat-endpoints/{endpointId}/test",
   tags: ["chat-channels"],
   summary: "Complete a chat endpoint setup test",
   description:
-    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary.",
+    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary. iMessage Photon additionally requires a fresh linked sender's task and a successful outbound agent publication.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(chatEndpointResponseSchema),
@@ -2167,7 +2244,7 @@ registry.registerPath({
   tags: ["chat-channels"],
   summary: "List destinations discovered for a chat endpoint",
   description:
-    "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, and Telegram chats. Direct-message resources are intentionally omitted.",
+    "Lists provider destinations such as Slack and Discord channels, Teams channels, GitHub repositories, Telegram chats, and iMessage Photon groups. Direct-message resources are intentionally omitted.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatEndpointResourceResponseSchema)),
@@ -5921,23 +5998,6 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
-registry.registerPath({
-  method: "get",
-  path: "/api/instance/settings/visibility",
-  tags: ["instance"],
-  summary: "Get instance visibility settings",
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-registry.registerPath({
-  method: "patch",
-  path: "/api/instance/settings/visibility",
-  tags: ["instance"],
-  summary: "Update instance visibility settings",
-  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
-});
-
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({
@@ -6623,6 +6683,31 @@ registry.registerPath({
     200: r.ok(),
     400: r.badRequest,
     401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/queued-comments/interrupt",
+  tags: ["issues"],
+  summary: "Interrupt the active legacy run and continue its queued comments",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        queueId: z.string().min(1),
+        revision: z.string().min(1),
+        targetRunId: z.string().min(1),
+      }),
+    ),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
   },
@@ -9064,43 +9149,6 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/companies/{companyId}/activation",
-  tags: ["access"],
-  summary: "Get company activation status",
-  request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/companies/{companyId}/budgets/increment",
-  tags: ["costs"],
-  summary: "Increment company budget (cloud-internal)",
-  request: {
-    params: z.object({ companyId: z.string() }),
-    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
-  },
-  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/budget-paused",
-  tags: ["costs"],
-  summary: "List companies with paused budgets (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "get",
-  path: "/api/cloud/activation-signals",
-  tags: ["costs"],
-  summary: "List per-company activation signals for lifecycle-email gating (cloud-internal)",
-  responses: { 200: r.ok(), 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────

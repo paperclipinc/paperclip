@@ -40,6 +40,7 @@ import {
   readNativeBoardResponseWaitSource,
 } from "./native-board-response-wait.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import {
   authorizeNativeChatReviewPresentation,

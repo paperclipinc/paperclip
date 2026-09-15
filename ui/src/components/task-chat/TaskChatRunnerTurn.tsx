@@ -1,7 +1,5 @@
-import { useRef, useState, type ComponentType, type SVGProps } from "react";
+import { useRef } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
-import { Brain, OctagonX } from "lucide-react";
-import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import type {
@@ -13,8 +11,7 @@ import type {
 import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
-import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
-import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import {
@@ -64,83 +61,13 @@ function terminalStatusFailed(status: string): boolean {
   );
 }
 
-function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="relative ml-4 min-w-0 pl-6">
-      <span
-        className="absolute inset-y-1 left-0 w-px bg-border/70"
-        aria-hidden
-        data-testid="task-chat-runner-activity-rail"
-      />
-      <ol
-        className="flex min-w-0 flex-col gap-2 py-1"
-        aria-label="Run activity"
-        data-testid="task-chat-runner-activity-list"
-      >
-        {items.map((item, index) => (
-          <li className="min-w-0" key={item.id} data-activity-item-id={item.id}>
-            {item.kind === "message" ? (
-              <div
-                className="min-w-0 px-1 text-sm text-foreground/90"
-                data-testid="task-chat-activity-commentary"
-              >
-                <MarkdownBody softBreaks linkIssueReferences>
-                  {item.text}
-                </MarkdownBody>
-              </div>
-            ) : item.kind === "thinking" ? (
-              <TaskChatThinking
-                item={item}
-                active={Boolean(item.streaming) && index === items.length - 1}
-                defaultOpen={false}
-                rowClassName="mx-0 px-0"
-              />
-            ) : item.kind === "tool" ? (
-              <TaskChatToolCard item={item} />
-            ) : item.kind === "usage" ? (
-              <TaskChatUsageReadout item={item} />
-            ) : item.kind === "marker" ? (
-              <RunnerActivityMarker item={item} />
-            ) : item.kind === "protocol" ? (
-              <TaskChatProtocolActivityRow item={item} />
-            ) : null}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
-  return (
-    <div className="flex min-h-6 min-w-0 items-center gap-2 py-1 text-xs text-destructive">
-      <span className="flex w-5 shrink-0 items-center justify-center">
-        <OctagonX
-          className="h-3.5 w-3.5 shrink-0"
-          aria-hidden
-          data-testid="task-chat-marker-icon"
-        />
-      </span>
-      <span className="shrink-0 font-medium">{item.label}</span>
-      {item.detail ? (
-        <span className="min-w-0 truncate text-muted-foreground">
-          {item.detail}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 function RunnerTurnStatus({
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
-  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -157,9 +84,8 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
-  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
-  const semanticLabel = reconnecting ? label : terminal
+  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
+  const semanticLabel = terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -194,7 +120,6 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -292,7 +217,6 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
-          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
@@ -354,7 +278,7 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && (!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
+      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} /> : null}
     </div>
   );
 }

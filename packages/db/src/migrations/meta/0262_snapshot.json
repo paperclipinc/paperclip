@@ -1,6 +1,6 @@
 {
-  "id": "194dc0a9-e6dd-4f91-889b-d5b429d268a8",
-  "prevId": "2554d3f8-4867-4868-af6c-4dcb3ee4de4a",
+  "id": "f55749c8-072a-40b0-885d-25c6c89aa602",
+  "prevId": "ea31f607-d08b-42be-a396-fc6797c53f7e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1863,7 +1863,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'question-response:%' AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
+          "where": "(\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'question-response:%' OR \"agent_wakeup_requests\".\"idempotency_key\" LIKE 'interaction:%') AND \"agent_wakeup_requests\".\"status\" NOT IN ('skipped', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6352,6 +6352,28 @@
           "method": "btree",
           "with": {}
         },
+        "chat_endpoints_live_discord_bot_external_uq": {
+          "name": "chat_endpoints_live_discord_bot_external_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bot_external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chat_endpoints\".\"provider\" = 'discord'\n          and \"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "chat_endpoints_live_bot_username_uq": {
           "name": "chat_endpoints_live_bot_username_uq",
           "columns": [
@@ -6439,7 +6461,7 @@
       "checkConstraints": {
         "chat_endpoints_provider_check": {
           "name": "chat_endpoints_provider_check",
-          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
         },
         "chat_endpoints_status_check": {
           "name": "chat_endpoints_status_check",
@@ -6624,7 +6646,7 @@
       "checkConstraints": {
         "chat_external_principals_provider_check": {
           "name": "chat_external_principals_provider_check",
-          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
         },
         "chat_external_principals_kind_check": {
           "name": "chat_external_principals_kind_check",

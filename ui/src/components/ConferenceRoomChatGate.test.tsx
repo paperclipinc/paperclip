@@ -4,15 +4,14 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { ConferenceRoomChatGate } from "./ConferenceRoomChatGate";
 
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -64,9 +63,7 @@ describe("ConferenceRoomChatGate (PAP-137)", () => {
   });
 
   it("redirects to the company home when the flag is off", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableConferenceRoomChat: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: false });
     await renderGate();
 
     const navigate = container.querySelector('[data-testid="navigate"]');
@@ -76,9 +73,7 @@ describe("ConferenceRoomChatGate (PAP-137)", () => {
   });
 
   it("renders the gated routes when the flag is on", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableConferenceRoomChat: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
     await renderGate();
 
     expect(container.querySelector('[data-testid="outlet"]')).not.toBeNull();
@@ -86,7 +81,7 @@ describe("ConferenceRoomChatGate (PAP-137)", () => {
   });
 
   it("renders nothing (no premature redirect) while the flag is loading", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockImplementation(() => new Promise(() => {}));
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
     await renderGate();
 
     expect(container.querySelector('[data-testid="navigate"]')).toBeNull();

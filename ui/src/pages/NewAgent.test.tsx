@@ -418,7 +418,7 @@ describe("New agent setup", () => {
     expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
     expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
   });
-  it.each(["opencode_local", "pi_local"])(
+  it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {
       await render(adapter);

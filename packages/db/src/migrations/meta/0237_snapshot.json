@@ -1,6 +1,6 @@
 {
-  "id": "50f4e443-e69e-48c7-89e2-6a3a2582dd96",
-  "prevId": "b7788149-64e9-4273-b400-91828a0402bb",
+  "id": "03fb5599-6390-4497-ad7c-d43e02a7be47",
+  "prevId": "5129d326-4e5f-40bf-81ee-b2cc6f1506cf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -17163,8 +17163,8 @@
         }
       },
       "indexes": {
-        "heartbeat_run_events_run_seq_idx": {
-          "name": "heartbeat_run_events_run_seq_idx",
+        "heartbeat_run_events_run_seq_uq": {
+          "name": "heartbeat_run_events_run_seq_uq",
           "columns": [
             {
               "expression": "run_id",
@@ -17179,7 +17179,7 @@
               "nulls": "last"
             }
           ],
-          "isUnique": false,
+          "isUnique": true,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -25850,6 +25850,257 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.managed_agent_profiles": {
+      "name": "managed_agent_profiles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_key": {
+          "name": "profile_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service": {
+          "name": "service",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'anthropic_managed_agents'"
+        },
+        "anthropic_agent_id": {
+          "name": "anthropic_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_version": {
+          "name": "agent_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "beta_version": {
+          "name": "beta_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'managed-agents-2026-04-01'"
+        },
+        "default_model": {
+          "name": "default_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'claude-sonnet-5'"
+        },
+        "default_max_list_cost_cents": {
+          "name": "default_max_list_cost_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 100
+        },
+        "api_key_secret_id": {
+          "name": "api_key_secret_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "retention_acknowledged": {
+          "name": "retention_acknowledged",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "qualification": {
+          "name": "qualification",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "qualified_at": {
+          "name": "qualified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "qualified_revision": {
+          "name": "qualified_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "managed_agent_profiles_company_idx": {
+          "name": "managed_agent_profiles_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "managed_agent_profiles_company_key_uq": {
+          "name": "managed_agent_profiles_company_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "profile_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "managed_agent_profiles_company_resource_uq": {
+          "name": "managed_agent_profiles_company_resource_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "anthropic_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "managed_agent_profiles_company_id_companies_id_fk": {
+          "name": "managed_agent_profiles_company_id_companies_id_fk",
+          "tableFrom": "managed_agent_profiles",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "managed_agent_profiles_api_key_secret_id_company_secrets_id_fk": {
+          "name": "managed_agent_profiles_api_key_secret_id_company_secrets_id_fk",
+          "tableFrom": "managed_agent_profiles",
+          "tableTo": "company_secrets",
+          "columnsFrom": [
+            "api_key_secret_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_agent_profiles_service_check": {
+          "name": "managed_agent_profiles_service_check",
+          "value": "\"managed_agent_profiles\".\"service\" = 'anthropic_managed_agents'"
+        },
+        "managed_agent_profiles_beta_check": {
+          "name": "managed_agent_profiles_beta_check",
+          "value": "\"managed_agent_profiles\".\"beta_version\" = 'managed-agents-2026-04-01'"
+        },
+        "managed_agent_profiles_positive_budget_check": {
+          "name": "managed_agent_profiles_positive_budget_check",
+          "value": "\"managed_agent_profiles\".\"default_max_list_cost_cents\" > 0"
+        },
+        "managed_agent_profiles_qualified_revision_check": {
+          "name": "managed_agent_profiles_qualified_revision_check",
+          "value": "(\"managed_agent_profiles\".\"qualified_at\" IS NULL AND \"managed_agent_profiles\".\"qualified_revision\" IS NULL) OR (\"managed_agent_profiles\".\"qualified_at\" IS NOT NULL AND \"managed_agent_profiles\".\"qualification\" <> '{}'::jsonb AND \"managed_agent_profiles\".\"qualified_revision\" ~ '^sha256:[0-9a-f]{64}$')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.native_run_finalizations": {
       "name": "native_run_finalizations",
       "schema": "",
@@ -31307,6 +31558,164 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.remote_agent_profiles": {
+      "name": "remote_agent_profiles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_key": {
+          "name": "profile_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service": {
+          "name": "service",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "configuration": {
+          "name": "configuration",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "retention_acknowledged": {
+          "name": "retention_acknowledged",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "qualification": {
+          "name": "qualification",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "qualified_at": {
+          "name": "qualified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "qualified_revision": {
+          "name": "qualified_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "remote_agent_profiles_company_idx": {
+          "name": "remote_agent_profiles_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "remote_agent_profiles_company_key_uq": {
+          "name": "remote_agent_profiles_company_key_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "profile_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "remote_agent_profiles_company_id_companies_id_fk": {
+          "name": "remote_agent_profiles_company_id_companies_id_fk",
+          "tableFrom": "remote_agent_profiles",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "remote_agent_profiles_service_check": {
+          "name": "remote_agent_profiles_service_check",
+          "value": "\"remote_agent_profiles\".\"service\" = 'aws_bedrock_agentcore_harness'"
+        },
+        "remote_agent_profiles_qualified_revision_check": {
+          "name": "remote_agent_profiles_qualified_revision_check",
+          "value": "(\"remote_agent_profiles\".\"qualified_at\" IS NULL AND \"remote_agent_profiles\".\"qualified_revision\" IS NULL) OR (\"remote_agent_profiles\".\"qualified_at\" IS NOT NULL AND \"remote_agent_profiles\".\"qualification\" <> '{}'::jsonb AND \"remote_agent_profiles\".\"qualified_revision\" ~ '^sha256:[0-9a-f]{64}$')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.routine_documents": {

@@ -1,6 +1,6 @@
 {
-  "id": "4004d3fa-4522-4568-af4e-0a3c2df05604",
-  "prevId": "1c882592-8728-4d72-a002-f2df6c44589b",
+  "id": "194dc0a9-e6dd-4f91-889b-d5b429d268a8",
+  "prevId": "2554d3f8-4867-4868-af6c-4dcb3ee4de4a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6155,7 +6155,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "allow_unlinked_people": {
           "name": "allow_unlinked_people",
@@ -6320,6 +6320,62 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_endpoints_live_bot_external_uq": {
+          "name": "chat_endpoints_live_bot_external_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bot_external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"provider_account_id\" is not null\n          and \"chat_endpoints\".\"bot_external_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_endpoints_live_bot_username_uq": {
+          "name": "chat_endpoints_live_bot_username_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "bot_username",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chat_endpoints\".\"status\" in ('verifying', 'active', 'paused', 'attention')\n          and \"chat_endpoints\".\"provider_account_id\" is not null\n          and \"chat_endpoints\".\"bot_username\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6836,6 +6892,12 @@
               "nulls": "last"
             },
             {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
               "expression": "provider_message_id",
               "isExpression": false,
               "asc": true,
@@ -7161,7 +7223,7 @@
       "checkConstraints": {
         "chat_publications_state_check": {
           "name": "chat_publications_state_check",
-          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'failed', 'cancelled')"
+          "value": "\"chat_publications\".\"state\" in ('pending', 'streaming', 'published', 'retry', 'delivery_unknown', 'failed', 'cancelled')"
         }
       },
       "isRLSEnabled": false

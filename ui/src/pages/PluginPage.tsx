@@ -13,7 +13,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { NotFoundPage } from "./NotFound";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 /**
  * Company-context plugin page. Renders a plugin's `page` slot at
@@ -35,7 +34,9 @@ export function PluginPage() {
   const { companies, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const routeCompany = useMemo(() => {
-    return findCompanyByUrlSegment(companies, routeCompanyPrefix);
+    if (!routeCompanyPrefix) return null;
+    const requested = routeCompanyPrefix.toUpperCase();
+    return companies.find((c) => c.issuePrefix.toUpperCase() === requested) ?? null;
   }, [companies, routeCompanyPrefix]);
   const hasInvalidCompanyPrefix = Boolean(routeCompanyPrefix) && !routeCompany;
 

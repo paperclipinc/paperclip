@@ -930,23 +930,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       it("is stored as a personal connection and referenced, never carried in the hire", async () => {
         const { root } = await connectWithApiKey();
 
-        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
-        const [, createBody] = mockSecretsApi.createMyUserSecret.mock.calls.at(-1) as [
-          string,
-          { definitionKey: string; value: string },
-        ];
-        expect(createBody.definitionKey).toMatch(/^ANTHROPIC_API_KEY\.setup\./);
-        expect(createBody.value).toBe(KEY);
-
-        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
-          adapterConfig: { env?: Record<string, unknown> };
-        };
-        // The same binding kind the subscription half of this step produces.
-        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
-          type: "user_secret_ref",
-          key: createBody.definitionKey,
-          version: "latest",
-        });
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ provider: "anthropic", method: "api_key", ownership: "personal", apiKey: KEY }));
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as { runtimeConfig: { aiConnection: unknown }; adapterConfig: { env?: Record<string, unknown> } };
+        expect(hireBody.runtimeConfig.aiConnection).toEqual({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
+        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toBeUndefined();
         // The whole payload, not just that one field: the point is that the key
         // is nowhere in what gets persisted, however it might be nested.
         expect(JSON.stringify(hireBody)).not.toContain(KEY);
@@ -954,16 +942,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => root.unmount());
       });
 
-      it("creates a distinct definition instead of rotating an existing key", async () => {
+      it("creates a managed connection without rotating an existing saved key", async () => {
         mockSecretsApi.listMyUserSecrets.mockResolvedValue([
           { definition: { id: "old-def", key: "ANTHROPIC_API_KEY" }, secret: { id: "secret-existing" } },
         ]);
         const { root } = await connectWithApiKey();
-        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledWith(
-          expect.any(String), expect.objectContaining({ key: expect.stringMatching(/^ANTHROPIC_API_KEY\.setup\./) }),
-        );
+        expect(managedApi.create).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ apiKey: KEY }));
         expect(mockSecretsApi.rotateMyUserSecret).not.toHaveBeenCalled();
-        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+        expect(managedApi.create).toHaveBeenCalledTimes(1);
         await act(async () => root.unmount());
       });
 

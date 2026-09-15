@@ -17,7 +17,6 @@ import type {
 import { SummarySlotCard } from "@/components/SummarySlotCard";
 import type { BuiltInAgentState } from "@/api/builtInAgents";
 import { queryKeys } from "@/lib/queryKeys";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 // QA fixtures for PAP-13939 — mirror the shapes exercised by
 // SummarySlotCard.test.tsx so the browser render matches the unit coverage.
@@ -162,10 +161,9 @@ interface SeedInput {
 
 function Seed({ seed, children }: { seed: SeedInput; children: ReactNode }) {
   const queryClient = useQueryClient();
-  queryClient.setQueryData(
-    queryKeys.access.currentBoardAccess,
-    buildCurrentBoardAccess({ features: { enableSummaries: seed.enableSummaries ?? true } }),
-  );
+  queryClient.setQueryData(queryKeys.instance.experimentalSettings, {
+    enableSummaries: seed.enableSummaries ?? true,
+  });
   if (seed.agent) {
     queryClient.setQueryData(queryKeys.builtInAgents.list(COMPANY_ID), [seed.agent]);
   }

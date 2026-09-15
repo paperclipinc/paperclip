@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { requiresExecutionReconciliation, type Issue, type IssueRecoveryAction } from "@paperclipai/shared";
+import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
@@ -13,30 +13,6 @@ import { StatusGlyph } from "./StatusGlyph";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
-import { Badge } from "@/components/ui/badge";
-
-function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
-  if (!state || requiresExecutionReconciliation(action.cause)) return null;
-  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
-  const Icon = tone.icon;
-  return (
-    <Badge variant="outline"
-      data-testid="active-agent-run-recovery-indicator"
-      data-recovery-state={state}
-      role="status"
-      aria-label={tone.label}
-      title={`${tone.label} — open the source task to act.`}
-      className={cn(
-        "gap-0.5 px-1.5 text-(length:--text-nano)",
-        tone.className,
-      )}
-    >
-      <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
-    </Badge>
-  );
-}
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -206,25 +182,16 @@ export const AgentRunCard = memo(function AgentRunCard({
         ? "border-(--dashboard-run-border) bg-(--dashboard-run-background) shadow-(--shadow-extract-1)"
         : "border-border bg-background/70",
       className,
-    )}>
-      <div className="border-b border-border/60 px-3 py-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              {isActive && (!run.execution || run.execution.phase === "working") ? (
-                <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="absolute inline-flex h-full w-full motion-safe:animate-ping rounded-full bg-blue-400 opacity-70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
-                </span>
-              ) : (
-                <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
-              )}
-              <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-(length:--text-micro)" />
-            </div>
-            <div className="mt-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-              <span>{(run.execution?.phase === "reconnecting" || run.execution?.phase === "retry_scheduled") ? "Reconnecting…" : (isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`)}</span>
-            </div>
-          </div>
+    )} data-run-status={run.status}>
+      <div className={cn("flex shrink-0 flex-col gap-3 p-3", showTranscript && "border-b border-border/60")}>
+        <Link
+          to={runUrl}
+          title={`${run.agentName} — ${statusLabel} · ${timestamp}`}
+          aria-label={`${run.agentName} — ${statusLabel}. View run`}
+          className="flex min-w-0 items-center gap-2 rounded-md text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Identity name={run.agentName} className="gap-2 font-medium" />
+        </Link>
 
         {run.issueId ? (
           <Link

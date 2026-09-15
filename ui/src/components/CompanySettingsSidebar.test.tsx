@@ -3,7 +3,6 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
@@ -11,9 +10,6 @@ import { primarySidebarStyles } from "./primary-sidebar-styles";
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
-}));
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
 }));
 const mockPluginsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -79,10 +75,6 @@ vi.mock("@/api/sidebarBadges", () => ({
   sidebarBadgesApi: mockSidebarBadgesApi,
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
-}));
-
 vi.mock("@/api/plugins", () => ({
   pluginsApi: mockPluginsApi,
 }));
@@ -119,9 +111,6 @@ describe("CompanySettingsSidebar", () => {
       failedRuns: 0,
       joinRequests: 2,
     });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ isInstanceAdmin: true }),
-    );
     mockPluginsApi.list.mockResolvedValue([]);
     mockUsePluginSlots.mockReturnValue({
       slots: [],
@@ -412,12 +401,6 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
       ...(hiddenSettings ? { hiddenSettings } : {}),
       ...(cloud ? { cloud } : {}),
     });
-    // The sidebar also gates on board access; seed it so these cases exercise
-    // the operator-hidden gate rather than the degrade-closed path.
-    queryClient.setQueryData(
-      queryKeys.access.currentBoardAccess,
-      buildCurrentBoardAccess({ isInstanceAdmin: true }),
-    );
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -470,121 +453,5 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     expect(container.textContent).not.toContain("Secrets");
     expect(container.textContent).not.toContain("Export");
     expect(container.textContent).not.toContain("Import");
-  });
-
-  it("company member: renders only exposed company surfaces and no instance section", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({
-        isInstanceAdmin: false,
-        exposedSurfaces: ["company.general", "company.members"],
-      }),
-    );
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Members");
-    expect(container.textContent).not.toContain("Invites");
-    expect(container.textContent).not.toContain("Secrets");
-    expect(container.textContent).not.toContain("Instance settings");
-    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/company/settings/instance/general" }),
-    );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("instance admin: sees every company surface and the instance section regardless of policy", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ isInstanceAdmin: true }),
-    );
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Secrets");
-    expect(container.textContent).toContain("Access");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("degrades closed: gated entries hidden while capabilities are unavailable", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockRejectedValue(new Error("offline"));
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).not.toContain("Members");
-    expect(container.textContent).not.toContain("Access");
-    // The chrome itself still renders — the page is not blocked.
-    expect(container.textContent).toContain("Back to app");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("enabled plugins' companySettingsPage entries render even when the policy hides everything", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ isInstanceAdmin: false, exposedSurfaces: [] }),
-    );
-    mockUsePluginSlots.mockReturnValue({
-      slots: [
-        {
-          type: "companySettingsPage",
-          id: "billing",
-          displayName: "Billing",
-          exportName: "BillingPage",
-          routePath: "billing",
-          pluginId: "plugin-billing",
-          pluginKey: "billing",
-          pluginDisplayName: "Billing",
-          pluginVersion: "0.1.0",
-        },
-      ],
-      isLoading: false,
-      errorMessage: null,
-    });
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanySettingsSidebar />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("Billing");
-
-    await act(async () => {
-      root.unmount();
-    });
   });
 });

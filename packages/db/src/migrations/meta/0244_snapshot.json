@@ -1,6 +1,6 @@
 {
-  "id": "46b78d2a-bb6b-454c-820d-fd51dcf65885",
-  "prevId": "d7f6fa91-15eb-49d3-9e04-1b26eecef6c4",
+  "id": "84cd6342-47c7-4a9d-9e0d-c0b713c76af7",
+  "prevId": "1e06c040-9de8-4fb0-974a-7487f64abd00",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -23055,6 +23055,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "source_identity_context_id": {
+          "name": "source_identity_context_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "source_run_id": {
           "name": "source_run_id",
           "type": "uuid",
@@ -24786,6 +24792,12 @@
         },
         "origin_identity_context_id": {
           "name": "origin_identity_context_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "continuation_identity_context_id": {
+          "name": "continuation_identity_context_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -33677,19 +33689,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "run_identity_contexts_run_id_heartbeat_runs_id_fk": {
-          "name": "run_identity_contexts_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "run_identity_contexts",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

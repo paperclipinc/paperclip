@@ -1,3 +1,6 @@
+import { documentService } from "./documents.js";
+import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
+import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
@@ -1111,6 +1114,10 @@ export async function resolveChatOriginPublicationBindings(
   runId: string | null,
 ): Promise<ChatPublicationBinding[]> {
   if (!runId) return [];
+  const explicitEmail = await dbOrTx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+    .innerJoin(chatConversations, eq(chatConversations.endpointId, chatEndpoints.id))
+    .where(and(eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId), eq(chatEndpoints.publicationMode, "explicit"))).limit(1);
+  if (explicitEmail.length) return [];
 
   let originRunId = runId;
   let contextSnapshot: Record<string, unknown> | null = null;
@@ -1852,6 +1859,14 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+/** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
+async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
+  if (!parentId) return;
+  const [parent] = await db.select({ conversationAgentId: issues.conversationAgentId })
+    .from(issues).where(and(eq(issues.id, parentId), eq(issues.companyId, companyId)));
+  if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   initialPlan?: string | null;
@@ -3236,15 +3251,6 @@ const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = [
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND =
   "harness_liveness_escalation";
 const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
-const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
-const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
-  "issue.productivity_review_created",
-  "issue.productivity_review_updated",
-];
-const PRODUCTIVITY_REVIEW_TRIGGERS: readonly IssueProductivityReviewTrigger[] =
-  ["no_comment_streak", "long_active_duration", "high_churn"];
-
 function lowTrustBoundaryIssueCondition(
   companyId: string,
   boundary: (LowTrustBoundary & { companyId: string }) | null | undefined,
@@ -3624,132 +3630,6 @@ async function terminalExplicitBlockersByRoot(
   }
 
   return terminalByRoot;
-}
-
-function readProductivityReviewTrigger(
-  value: unknown,
-): IssueProductivityReviewTrigger | null {
-  if (typeof value !== "string") return null;
-  return PRODUCTIVITY_REVIEW_TRIGGERS.includes(
-    value as IssueProductivityReviewTrigger,
-  )
-    ? (value as IssueProductivityReviewTrigger)
-    : null;
-}
-
-function readProductivityReviewStreak(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
-    return null;
-  return Math.floor(value);
-}
-
-async function listIssueProductivityReviewMap(
-  dbOrTx: any,
-  companyId: string,
-  sourceIssueIds: string[],
-): Promise<Map<string, IssueProductivityReview>> {
-  const map = new Map<string, IssueProductivityReview>();
-  if (sourceIssueIds.length === 0) return map;
-
-  const reviewRows: Array<{
-    sourceIssueId: string | null;
-    reviewIssueId: string;
-    reviewIdentifier: string | null;
-    status: string;
-    priority: string;
-    createdAt: Date;
-    updatedAt: Date;
-  }> = [];
-  for (const chunk of chunkList(
-    [...new Set(sourceIssueIds)],
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const rows = await dbOrTx
-      .select({
-        sourceIssueId: issues.originId,
-        reviewIssueId: issues.id,
-        reviewIdentifier: issues.identifier,
-        status: issues.status,
-        priority: issues.priority,
-        createdAt: issues.createdAt,
-        updatedAt: issues.updatedAt,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
-          inArray(issues.originId, chunk),
-          visibleIssueCondition(),
-          notInArray(issues.status, PRODUCTIVITY_REVIEW_TERMINAL_STATUSES),
-        ),
-      )
-      .orderBy(desc(issues.createdAt), desc(issues.id));
-    reviewRows.push(...rows);
-  }
-
-  if (reviewRows.length === 0) return map;
-
-  const reviewIssueIds = reviewRows.map((row) => row.reviewIssueId);
-  const triggerByReviewIssueId = new Map<
-    string,
-    {
-      trigger: IssueProductivityReviewTrigger | null;
-      noCommentStreak: number | null;
-    }
-  >();
-  for (const chunk of chunkList(
-    reviewIssueIds,
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const detailRows = await dbOrTx
-      .select({
-        entityId: activityLog.entityId,
-        details: activityLog.details,
-        createdAt: activityLog.createdAt,
-      })
-      .from(activityLog)
-      .where(
-        and(
-          eq(activityLog.companyId, companyId),
-          eq(activityLog.entityType, "issue"),
-          inArray(activityLog.entityId, chunk),
-          inArray(activityLog.action, PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS),
-        ),
-      )
-      .orderBy(desc(activityLog.createdAt));
-    for (const row of detailRows as Array<{
-      entityId: string;
-      details: Record<string, unknown> | null;
-      createdAt: Date;
-    }>) {
-      if (triggerByReviewIssueId.has(row.entityId)) continue;
-      triggerByReviewIssueId.set(row.entityId, {
-        trigger: readProductivityReviewTrigger(row.details?.trigger),
-        noCommentStreak: readProductivityReviewStreak(
-          row.details?.noCommentStreak,
-        ),
-      });
-    }
-  }
-
-  for (const row of reviewRows) {
-    if (!row.sourceIssueId) continue;
-    if (map.has(row.sourceIssueId)) continue;
-    const detail = triggerByReviewIssueId.get(row.reviewIssueId);
-    map.set(row.sourceIssueId, {
-      reviewIssueId: row.reviewIssueId,
-      reviewIdentifier: row.reviewIdentifier,
-      status: row.status as IssueProductivityReview["status"],
-      priority: row.priority as IssueProductivityReview["priority"],
-      trigger: detail?.trigger ?? null,
-      noCommentStreak: detail?.noCommentStreak ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    });
-  }
-
-  return map;
 }
 
 async function listIssueBlockerAttentionMap(
@@ -6378,7 +6258,6 @@ async function listBlockedInboxIssues(
       blockerAttention?: IssueBlockerAttention;
       reviewAttention?: IssueReviewAttention;
       blockedInboxAttention: IssueBlockedInboxAttention;
-      productivityReview?: IssueProductivityReview | null;
       liveDescendantCount?: number;
       lastActivityAt: Date;
       myLastTouchAt?: Date | null;
@@ -6513,9 +6392,6 @@ async function listBlockedInboxIssues(
           reviewAttention:
             reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
           blockedInboxAttention,
-          ...(productivityReviewByIssueId.has(row.id)
-            ? { productivityReview: productivityReviewByIssueId.get(row.id) }
-            : {}),
           ...(includeLiveDescendantSummary
             ? {
                 liveDescendantCount:
@@ -7908,6 +7784,8 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
+      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
+      if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
         filters?.assigneeAgentId,
       );
@@ -8034,14 +7912,6 @@ export function issueService(db: Db) {
             ),
           );
         if (labeledIssueIds.length === 0) return [];
-        conditions.push(
-          inArray(
-            issues.id,
-            labeledIssueIds.map((row) => row.issueId),
-          ),
-        );
-      }
-      if (hasSearch) {
         conditions.push(
           inArray(
             issues.id,
@@ -8183,9 +8053,6 @@ export function issueService(db: Db) {
                     liveDescendantCountByIssueId.get(row.id) ?? 0,
                 }
               : {}),
-            ...(productivityReviewByIssueId.has(row.id)
-              ? { productivityReview: productivityReviewByIssueId.get(row.id) }
-              : {}),
           };
         });
       }
@@ -8229,9 +8096,6 @@ export function issueService(db: Db) {
                   liveDescendantCountByIssueId.get(row.id) ?? 0,
               }
             : {}),
-          ...(productivityReviewByIssueId.has(row.id)
-            ? { productivityReview: productivityReviewByIssueId.get(row.id) }
-            : {}),
           ...deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt:
               statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
@@ -8248,10 +8112,8 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [
-        eq(issues.companyId, companyId),
-        visibleIssueCondition(),
-      ];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
         conditions.push(eq(issues.status, statuses[0]!));
@@ -9178,11 +9040,7 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (
-        !parent ||
-        !parent.assigneeAgentId ||
-        ["backlog", "done", "cancelled"].includes(parent.status)
-      ) {
+      if (!parent || parent.conversationAgentId || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
         return null;
       }
 
@@ -9769,6 +9627,10 @@ export function issueService(db: Db) {
       });
     },
 
+    getConversation: async (companyId: string, agentId: string, userId: string) => db.select().from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.conversationAgentId, agentId), eq(issues.conversationUserId, userId),
+    )).then((rows) => rows[0] ?? null),
+
     create: async (
       companyId: string,
       data: IssueCreateInput,
@@ -9817,6 +9679,18 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const persist = async (tx: DbTransaction) => {
+        await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
+        if (issueData.conversationAgentId && issueData.conversationUserId) {
+          const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`);
+          const [existing] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId),
+            eq(issues.conversationAgentId, issueData.conversationAgentId), eq(issues.conversationUserId, issueData.conversationUserId)));
+          if (existing) {
+            const [enriched] = await withIssueLabels(tx, [existing]);
+            const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+            return withRelations;
+          }
+        }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -10670,7 +10544,30 @@ export function issueService(db: Db) {
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
+      if (options.bindRuntimeSharedWorkspace) {
+        const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
+        if (!workspaceId) {
+          throw unprocessable("Runtime workspace binding requires an existing shared workspace");
+        }
+        const [workspace] = await dbOrTx
+          .select({ mode: executionWorkspaces.mode })
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.id, workspaceId),
+            eq(executionWorkspaces.companyId, existing.companyId),
+          ));
+        if (
+          workspace?.mode !== "shared_workspace" ||
+          (issueData.executionWorkspacePreference ?? existing.executionWorkspacePreference) !== "reuse_existing" ||
+          (issueData.executionWorkspaceSettings ?? existing.executionWorkspaceSettings)?.mode !== "shared_workspace"
+        ) {
+          throw unprocessable("Runtime workspace binding requires an existing shared workspace");
+        }
+      }
+      // Warm sandbox continuity is runtime bookkeeping, independent of the
+      // opt-in UI for creating isolated worktrees. Public updates still obey
+      // the feature gate; only the internal shared-workspace binding bypasses it.
+      if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
@@ -12103,7 +12000,7 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
-      if (dbOrTx === db && actor.runId) {
+      if (dbOrTx === db && (actor.runId || actor.userId)) {
         const append = () =>
           db.transaction(async (tx) => {
             // Serialize run-authored comments on the issue so a provider retry
@@ -12140,10 +12037,23 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(
-        body,
-        currentUserRedactionOptions,
-      );
+      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      if (actor.userId && options?.clientRequestId) {
+        const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
+          eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
+        if (existing) {
+          if (existing.body !== redactedBody) throw conflict("Message request ID was already used for different content");
+          return existing;
+        }
+      }
+      if (issue.conversationAgentId && actor.runId) {
+        const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));
+        const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId));
+        if (run?.status === "cancelled") throw conflict("This conversation turn was cancelled; it cannot post a reply");
+        if (run?.contextSnapshot?.conversationSessionGeneration !== current.conversationSessionGeneration) {
+          throw conflict("Conversation session changed; this reply belongs to an earlier session");
+        }
+      }
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ??
           (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
@@ -12354,6 +12264,7 @@ export function issueService(db: Db) {
             authorType,
             createdByRunId,
             body: redactedBody,
+            clientRequestId: options?.clientRequestId ?? null,
             presentation,
             metadata,
             sourceTrust: options?.sourceTrust ?? null,

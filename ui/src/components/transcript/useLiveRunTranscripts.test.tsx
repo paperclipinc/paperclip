@@ -17,6 +17,12 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: useQueryMock,
 }));
 
+vi.mock("../../api/instanceSettings", () => ({
+  instanceSettingsApi: {
+    getGeneral: vi.fn(),
+  },
+}));
+
 vi.mock("../../api/heartbeats", () => ({
   heartbeatsApi: {
     log: logMock,

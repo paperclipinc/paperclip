@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
-import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 let issueWorkspaceDraftCalls = 0;
 let issueWorkspaceDraft: Record<string, unknown> | null = {
@@ -18,11 +17,9 @@ let issueWorkspaceBranchName: string | null = null;
 let issueWorkspaceCanSave = true;
 let latestWorkspaceIssue: Record<string, unknown> | null = null;
 
-vi.mock("../api/access", () => ({
-  accessApi: {
-    getCurrentBoardAccess: vi.fn(async () =>
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    ),
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: {
+    getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
   },
 }));
 

@@ -34,12 +34,6 @@ import {
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
-import {
-  canCreateStackCompany,
-  cloudTenantCompanyId,
-  isCompanyIdConflict,
-  withCloudStackSlugAlias,
-} from "../services/cloud-tenant-company.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
@@ -380,13 +374,6 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     }
   }
 
-  // Cloud tenants reach their company under the gateway's stack slug too, so
-  // company payloads carry that slug as slugAliases (no-op for other actors).
-  function withActorSlugAliases<T extends { id: string; issuePrefix: string }>(req: Request, company: T): T {
-    const cloudStack = req.actor.source === "cloud_tenant" ? req.actor.cloudStack : undefined;
-    return withCloudStackSlugAlias(company, cloudStack);
-  }
-
   router.get("/", async (req, res) => {
     assertBoard(req);
     const scope = req.query.scope;
@@ -406,11 +393,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       return;
     }
     const allowed = new Set(req.actor.companyIds ?? []);
-    res.json(
-      result
-        .filter((company) => allowed.has(company.id))
-        .map((company) => withActorSlugAliases(req, company)),
-    );
+    res.json(result.filter((company) => allowed.has(company.id)));
   });
 
   router.get("/stats", async (req, res) => {
@@ -509,7 +492,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json(withActorSlugAliases(req, company));
+    res.json(company);
   });
 
   router.get("/:companyId/feedback-traces", async (req, res) => {
@@ -1217,29 +1200,14 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     next();
   }, validate(createCompanySchema), async (req, res) => {
     assertBoard(req);
-    const cloudStack = req.actor.source === "cloud_tenant" ? req.actor.cloudStack : undefined;
-    const createsOwnStackCompany = canCreateStackCompany(cloudStack);
-    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin || createsOwnStackCompany)) {
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
     const ownerPrincipalId = req.actor.userId ?? "local-board";
-    let company;
-    try {
-      company = await svc.create({
-        ...req.body,
-        // A cloud tenant only ever creates the one company its stack routes
-        // to: the id is server-derived from the stack, never client-supplied,
-        // so gateway slug->company routing keeps working and a tenant cannot
-        // create arbitrary companies.
-        ...(createsOwnStackCompany ? { id: cloudTenantCompanyId(cloudStack.stackId) } : {}),
-        defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
-      });
-    } catch (error) {
-      if (createsOwnStackCompany && isCompanyIdConflict(error)) {
-        throw conflict("This workspace's company has already been created");
-      }
-      throw error;
-    }
+    const company = await svc.create({
+      ...req.body,
+      defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
+    });
     await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
     await access.ensureRoleDefaultGrants(
       company.id,

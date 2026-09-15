@@ -43,7 +43,7 @@ import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { captureRunIdentity } from "../run-identity.js";
-import { prepareNativeRunnerFileHandoff } from "./native-runner-file-handoff.js";
+import { prepareNativeRunnerFileHandoff, type RemoteWorkspaceFileReader } from "./native-runner-file-handoff.js";
 import { MAX_ATTACHMENT_BYTES } from "../../attachment-types.js";
 import {
   READ_CURRENT_WAKE_COMMENTS_TOOL_DEFINITION,
@@ -72,7 +72,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api",
   "get_task_context", "get_task_history", "search_tasks", "report_progress",
   "request_human_input",
-  "create_task", "set_dependencies", "register_deliverable",
+  "create_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
 ]);
@@ -93,6 +93,7 @@ type Binding = {
   workMode?: "standard" | "planning" | "ask";
   workspaceRoot?: string;
   executionTargetKind?: "local" | "remote";
+  readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
   currentWakeComments?: CurrentWakeCommentsBinding;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   enqueueWakeup?: (agentId: string, options: {
@@ -146,7 +147,7 @@ export class PaperclipRunnerToolAuthority {
           descriptor.allowedModes.includes(workMode) &&
           (descriptor.operationId !== "register_deliverable" ||
             (Boolean(this.binding.workspaceRoot) &&
-              (this.binding.executionTargetKind ?? "local") === "local")),
+              ((this.binding.executionTargetKind ?? "local") === "local" || Boolean(this.binding.readRemoteWorkspaceFile)))),
       ).map((descriptor) => ({
         name: descriptor.operationId,
         description:
@@ -187,7 +188,7 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...definitions];
+    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools), ...definitions];
   }
 
   async execute(call: {
@@ -195,6 +196,13 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    if (isConnectorTool(call.tool)) {
+      if (!(this.binding.connectorAssignments ?? []).some((assignment) => assignment.tools.some((tool) => tool.name === call.tool))) throw forbidden("Connector tool is not available to this run");
+      const { run } = await this.#boundContext();
+      const snapshot = record(run.contextSnapshot);
+      if (isPaperclipExternalChatContractTurn(snapshot.paperclipWake) || String(snapshot.source ?? "").startsWith("chat:") || snapshot.paperclipExternalChatQuestionResponse) throw forbidden("Restricted chat runs cannot use email actions");
+      return executeConnectorTool(this.db, this.binding, call.tool, call.arguments);
+    }
     if (RUNTIME_CONNECTION_TOOL_DEFINITIONS.some((tool) => tool.name === call.tool)) {
       await this.#boundContext();
       const { run } = await captureRunIdentity(this.db, this.binding);
@@ -834,6 +842,7 @@ export class PaperclipRunnerToolAuthority {
             agentId: this.binding.agentId,
             workspaceRoot,
             executionTargetKind: this.binding.executionTargetKind ?? "local",
+            readRemoteWorkspaceFile: this.binding.readRemoteWorkspaceFile,
           },
           deliverable: {
             filename: typeof input.filename === "string" ? input.filename : "",
@@ -1105,7 +1114,7 @@ export class PaperclipRunnerToolAuthority {
                 eq(chatEndpoints.assignedAgentId, this.binding.agentId),
               ),
             );
-          if (!endpoint) {
+          if (!endpoint || endpoint.provider === "agentmail") {
             throw new Error("paperclip_runner_chat_attachment_binding_denied");
           }
           provider = endpoint.provider;

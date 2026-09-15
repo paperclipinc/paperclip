@@ -1,3 +1,6 @@
+import { hasLiveLegacyController } from "../legacy-controller-lease.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
   asc,
@@ -48,10 +51,6 @@ import {
   statusDecisions,
   workAssessments,
 } from "@paperclipai/db";
-import {
-  SANDBOX_NOT_READY_ERROR_CODE,
-  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
-} from "@paperclipai/adapter-utils";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -505,20 +504,9 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
-// Sandbox capacity failures (the cluster cannot schedule or bring up the
-// sandbox pod) are transient infrastructure, but they do NOT resolve on the
-// generic 60s backoff: node provisioning / autoscaler recovery takes minutes.
-// Retrying on the short backoff just burns full readiness windows back to
-// back, so these codes get a longer base backoff with the same attempt cap.
-const SANDBOX_CAPACITY_CONTINUATION_ERROR_CODES = new Set<string>([
-  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
-  SANDBOX_NOT_READY_ERROR_CODE,
-]);
-
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
-const CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS = 5 * 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -709,14 +697,6 @@ export function classifyContinuationFailure(
       kind: "non_retryable",
       maxAttempts: 0,
       baseBackoffMs: 0,
-      errorCode,
-    };
-  }
-  if (errorCode && SANDBOX_CAPACITY_CONTINUATION_ERROR_CODES.has(errorCode)) {
-    return {
-      kind: "transient_infra",
-      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
-      baseBackoffMs: CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS,
       errorCode,
     };
   }
@@ -1948,6 +1928,17 @@ export function recoveryService(
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      // The sweep can combine an old in-progress issue snapshot with a newer
+      // successful run. Validate eligibility under the enqueue issue lock so
+      // completion or reassignment cannot create a redundant continuation.
+      ...(input.source === "issue.productive_terminal_continuation_recovery"
+        ? {
+            issueStateGuard: {
+              statuses: ["in_progress"],
+              assigneeAgentId: input.agentId,
+            },
+          }
+        : {}),
       payload: withRecoveryContext(
         {
           issueId: input.issueId,
@@ -2505,7 +2496,9 @@ export function recoveryService(
                       ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
                       : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
                   : recoveryCause === "configuration_incomplete"
-                    ? readConfigurationIncompletePayload(input.latestRun)
+                    ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
+                      ? "Reconnect the selected AI account or choose an available connection, then continue the task."
+                      : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
                           readNonEmptyString(
@@ -4206,12 +4199,24 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
-      const executionState =
-        issue.status === "in_review"
-          ? parseIssueExecutionState(issue.executionState)
-          : null;
-      const pendingExecutionState =
-        executionState?.status === "pending" ? executionState : null;
+      if (issue.conversationAgentId) {
+        const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
+        if (lastRun?.status === "succeeded") {
+          if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
+            const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+            if (current) Object.assign(issue, current);
+          }
+        }
+        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
+        {
+          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+        }
+      }
+      if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
+      const executionState = issue.status === "in_review"
+        ? parseIssueExecutionState(issue.executionState)
+        : null;
+      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
@@ -5511,6 +5516,12 @@ export function recoveryService(
     if (isNativeRunnerOwnershipHeld(run))
       return { terminalized: false, status: run.status };
 
+    // Another controller may own a sandbox run whose PID has no meaning on
+    // this host. Its live lease owns both execution and finalization, even if
+    // the issue is already terminal or this process has no in-memory handle.
+    if (await hasLiveLegacyController(db, run))
+      return { terminalized: false, status: run.status };
+
     const pid = run.processPid ?? null;
     const processGroupId = run.processGroupId ?? null;
 
@@ -5622,7 +5633,22 @@ export function recoveryService(
         and(
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
+          eq(heartbeatRuns.runtimeMode, run.runtimeMode),
           nativeRunnerOwnershipNotHeldCondition(),
+          // Recheck ownership in the write: a controller can renew or claim
+          // the run after the liveness read. An old snapshot cannot end a new
+          // controller's run, even if that controller's lease later expires.
+          run.runtimeMode === "legacy"
+            ? and(
+                run.controllerBootId
+                  ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
+                  : isNull(heartbeatRuns.controllerBootId),
+                or(
+                  isNull(heartbeatRuns.controllerBootId),
+                  sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
+                ),
+              )
+            : undefined,
         ),
       )
       .returning()

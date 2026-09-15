@@ -1,4 +1,3 @@
-import { COMPANY_SETTINGS_SURFACES, type CompanySettingsSurface } from "../constants.js";
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
@@ -79,7 +78,6 @@ export interface InstanceExperimentalSettings {
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
@@ -106,8 +104,6 @@ export interface InstanceExperimentalSettings {
    */
   enableFirstTaskPlanProposal: boolean;
   autoRestartDevServerWhenIdle: boolean;
-  cloudBilling: boolean;
-  cloudTrialBanner: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
@@ -150,20 +146,6 @@ export interface InstanceExperimentalSettings {
 }
 
 /**
- * Instance-wide settings-surface visibility policy (PR-1). Decides which
- * company-scoped settings surfaces non-admin company members may use.
- * Instance-scoped surfaces are never part of the policy. Default: all
- * company surfaces exposed (zero behavior change for self-hosters).
- */
-export interface InstanceVisibilitySettings {
-  companySurfaces: CompanySettingsSurface[];
-}
-
-export const DEFAULT_INSTANCE_VISIBILITY_SETTINGS: InstanceVisibilitySettings = {
-  companySurfaces: [...COMPANY_SETTINGS_SURFACES],
-};
-
-/**
  * Boolean feature-flag keys of the experimental settings — the only keys a
  * cloud managed-config overlay may target. Server-managed bookkeeping fields
  * (activation cutoffs, lookback hours) are excluded by construction.
@@ -196,7 +178,6 @@ export interface InstanceSettings {
   defaultEnvironmentId: string | null;
   general: InstanceGeneralSettings;
   experimental: InstanceExperimentalSettingsWithManaged;
-  visibility: InstanceVisibilitySettings;
   createdAt: Date;
   updatedAt: Date;
 }

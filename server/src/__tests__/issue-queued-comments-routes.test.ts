@@ -21,7 +21,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { reconcileSteeredIdentity } from "../services/run-identity.js";
+import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

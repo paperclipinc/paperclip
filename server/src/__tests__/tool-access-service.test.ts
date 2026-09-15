@@ -85,7 +85,7 @@ import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -5099,7 +5099,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "github",
       ]),
     );
-    expect(res.body.apps).toHaveLength(40);
+    expect(res.body.apps).toHaveLength(46);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -7164,12 +7164,6 @@ describeEmbeddedPostgres("tool access service", () => {
       paperclipCloudConnector: connector,
     });
     const actor = { actorType: "user" as const, actorId: userId };
-    const gmailDefinition = getConnectableAppDefinition("gmail")!;
-    const previousOwnershipAvailability = gmailDefinition.ownershipAvailability;
-    gmailDefinition.ownershipAvailability = {
-      ...previousOwnershipAvailability,
-      platform_shared: true,
-    };
     let deadline: ReturnType<typeof setTimeout> | null = null;
     mockToolsList([]);
 
@@ -17312,6 +17306,28 @@ describeEmbeddedPostgres("tool access service", () => {
         lastHealthAt: new Date(0),
       })
       .returning();
+    const [pluginApplication] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `paperclip_plugin:fixture-${randomUUID()}`,
+      name: "Plugin placeholder",
+      type: "paperclip_plugin",
+      status: "active",
+      metadata: { source: "plugin_backfill" },
+    }).returning();
+    const [pluginConnection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: pluginApplication!.id,
+      name: "Plugin placeholder",
+      uid: `plugin-${randomUUID()}`,
+      connectionKind: "managed",
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { type: "paperclip_plugin" },
+      transportConfig: { type: "paperclip_plugin" },
+      healthStatus: "ok",
+      healthCheckedAt: null,
+    }).returning();
     const connection = await service.createConnection(company.id, {
       name: "Swept remote",
       transport: "mcp_remote",
@@ -17320,7 +17336,7 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
     });
 
-    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0 });
+    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
     const [updatedConnection] = await db
       .select()
       .from(toolConnections)
@@ -17329,6 +17345,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, chatConnection!.id));
+
+    const [untouchedPlugin] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, pluginConnection!.id));
+    expect(untouchedPlugin).toMatchObject({ enabled: true, healthStatus: "ok", healthCheckedAt: null });
 
     expect(sweep).toMatchObject({
       checked: 1,

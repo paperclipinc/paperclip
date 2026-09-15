@@ -1,6 +1,7 @@
+import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
@@ -34,6 +35,7 @@ import {
   agents,
   approvals,
   chatConversations,
+  chatEndpoints,
   chatPublications,
   companyMemberships,
   documents,
@@ -355,6 +357,9 @@ const queuedCommentSteeringTargetSchema =
   queuedCommentMutationTargetSchema.extend({
     targetRunId: z.string().min(1),
   });
+const queuedCommentInterruptTargetSchema = queuedCommentMutationTargetSchema.extend({
+  targetRunId: z.string().min(1).nullable(),
+});
 const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
   body: z
     .string()
@@ -3016,9 +3021,6 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.blockedInboxAttention !== undefined
       ? { blockedInboxAttention: issue.blockedInboxAttention }
       : {}),
-    ...(issue.productivityReview
-      ? { productivityReview: issue.productivityReview }
-      : {}),
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
     ...(issue.liveDescendantCount !== undefined
       ? { liveDescendantCount: issue.liveDescendantCount }
@@ -4624,12 +4626,13 @@ export function issueRoutes(
     actorRunId?: string | null;
     reviewInteractionId?: string;
   }) {
-    const nextStatus =
-      typeof input.updateFields.status === "string"
-        ? input.updateFields.status
-        : input.existing.status;
-    if (input.existing.status === "in_review" || nextStatus !== "in_review")
-      return null;
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    // Conversations wait for the next message; successful run finalization owns
+    // the waiting state. They do not need an execution-task review assignment.
+    if (isConversation(input.existing) && !input.reviewInteractionId) return null;
+    if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
     if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(
@@ -7019,12 +7022,13 @@ export function issueRoutes(
       queuedCommentCount: comments.length,
     });
     const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-      steering.kind !== "probe"
+      input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
+    const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
     return buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
       executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
@@ -7158,7 +7162,7 @@ export function issueRoutes(
             and(
               eq(heartbeatRuns.id, activeRunId),
               eq(heartbeatRuns.companyId, input.issue.companyId),
-              eq(heartbeatRuns.status, "running"),
+              input.allowStoppedTarget ? undefined : eq(heartbeatRuns.status, "running"),
             ),
           )
           .for("update")
@@ -7986,10 +7990,10 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated") {
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
       res
         .status(400)
-        .json({ error: "sortField must be 'updated' when provided" });
+        .json({ error: "sortField must be 'updated' or 'id' when provided" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -8537,9 +8541,6 @@ export function issueRoutes(
       svc
         .listReviewAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
-        .then((map) => map.get(issue.id) ?? null),
       svc.getCurrentScheduledRetry(issue.id),
       svc.listAttachments(issue.id),
       documentsSvc.getIssueDocumentByKey(
@@ -8863,9 +8864,6 @@ export function issueRoutes(
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
         .then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
@@ -9254,8 +9252,10 @@ export function issueRoutes(
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
+            .innerJoin(chatEndpoints, eq(chatEndpoints.id, chatConversations.endpointId))
             .where(
               and(
+                eq(chatEndpoints.externalExecutionPolicy, "restricted"),
                 eq(chatConversations.companyId, lockedIssue.companyId),
                 eq(chatConversations.issueId, lockedIssue.id),
               ),
@@ -12753,6 +12753,7 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
           ? issueWriteAuthorizationReason(
@@ -12777,6 +12778,7 @@ export function issueRoutes(
         : null;
       const {
         comment: commentBody,
+        commentClientRequestId,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
@@ -12788,6 +12790,9 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
+        throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
+      }
       if (
         deferWakeForGoal === true &&
         (!normalizedAssigneeAgentId ||
@@ -13635,6 +13640,7 @@ export function issueRoutes(
                 },
                 {
                   attachmentIds: commentAttachmentIds,
+                  clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: attachmentCommentSourceTrust,
                 },
@@ -14239,6 +14245,7 @@ export function issueRoutes(
           },
           {
             authorizationReason: issueMutationAuthorizationReason,
+            clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
             sourceTrust: await sourceTrustForActorWrite(issue, actor),
           },
         );
@@ -14668,20 +14675,29 @@ export function issueRoutes(
               (commentIsFromAssigneeRun && mentionedId === assigneeId)
             )
               continue;
+            const delegation = commentIsFromAssigneeRun
+              ? await routeDelegationMention(req, issue, mentionedId, comment)
+              : null;
+            if (delegation?.kind === "completed") continue;
+            const wakeIssueId = delegation?.issueId ?? id;
+            const wakeCommentId = delegation?.commentId ?? comment.id;
             addWakeup(mentionedId, {
               source: "automation",
               triggerDetail: "system",
               reason: "issue_comment_mentioned",
-              payload: { issueId: id, commentId: comment.id },
+              payload: { issueId: wakeIssueId, commentId: wakeCommentId,
+                ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
+              },
               requestedByActorType: actor.actorType,
               requestedByActorId: actor.actorId,
               contextSnapshot: {
-                issueId: id,
-                taskId: id,
-                commentId: comment.id,
-                wakeCommentId: comment.id,
+                issueId: wakeIssueId,
+                taskId: wakeIssueId,
+                commentId: wakeCommentId,
+                wakeCommentId,
                 wakeReason: "issue_comment_mentioned",
-                source: "comment.mention",
+                source: delegation ? "comment.mention.delegation" : "comment.mention",
+                ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
               },
             });
           }
@@ -15338,6 +15354,75 @@ export function issueRoutes(
         }),
       );
       publishActivity(activityPublication as ActivityPublication);
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+    },
+  );
+
+  router.post(
+    "/issues/:id/queued-comments/interrupt",
+    validate(queuedCommentInterruptTargetSchema),
+    async (req, res) => {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue) return;
+      const decision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      if (issue.conversationAgentId) {
+        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+        if (req.actor.userId !== issue.conversationUserId) {
+          throw forbidden("Only the conversation owner can interrupt a chat to send queued messages");
+        }
+      }
+      const actor = getActorInfo(req);
+      const runToInterrupt = await db.transaction(async (tx) => {
+        const locked = await lockQueuedCommentState({
+          tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
+          allowStoppedTarget: true,
+        });
+        assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
+        if (locked.queue.protocol !== "legacy" || locked.state !== "deferred" ||
+            !locked.queue.entries.length ||
+            (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
+          throw conflict("This queue does not support legacy interruption");
+        }
+        if (locked.activeRun && locked.activeRun.status !== "running" &&
+            !["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status)) {
+          throw conflict("The previous run has not stopped");
+        }
+        if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
+          throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+        }
+        // The click is durable fresh user intent, including when the message
+        // predates a failed run's stop. Keep its content and original attribution.
+        await tx.update(agentWakeupRequests).set({
+          payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
+            actorId: actor.actorId, requestedAt: new Date().toISOString(),
+          } },
+          updatedAt: new Date(),
+        }).where(eq(agentWakeupRequests.id, locked.wake.id));
+        return locked.activeRun?.status === "running" ? locked.activeRun.id : null;
+      });
+      // Never hold the issue lock while joining the adapter. Queue edits and
+      // discards stay authoritative until the dispatcher claims the successor.
+      const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
+      if (runToInterrupt) await heartbeat.cancelRun(runToInterrupt, "Interrupted to send queued messages", {
+        ...options,
+        suppressImmediateRecovery: true,
+        resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
+      });
+      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comments_interrupted", entityType: "issue", entityId: issue.id,
+        details: { queueId: req.body.queueId, targetRunId: req.body.targetRunId },
+      });
+      const currentIssue = await svc.getById(issue.id);
+      const queue = await buildQueuedCommentQueue({
+        executor: db, issue: currentIssue ?? issue,
+        activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor,
+      });
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -17052,6 +17137,32 @@ export function issueRoutes(
     res.json(bundle);
   });
 
+  // Resolving an unused chat is read-only. POST is used only by first send/upload.
+  for (const method of ["get", "post"] as const) {
+    router[method]("/companies/:companyId/chats/:agentRef", async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
+      if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
+      if (!resolved.agent) throw notFound("Agent not found");
+      const agent = resolved.agent;
+      const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
+      if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
+      if (existing || method === "get") { res.json(existing); return; }
+      const issue = await svc.create(companyId, {
+        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        conversationAgentId: agent.id, conversationUserId: req.actor.userId,
+        conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
+      });
+      await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
+        action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
+        details: { agentId: agent.id } });
+      res.json(issue);
+    });
+  }
+
   router.post(
     "/issues/:id/comments",
     validate(addIssueCommentSchema),
@@ -17064,6 +17175,40 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (issue.conversationAgentId && req.actor.type === "board") {
+        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+        if (!req.actor.userId) throw forbidden("Board user access required");
+        if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
+        if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
+        if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
+        if (req.body.body.trim() !== "/new" && !(await assertBoardCommentNotPaused(req, res, issue))) return;
+        const actor = getActorInfo(req);
+        const userId = req.actor.userId;
+        const publications: ActivityPublication[] = [];
+        const comment = await db.transaction(async (tx) => {
+          await tx.select({ id: issueRows.id }).from(issueRows).where(and(
+            eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId),
+          )).for("update");
+          const [existing] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+            eq(issueComments.issueId, issue.id), eq(issueComments.authorUserId, userId),
+            eq(issueComments.clientRequestId, req.body.clientRequestId),
+          ));
+          const saved = await svc.addComment(issue.id, req.body.body, { userId }, {
+            clientRequestId: req.body.clientRequestId, authorType: "user", attachmentIds: req.body.attachmentIds,
+          }, tx);
+          if (!existing) await logActivity(tx as unknown as Db, {
+            companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+            action: "issue.comment_added", entityType: "issue", entityId: issue.id,
+            details: { commentId: saved.id, identifier: issue.identifier },
+          }, publications);
+          return saved;
+        });
+        for (const publication of publications) publishActivity(publication);
+        await issueReferencesSvc.syncComment(comment.id);
+        await deliverConversationComments(db, issue, heartbeat.wakeup);
+        res.status(201).json(comment);
+        return;
+      }
       if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
         await auditAgentIssueCommentAttributionSpoof({
           db,
@@ -17086,6 +17231,7 @@ export function issueRoutes(
         issue,
       );
       if (!commentAccessDecision) return;
+      if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
       const commentAuthorizationReason = issueWriteAuthorizationReason(
         req,
         commentAccessDecision,
@@ -17434,6 +17580,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
+          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           sourceTrust,
         };
         let txResult: {
@@ -17545,6 +17692,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
+          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
@@ -17940,20 +18088,29 @@ export function issueRoutes(
             (commentIsFromAssigneeRun && mentionedId === assigneeId)
           )
             continue;
+          const delegation = commentIsFromAssigneeRun
+            ? await routeDelegationMention(req, currentIssue, mentionedId, comment)
+            : null;
+          if (delegation?.kind === "completed") continue;
+          const wakeIssueId = delegation?.issueId ?? id;
+          const wakeCommentId = delegation?.commentId ?? comment.id;
           addWakeup(mentionedId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
+            payload: { issueId: wakeIssueId, commentId: wakeCommentId,
+              ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
+            },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
             contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
+              issueId: wakeIssueId,
+              taskId: wakeIssueId,
+              commentId: wakeCommentId,
+              wakeCommentId,
               wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
+              source: delegation ? "comment.mention.delegation" : "comment.mention",
+              ...(delegation ? { resumeIntent: true, followUpRequested: true } : {}),
             },
           });
         }
@@ -18217,6 +18374,12 @@ export function issueRoutes(
       if (issue.companyId !== companyId) {
         res.status(422).json({ error: "Issue does not belong to company" });
         return;
+      }
+      if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
+        throw notFound("Agent Chat is disabled");
+      }
+      if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+        throw forbidden("Only the conversation owner can upload attachments");
       }
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (

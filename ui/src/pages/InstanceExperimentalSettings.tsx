@@ -164,7 +164,6 @@ export function InstanceExperimentalSettings() {
         queryClient.invalidateQueries({ queryKey: queryKeys.adapters.all }),
         queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess }),
       ]);
     },
     onError: (error, _patch, context) => {
@@ -315,6 +314,17 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle cases experimental setting"
         />
 
+        <ExperimentalToggleCard
+          title="Agent Chat"
+          description="Talk to each agent in one ongoing conversation. Clarify goals and create tasks for execution."
+          footnote="Turning this off preserves conversations and lets active runs finish, but prevents new messages."
+          checked={experimentalQuery.data?.enableAgentChat ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentChat"
+          managed={managedKeys.enableAgentChat}
+          ariaLabel="Toggle agent chat experimental setting"
+        />
         <ExperimentalToggleCard
           title="Chat connectors"
           description="Connect agents to Slack, GitHub, Discord, Microsoft Teams, and Telegram conversations."

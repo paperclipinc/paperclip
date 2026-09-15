@@ -81,50 +81,8 @@ describe("onEnvironmentResumeLease", () => {
         phase: "Running",
         backend: "sandbox-cr",
         resumedLease: true,
-        // Capability signal the server reads to disable the network-install shim
-        // and fail fast on a wrong runtime image (Finding 2 in PR #9950): the
-        // k8s plugin's runtime images are pre-baked, so it declares it per-lease.
-        runtimeImagePrebaked: true,
         // sandbox-cr has a pod-exec channel, so native file sync stays enabled.
         nativeFileSyncUnsupported: false,
-      }),
-    );
-  });
-
-  it("carries the originally-resolved adapter type and image forward on resume", async () => {
-    // Gap-1 (second layer): a Kubernetes pod's image cannot change in place,
-    // so the resumed lease must surface the SAME adapterType/image it was
-    // acquired with, not drop them: otherwise the server's reusable-lease
-    // scope would go null on every resume and lose the positive match proof
-    // reacquired leases had.
-    h.clients = {
-      custom: {
-        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
-      },
-      core: {
-        readNamespacedPod: vi.fn().mockResolvedValue({
-          metadata: {},
-          status: { phase: "Running" },
-        }),
-      },
-    };
-
-    const lease = await plugin.definition.onEnvironmentResumeLease!({
-      driverKey: "kubernetes",
-      companyId: "acme",
-      environmentId: "env-1",
-      config: CONFIG,
-      providerLeaseId: "pc-abc",
-      leaseMetadata: leaseMetadata({
-        adapterType: "claude_local",
-        image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
-      }),
-    });
-
-    expect(lease.metadata).toEqual(
-      expect.objectContaining({
-        adapterType: "claude_local",
-        image: "ghcr.io/paperclipai/agent-runtime-claude:v1",
       }),
     );
   });
@@ -303,74 +261,5 @@ describe("onEnvironmentDestroyLease", () => {
       expect.objectContaining({ namespace: "paperclip-acme", name: "pc-job" }),
     );
     expect(deleteCr).not.toHaveBeenCalled();
-  });
-});
-
-describe("onEnvironmentReleaseLease (per-run Secret cleanup)", () => {
-  it("explicitly deletes the per-run Secret on normal release (defense against a wedged ownerRef cascade)", async () => {
-    const deleteCr = vi.fn().mockResolvedValue({});
-    const deleteSecret = vi.fn().mockResolvedValue({});
-    h.clients = {
-      custom: { deleteNamespacedCustomObject: deleteCr },
-      core: { deleteNamespacedSecret: deleteSecret },
-    };
-
-    await plugin.definition.onEnvironmentReleaseLease!({
-      driverKey: "kubernetes",
-      companyId: "acme",
-      environmentId: "env-1",
-      config: CONFIG,
-      providerLeaseId: "pc-abc",
-      leaseMetadata: leaseMetadata(),
-    });
-
-    expect(deleteSecret).toHaveBeenCalledWith({
-      namespace: "paperclip-acme",
-      name: "pc-abc-env",
-    });
-  });
-
-  it("tolerates a 404 on the Secret delete (cascade already removed it) without throwing", async () => {
-    const deleteCr = vi.fn().mockResolvedValue({});
-    const deleteSecret = vi.fn().mockRejectedValue(notFound());
-    h.clients = {
-      custom: { deleteNamespacedCustomObject: deleteCr },
-      core: { deleteNamespacedSecret: deleteSecret },
-    };
-
-    await expect(
-      plugin.definition.onEnvironmentReleaseLease!({
-        driverKey: "kubernetes",
-        companyId: "acme",
-        environmentId: "env-1",
-        config: CONFIG,
-        providerLeaseId: "pc-abc",
-        leaseMetadata: leaseMetadata(),
-      }),
-    ).resolves.toBeUndefined();
-    expect(deleteSecret).toHaveBeenCalled();
-  });
-
-  it("reconstructs the Secret name from the providerLeaseId when leaseMetadata omits it", async () => {
-    const deleteCr = vi.fn().mockResolvedValue({});
-    const deleteSecret = vi.fn().mockResolvedValue({});
-    h.clients = {
-      custom: { deleteNamespacedCustomObject: deleteCr },
-      core: { deleteNamespacedSecret: deleteSecret },
-    };
-
-    await plugin.definition.onEnvironmentReleaseLease!({
-      driverKey: "kubernetes",
-      companyId: "acme",
-      environmentId: "env-1",
-      config: CONFIG,
-      providerLeaseId: "pc-xyz",
-      leaseMetadata: { namespace: "paperclip-acme", backend: "sandbox-cr" },
-    });
-
-    expect(deleteSecret).toHaveBeenCalledWith({
-      namespace: "paperclip-acme",
-      name: "pc-xyz-env",
-    });
   });
 });

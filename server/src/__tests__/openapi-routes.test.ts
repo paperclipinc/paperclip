@@ -28,6 +28,7 @@ const apiPrefixes: Record<string, string> = {
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
+  "email.ts": "/api",
   "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -85,17 +86,7 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set([
-  // Cloud upstream routes are fork-specific and not in the public OpenAPI document.
-  "cloud-upstreams.ts",
-]);
-
-const explicitOpenApiOperationCoverageExclusions = new Set([
-  // This endpoint is authenticated by the provider signature rather than by a
-  // Paperclip board/agent credential. It intentionally stays out of the public
-  // board API document, while this exact exclusion keeps route coverage honest.
-  "POST /api/chat-webhooks/{publicId}/{provider}",
-]);
+const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a
@@ -139,7 +130,7 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (
-    file === "chat-channels.ts" &&
+    (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
     return routePath;
@@ -233,6 +224,26 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents personal board-only announcements and private responses", () => {
+    const { spec } = loadSpecRoutes();
+    const current = spec.paths["/api/announcements/current"].get;
+    const image = spec.paths["/api/announcements/{id}/image"].get;
+    const animation = spec.paths["/api/announcements/{id}/animation"].get;
+    const dismiss = spec.paths["/api/announcements/{id}/dismiss"].post;
+    for (const operation of [current, image, animation, dismiss]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      const success = operation.responses["200"] ?? operation.responses["204"];
+      expect(success.headers["Cache-Control"].schema.enum).toEqual(["private, no-store"]);
+    }
+    expect(current.responses["200"].content["application/json"].schema.nullable).toBe(true);
+    expect(Object.keys(image.responses["200"].content)).toEqual(["image/png", "image/jpeg", "image/webp"]);
+    expect(dismiss.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["companyId"], additionalProperties: false,
+    });
+    expect(dismiss.description).toContain("viewers may dismiss their own");
+  });
+
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const wake = res.body.paths["/api/agents/{id}/wakeup"].post;
@@ -265,12 +276,10 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
-    expect(
-      res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security,
-    ).toEqual([]);
-    expect(
-      res.body.paths["/api/mcp/gateways/{gatewayPublicId}"],
-    ).toBeUndefined();
+    expect(res.body.paths["/api/mcp/project-tools"].post.security).toEqual([{ AgentRunAuth: [] }]);
+    expect(res.body.paths["/api/mcp/project-tools"].post["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, taskBound: true });
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].get.parameters).toContainEqual({
       name: "scope",
       in: "query",
@@ -398,6 +407,7 @@ describe("openapi routes", () => {
       ["post", "/api/chat-endpoints/{endpointId}/setup"],
       ["post", "/api/chat-endpoints/{endpointId}/setup-secret"],
       ["post", "/api/chat-endpoints/{endpointId}/test"],
+      ["post", "/api/chat-endpoints/{endpointId}/photon/inspect"],
       ["get", "/api/chat-endpoints/{endpointId}/resources"],
       ["put", "/api/chat-endpoints/{endpointId}/resources"],
       ["get", "/api/chat-endpoints/{endpointId}/principals"],
@@ -462,7 +472,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "discord", "microsoft-teams", "telegram"],
+            enum: ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -522,6 +532,21 @@ describe("openapi routes", () => {
     );
     expect(setup.responses["409"]).toBeDefined();
     expect(setup.responses["422"]).toBeDefined();
+    expect(setup.responses["502"]).toBeDefined();
+    expect(setup.responses["503"]).toBeDefined();
+
+    const photon = spec.paths["/api/chat-endpoints/{endpointId}/photon/inspect"].post;
+    expect(photon.requestBody.content["application/json"].schema.required).toEqual([
+      "projectId", "projectSecret",
+    ]);
+    const photonResponse = photon.responses["200"].content["application/json"].schema;
+    expect(photonResponse.properties.allocation.enum).toEqual(["dedicated", "shared"]);
+    expect(photonResponse.properties.lines.items.additionalProperties).toBe(false);
+    expect(JSON.stringify(photonResponse)).not.toMatch(/projectSecret|token/);
+    expect(photon.responses["422"]).toBeDefined();
+    expect(photon.responses["429"]).toBeDefined();
+    expect(photon.responses["502"]).toBeDefined();
+    expect(photon.responses["503"]).toBeDefined();
 
     const setupSecret =
       spec.paths["/api/chat-endpoints/{endpointId}/setup-secret"].post;

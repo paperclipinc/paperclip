@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { BudgetPolicySummary } from "@paperclipai/shared";
 import { AlertTriangle, PauseCircle, ShieldAlert, Wallet } from "lucide-react";
-import { currencyAmountNoun, getDisplayCurrency } from "../lib/display-currency";
 import { cn, formatCents } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +10,7 @@ function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
 }
 
-function parseAmountInput(value: string) {
+function parseDollarInput(value: string) {
   const normalized = value.trim();
   if (normalized.length === 0) return 0;
   const parsed = Number(normalized);
@@ -48,7 +47,7 @@ export function BudgetPolicyCard({
     setDraftBudget(centsInputValue(summary.amount));
   }, [summary.amount]);
 
-  const parsedDraft = parseAmountInput(draftBudget);
+  const parsedDraft = parseDollarInput(draftBudget);
   const canSave = typeof parsedDraft === "number" && parsedDraft !== summary.amount && Boolean(onSave);
   const progress = summary.amount > 0 ? Math.min(100, summary.utilizationPercent) : 0;
   const StatusIcon = summary.status === "hard_stop" ? ShieldAlert : summary.status === "warning" ? AlertTriangle : Wallet;
@@ -136,7 +135,7 @@ export function BudgetPolicyCard({
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
       <div className="min-w-0 flex-1">
         <label className="text-(length:--text-micro) uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Budget ({getDisplayCurrency()})
+          Budget (USD)
         </label>
         <Input
           value={draftBudget}
@@ -188,7 +187,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative {currencyAmountNoun()}.</p>
+          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
         ) : null}
       </div>
     );
@@ -217,7 +216,7 @@ export function BudgetPolicyCard({
         {pausedPane}
         {saveSection}
         {parsedDraft === null ? (
-          <p className="text-xs text-destructive">Enter a valid non-negative {currencyAmountNoun()}.</p>
+          <p className="text-xs text-destructive">Enter a valid non-negative dollar amount.</p>
         ) : null}
       </CardContent>
     </Card>

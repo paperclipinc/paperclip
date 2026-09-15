@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
-import { findCompanyByUrlSegment } from "@/lib/company-routes";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
@@ -23,7 +22,6 @@ import { AnnouncementWell } from "./AnnouncementWell";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
-import { CloudTrialBanner } from "./CloudTrialBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { SidebarShell } from "./SidebarShell";
@@ -139,10 +137,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const matchedCompany = useMemo(
-    () => findCompanyByUrlSegment(companies, companyPrefix),
-    [companies, companyPrefix],
-  );
+  const matchedCompany = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
+  }, [companies, companyPrefix]);
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
@@ -294,7 +293,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
       return;
     }
 
@@ -335,7 +334,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     matchedCompany,
     location.pathname,
     location.search,
-    location.hash,
     navigate,
     pushToast,
     selectionSource,
@@ -635,7 +633,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <CloudTrialBanner />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button

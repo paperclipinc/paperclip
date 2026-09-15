@@ -1,6 +1,6 @@
 {
-  "id": "d1a3e2cb-5f5f-4bb2-98ec-8475b445d6e6",
-  "prevId": "02bc1b0f-2d2b-4c3e-9320-b085bade9f09",
+  "id": "94dca593-bcb1-4e7e-8311-42e788a539c2",
+  "prevId": "5f80a2a4-dcf6-48a0-be4b-f32dbb243e28",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -266,6 +266,30 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "ai_connection": {
+          "name": "ai_connection",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_grant_id": {
+          "name": "connection_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_method": {
+          "name": "connection_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "adapter_type": {
           "name": "adapter_type",
@@ -2245,6 +2269,288 @@
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ai_connection_defaults": {
+      "name": "ai_connection_defaults",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ai_connection_defaults_owner_method_uq": {
+          "name": "ai_connection_defaults_owner_method_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "method",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ai_connection_defaults_company_id_companies_id_fk": {
+          "name": "ai_connection_defaults_company_id_companies_id_fk",
+          "tableFrom": "ai_connection_defaults",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ai_connection_defaults_company_grant_fk": {
+          "name": "ai_connection_defaults_company_grant_fk",
+          "tableFrom": "ai_connection_defaults",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "company_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ai_connection_defaults_provider_check": {
+          "name": "ai_connection_defaults_provider_check",
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
+        },
+        "ai_connection_defaults_method_check": {
+          "name": "ai_connection_defaults_method_check",
+          "value": "\"ai_connection_defaults\".\"method\" in ('subscription','api_key')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ai_provider_defaults": {
+      "name": "ai_provider_defaults",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ai_provider_defaults_owner_provider_uq": {
+          "name": "ai_provider_defaults_owner_provider_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ai_provider_defaults_company_id_companies_id_fk": {
+          "name": "ai_provider_defaults_company_id_companies_id_fk",
+          "tableFrom": "ai_provider_defaults",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ai_provider_defaults_company_grant_fk": {
+          "name": "ai_provider_defaults_company_grant_fk",
+          "tableFrom": "ai_provider_defaults",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "company_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ai_provider_defaults_provider_check": {
+          "name": "ai_provider_defaults_provider_check",
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.announcement_dismissals": {
+      "name": "announcement_dismissals",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "announcement_id": {
+          "name": "announcement_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dismissed_at": {
+          "name": "dismissed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "announcement_dismissals_user_id_announcement_id_pk": {
+          "name": "announcement_dismissals_user_id_announcement_id_pk",
+          "columns": [
+            "user_id",
+            "announcement_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -42171,15 +42477,15 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
-          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel')"
+          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel', 'ai')"
         },
         "tool_connections_channel_transport_check": {
           "name": "tool_connections_channel_transport_check",
-          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n    )"
+          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" not in ('chat_sdk', 'runtime_auth'))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'ai' and \"tool_connections\".\"transport\" = 'runtime_auth')\n    )"
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",

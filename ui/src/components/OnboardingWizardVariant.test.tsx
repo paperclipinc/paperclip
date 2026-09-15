@@ -5,12 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingWizardVariant } from "./OnboardingWizardVariant";
 
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("./OnboardingWizard", () => ({
@@ -43,10 +43,10 @@ describe("OnboardingWizardVariant (PAP-138)", () => {
   });
 
   it("renders the capsule wizard without reading the chat flag", () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({});
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
     renderVariant();
 
     expect(container.querySelector('[data-testid="wizard-capsule"]')).not.toBeNull();
-    expect(mockAccessApi.getCurrentBoardAccess).not.toHaveBeenCalled();
+    expect(mockInstanceSettingsApi.getExperimental).not.toHaveBeenCalled();
   });
 });

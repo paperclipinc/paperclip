@@ -1,9 +1,10 @@
+import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
-import { useFeatures } from "../../hooks/useFeatures";
+import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
@@ -163,7 +164,10 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     return onAdapterChange(() => setParserTick((t) => t + 1));
   }, []);
-  const { data: generalSettings } = useFeatures();
+  const { data: generalSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  });
 
   const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(
@@ -382,7 +386,7 @@ export function useLiveRunTranscripts({
       controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
+  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
 
   useEffect(() => {
     if (!visible || !enableRealtimeUpdates) return;

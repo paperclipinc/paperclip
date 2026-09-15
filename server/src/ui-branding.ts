@@ -151,39 +151,6 @@ export function isWorktreeUiBrandingEnabled(env: NodeJS.ProcessEnv = process.env
   return isTruthyEnvValue(env.PAPERCLIP_IN_WORKTREE);
 }
 
-// Public URL path the deployer serves the brand directory from. Kept in sync
-// with the static route registered in app.ts.
-export const BRAND_DIR_PUBLIC_PATH = "/branding";
-const BRAND_STYLESHEET_HREF = `${BRAND_DIR_PUBLIC_PATH}/brand.css`;
-
-/**
- * Returns the configured brand directory, or null when unset. When set, the
- * deployer (e.g. the operator) has mounted a directory of brand assets — most
- * importantly brand.css — that the server exposes under /branding.
- */
-export function getBrandDir(env: NodeJS.ProcessEnv = process.env): string | null {
-  return nonEmpty(env.PAPERCLIP_BRAND_DIR);
-}
-
-/**
- * Emits a <link> to the runtime brand stylesheet when PAPERCLIP_BRAND_DIR is set.
- * The link is injected AFTER the bundled stylesheet (see applyUiBranding) so the
- * brand overrides win the cascade. Returns "" when no brand dir is configured,
- * which keeps the default build byte-for-byte unbranded.
- */
-export function renderBrandStylesheetLink(env: NodeJS.ProcessEnv = process.env): string {
-  if (!getBrandDir(env)) return "";
-  return `<link rel="stylesheet" href="${BRAND_STYLESHEET_HREF}" />`;
-}
-
-function injectBeforeHeadClose(html: string, snippet: string): string {
-  if (!snippet) return html;
-  const idx = html.toLowerCase().lastIndexOf("</head>");
-  if (idx === -1) return html;
-  const indented = `    ${snippet}\n  `;
-  return `${html.slice(0, idx)}${indented}${html.slice(idx)}`;
-}
-
 export function getWorktreeUiBranding(env: NodeJS.ProcessEnv = process.env): WorktreeUiBranding {
   if (!isWorktreeUiBrandingEnabled(env)) {
     return {
@@ -220,46 +187,19 @@ export function renderFaviconLinks(branding: WorktreeUiBranding): string {
   ].join("\n");
 }
 
-/**
- * The colour theme a fresh visitor (no stored preference) should see. Reads
- * PAPERCLIP_DEFAULT_THEME ("light" | "dark"); falls back to "dark" (the product's
- * built-in default) so the unconfigured build is unchanged. Deployers set "light"
- * to make a first visit render in light mode. The pre-React inline script in
- * ui/index.html and the ThemeProvider both read the injected meta tag.
- */
-export function resolveDefaultTheme(env: NodeJS.ProcessEnv = process.env): "light" | "dark" {
-  return nonEmpty(env.PAPERCLIP_DEFAULT_THEME)?.toLowerCase() === "light" ? "light" : "dark";
-}
+export function renderRuntimeBrandingMeta(branding: WorktreeUiBranding): string {
+  if (!branding.enabled || !branding.name || !branding.color || !branding.textColor) return "";
 
-const DEFAULT_DISPLAY_CURRENCY = "USD";
-
-export function resolveDisplayCurrency(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = nonEmpty(env.PAPERCLIP_DISPLAY_CURRENCY)?.toUpperCase();
-  return raw && /^[A-Z]{3}$/.test(raw) ? raw : DEFAULT_DISPLAY_CURRENCY;
-}
-
-export function renderRuntimeBrandingMeta(
-  branding: WorktreeUiBranding,
-  defaultTheme: "light" | "dark" = "dark",
-  displayCurrency: string = DEFAULT_DISPLAY_CURRENCY,
-): string {
-  const parts: string[] = [];
-  if (defaultTheme !== "dark") {
-    parts.push(`<meta name="paperclip-default-theme" content="${defaultTheme}" />`);
+  const tags = [
+    '<meta name="paperclip-worktree-enabled" content="true" />',
+    `<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`,
+    `<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`,
+    `<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`,
+  ];
+  if (branding.instanceId) {
+    tags.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
   }
-  if (displayCurrency !== DEFAULT_DISPLAY_CURRENCY) {
-    parts.push(`<meta name="paperclip-display-currency" content="${escapeHtmlAttribute(displayCurrency)}" />`);
-  }
-  if (branding.enabled && branding.name && branding.color && branding.textColor) {
-    parts.push('<meta name="paperclip-worktree-enabled" content="true" />');
-    parts.push(`<meta name="paperclip-worktree-name" content="${escapeHtmlAttribute(branding.name)}" />`);
-    parts.push(`<meta name="paperclip-worktree-color" content="${escapeHtmlAttribute(branding.color)}" />`);
-    parts.push(`<meta name="paperclip-worktree-text-color" content="${escapeHtmlAttribute(branding.textColor)}" />`);
-    if (branding.instanceId) {
-      parts.push(`<meta name="paperclip-instance-id" content="${escapeHtmlAttribute(branding.instanceId)}" />`);
-    }
-  }
-  return parts.join("\n");
+  return tags.join("\n");
 }
 
 function replaceMarkedBlock(html: string, startMarker: string, endMarker: string, content: string): string {
@@ -281,14 +221,10 @@ function replaceMarkedBlock(html: string, startMarker: string, endMarker: string
 export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.env): string {
   const branding = getWorktreeUiBranding(env);
   const withFavicon = replaceMarkedBlock(html, FAVICON_BLOCK_START, FAVICON_BLOCK_END, renderFaviconLinks(branding));
-  const withRuntimeMeta = replaceMarkedBlock(
+  return replaceMarkedBlock(
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,
     RUNTIME_BRANDING_BLOCK_END,
-    renderRuntimeBrandingMeta(branding, resolveDefaultTheme(env), resolveDisplayCurrency(env)),
+    renderRuntimeBrandingMeta(branding),
   );
-  // Inject the runtime brand stylesheet last so it lands after the bundled
-  // stylesheet (Vite emits that at the end of <head>) and its CSS variable
-  // overrides win the cascade. No-op when PAPERCLIP_BRAND_DIR is unset.
-  return injectBeforeHeadClose(withRuntimeMeta, renderBrandStylesheetLink(env));
 }

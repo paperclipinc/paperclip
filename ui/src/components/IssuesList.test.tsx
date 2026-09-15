@@ -13,7 +13,6 @@ import {
   issueAgeSeparatorLabel,
 } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const companyState = vi.hoisted(() => ({
@@ -39,7 +38,6 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   listMembers: vi.fn(),
   listUserDirectory: vi.fn(),
-  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
@@ -50,6 +48,7 @@ const mockExecutionWorkspacesApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+
 const mockExternalObjectsApi = vi.hoisted(() => ({
   getIssueSummaries: vi.fn(),
 }));
@@ -352,9 +351,7 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockReset();
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
-    mockAccessApi.getCurrentBoardAccess.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true });
     mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
@@ -363,9 +360,11 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableExternalObjects: false } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
+      enableStreamlinedUi: true,
+    });
     setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2400 });
     mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {} });
     localStorage.clear();
@@ -421,9 +420,10 @@ describe("IssuesList", () => {
   });
 
   it("forwards external-object summaries into issue rows", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableExternalObjects: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
     mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
       summaries: {
         "issue-1": {
@@ -549,7 +549,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(mockAccessApi.getCurrentBoardAccess).toHaveBeenCalled();
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
       expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
     });
     expect(mockExternalObjectsApi.getIssueSummaries).not.toHaveBeenCalled();
@@ -560,9 +560,10 @@ describe("IssuesList", () => {
   });
 
   it("filters issue rows by external-object status summaries", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: false, enableExternalObjects: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
     const failedIssue = createIssue({ id: "issue-failed", identifier: "PAP-10", title: "Failed external object" });
     const freshIssue = createIssue({ id: "issue-fresh", identifier: "PAP-11", title: "Fresh external object" });
     const noObjectIssue = createIssue({ id: "issue-none", identifier: "PAP-12", title: "No external object" });
@@ -731,9 +732,7 @@ describe("IssuesList", () => {
       "paperclip:test-issues:company-1",
       JSON.stringify({ groupBy: "workspace", sortField: "updated", sortDir: "desc" }),
     );
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "execution-workspace-1",
@@ -1860,9 +1859,7 @@ describe("IssuesList", () => {
 
   it("filters the list to a single workspace when a workspace name is clicked", async () => {
     localStorage.setItem("paperclip:test-issues:company-1:issue-columns", JSON.stringify(["id", "workspace"]));
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-alpha",
@@ -2102,9 +2099,7 @@ describe("IssuesList", () => {
   });
 
   it("uses workspace summaries instead of the full workspace list on the issues page", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableIsolatedWorkspaces: true } }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
 
     const { root } = renderWithQueryClient(

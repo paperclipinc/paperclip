@@ -30,7 +30,6 @@ import {
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { useFeatures } from "@/hooks/useFeatures";
 import { secretsApi } from "@/api/secrets";
 import {
   AlertDialog,
@@ -1330,9 +1329,17 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     setBreadcrumbs(crumbs);
   }, [isEnvironmentFormPage, mode, setBreadcrumbs]);
 
-  const { data: instanceSettings } = useFeatures();
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    retry: false,
+  });
 
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
 
@@ -1508,7 +1515,6 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       await instanceSettingsApi.update({ defaultEnvironmentId }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.settings });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       pushToast({
         title: "Default environment updated",
         body: "Agent inheritance now follows the updated instance default.",

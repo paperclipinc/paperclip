@@ -8,7 +8,6 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipa
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
-import { resolveCloudTenantWsAuth } from "../middleware/auth.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
@@ -133,16 +132,6 @@ async function authorizeUpgrade(
     resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ): Promise<UpgradeContext | null> {
-  // Cloud-tenant: the cloud gateway proxies WS upgrades with x-paperclip-cloud-*
-  // headers (and no product session). Trust them exactly like the HTTP actor
-  // middleware (validated server token + company derived from the stack id).
-  const cloud = resolveCloudTenantWsAuth(req.headers);
-  if (cloud) {
-    return cloud.companyId === companyId
-      ? { companyId, actorType: "board", actorId: cloud.userId }
-      : null;
-  }
-
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);

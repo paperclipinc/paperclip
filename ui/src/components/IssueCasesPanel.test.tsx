@@ -6,7 +6,6 @@ import type { AnchorHTMLAttributes } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueCaseLink } from "@/api/cases";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { IssueCasesPanel } from "./IssueCasesPanel";
 
 function act(callback: () => void) {
@@ -14,13 +13,13 @@ function act(callback: () => void) {
 }
 
 const mockCasesApi = vi.hoisted(() => ({ listForIssue: vi.fn() }));
-const mockAccessApi = vi.hoisted(() => ({ getCurrentBoardAccess: vi.fn() }));
+const mockInstanceApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 
 vi.mock("@/api/cases", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/cases")>()),
   casesApi: mockCasesApi,
 }));
-vi.mock("@/api/access", () => ({ accessApi: mockAccessApi }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceApi }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
@@ -54,7 +53,7 @@ describe("IssueCasesPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockCasesApi.listForIssue.mockReset();
-    mockAccessApi.getCurrentBoardAccess.mockReset();
+    mockInstanceApi.getExperimental.mockReset();
   });
   afterEach(() => container.remove());
 
@@ -73,9 +72,7 @@ describe("IssueCasesPanel", () => {
   }
 
   it("renders nothing when the Cases flag is off", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableCases: false } }),
-    );
+    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: false });
     mockCasesApi.listForIssue.mockResolvedValue(links);
     const root = await render();
     expect(container.textContent).toBe("");
@@ -84,9 +81,7 @@ describe("IssueCasesPanel", () => {
   });
 
   it("renders linked cases with role + status when enabled", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableCases: true } }),
-    );
+    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: true });
     mockCasesApi.listForIssue.mockResolvedValue(links);
     const root = await render();
     const text = container.textContent ?? "";
@@ -100,9 +95,7 @@ describe("IssueCasesPanel", () => {
   });
 
   it("renders nothing when enabled but no cases are linked", async () => {
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { enableCases: true } }),
-    );
+    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: true });
     mockCasesApi.listForIssue.mockResolvedValue([]);
     const root = await render();
     expect(container.textContent).toBe("");

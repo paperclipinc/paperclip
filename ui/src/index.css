@@ -2983,3 +2983,68 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .task-chat-loading-shell .animate-pulse {
   animation: none;
 }
+
+/* Task recovery panel uses the shared spacing, radius, and type scales. */
+.execution-blocker-notice {
+  gap: calc(var(--spacing) * 2);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
+/* The runner keeps one fixed-height activity row between commentary updates. */
+@keyframes runner-activity-roll-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes runner-activity-roll-out {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-100%); opacity: 0; }
+}
+.runner-activity-roll-in { animation: runner-activity-roll-in var(--motion-line-scroll) var(--motion-ease-standard) both; }
+.runner-activity-roll-out { animation: runner-activity-roll-out var(--motion-line-scroll) var(--motion-ease-standard) both; }
+@media (prefers-reduced-motion: reduce) {
+  .runner-activity-roll-in { animation: none; }
+  .runner-activity-roll-out { display: none; }
+}
+
+/* Keep entity-picker search controls visible when a narrow viewport opens its
+   software keyboard. The fixed sheet also avoids scale motion during mobile
+   viewport resizing. */
+@media (max-width: 40rem) {
+  [data-mobile-entity-picker] {
+    position: fixed !important;
+    inset: auto calc(var(--spacing) * 4) max(calc(var(--spacing) * 4), env(safe-area-inset-bottom)) !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - calc(var(--spacing) * 8)) !important;
+    transform: none !important;
+    transform-origin: bottom center !important;
+    animation: none !important;
+  }
+
+  [data-mobile-entity-picker] [data-slot="command-list"] {
+    max-height: min(var(--sz-300px), calc(100dvh - calc(var(--spacing) * 24))) !important;
+  }
+}
+:root {
+  --announcement-width: 22rem;
+  --announcement-available-width: calc(100vw - var(--spacing) * 6);
+  --announcement-image-height: 8.5rem;
+  --announcement-image-mobile-height: 6rem;
+  --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
+  --announcement-max-height: calc(100dvh - var(--spacing) * 6);
+  --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
+}
+
+.announcement-well {
+  animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
+}
+@keyframes announcement-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .announcement-well { animation: none; }
+}

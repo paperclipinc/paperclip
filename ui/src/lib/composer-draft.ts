@@ -46,9 +46,9 @@ export function saveDraft(draftKey: string, value: string, attemptId?: string) {
 export function clearDraft(draftKey: string, attemptId?: string) {
   try {
     if (!mayWriteDraft(draftKey, attemptId)) return;
-    localStorage.removeItem(draftKey);
-    localStorage.removeItem(`${draftKey}:attachments:v1`);
-    localStorage.removeItem(`${draftKey}:submission:v1`);
+    draftStorage(draftKey).removeItem(draftKey);
+    draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
+    draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
   } catch {
     // Ignore browser storage failures.
   }
@@ -57,24 +57,32 @@ export function clearDraft(draftKey: string, attemptId?: string) {
 export interface ComposerDraftSubmission {
   attemptId: string;
   reviewed: boolean;
+  /** Start of text typed after the submitted body in a restored uncertain draft. */
+  nextDraftOffset?: number;
+  submittedAttachmentIds?: string[];
 }
 
-/** Local uncertainty fence, not a server idempotency key or proof of delivery.
- * Any retained in-flight intent is uncertain after a reload. */
+/** Retained client request ID. It is not delivery proof until a matching
+ * server receipt is observed; use the same ID for submission and reconciliation. */
 export function loadDraftSubmission(
   draftKey: string,
 ): ComposerDraftSubmission | null {
   try {
-    const raw = localStorage.getItem(`${draftKey}:submission:v1`);
-    if (!raw || raw.length > 2_048) return null;
+    const raw = draftStorage(draftKey).getItem(`${draftKey}:submission:v1`);
+    if (!raw || raw.length > 16_384) return null;
     const record = JSON.parse(raw);
     return record?.version === 1 &&
       record.draftKey === draftKey &&
-      Object.keys(record).length === 4 &&
+      Object.keys(record).every((key) => ["version", "draftKey", "attemptId", "reviewed", "nextDraftOffset", "submittedAttachmentIds"].includes(key)) &&
       typeof record.attemptId === "string" &&
       /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(record.attemptId) &&
-      typeof record.reviewed === "boolean"
-      ? { attemptId: record.attemptId, reviewed: record.reviewed }
+      typeof record.reviewed === "boolean" &&
+      (record.nextDraftOffset === undefined || (Number.isSafeInteger(record.nextDraftOffset) && record.nextDraftOffset >= 0)) &&
+      (record.submittedAttachmentIds === undefined || (Array.isArray(record.submittedAttachmentIds) && record.submittedAttachmentIds.length <= 256 && record.submittedAttachmentIds.every((id: unknown) => typeof id === "string" && id.length <= 128)))
+      ? { attemptId: record.attemptId, reviewed: record.reviewed,
+          ...(record.nextDraftOffset !== undefined ? { nextDraftOffset: record.nextDraftOffset } : {}),
+          ...(record.submittedAttachmentIds !== undefined ? { submittedAttachmentIds: record.submittedAttachmentIds } : {}),
+        }
       : null;
   } catch {
     return null;
@@ -89,7 +97,7 @@ export function saveDraftSubmission(
     // An old completion/review must not replace a different retained intent.
     // This is a local guard, not cross-tab atomicity or server idempotency.
     if (!mayWriteDraft(draftKey, submission.attemptId)) return;
-    localStorage.setItem(
+    draftStorage(draftKey).setItem(
       `${draftKey}:submission:v1`,
       JSON.stringify({ version: 1, draftKey, ...submission }),
     );
@@ -101,10 +109,24 @@ export function saveDraftSubmission(
 export function clearDraftSubmission(draftKey: string, attemptId: string) {
   try {
     if (loadDraftSubmission(draftKey)?.attemptId === attemptId)
-      localStorage.removeItem(`${draftKey}:submission:v1`);
+      draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
   } catch {
     /* Disabled browser storage is supported in memory. */
   }
+}
+
+/** A late response can settle only its own retained intent, never a newer draft. */
+export function settleDraftSubmission(draftKey: string, attemptId: string, nextDraft?: string): boolean {
+  const submission = loadDraftSubmission(draftKey);
+  if (submission?.attemptId !== attemptId) return false;
+  nextDraft ??= submission.nextDraftOffset === undefined
+    ? "" : loadDraft(draftKey).slice(submission.nextDraftOffset);
+  const nextAttachments = submission.submittedAttachmentIds === undefined ? []
+    : loadDraftAttachments(draftKey).filter(item => !submission.submittedAttachmentIds!.includes(item.attachmentId));
+  clearDraft(draftKey, attemptId);
+  if (nextDraft) saveDraft(draftKey, nextDraft);
+  if (nextAttachments.length) saveDraftAttachments(draftKey, nextAttachments);
+  return true;
 }
 
 export interface ComposerDraftAttachment {
@@ -165,7 +187,7 @@ export function loadDraftAttachments(
   draftKey: string,
 ): ComposerDraftAttachment[] {
   try {
-    const raw = localStorage.getItem(`${draftKey}:attachments:v1`);
+    const raw = draftStorage(draftKey).getItem(`${draftKey}:attachments:v1`);
     if (!raw || raw.length > 32_768) return [];
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
@@ -178,25 +200,25 @@ export function loadDraftAttachments(
   }
 }
 
-export function saveDraftAttachments(draftKey: string, attachments: unknown) {
+export function saveDraftAttachments(draftKey: string, attachments: unknown, attemptId?: string) {
   try {
-    // In-flight/unknown receipts were saved before the intent. Generic effects
-    // (including a stale composer's cleanup) must not rewrite that snapshot.
-    if (!mayWriteDraft(draftKey)) return;
+    // Only the owning pending request may persist newly uploaded receipts.
+    // Generic effects and stale composer cleanups must not rewrite its snapshot.
+    if (!mayWriteDraft(draftKey, attemptId)) return;
     const selected = draftAttachments(attachments);
     if (selected.length)
-      localStorage.setItem(
+      draftStorage(draftKey).setItem(
         `${draftKey}:attachments:v1`,
         JSON.stringify({ version: 1, draftKey, attachments: selected }),
       );
-    else localStorage.removeItem(`${draftKey}:attachments:v1`);
+    else draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
   } catch {
     /* Disabled/full browser storage must not break the composer. */
   }
 }
 export function loadStructuredDraft<T>(draftKey: string, fallback: T): T {
   try {
-    const value = localStorage.getItem(draftKey);
+    const value = draftStorage(draftKey).getItem(draftKey);
     return value ? (JSON.parse(value) as T) : fallback;
   } catch {
     return fallback;

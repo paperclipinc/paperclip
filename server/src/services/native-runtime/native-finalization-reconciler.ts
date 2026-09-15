@@ -18,6 +18,8 @@ import {
 } from "@paperclipai/db";
 import {
   finalizeNativeRun,
+  pendingNativeGovernance,
+  resolveNativeFinalizerStatus,
   recordNativeFinalizationFailure,
   repairCommittedNativeReviewResponse,
   repairCommittedNativeChatResponse,

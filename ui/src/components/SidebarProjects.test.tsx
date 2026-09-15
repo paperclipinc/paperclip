@@ -8,7 +8,6 @@ import type { Project, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProjects } from "./SidebarProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -22,8 +21,8 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   listMine: vi.fn(),
   updateProject: vi.fn(),
 }));
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
 }));
 
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
@@ -93,12 +92,12 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
-vi.mock("../api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
-vi.mock("@/api/access", () => ({
-  accessApi: mockAccessApi,
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -292,9 +291,9 @@ describe("SidebarProjects", () => {
       session: { id: "session-1", userId: "user-1" },
       user: { id: "user-1" },
     });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(buildCurrentBoardAccess({ features: {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-    } }));
+    });
     memberships = {
       projectMemberships: {},
       agentMemberships: {},

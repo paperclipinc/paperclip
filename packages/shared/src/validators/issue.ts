@@ -855,6 +855,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
@@ -1000,6 +1001,7 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
+    sourceChannel: z.literal("imessage-photon").optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()
@@ -1073,6 +1075,7 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    purpose: z.literal("ai").optional(),
     version: z.literal(1),
     serviceSlug: z.string().trim().min(1).max(120),
     serviceName: z.string().trim().min(1).max(160),

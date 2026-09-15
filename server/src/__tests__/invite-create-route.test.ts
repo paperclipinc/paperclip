@@ -23,17 +23,6 @@ function registerModuleMocks() {
     deduplicateAgentName: vi.fn(),
     logActivity: (...args: unknown[]) => logActivityMock(...args),
     notifyHireApproved: vi.fn(),
-    instanceSettingsService: () => ({
-      getVisibility: vi.fn().mockResolvedValue({
-        companySurfaces: [
-          "company.general",
-          "company.members",
-          "company.invites",
-          "company.secrets",
-          "company.plugins",
-        ],
-      }),
-    }),
   }));
 }
 

@@ -137,6 +137,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
@@ -383,6 +384,19 @@ export const issuesApi = {
       `/issues/${id}/queued-comments/order`,
       data,
     ),
+  interruptQueuedComments: (
+    id: string,
+    data: { queueId: string; targetRunId: string | null; revision: string },
+  ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
+  interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
+    const queue = await issuesApi.getQueuedComments(id);
+    if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
+      throw new Error("The queued messages changed. Refresh and try again.");
+    }
+    return issuesApi.interruptQueuedComments(id, {
+      queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,
+    });
+  },
   steerQueuedComment: (
     id: string,
     commentId: string,
@@ -500,6 +514,7 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {

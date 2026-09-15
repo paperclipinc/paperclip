@@ -1,3 +1,4 @@
+import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -112,6 +113,7 @@ function readNonEmptyString(value: unknown): string | null {
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
+  if (retryReason === "ai_connection_busy") return "ai_connection_wait";
   if (retryReason === "native_safe_replacement") return "native_safe_replacement";
   return "other";
 }
@@ -343,6 +345,21 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    if (input.conversationContinuation) {
+      const [interactions, linkedApprovals] = await Promise.all([
+        dbOrTx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.companyId, input.companyId),
+          eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.status, "pending"),
+        )).limit(1),
+        dbOrTx.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
+          eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),
+        )).where(and(
+          eq(issueApprovals.companyId, input.companyId), eq(issueApprovals.issueId, issueId),
+          inArray(approvals.status, ["pending", "revision_requested"]),
+        )).limit(1),
+      ]);
+      facts.pendingResponse = interactions.length > 0 ? "interaction" : linkedApprovals.length > 0 ? "approval" : null;
+    }
     facts.reviewParticipant = buildReviewParticipantFacts({
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
@@ -891,9 +908,9 @@ export function createPostgresRunDispatchAdapter(
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (!issueId) return { issueId: null, decision: { stale: false as const } };
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId);
-    if (recovery) return { issueId, decision: { stale: true as const,
+    if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
+    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    if (recovery) return { issueId, facts: null, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },
     } };

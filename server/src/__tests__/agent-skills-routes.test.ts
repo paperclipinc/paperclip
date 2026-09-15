@@ -180,7 +180,7 @@ function createDb(requireBoardApprovalForNewAgents = false) {
 let agentRoutes: (typeof import("../routes/agents.js"))["agentRoutes"];
 let errorHandler: (typeof import("../middleware/index.js"))["errorHandler"];
 
-async function createApp(db: Record<string, unknown> = createDb()) {
+async function createApp(db: Record<string, unknown> = createDb(), actor?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

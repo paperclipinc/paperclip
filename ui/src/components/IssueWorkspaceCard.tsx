@@ -4,7 +4,7 @@ import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { environmentsApi } from "../api/environments";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -197,7 +197,10 @@ export function IssueWorkspaceCard({
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
 
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
 
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: the workspace path is a host filesystem path,

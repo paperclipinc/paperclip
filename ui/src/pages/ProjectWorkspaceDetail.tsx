@@ -22,7 +22,6 @@ import { useCompany } from "../context/CompanyContext";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 type WorkspaceFormState = {
   name: string;
@@ -266,7 +265,9 @@ export function ProjectWorkspaceDetail() {
   const activeTab = useMemo(() => projectWorkspaceTabFromSearch(location.search), [location.search]);
 
   const routeCompanyId = useMemo(() => {
-    return findCompanyByUrlSegment(companies, companyPrefix)?.id ?? null;
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
   }, [companies, companyPrefix]);
 
   const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;

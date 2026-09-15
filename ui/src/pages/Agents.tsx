@@ -6,12 +6,11 @@ import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
-import { accessApi } from "../api/access";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
-import { useFeatures } from "../hooks/useFeatures";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
@@ -212,17 +211,12 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
 
-  const { data: boardAccess } = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
+    enabled: !!selectedCompanyId,
   });
-  const canUseProviderTrace =
-    boardAccess?.source === "local_implicit" ||
-    boardAccess?.isInstanceAdmin === true;
-
-  const { data: featureSettings } = useFeatures();
-  const builtInAgentsEnabled = featureSettings?.enableBuiltInAgents === true;
+  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
     () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
@@ -257,7 +251,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId && effectiveView === "org",
   });
 
-  const environmentsEnabled = featureSettings?.enableEnvironments === true;
+  const environmentsEnabled = instanceSettings?.experimental.enableEnvironments === true;
 
   const { data: environments } = useQuery({
     queryKey: queryKeys.environments.list(selectedCompanyId!),
@@ -319,23 +313,23 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         resolveAgentEnvironment(
           agent,
           environmentsById,
-          featureSettings?.defaultEnvironmentId ?? null,
+          instanceSettings?.defaultEnvironmentId ?? null,
           environmentCapabilities,
         ),
       );
     }
     return map;
-  }, [agents, environmentsById, environmentCapabilities, featureSettings?.defaultEnvironmentId]);
+  }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    if (selectedCompanyId && requestedTab === "builtin" && featureSettings && !builtInAgentsEnabled) {
+    if (selectedCompanyId && requestedTab === "builtin" && instanceSettings && !builtInAgentsEnabled) {
       navigate("/agents/all", { replace: true });
     }
-  }, [builtInAgentsEnabled, featureSettings, navigate, requestedTab, selectedCompanyId]);
+  }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select an organization to view agents." />;

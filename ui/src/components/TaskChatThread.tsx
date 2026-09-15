@@ -1,3 +1,5 @@
+import type { ActivityEvent } from "@paperclipai/shared";
+import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
@@ -394,6 +396,8 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 }
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  conversationMode?: boolean;
+  creationActivity?: ActivityEvent[];
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
@@ -1554,7 +1558,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "native_runner_timed_out"
             : "native_runner_process_exited");
         const label =
-          code === "native_provider_usage_limit" && source.status === "failed"
+          code === "native_provider_approval_required" && source.status === "failed"
+            ? "Approval required"
+            : code === "native_provider_usage_limit" && source.status === "failed"
             ? "Usage limit reached"
             : source.status === "cancelled"
               ? "Run cancelled"
@@ -1612,16 +1618,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
-        // A queued continuation cancelled after the task was completed or parked
-        // never produced a provider turn. Keep its record in the run log without
-        // presenting it as a completed chat response.
-        if (
-          source.status === "cancelled" &&
-          meta?.errorCode === "issue_not_in_progress"
-        ) {
-          settledRunIds.add(source.id);
-          continue;
-        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;
@@ -1678,9 +1674,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           const code = meta?.errorCode ?? "native_runner_process_exited";
           const retryDetail = meta?.scheduledRetryAt
             ? "Retry scheduled automatically."
-            : "You can retry this message now.";
-          const detail =
-            source.status === "cancelled"
+            : canRetryFailedRun
+              ? "You can retry this message now."
+              : "Your message is preserved.";
+          const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
+          const detail = aiRequest
+            ? aiRequest.status === "pending"
+              ? "The selected AI account is unavailable. Fix it in the connection card."
+              : "This run stopped because its AI account was unavailable."
+            : source.status === "cancelled"
               ? code === "execution_reconciliation_required"
                 ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
                 : "Execution was stopped before returning an answer."
@@ -1697,6 +1699,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               kind: "marker",
               variant: "interrupted",
               label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              runId: source.status === "cancelled" ? undefined : source.id,
               tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
             },
@@ -2808,11 +2811,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     attachments={attachments}
                     header={threadHeaderWithBlockers}
                     renderInteraction={renderInteraction}
-                    renderBrief={
-                      issueBrief
-                        ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                        : undefined
-                    }
+                    renderBrief={renderBrief}
                     renderMessageActions={renderMessageActions}
                     renderQueuedAction={renderQueuedAction}
                     onTryAgainNoLiveExecutionPath={
@@ -2829,28 +2828,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     tryAgainNoLiveExecutionPathPending={
                       tryAgainNoLiveExecutionPathPending
                     }
-                    onRetryFailedRun={
-                      isTerminalIssueStatus(issueStatus) ||
-                      interactions?.some(
-                        (interaction) => interaction.status === "pending",
-                      ) ||
-                      requiresExecutionReconciliation(
-                        props.recoveryAction?.cause,
-                      ) ||
-                      props.scheduledRetry ||
-                      linkedRuns?.some((run) =>
-                        [
-                          "working",
-                          "retry_scheduled",
-                          "reconnecting",
-                          "finishing",
-                          "queued",
-                          "recovery_needed",
-                        ].includes(run.execution?.phase ?? ""),
-                      )
-                        ? undefined
-                        : onRetryFailedRun
-                    }
+                    onRetryFailedRun={retryFailedRunHandler}
                     retryFailedRunId={retryFailedRunId}
                     tail={
                       tailRunId ||
@@ -2911,7 +2889,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                         : (liveRun && liveRun.id === tailRunId
                                             ? liveRun.currentStatusMessage
                                             : null) ||
-                                          "Waiting for transcript..."
+                                          (tailStatus === "failed"
+                                            ? "This run stopped before a response was available. Review the task’s connection or recovery action below."
+                                            : "Waiting for transcript...")
                                     }
                                   />
                                 </>
@@ -2955,7 +2935,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   isMobile
                     ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                     : "bottom-0 z-10",
-                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-2 pb-2 md:px-4",
+                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-1 pb-1 md:px-4 md:pb-2",
                   streamlinedUiEnabled && "md:px-0 md:pb-0",
                   (!streamlinedUiEnabled || isMobile) &&
                     "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
@@ -2970,7 +2950,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="relative isolate flex flex-col"
                   data-testid="task-chat-composer-stack"
                 >
-                  {queuedMessageQueue ? (
+                  {queuedMessageQueue && !composerPause ? (
                     <TaskChatQueuedMessages
                       queue={queuedMessageQueue}
                       onEdit={beginQueuedEdit}
@@ -2988,10 +2968,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         await onSteerQueuedComment(commentId, revision);
                       }}
                       onInterrupt={
-                        onInterruptQueued && queuedMessageQueue.targetRunId
+                        onInterruptQueued && queuedMessageQueue.queueId
                           ? async () => {
                               await onInterruptQueued(
-                                queuedMessageQueue.targetRunId!,
+                                queuedMessageQueue.targetRunId,
                               );
                             }
                           : undefined
@@ -3014,6 +2994,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <div className="relative z-10">
                     <TaskChatComposer
                       onAdd={handleThreadAdd}
+                      confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                        comment.authorUserId === currentUserId && comment.clientRequestId &&
+                        !("clientStatus" in comment && comment.clientStatus)
+                      ).map((comment) => comment.clientRequestId!))}
                       onReviewConversation={onReviewConversation}
                       onStop={liveRun ? onCancelRun : undefined}
                       stopPending={stopPending}
@@ -3026,6 +3010,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onImageUpload={imageUploadHandler}
                       mentions={mentions}
                       enableReassign={enableReassign}
+                      conversationMode={conversationMode}
                       reassignOptions={reassignOptions}
                       agentMap={agentMap}
                       userProfileMap={userProfileMap}
@@ -3037,6 +3022,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       queuedEdit={queuedEdit}
                       onSaveQueuedEdit={saveQueuedEdit}
                       onCancelQueuedEdit={() => setQueuedEdit(null)}
+                      pause={composerPause}
                       takeover={composerTakeover}
                       runnerGoalCapability={runnerGoal.data?.capability ?? null}
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}

@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -13,7 +13,11 @@ import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: experimentalMock } }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: {
+  getExperimental: experimentalMock,
+  get: async () => ({ defaultEnvironmentId: "local-env" }),
+  getGeneral: async () => ({}),
+} }));
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const getConnectionMock = vi.hoisted(() => vi.fn());

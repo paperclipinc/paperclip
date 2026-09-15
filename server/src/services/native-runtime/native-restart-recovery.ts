@@ -13,6 +13,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
 export type NativeControllerIdentity = {
@@ -786,7 +787,7 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
-        await tx
+        const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
             status: "failed",
@@ -798,7 +799,11 @@ export async function claimNativeRestartRecoveries(input: {
             error: reason,
             updatedAt: now,
           })
-          .where(eq(heartbeatRuns.id, row.run.id));
+          .where(eq(heartbeatRuns.id, row.run.id))
+          .returning();
+        if (updatedRun && updatedRun.status !== row.run.status) {
+          terminalRunToReport = updatedRun;
+        }
         await tx
           .update(issues)
           .set({ executionRunId: null, updatedAt: now })

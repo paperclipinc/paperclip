@@ -80,7 +80,7 @@ import {
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
@@ -2110,7 +2110,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryFn: () => issuesApi.listFeedbackVotes(conversationIssueId!),
     enabled: Boolean(conversationIssueId),
   });
-  const { data: instanceGeneralSettings } = useFeatures();
+  const { data: instanceGeneralSettings } = useQuery({
+    queryKey: queryKeys.instance.generalSettings,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+    enabled: Boolean(conversationIssueId),
+    retry: false,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const { orderedProjects } = useProjectOrder({

@@ -10,6 +10,7 @@ export type RetryReasonKind =
   | "max_turn_continuation"
   | "disposition_repair"
   | "native_safe_replacement"
+  | "ai_connection_wait"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -108,6 +109,7 @@ export type ScheduledRetryFacts = {
 
 export type QueuedRunStalenessErrorCode =
   | "execution_reconciliation_required"
+  | "issue_dependencies_blocked"
   | "issue_not_found"
   | "issue_assignee_changed"
   | "issue_terminal_status"
@@ -357,6 +359,12 @@ export function decideScheduledRetryGate(
     };
   }
 
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { allowed: false, issueId: facts.issueId, errorCode: "issue_blocked",
+      reason: "Scheduled replacement suppressed because the task was blocked after recovery",
+      details: { issueId: facts.issueId } };
+  }
+
   if (facts.retryReasonKind === "native_safe_replacement" &&
       [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
     return { allowed: false, issueId: facts.issueId, errorCode: "issue_execution_lock_changed",
@@ -574,6 +582,20 @@ export function decideQueuedRunStaleness(
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
     };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+    return { stale: true, errorCode: "issue_dependencies_blocked",
+      reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
+      details: { issueId: facts.issueId,
+        unresolvedBlockerIssueIds: facts.dependenciesBlocked.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount } };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { stale: true, errorCode: "issue_blocked",
+      reason: "Cancelled because the task was blocked before replacement dispatch",
+      details: { issueId: facts.issueId } };
   }
 
   if (facts.retryReasonKind === "native_safe_replacement" &&

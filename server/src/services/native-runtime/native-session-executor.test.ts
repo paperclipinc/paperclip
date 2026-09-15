@@ -4174,6 +4174,7 @@ function leaseDb(
   runResultJson: Record<string, unknown> = {},
   updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
   runnerProfileJson: Record<string, unknown> = {},
+  runStatus = "running",
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -4197,7 +4198,7 @@ function leaseDb(
             returning: () => Promise<Array<{ runId: string }>>;
           };
           result.returning = () =>
-            Promise.resolve([{ runId: coordinator.runId }]);
+            Promise.resolve([{ runId: coordinator.runId, nextEventSeq: 2 }]);
           return result;
         },
       };
@@ -4211,12 +4212,14 @@ function leaseDb(
           : table === heartbeatRuns
             ? [
                 {
+                  id: boundExecution.binding.runId,
                   agentId: boundExecution.binding.agentId,
                   companyId: boundExecution.binding.companyId,
                   nativeIssueId: boundExecution.binding.issueId,
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
+                  status: runStatus,
                 },
               ]
             : table === issues
@@ -4240,12 +4243,20 @@ function leaseDb(
       return query;
     },
   });
+  const insert = (table: unknown) => ({
+    values: (values: Record<string, unknown>) => {
+      updates.push({ table, values });
+      return { returning: async () => [values] };
+    },
+  });
   const tx = {
+    insert,
     execute: async () => [],
     select,
     update,
   };
   return {
+    insert,
     select,
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
@@ -4361,6 +4372,22 @@ function cancellationDb(options?: {
     tx,
   };
 }
+
+describe("native startup restart detachment", () => {
+  it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = "restart-during-session-open";
+    const detach = vi.fn(async () => undefined);
+    await expect(detachNativeSessionsForRestart([restarting.binding.runId])).resolves.toMatchObject({ inactiveRunIds: [restarting.binding.runId] });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession({ detachControllerForRestart: detach });
+      expect(detach).toHaveBeenCalledOnce();
+      await options.onSession(null);
+      throw new Error("detachment closed the old event stream");
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner" })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+  });
+});
 
 describe("native resumed preparation timing", () => {
   it("keeps answered-question ingress at the run root rather than charging it to preparation", async () => {
@@ -5994,6 +6021,25 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+        dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
+      } });
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "stop-before-completion",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
   it("keeps typed integrity failure permanent even if a wrapper changes its message", () => {
     const failure = new NativeSessionProtocolIntegrityError(
       "semantic_input_digest_mismatch",
@@ -6135,7 +6181,7 @@ describe("native session bounded recovery", () => {
         );
         expect(updateIssue).toHaveBeenCalledWith(
           execution.binding.issueId,
-          { status: "in_review" },
+          { status: "blocked" },
           expect.anything(),
         );
       } finally {
@@ -6189,7 +6235,7 @@ describe("native session bounded recovery", () => {
     const failure = new NativeSessionCleanupQuarantinedError();
     state.execute.mockReset().mockRejectedValueOnce(failure);
     state.upsertRecoveryAction.mockReset().mockResolvedValue({});
-    const updateIssue = vi.fn(async () => null);
+    const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 7 }));
     const service = vi
       .spyOn(issueServiceModule, "issueService")
       .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
@@ -6221,6 +6267,7 @@ describe("native session bounded recovery", () => {
       expect(state.upsertRecoveryAction).toHaveBeenCalledWith(
         expect.objectContaining({
           cause: "native_session_cleanup_quarantined",
+          evidence: expect.objectContaining({ nativeFailureBlock: { runId: execution.binding.runId, statusVersion: 7 } }),
           ownerType: "board",
           wakePolicy: null,
           nextAction: expect.stringContaining(
@@ -6230,7 +6277,7 @@ describe("native session bounded recovery", () => {
       );
       expect(updateIssue).toHaveBeenCalledWith(
         execution.binding.issueId,
-        { status: "in_review" },
+        { status: "blocked" },
         expect.anything(),
       );
     } finally {
@@ -6421,6 +6468,21 @@ describe("native session bounded recovery", () => {
     ).toBe("native_current_wake_comments_changed_after_read");
   });
 
+  it("requires operator action without retrying an approval-required terminal", () => {
+    const code = nativeSessionFailureSourceCode(
+      new NativeProviderTerminalFailure("approval_required", false, "Approval required"),
+    );
+    expect(code).toBe("native_provider_approval_required");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+      phase: "terminal_failure",
+      failureCode: "native_provider_approval_required",
+      nextAttemptAt: null,
+    });
+    expect(nativeSessionRecoveryProjection({
+      phase: "terminal_failure", failureCode: code, agentId: "agent-1",
+    })).toMatchObject({ issueStatus: "blocked", recoveryOwner: { kind: "board" } });
+  });
+
   it("retries the same run twice and stops at the third failed attempt", () => {
     const now = new Date("2026-08-09T00:00:00.000Z");
     expect(
@@ -6488,50 +6550,6 @@ describe("native session bounded recovery", () => {
     ).toEqual({
       phase: "terminal_failure",
       failureCode: "native_current_wake_comments_changed_after_read",
-      nextAttemptAt: null,
-    });
-  });
-
-  it("stops retries only for an authenticated provider usage-limit terminal", () => {
-    const event = {
-      sourceKind: "runner" as const,
-      eventType: "turn.failed" as const,
-      payload: {
-        status: "failed",
-        error: {
-          codexErrorInfo: "usageLimitExceeded",
-          message: "Private provider account details",
-        },
-      },
-    };
-    expect(nativeProviderUsageLimitFromEvent(event)).toBe(true);
-    expect(
-      nativeProviderUsageLimitFromEvent({
-        ...event,
-        eventType: "item.completed",
-      }),
-    ).toBe(false);
-    expect(
-      nativeProviderUsageLimitFromEvent({
-        ...event,
-        sourceKind: "control_plane",
-      }),
-    ).toBe(false);
-    expect(
-      nativeProviderUsageLimitFromEvent({
-        ...event,
-        payload: { status: "failed", error: { message: "usageLimitExceeded" } },
-      }),
-    ).toBe(false);
-    expect(
-      nativeSessionFailureDisposition(
-        1,
-        new Date(),
-        "native_provider_usage_limit",
-      ),
-    ).toEqual({
-      phase: "terminal_failure",
-      failureCode: "native_provider_usage_limit",
       nextAttemptAt: null,
     });
   });
@@ -6650,6 +6668,28 @@ describe("native process ownership", () => {
       execution.binding,
       expectedBinding,
     );
+  });
+
+  it.each(["cancelled", "succeeded", "interrupted", "timed_out", "failed"])(
+    "refuses native provider claims after the run became %s", async status => {
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      state.createBackend.mockClear();
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates, {}, status), execution, runnerInstanceId: "late-startup",
+      })).rejects.toThrow();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(updates.some(update => update.table === nativeRunFinalizations)).toBe(false);
+      expect(updates.some(update => update.values.eventType === "native.process_start_requested")).toBe(false);
+    },
+  );
+
+  it("fences a cancellation request before its terminal status commits", async () => {
+    state.createBackend.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, { startupCancellation: { requestedAt: new Date().toISOString() } }),
+      execution, runnerInstanceId: "cancel-requested",
+    })).rejects.toThrow();
+    expect(state.createBackend).not.toHaveBeenCalled();
   });
 
   it("forwards the app-server PID and process group through the production backend seam", async () => {
@@ -6808,6 +6848,89 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
     }
     await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["open", "before-close"],
+    ["open", "during-close"],
+    ["recover", "before-close"],
+    ["recover", "during-close"],
+  ] as const)("preserves managed Codex credentials after %s session detachment %s", async (mode, timing) => {
+    let finishClose!: () => void;
+    const closing = new Promise<void>((resolve) => { finishClose = resolve; });
+    const close = vi.fn(async () => {
+      if (timing === "during-close") await closing;
+    });
+    const detach = vi.fn(async () => undefined);
+    const rawSession = { close, detachControllerForRestart: detach };
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => rawSession,
+      recoverSession: async () => ({ recovered: true, session: rawSession }),
+    } as never);
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-detach",
+      managedAiCredentialHome: join(isolatedStateDirectory, "managed-home"),
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    const auth = JSON.stringify({ OPENAI_API_KEY: "fixture-managed-codex-credential" });
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, auth);
+    const session = mode === "open"
+      ? await backend.openSession({} as never)
+      : (await backend.recoverSession!({} as never, {
+          signal: new AbortController().signal,
+        })).session!;
+
+    if (timing === "before-close") {
+      await session.detachControllerForRestart!();
+      await session.close({ reason: "old controller finalizer" });
+    } else {
+      const closed = session.close({ reason: "old controller finalizer" });
+      await session.detachControllerForRestart!();
+      finishClose();
+      await closed;
+    }
+
+    expect(detach).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(state.copyBackCodexAuth).not.toHaveBeenCalled();
+    await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
+  });
+
+  it("still cleans up managed Codex credentials after an owned session closes", async () => {
+    const close = vi.fn(async () => undefined);
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => ({ close }),
+    } as never);
+    const managedHome = join(isolatedStateDirectory, "managed-home");
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-close",
+      managedAiCredentialHome: managedHome,
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, "fixture-managed-codex-credential");
+    const session = await backend.openSession({} as never);
+
+    await session.close({ reason: "completed" });
+    await session.close({ reason: "repeated cleanup" });
+
+    expect(state.copyBackCodexAuth).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ hostAuthPath: join(managedHome, "auth.json") }),
+    );
+    await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {

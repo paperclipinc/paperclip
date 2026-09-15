@@ -9,7 +9,7 @@ import { Link, useNavigate } from "@/lib/router";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
@@ -769,7 +769,11 @@ function StreamlinedIssuesList({
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;

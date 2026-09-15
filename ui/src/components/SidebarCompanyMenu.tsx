@@ -44,7 +44,6 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
-import { findCompanyByUrlSegment } from "../lib/company-routes";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -297,8 +296,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   }
 
   function selectCompany(company: Company) {
-    const pathPrefix = location.pathname.split("/")[1];
-    const isCompanyRoute = findCompanyByUrlSegment(sidebarCompanies, pathPrefix) != null;
+    const pathPrefix = location.pathname.split("/")[1]?.toUpperCase();
+    const isCompanyRoute = sidebarCompanies.some((sidebarCompany) => (
+      sidebarCompany.issuePrefix.toUpperCase() === pathPrefix
+    ));
     const shouldLeaveCurrentRoute = company.id !== selectedCompany?.id
       && (location.pathname.startsWith("/instance/") || isCompanyRoute);
 

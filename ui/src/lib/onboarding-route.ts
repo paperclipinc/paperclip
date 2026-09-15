@@ -1,9 +1,6 @@
-import { findCompanyByUrlSegment } from "./company-routes";
-
 type OnboardingRouteCompany = {
   id: string;
   issuePrefix: string;
-  slugAliases?: string[];
 };
 
 export function isOnboardingPath(pathname: string): boolean {
@@ -105,7 +102,11 @@ export function resolveRouteOnboardingOptions(params: {
     return { initialStep: 1 };
   }
 
-  const matchedCompany = findCompanyByUrlSegment(companies, companyPrefix);
+  const matchedCompany =
+    companies.find(
+      (company) =>
+        company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
+    ) ?? null;
 
   if (!matchedCompany) {
     if (cloudManaged) return managedFallback();

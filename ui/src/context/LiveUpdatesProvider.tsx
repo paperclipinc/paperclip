@@ -301,9 +301,22 @@ function resolveVisibleIssueRouteContext(
   const segments = relativePath.split("/").filter(Boolean);
   if (!["issues", "chats"].includes(segments[0]) || !segments[1]) return null;
 
-  const issueRef = decodeURIComponent(segments[1]);
-  const issue =
-    queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
+  let issueRef = decodeURIComponent(segments[1]);
+  if (segments[0] === "chats") {
+    const session = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+    const userId = session?.user?.id ?? session?.session?.userId ?? null;
+    const companyPrefix = extractCompanyPrefixFromPath(pathname);
+    const company = queryClient.getQueryData<CompanyListResult>(queryKeys.companies.list(userId))
+      ?.companies.find(item => item.issuePrefix.toUpperCase() === companyPrefix?.toUpperCase());
+    if (!company) return null;
+    const agent = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(company.id))
+      ?.find(item => item.id === issueRef || agentRouteRef(item) === issueRef);
+    if (!agent) return null;
+    const conversation = queryClient.getQueryData<Issue | null>(queryKeys.agentChats.detail(company.id, userId, agent.id));
+    if (!conversation) return null;
+    issueRef = conversation.id;
+  }
+  const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
   const issueRefs = new Set<string>([issueRef]);
   if (issue?.id) issueRefs.add(issue.id);
   if (issue?.identifier) issueRefs.add(issue.identifier);
@@ -505,21 +518,19 @@ function invalidateVisibleIssueRunQueries(
   }
 
   for (const issueRef of context.issueRefs) {
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.issues.detail(issueRef),
-    });
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.issues.activity(issueRef),
-    });
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.issues.runs(issueRef),
-    });
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.issues.liveRuns(issueRef),
-    });
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.issues.activeRun(issueRef),
-    });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueRef) });
+    if (status && TERMINAL_RUN_STATUSES.has(status)) {
+      // A final comment can race the last in-flight history fetch. Reconcile
+      // persisted messages after the turn settles.
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueRef) });
+      queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
+    }
   }
   return true;
 }
@@ -1063,6 +1074,11 @@ function buildRunStatusToast(
 
   const error = readString(payload.error);
   const errorCode = readString(payload.errorCode);
+  // Interrupt is an intentional conversation control. Its caller gives
+  // feedback; the terminal event must not announce a cancelled/failed run.
+  if (errorCode === "operator_interrupted") return null;
+  // Workspace contention is ordinary scheduling, not a failed user action.
+  if (errorCode === "workspace_busy") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? "Agent";
@@ -1255,6 +1271,10 @@ function invalidateActivityQueries(
       !!currentActor.agentId &&
       actorId === currentActor.agentId);
 
+  if (action?.startsWith("ai_connection.") || action?.startsWith("connection_grant.")) {
+    queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+  }
+
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
@@ -1265,6 +1285,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
+      // An ancestor hold or reparenting changes descendants' effective pause.
+      queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
+    }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
     });
@@ -1317,19 +1341,10 @@ function invalidateActivityQueries(
           visibleIssueCommentActivity
             ? { refetchType: "inactive" as const }
             : undefined;
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.detail(ref),
-          ...invalidationOptions,
-        });
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.activity(ref),
-          ...invalidationOptions,
-        });
-        if (action === "issue.comment_added") {
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.issues.comments(ref),
-            ...invalidationOptions,
-          });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
+        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
         }
         if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
           // These cards are durable API objects, not streamed text. Refresh the
@@ -1426,13 +1441,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "project") {
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.projects.all(companyId),
-    });
-    if (entityId)
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.projects.detail(entityId),
-      });
+    const sourceIssueId = readString((payload.details as Record<string, unknown> | undefined)?.sourceIssueId);
+    if (sourceIssueId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(sourceIssueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(entityId) });
     return;
   }
 
@@ -1825,16 +1837,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
-  const liveCompanyId = resolveLiveCompanyId(
-    selectedCompanyId,
-    selectedCompany?.id ?? null,
-  );
-  const canConnectSocket =
-    sessionStatus === "success" && session !== null && liveCompanyId !== null;
-  const currentActorRef = useRef<{
-    userId: string | null;
-    agentId: string | null;
-  }>({
+  const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
+  const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;
+  const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
     userId: currentUserId,
     agentId: null,
   });
@@ -1994,6 +1999,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
   }, [
+    visible,
+    invalidationBatcher,
+    queryClient,
     coalescingClient,
     liveCompanyId,
     pushToast,

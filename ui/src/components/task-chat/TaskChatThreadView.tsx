@@ -431,7 +431,7 @@ export function TaskChatThreadView({
   const body = (
     <div
       className={cn(
-        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-1 py-3 md:px-4 md:py-4",
         streamlined ? "md:px-0" : "gap-5",
         className,
       )}
@@ -444,61 +444,7 @@ export function TaskChatThreadView({
           {header}
         </div>
       ) : null}
-      {streamlined
-        ? renderedItems.map(({ item, content }, index) => (
-            <div
-              key={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              data-thread-anchor={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              id={item.kind === "message" ? `comment-${item.id}` : undefined}
-              className={taskChatItemSpacingClass(
-                item,
-                renderedItems[index - 1]?.item ?? null,
-              )}
-              data-thread-item-kind={
-                item.kind === "message" ? item.author : item.kind
-              }
-            >
-              {content}
-            </div>
-          ))
-        : items.map((item, index) => (
-            <div
-              key={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              data-thread-anchor={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              id={item.kind === "message" ? `comment-${item.id}` : undefined}
-              className={cn(
-                index > 0 &&
-                  item.kind === "interaction" &&
-                  item.interaction.status !== "pending" &&
-                  "-mt-3",
-              )}
-            >
-              {renderItem(
-                item,
-                onApprovalDecision,
-                renderInteraction,
-                renderBrief,
-                renderMessageActions,
-                renderQueuedAction,
-                onRuntimeRequestDecision,
-                "classic",
-                onTryAgainNoLiveExecutionPath,
-                tryAgainNoLiveExecutionPathPending,
-                retryableMarkerId,
-                onRetryFailedRun,
-                retryFailedRunId,
-                attachments,
-              )}
-            </div>
-          ))}
+      {history}
       {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
     </div>
   );

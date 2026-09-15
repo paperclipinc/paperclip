@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { AdapterCredentialSetup, CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 // Re-export shared types so local consumers don't need to change imports
 export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -49,8 +49,6 @@ export interface AdapterConfigFieldsProps {
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
-  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
-  credentialSetup?: AdapterCredentialSetup;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {
@@ -58,8 +56,6 @@ export interface UIAdapterModule extends TranscriptParserSource {
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
-  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
-  credentialSetup?: AdapterCredentialSetup;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter

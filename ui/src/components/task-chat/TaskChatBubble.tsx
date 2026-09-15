@@ -132,7 +132,11 @@ function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
   );
 }
 
-export function TaskChatBubble({
+export function TaskChatBubble(props: TaskChatBubbleProps) {
+  const email = useEmailComment(props.item.id);
+  return email ?? <TaskChatBubbleContent {...props} />;
+}
+function TaskChatBubbleContent({
   item,
   animateEntry = true,
   queuedAction,

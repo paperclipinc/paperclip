@@ -78,7 +78,7 @@ export function AgentProviderConnection({
     setAuthorizationUrl(null);
     setLoginPhase("preparing");
   };
-  const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(null);
+  const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
   const [opened, setOpened] = useState(false);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
@@ -90,11 +90,17 @@ export function AgentProviderConnection({
     useState<ProviderConnection | null>(null);
   const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
-    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
-  const savedKeys = useSavedProviderKeys(companyId, envKey);
+    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
+  const aiProvider = adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
+  const availableKeys = useSavedProviderKeys(companyId, envKey);
+  // Add/reconnect creates the requested account, never copies a saved account's
+  // credential or silently changes its ownership. Agent setup retains reuse.
+  const savedKeys = managedAccount
+    ? { ...availableKeys, options: [], subscriptions: [], loading: false }
+    : availableKeys;
   const [subscriptionId, setSubscriptionId] = useState<string | null>(null);
   const savedSubscription =
-    adapterType === "codex_local"
+    savedKeys.subscriptions.length
       ? savedKeys.subscriptions.find(
           (option) =>
             option.id === (subscriptionId ?? savedKeys.subscriptions[0]?.id),
@@ -104,11 +110,19 @@ export function AgentProviderConnection({
   const selectedKey = savedKeys.options.find(
     (option) => option.id === (selectedKeyId ?? savedKeys.options[0]?.id),
   );
-  const storedLogin = savedKeys.storedLogin;
+  const storedLogin = managedAccount
+    ? { ...savedKeys.storedLogin, data: undefined, isPending: false, isError: false }
+    : savedKeys.storedLogin;
+  const savedManagedAccount = useRef<{ connectionId: string; grantId: string } | null>(null);
   const method = methodChoice ?? (
-    (adapterType === "claude_local" ? storedLogin.data : savedKeys.subscriptions.length)
+    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && !savedSubscription && storedLogin.data))
       ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
+  const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
+    provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
+  { allowHostClaude: health.data?.deploymentMode === "local_trusted" });
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -143,16 +157,17 @@ export function AgentProviderConnection({
       let connection: ProviderConnection =
         method === "api"
           ? selectedKey
-            ? { env: { [envKey]: selectedKey.binding } }
+            ? selectedKey.aiConnection ? { env: {}, aiConnection: selectedKey.aiConnection } : { env: { [envKey]: selectedKey.binding } }
             : (storedConnection ?? {
                 env: {},
                 credentials: { [envKey]: apiKey.trim() },
               })
           : {
-              env: savedSubscription
+              ...(savedSubscription?.aiConnection ? { aiConnection: savedSubscription.aiConnection } : {}),
+              env: savedSubscription?.binding
                 ? { CODEX_HOME: savedSubscription.binding }
                 : {},
-              ...(adapterType === "claude_local" && storedLogin.data
+              ...(adapterType === "claude_local" && !savedSubscription && storedLogin.data
                 ? {
                     env: buildFixedClaudeOAuthBinding(),
                     applyStoredClaudeLogin: true,
@@ -198,7 +213,7 @@ export function AgentProviderConnection({
     !savedSubscription &&
     !savedKeys.loading &&
     !storedLogin.data &&
-    (auth.data?.status !== "present" || subscriptionId === "");
+    (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
   return (
     <div className="min-w-0 max-w-full">
       <ModelSourceTiles
@@ -240,7 +255,6 @@ export function AgentProviderConnection({
         </p>
       )}
       {method === "subscription" &&
-        adapterType === "codex_local" &&
         savedKeys.subscriptions.length > 0 && (
           <SavedProviderKeySelect
             options={savedKeys.subscriptions}
@@ -339,13 +353,15 @@ export function AgentProviderConnection({
                   onConnected(connection);
                 }}
               />
-            ) : savedSubscription ? null : (
+            ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
+              <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+            ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
                   ? "Use your saved Claude subscription for this agent."
                   : canLogin
                     ? "Use the existing provider connection for this environment."
-                    : `Use the ${provider} login on this machine. If you haven’t signed in yet, run ${adapterType === "claude_local" ? "claude auth login" : "codex login"} in your terminal, then connect.`}
+                    : "This environment does not support browser sign-in. Choose a sign-in environment or connect with an API key."}
               </p>
             )}
           </div>
@@ -370,7 +386,11 @@ export function AgentProviderConnection({
           else onBack();
         }}
         primaryLabel={
-          busy
+          opened && needsLogin
+            ? loginPhase === "waiting" ? "Waiting for code"
+              : loginPhase === "connecting" ? "Connecting"
+              : `Sign in to ${provider}`
+            : busy
             ? "Connecting"
             : method === "subscription" &&
                 (storedLogin.data || savedSubscription)
@@ -380,11 +400,14 @@ export function AgentProviderConnection({
                 : "Connect"
         }
         primaryDisabled={
-          auth.isPending ||
+          managedAccount?.disabled ||
+          (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
+          (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
+          (!managedAccount && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
           !opened ||
-          Boolean(needsLogin) ||
+          (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
             !storedConnection &&

@@ -67,7 +67,7 @@ function availableToolConnectionMethods(
   app: (typeof CONNECTABLE_APP_DEFINITIONS)[number],
 ) {
   return getAvailableConnectionMethods(app).filter(
-    (method) => (method.purpose ?? "tool") === "tool",
+    (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "runtime_auth",
   );
 }
 
@@ -308,9 +308,9 @@ export function connectionIntentService(db: Db) {
       if (!app) throw notFound("Connection service was not found");
       const methods = purpose === "ai" ? getAvailableConnectionMethods(app).filter(method => method.transport === "runtime_auth") : availableToolConnectionMethods(app);
       return { ...app, available: app.availability?.available !== false,
-        searchCapabilities: availableToolConnectionMethods(app).map((method) =>
+        searchCapabilities: methods.map((method) =>
           `${method.whenToUse} ${method.capabilityProfile?.label ?? ""} ${method.capabilityProfile?.description ?? ""}`).join(" "),
-        methods: availableToolConnectionMethods(app).map((method) => ({
+        methods: methods.map((method) => ({
           key: method.key, label: method.label ?? method.key, auth: method.auth,
         })), source: "catalog" as const };
     }

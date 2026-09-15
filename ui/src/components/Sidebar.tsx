@@ -37,7 +37,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { attentionApi } from "../api/attention";
 import { heartbeatsApi } from "../api/heartbeats";
-import { useFeatures } from "../hooks/useFeatures";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { attentionBadgeCount } from "../lib/attention";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -62,7 +62,10 @@ export function Sidebar({ children }: { children?: ReactNode }) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const rail = collapsed && !peeking;
   const inboxBadge = useInboxBadge(selectedCompanyId);
-  const { data: experimentalSettings } = useFeatures();
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,

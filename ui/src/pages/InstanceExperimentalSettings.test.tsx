@@ -85,7 +85,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
-    enableCloudSync: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableBetaSkills: false,
@@ -99,8 +98,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableFirstTaskPlanProposal: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
-    cloudBilling: false,
-    cloudTrialBanner: false,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
@@ -804,6 +801,30 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("keeps a managed isolated-workspaces-by-default setting locked", async () => {
+    // The cloud overlay owns this key, so the tenant sees its value but cannot
+    // write it back and have the overlay immediately override the write.
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableIsolatedWorkspaces: true,
+      enableIsolatedWorkspacesByDefault: true,
+      managedKeys: {
+        enableIsolatedWorkspacesByDefault: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ISOLATED_WORKSPACES_BY_DEFAULT_TOGGLE_SELECTOR,
+    );
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(toggle?.disabled).toBe(true);
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("keeps a managed chat connectors setting locked", async () => {

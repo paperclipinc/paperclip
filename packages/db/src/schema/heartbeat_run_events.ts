@@ -20,7 +20,7 @@ export const heartbeatRunEvents = pgTable(
   {
     id: bigserial("id", { mode: "number" }).primaryKey(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
-    runId: uuid("run_id").notNull().references(() => heartbeatRuns.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").notNull().references(() => heartbeatRuns.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
     seq: bigint("seq", { mode: "number" }).notNull(),
     eventType: text("event_type").notNull(),
