@@ -105,6 +105,7 @@ export type {
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
+  InstanceVisibilitySettings,
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
   BackupRetentionPolicy,
@@ -129,6 +130,7 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {
@@ -1062,6 +1064,12 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  PublicFeatureFlags,
+  EffectiveStanding,
+  BoardCapabilities,
+} from "./capabilities.js";
+export { derivePublicFeatureFlags } from "./capabilities.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
 

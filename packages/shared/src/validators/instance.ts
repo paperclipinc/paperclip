@@ -6,6 +6,7 @@ import {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "../types/instance.js";
+import { COMPANY_SETTINGS_SURFACES } from "../constants.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
 
@@ -59,6 +60,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableClassicTaskInterface: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
+  enableCloudSync: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
   enableSmokeLab: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),
@@ -72,6 +74,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   enableFirstTaskPlanProposal: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
+  cloudBilling: z.boolean().default(false),
+  cloudTrialBanner: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableOwnerInstanceAdmin: z.boolean().default(false),
@@ -117,6 +121,15 @@ export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().guid().nullable().optional(),
 }).strict();
 
+export const instanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z
+    .array(z.enum(COMPANY_SETTINGS_SURFACES))
+    .default([...COMPANY_SETTINGS_SURFACES]),
+}).strict();
+
+export const patchInstanceVisibilitySettingsSchema = z.object({
+  companySurfaces: z.array(z.enum(COMPANY_SETTINGS_SURFACES)),
+}).strict();
 // The longest time a task drain can run before it expires on its own. A
 // caller can send a shorter `ttlMs`, but not a longer one — the request must
 // fail instead of the server silently clamping the value.
@@ -138,6 +151,8 @@ export type PatchInstanceExperimentalSettings = Partial<
   >
 >;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
+export type InstanceVisibilitySettings = z.infer<typeof instanceVisibilitySettingsSchema>;
+export type PatchInstanceVisibilitySettings = z.infer<typeof patchInstanceVisibilitySettingsSchema>;
 export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
 
 export const instanceSettingsSchema = z.object({
@@ -145,6 +160,7 @@ export const instanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().guid().nullable(),
   general: instanceGeneralSettingsSchema,
   experimental: instanceExperimentalSettingsWithManagedSchema,
+  visibility: instanceVisibilitySettingsSchema,
   createdAt: z.union([z.date(), z.string().datetime()]),
   updatedAt: z.union([z.date(), z.string().datetime()]),
 }).strict();
