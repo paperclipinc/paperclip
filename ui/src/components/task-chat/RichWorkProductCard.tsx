@@ -2,6 +2,7 @@ import { useContext, useState, type CSSProperties } from "react";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
 import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
+import { attachmentDownloadPath } from "@/lib/issue-attachments";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
   ExternalLink,
@@ -162,7 +163,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       Icon = isImage ? Image : isVideo ? Film : File;
       const size = numberMeta(metadata, "byteSize", "size");
       meta = [isImage ? "Image" : isVideo ? "Video" : stringMeta(metadata, "kind", "fileType") ?? "File", size === null ? null : formatBytes(size)];
-      action = isImage || isVideo ? "Open gallery" : "Open preview";
+      action = isImage || isVideo ? "Open gallery" : "Download";
       break;
     }
     case "document":
@@ -220,6 +221,13 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const mediaPath = workProduct.type === "artifact" && (isImage || isVideo)
     ? stringMeta(metadata, "contentPath", "openPath") ?? href
     : null;
+  const artifactContentPath = stringMeta(metadata, "contentPath")
+    ?? (href && /^\/api\/attachments\/[^/?#]+\/content$/.test(href) ? href : null);
+  const actionHref = workProduct.type === "artifact" && !isImage && !isVideo
+    ? stringMeta(metadata, "downloadPath") ?? (artifactContentPath
+      ? attachmentDownloadPath({ contentPath: artifactContentPath })
+      : href)
+    : href;
   const openGallery = () => {
     if (mediaPath && !openIssueGallery?.(mediaPath)) setGalleryOpen(true);
   };
@@ -254,8 +262,8 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
           <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline">
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
           </button>
-        ) : href ? (
-          <a href={href} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
+        ) : actionHref ? (
+          <a href={actionHref} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={actionHref.startsWith("http") ? "_blank" : undefined} rel={actionHref.startsWith("http") ? "noreferrer" : undefined}>
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : null}

@@ -581,7 +581,7 @@ async function materializeDecisionEffect(input: {
       { kind: "request_confirmation" }
     > = {
       kind: "request_confirmation",
-      idempotencyKey: `native-review:${input.decisionId}`,
+      idempotencyKey: `native-review:${input.decisionId}${effect.requestKey ? `:${effect.requestKey}` : ""}`,
       sourceRunId: input.runId,
       resolverPolicy: effect.ownerAgentId ? "anyone" : "human_only",
       addresseeAgentId: effect.ownerAgentId ?? null,
@@ -1559,6 +1559,11 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    // A completed model turn cannot close a persistent conversation. Preserve
+    // the task here; the response finalizer records its durable waiting state.
+    if (issue.conversationAgentId && input.decision.statusAction === "done") {
+      input = { ...input, decision: { ...input.decision, statusAction: "preserve", toStatus: issue.status as NativeStatusDecision["toStatus"], effects: [] } };
+    }
     if (coordinator.phase === "committed" && coordinator.decisionId) {
       if (input.supersedesCommittedDecisionId) {
         if (

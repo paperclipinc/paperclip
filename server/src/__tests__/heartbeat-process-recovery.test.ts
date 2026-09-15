@@ -1,3 +1,5 @@
+import * as controllerLeases from "../services/legacy-controller-lease.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -650,7 +652,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
-    runStatus?: "running" | "queued" | "failed";
+    runStatus?: "running" | "queued" | "failed" | "interrupted";
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
@@ -719,9 +721,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      nextEventSeq: 2,
       startedAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
+
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: input?.adapterType ?? "codex_local" } });
 
     if (input?.includeIssue !== false) {
       await db.insert(issues).values({
@@ -1483,12 +1489,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
       .then((rows) => rows[0] ?? null);
-    const agent = await db
-      .select({ status: agents.status, errorReason: agents.errorReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-
     const recoveryRun = await db
       .select()
       .from(heartbeatRuns)
@@ -2674,6 +2674,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       const heartbeat = heartbeatService(db);
 
+      mockCloseIdleWarmNativeSessionsForRestart.mockClear();
       const result = await heartbeat.prepareHotRestartShutdown(
         "SIGTERM",
         new Date("2026-03-19T00:06:00.000Z"),
@@ -2684,6 +2685,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         skipDrain: true,
         activeRunIds: [runId],
       });
+      expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
       expect(isPidAlive(child.pid)).toBe(true);
       const run = await db
         .select()
@@ -3390,6 +3392,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("terminalizes an unsupported legacy session on shutdown without speculative replay", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "process",
       agentStatus: "running",
     });
     const result = await heartbeatService(db).drainRunningRunsForShutdown(
@@ -3467,6 +3470,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryRunIds: [],
       restartSuspendedRunIds: [runId],
     });
+    expect(mockDetachNativeSessionsForRestart).toHaveBeenCalledWith([runId]);
     await expect(
       db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
     ).resolves.toEqual([
@@ -3688,6 +3692,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
     const sourceIssueId = randomUUID();
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "process",
       agentStatus: "idle",
       processPid: 999_999_999,
       processLossRetryCount: 1,
@@ -3845,6 +3850,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
 
     expect(
       await db
@@ -7395,7 +7401,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(mockTerminateLocalService).toHaveBeenCalledWith(
         expect.objectContaining({ pid: 12345, processGroupId: null }),
-        { forceAfterMs: 1000 },
+        { forceAfterMs: 1000, signal: "SIGINT" },
       );
       expect(runningProcesses.has(runId)).toBe(false);
     } finally {
@@ -7611,7 +7617,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const events = await db
       .select()
       .from(heartbeatRunEvents)
-      .where(eq(heartbeatRunEvents.runId, runId));
+      .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "lifecycle")));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       eventType: "lifecycle",
@@ -10103,19 +10109,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("classifies actionable plan-only recovery and enqueues one liveness continuation", async () => {
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "I will inspect the repo next and then implement the fix.",
-      provider: "test",
-      model: "test-model",
-    });
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+  it.each([false, true])("enqueues one bounded plan-only continuation with legacy productivity review present: %s", async (withLegacyReview) => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
+    });
+    const legacyReviewId = randomUUID();
+    if (withLegacyReview) {
+      await db.insert(issues).values({
+        id: legacyReviewId,
+        companyId,
+        title: "Historical productivity review",
+        description: "Keep this review and its existing ownership unchanged.",
+        status: "todo",
+        assigneeUserId: "responsible-user",
+        parentId: issueId,
+        originKind: "issue_productivity_review",
+        originId: issueId,
+        originFingerprint: `productivity-review:${issueId}`,
+      });
+    }
+    const legacyReviewBefore = withLegacyReview
+      ? await db.select().from(issues).where(eq(issues.id, legacyReviewId))
+      : [];
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      if (withLegacyReview) {
+        // These pre-dispatch cancellations used to satisfy both the no-comment
+        // and churn thresholds and suppress an otherwise valid continuation.
+        await db.insert(heartbeatRuns).values(Array.from({ length: 10 }, (_, index) => ({
+          id: randomUUID(), companyId, agentId,
+          invocationSource: "automation", triggerDetail: "system", status: "cancelled",
+          errorCode: "execution_reconciliation_required",
+          contextSnapshot: { issueId, taskId: issueId },
+          createdAt: new Date(Date.now() - (index + 1) * 60_000),
+          finishedAt: new Date(),
+        })));
+      }
+      return {
+        exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test", model: "test-model",
+      };
     });
     const heartbeat = heartbeatService(db);
 
@@ -10153,6 +10187,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
+    if (withLegacyReview) {
+      expect(await db.select().from(issues).where(eq(issues.id, legacyReviewId))).toEqual(legacyReviewBefore);
+      const source = (await issueService(db).list(companyId)).find((issue) => issue.id === issueId);
+      expect(source).toBeDefined();
+      expect(source).not.toHaveProperty("productivityReview");
+    }
   });
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {

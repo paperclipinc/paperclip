@@ -1,3 +1,4 @@
+import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import {
   createContext,
   useCallback,
@@ -33,6 +34,8 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
+import type { CompanyListResult } from "../api/companies-query";
+import { healthApi } from "../api/health";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
@@ -42,8 +45,9 @@ import {
   removeLiveRunById,
 } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
-import { toCompanyRelativePath } from "../lib/company-routes";
+import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
+import { agentRouteRef } from "../lib/utils";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
@@ -295,7 +299,7 @@ function resolveVisibleIssueRouteContext(
 
   const relativePath = toCompanyRelativePath(pathname);
   const segments = relativePath.split("/").filter(Boolean);
-  if (segments[0] !== "issues" || !segments[1]) return null;
+  if (!["issues", "chats"].includes(segments[0]) || !segments[1]) return null;
 
   const issueRef = decodeURIComponent(segments[1]);
   const issue =
@@ -1327,6 +1331,16 @@ function invalidateActivityQueries(
             ...invalidationOptions,
           });
         }
+        if (action?.startsWith("issue.attachment_") || action?.startsWith("issue.work_product_")) {
+          // These cards are durable API objects, not streamed text. Refresh the
+          // visible task too, including attachments bound to an existing comment.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(ref) });
+        }
+        if (action === "issue.conversation_session_started") {
+          queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", ref] });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+        }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
           queryClient.invalidateQueries({
@@ -1779,6 +1793,7 @@ export const __liveUpdatesTestUtils = {
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
+  canUseLiveSession,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,
@@ -1786,7 +1801,13 @@ export const __liveUpdatesTestUtils = {
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
 
+function canUseLiveSession(sessionStatus: string, hasSession: boolean, deploymentMode?: string) {
+  return sessionStatus === "success" && (hasSession || deploymentMode === "local_trusted");
+}
+
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
+  const { visible } = usePageVisibility();
+  const wasHidden = useRef(!visible);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -1801,6 +1822,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
   const liveCompanyId = resolveLiveCompanyId(
@@ -1853,7 +1875,17 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!visible) {
+      wasHidden.current = true;
+      invalidationBatcher.dispose();
+      return;
+    }
     if (!canConnectSocket || !liveCompanyId) return;
+    if (wasHidden.current) {
+      wasHidden.current = false;
+      // Reconcile events missed while hidden, including completed runs/issues.
+      void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+    }
 
     let closed = false;
     let reconnectAttempt = 0;
@@ -1905,6 +1937,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       nextSocket.onmessage = (message) => {
+        if (!getPageVisibility().visible) return;
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 

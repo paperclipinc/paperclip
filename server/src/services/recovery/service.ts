@@ -186,6 +186,10 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
 };
 
 type RecoveryWakeup = (
@@ -4236,6 +4240,18 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      // A native chat can finish between the earlier settlement read and this
+      // fresh run read, before its response is materialized. Its trusted
+      // finalizer owns that settlement; generic productive-work recovery must
+      // not invent another conversation turn during the publication window.
+      if (
+        issue.conversationAgentId &&
+        latestRun?.status === "succeeded" &&
+        parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
 
       const agent = await getAgent(agentId);
       const agentInvokable =
@@ -5196,6 +5212,7 @@ export function recoveryService(
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
         eq(issues.status, "blocked"),
+        isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
       ];
@@ -5453,7 +5470,9 @@ export function recoveryService(
   // state is auditable. It never overwrites a status that another path already
   // made terminal.
   //
-  // Two independent authorities terminalize the run. Either one is enough:
+  // A live controller lease owns execution and finalization across server
+  // processes. Only after that ownership ends can either authority below
+  // terminalize the run:
   //
   // - Issue-terminal authority: the run's issue already reached a terminal
   //   status (done or cancelled), but the run row is still "running". A healthy

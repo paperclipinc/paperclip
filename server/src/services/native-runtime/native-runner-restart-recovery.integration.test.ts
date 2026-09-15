@@ -1,3 +1,4 @@
+import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -34,6 +35,16 @@ import {
 } from "../../realtime/runner-prp-ws.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
+
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../../sentry.js")>("../../sentry.js");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 import {
   claimNativeRestartRecoveries,
   type NativeControllerIdentity,
@@ -580,6 +591,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!claim || claim.kind !== "resume_dead_runner") {
         throw new Error("Expected dead-runner recovery claim");
       }
+      expect(await hasNativeLocalProcessStop(fixture.db, companyId, fixture.runId)).toBe(true);
+      const [stoppedRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(stoppedRun.processPid).toBeNull();
+      expect(stoppedRun.processGroupId).toBeNull();
 
       restored = createRunnerdCodexTransport({
         ...options,

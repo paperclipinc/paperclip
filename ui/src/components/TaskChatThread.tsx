@@ -94,7 +94,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
+import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import {
   resolveTaskChatBlockers,
@@ -488,6 +488,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
@@ -498,6 +499,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     imageUploadHandler,
     mentions,
     enableReassign,
+    conversationMode,
     reassignOptions,
     currentAssigneeValue,
     issueStatus,
@@ -534,7 +536,40 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const retryFailedRunHandler =
+    isTerminalIssueStatus(issueStatus) ||
+    interactions?.some((interaction) => interaction.status === "pending") ||
+    requiresExecutionReconciliation(props.recoveryAction?.cause) ||
+    props.scheduledRetry ||
+    linkedRuns?.some((run) => {
+      // The server accepts explicit new attempts for these stopped legacy
+      // conversations. It still proves process/lease termination and ownership;
+      // offering Retry does not certify prior action outcomes or resume them.
+      // Keep this set aligned with conversation-continuation.ts on the server.
+      if (
+        run.runtimeMode === "legacy" &&
+        (run.status === "failed" || run.status === "timed_out") &&
+        run.execution?.phase === "recovery_needed" &&
+        run.execution.cause === "legacy_execution_requires_reconciliation" &&
+        [
+          "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+          "pi_local", "grok_local", "kimi_local", "hermes_local",
+        ].includes(run.adapterType ?? "")
+      ) return false;
+      return [
+        "working",
+        "retry_scheduled",
+        "reconnecting",
+        "finishing",
+        "queued",
+        "recovery_needed",
+      ].includes(run.execution?.phase ?? "");
+    })
+      ? undefined
+      : onRetryFailedRun;
+  const canRetryFailedRun = Boolean(retryFailedRunHandler);
   const queryClient = useQueryClient();
+  const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -755,6 +790,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
+        if (isRedundantAiRecoveryNotice(comment, interactions)) return [];
         if (comment.body !== LEGACY_WITHHELD_RUN_COMMENT || !comment.runId)
           return [comment];
         const resultJson = linkedRunMetaById.get(comment.runId)?.resultJson;
@@ -767,7 +803,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         const summary = acceptedSemanticResultSummary(resultJson);
         return [summary ? { ...comment, body: summary } : comment];
       }),
-    [comments, linkedRunMetaById],
+    [comments, interactions, linkedRunMetaById],
   );
 
   const commentItems = useMemo(
@@ -1265,10 +1301,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
+    for (const item of createdProjectItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
+    createdProjectItems,
     comments,
     projectedComments,
     commentItems,
@@ -1379,11 +1419,65 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
+    let previousExecutionWaitKey: string | null = null;
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // A workspace admission attempt never started provider work. Its live
+      // successor owns the waiting indicator; retain this attempt in the run log.
+      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // /new is represented by its durable comment boundary, not an empty
+      // model response or a completed-run notice.
+      if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
+      // A queued continuation can become unnecessary while another turn finishes
+      // the task. Keep that cancellation in the run log, not the conversation.
+      // Apply this before native stop markers are assembled as well.
+      if (
+        source.status === "cancelled" &&
+        entries.length === 0 &&
+        (meta?.errorCode === "issue_not_in_progress" ||
+          (meta?.errorCode === "issue_terminal_status" && !meta.startedAt))
+      ) {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // Historical pre-admission cancellations describe a wait, not failed
+      // work. Collapse repeated observations of that hold, retaining real
+      // execution and any transcript/comment content between wait episodes.
+      const executionWait =
+        source.status === "cancelled" &&
+        !meta?.startedAt &&
+        meta?.errorCode === "execution_reconciliation_required" &&
+        entries.length === 0 &&
+        !lastCommentIdByRun.has(source.id);
+      if (executionWait) {
+        const wait = meta?.resultJson?.executionWait;
+        const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
+          ? String(wait.recoveryActionId)
+          : "execution_reconciliation_required";
+        settledRunIds.add(source.id);
+        if (previousExecutionWaitKey !== waitKey) {
+          const id = `${source.id}:execution-wait`;
+          entriesWithFailures.push({
+            ms: toMs(meta?.finishedAt ?? meta?.createdAt),
+            order: 3,
+            id,
+            item: {
+              id, kind: "marker", variant: "interrupted", tone: "neutral",
+              label: "Waiting to resume",
+              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+            },
+          });
+        }
+        previousExecutionWaitKey = waitKey;
+        continue;
+      }
+      previousExecutionWaitKey = null;
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
@@ -1477,7 +1571,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `The run was cancelled ${responseBoundary}.`
             : source.status === "interrupted"
               ? `The run was interrupted ${responseBoundary}.`
-              : code === "native_provider_model_rejected"
+              : code === "native_provider_approval_required"
+                ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
+                : code === "native_provider_model_rejected"
                 ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
@@ -1616,8 +1712,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "turn_boundary",
-              label: "Run completed",
-              detail: "The runner returned no user-facing response.",
+              label: source.status === "cancelled" ? "Stopped" : "Run completed",
+              detail: source.status === "cancelled" ? "This turn was cancelled before it returned a response." : "The runner returned no user-facing response.",
             },
           });
         }
@@ -1921,6 +2017,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     };
   }, [
     orderedEntries,
+    canRetryFailedRun,
+    interactions,
     runs,
     liveRun,
     transcriptByRun,
@@ -2380,7 +2478,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2396,7 +2494,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
@@ -2450,6 +2548,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       tailRunId,
       reopenToolReview,
     ],
+  );
+
+  const renderBrief = useCallback(
+    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
+    [issueBrief],
   );
 
   const assignedAgentForNotice = useMemo(() => {

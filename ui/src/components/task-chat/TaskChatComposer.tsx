@@ -72,6 +72,8 @@ import type { RunnerGoalCapability } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
+import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
+
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -116,6 +118,7 @@ interface TaskChatComposerProps {
   /** Mentionable entities for the editor's @-autocomplete. */
   mentions?: MentionOption[];
   enableReassign?: boolean;
+  conversationMode?: boolean;
   reassignOptions?: InlineEntityOption[];
   agentMap?: ReadonlyMap<string, { icon?: string | null }>;
   userProfileMap?: ReadonlyMap<
@@ -134,6 +137,7 @@ interface TaskChatComposerProps {
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
   onCancelQueuedEdit?: () => void;
+  pause?: TaskComposerPause | null;
   takeover?: TaskChatComposerTakeover | null;
   pendingTakeover?: {
     count: number;
@@ -388,6 +392,7 @@ export function TaskChatComposer({
   onImageUpload,
   mentions,
   enableReassign = false,
+  conversationMode = false,
   reassignOptions,
   agentMap,
   userProfileMap,
@@ -400,6 +405,7 @@ export function TaskChatComposer({
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
+  pause = null,
   takeover = null,
   pendingTakeover = null,
   runnerGoalCapability = null,
@@ -462,6 +468,29 @@ export function TaskChatComposer({
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const pendingDraftRef = useRef<{
+    draftKey: string;
+    attemptId: string;
+    submittedBody: string;
+    submittedAttachmentIds: string[];
+  } | null>(null);
+  function changeBody(value: string) {
+    bodyRef.current = value;
+    setBody(value);
+    const pending = pendingDraftRef.current;
+    if (!pending || pending.draftKey !== draftKey ||
+        loadDraftSubmission(pending.draftKey)?.attemptId !== pending.attemptId) return;
+    // Keep text typed during delivery durable too. Navigation may happen before
+    // either the request promise or the matching live server receipt arrives.
+    saveDraft(pending.draftKey,
+      value ? `${pending.submittedBody}\n\n${value}` : pending.submittedBody,
+      pending.attemptId);
+    saveDraftSubmission(pending.draftKey, {
+      attemptId: pending.attemptId, reviewed: false,
+      nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
+      submittedAttachmentIds: pending.submittedAttachmentIds,
+    });
+  }
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedEditRef = useRef(queuedEdit);
   queuedEditRef.current = queuedEdit;
@@ -759,7 +788,7 @@ export function TaskChatComposer({
    * the paste when it carries no images the plugin should handle.
    */
   function handlePasteCapture(evt: ReactClipboardEvent<HTMLDivElement>) {
-    if (!canAcceptFiles) return;
+    if (pause || !canAcceptFiles) return;
     const files = Array.from(evt.clipboardData?.files ?? []);
     if (files.length === 0) return;
     const nonImages = files.filter((file) => !file.type.startsWith("image/"));
@@ -793,7 +822,7 @@ export function TaskChatComposer({
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
-    takeover && !queuedEdit && !submitting && !uploadPending,
+    takeover && !pause && !queuedEdit && !submitting && !uploadPending,
   );
   const previousTakeoverVisibleRef = useRef(takeoverVisible);
   useEffect(() => {
@@ -802,6 +831,8 @@ export function TaskChatComposer({
     }
     previousTakeoverVisibleRef.current = takeoverVisible;
   }, [queuedEdit, takeoverVisible]);
+
+  const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
 
   async function submit() {
     const retained =
@@ -817,6 +848,10 @@ export function TaskChatComposer({
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
+    if (goalCommand.matched && conversationMode) {
+      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      return;
+    }
     if (goalCommand.matched) {
       if ("error" in goalCommand) {
         setActionError(goalCommand.error);
@@ -986,7 +1021,6 @@ export function TaskChatComposer({
         clearDraftSubmission(draftKey, attemptId);
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
-      const nextDraft = bodyRef.current;
       const restoredBody = nextDraft
         ? `${submittedBody}\n\n${nextDraft}`
         : submittedBody;
@@ -998,6 +1032,7 @@ export function TaskChatComposer({
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
+      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
     }
   }
@@ -1058,6 +1093,10 @@ export function TaskChatComposer({
       Skip
     </Button>
   ) : null;
+
+  if (pause && (!conversationMode || queuedEdit)) {
+    return <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />;
+  }
 
   return (
     <div
@@ -1234,11 +1273,17 @@ export function TaskChatComposer({
               </span>
             </button>
           ) : null}
+          {pause && conversationMode ? (
+            <div className="space-y-2">
+              <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
+              <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
+            </div>
+          ) : null}
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
               value={body}
-              onChange={setBody}
+              onChange={changeBody}
               placeholder={
                 disabled
                   ? (disabledReason ?? "Composer disabled")
@@ -1246,7 +1291,11 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission}
               mentions={mentions}
-              actionCommands={[goalCommandOption]}
+              actionCommands={conversationMode ? [{
+                id: "action:new", kind: "action", command: "new", name: "New session",
+                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                disabled,
+              }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined

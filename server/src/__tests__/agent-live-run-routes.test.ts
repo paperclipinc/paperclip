@@ -37,6 +37,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
   redactForRun: vi.fn(
     async (_companyId: string, _runId: string, value: unknown) => value,
   ),
@@ -425,7 +426,7 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
-  }, 10_000);
+  });
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
@@ -671,6 +672,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
@@ -715,6 +718,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
   });
 
   it("does not pad with recent runs when no minCount is requested", async () => {
@@ -883,6 +888,7 @@ describe("agent live run routes", () => {
     // Optional wake fields retain their existing shape; execution identity
     // always comes from the authenticated caller.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_assigned",
@@ -914,6 +920,7 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -1666,7 +1673,7 @@ describe("agent live run routes", () => {
         id: "trace-1",
         status: "incomplete",
         deletedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       },
       "trace_incomplete",
     ],

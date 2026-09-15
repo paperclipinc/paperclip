@@ -19,6 +19,8 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "announcements.ts": "/api",
+  "ai-connections.ts": "/api",
   "attention.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
@@ -55,6 +57,7 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
@@ -91,6 +94,14 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
+  "POST /api/chat-webhooks/{publicId}/{provider}",
+]);
+
+const explicitOpenApiOperationCoverageExclusions = new Set([
+  // This endpoint is authenticated by the provider signature rather than by a
+  // Paperclip board/agent credential. It intentionally stays out of the public
+  // board API document, while this exact exclusion keeps route coverage honest.
+  "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
 ]);
 

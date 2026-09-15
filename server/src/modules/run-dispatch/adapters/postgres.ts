@@ -4,8 +4,12 @@ import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
+  approvals,
+  issueApprovals,
+  issueThreadInteractions,
   heartbeatRuns,
   issueRecoveryActions,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
@@ -61,6 +65,7 @@ import { RunDispatchApplicationError } from "../application/types.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
+  conversationContinuation: boolean;
   runId: string;
   companyId: string;
   agentId: string;
@@ -268,7 +273,7 @@ export function createPostgresRunDispatchAdapter(
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation",
+      enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
       budgetBlock: null,
       agentInvokable: true,
@@ -402,6 +407,7 @@ export function createPostgresRunDispatchAdapter(
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
+        conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
         contextSnapshot: parseObject(run.contextSnapshot),
         scheduledRetryReason: run.scheduledRetryReason,
         retryReasonOverride: input.retryReasonOverride,
@@ -523,11 +529,21 @@ export function createPostgresRunDispatchAdapter(
             .then((rows) => Boolean(rows[0]))
         : false;
 
+    const retryReasonKind = classifyRetryReasonKind(retryReason);
+    // Dependency edges can change after scheduled promotion without changing
+    // the displayed status. Read them again under the queued/final issue lock.
+    const readiness = issue && retryReasonKind === "native_safe_replacement"
+      ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
+      : null;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
-      retryReasonKind: classifyRetryReasonKind(retryReason),
+      retryReasonKind,
+      dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
+        unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+      } : null,
       issueFound: issue !== null,
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
@@ -685,6 +701,7 @@ export function createPostgresRunDispatchAdapter(
           runId: run.id,
           companyId: run.companyId,
           agentId: run.agentId,
+          conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
           contextSnapshot: parseObject(run.contextSnapshot),
           scheduledRetryReason: run.scheduledRetryReason,
           retryReasonOverride: run.scheduledRetryReason,
@@ -723,6 +740,7 @@ export function createPostgresRunDispatchAdapter(
       // issue suppresses a max-turn continuation, but every other retry
       // reason proceeds to promotion anyway.
       const isLegacyMissingIssueException =
+        !hasConversationContinuationPolicy(run.resultJson) &&
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
         factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
@@ -800,6 +818,9 @@ export function createPostgresRunDispatchAdapter(
           resultJson: {
             ...parseObject(run.resultJson),
             stopReason: decision.errorCode,
+            ...(decision.errorCode === "execution_reconciliation_required"
+              ? { executionWait: decision.details }
+              : {}),
             effectiveTimeoutSec: 0,
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
@@ -888,7 +909,7 @@ export function createPostgresRunDispatchAdapter(
       now,
       tx,
     );
-    return { issueId, decision: decideQueuedRunStaleness(facts, now) };
+    return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
   }
 
   async function cancelStaleQueuedRun(
@@ -896,8 +917,21 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, decision } = await decideCurrentRunStaleness(tx, run, input.now);
-      if (!decision.stale || !issueId) return { outcome: "not_stale" as const };
+      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
+      if (!decision.stale || !issueId) {
+        if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
+          // Preserve the authority accepted under the issue/run locks. Later
+          // preflight reads can observe a reassignment; they must not turn an
+          // assignee comment into a non-assignee subscription-wait exception.
+          await tx.update(heartbeatRuns).set({
+            runnerProfileJson: {
+              ...parseObject(run.runnerProfileJson),
+              aiConnectionNonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId,
+            },
+          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+        }
+        return { outcome: "not_stale" as const };
+      }
       return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
     };
 

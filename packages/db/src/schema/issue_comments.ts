@@ -5,7 +5,7 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
-import { pgTable, uuid, text, timestamp, index, jsonb, unique } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, jsonb, unique, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -30,6 +30,8 @@ export const issueComments = pgTable(
     derivedAuthorAgentId: uuid("derived_author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     derivedCreatedByRunId: uuid("derived_created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     derivedAuthorSource: text("derived_author_source").$type<IssueCommentDerivedAuthorSource>(),
+    clientRequestId: text("client_request_id"),
+    conversationSessionGeneration: integer("conversation_session_generation"),
     body: text("body").notNull(),
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),

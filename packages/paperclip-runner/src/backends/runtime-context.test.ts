@@ -60,12 +60,19 @@ describe("native runtime context files", () => {
     ).join("\n");
 
     expect(constraints).toContain(
-      "Invoke paperclip_finish or paperclip_block exactly once before writing",
+      "Obtain one accepted result from paperclip_finish or paperclip_block before writing",
     );
     expect(constraints).toContain("do not call another tool");
     expect(constraints).not.toContain(
       "final response exactly once before invoking",
     );
+  });
+
+  it("requires requested file deliverables before completion in ordinary native tasks", () => {
+    const constraints = nativeTaskConstraints(runtimeInput("/bundle", "AGENTS.md")).join("\n");
+    expect(constraints).toContain("register_deliverable");
+    expect(constraints).toContain("deliverable:");
+    expect(constraints).toContain("download link");
   });
 
   it("marks only authoritative answered-question envelopes as resolved in the outer task", () => {

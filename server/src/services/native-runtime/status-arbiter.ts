@@ -20,6 +20,7 @@ export type NativeStatusEffect =
   | { kind: "create_interaction"; gate?: NativeGovernanceGate; prompt?: string }
   | {
       kind: "bind_reviewer";
+      requestKey?: string;
       prompt: string;
       detailsMarkdown?: string | null;
       ownerUserId?: string | null;
@@ -335,7 +336,7 @@ export function arbitrateNativeStatus(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_review",
       toStatus: "in_review",
-      reasonCode,
+      reasonCode: "actionable_attention_pending",
       unblockDescriptor: null,
       effects: [
         {

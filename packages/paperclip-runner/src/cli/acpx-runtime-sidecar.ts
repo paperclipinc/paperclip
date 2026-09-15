@@ -10,6 +10,7 @@ import type {
 } from "acpx/runtime";
 
 import { createAcpxToolEventNormalizer } from "../provider-events.js";
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
@@ -23,6 +24,7 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { AcpxApprovalRequiredError } from "../drivers/acpx/permission-policy.js";
 import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
@@ -261,6 +263,7 @@ async function dispatch(
         model: params.model,
         permissionMode: params.permissionMode,
         systemInstructions: params.systemInstructions,
+        runtimeContext: params.runtimeContext,
         environment: process.env,
         expectedIdentity: params.expectedIdentity,
         semanticTools: {
@@ -563,7 +566,11 @@ async function pumpTurn(
   } catch (error) {
     terminal = {
       status: "failed",
-      error: { message: safeMessage(error), retryable: false },
+      error: {
+        ...(error instanceof AcpxApprovalRequiredError ? { code: error.code } : {}),
+        message: safeMessage(error),
+        retryable: false,
+      },
     };
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
@@ -1012,9 +1019,6 @@ function parseOpenParams(
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   resolveQualifiedAcpxProfile(agent, model);
-  if (value.runtimeContext !== undefined && value.runtimeContext !== null) {
-    throw new Error("ACPX sidecar runtime context must be pre-materialized");
-  }
   if (
     value.providerSessionKey !== undefined &&
     value.providerSessionKey !== null
@@ -1039,7 +1043,9 @@ function parseOpenParams(
       "systemInstructions",
       1024 * 1024,
     ),
-    runtimeContext: null,
+    runtimeContext: value.runtimeContext == null
+      ? null
+      : parseNativeRuntimeContext(value.runtimeContext),
     tools: parseTools(value.tools),
     ...(value.expectedIdentity === undefined || value.expectedIdentity === null
       ? {}

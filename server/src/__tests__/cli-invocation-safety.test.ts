@@ -338,7 +338,14 @@ const SKIP_DIRS = new Set([
   "tmp",
 ]);
 
-const SKIP_PATH_PREFIXES = ["doc/logs/", "doc/plans/", "scripts/"];
+const SKIP_PATH_PREFIXES = [
+  "doc/logs/",
+  "doc/plans/",
+  "scripts/",
+  // Generated paid-run transcripts contain historical copies of instructions,
+  // including escaped warning examples; they are not authored guidance.
+  "tests/runner-e2e/results/",
+];
 
 const SCAN_EXTENSIONS = new Set([
   ".md",

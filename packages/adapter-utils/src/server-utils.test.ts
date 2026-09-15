@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
+  readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildPersistentSkillSnapshot,
@@ -14,16 +15,16 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
-  resolvePaperclipDesiredSkillNames,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
+  resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
@@ -86,6 +87,9 @@ describe("runtime connection tool delivery", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       CONNECTION_INTENT_AGENT_GUIDANCE,
     );
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).toContain(CONNECTION_INTENT_AGENT_GUIDANCE);
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("Execution contract:");
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("child issues");
   });
 });
 
@@ -561,56 +565,6 @@ describe("adapter skill snapshots", () => {
   });
 });
 
-describe("resolvePaperclipDesiredSkillNames", () => {
-  const createAgentEntry = {
-    key: "paperclipai/paperclip/paperclip-create-agent",
-    runtimeName: "paperclip-create-agent",
-    source: "/runtime/paperclip-create-agent",
-  };
-  const otherEntry = {
-    key: "paperclipai/paperclip/paperclip",
-    runtimeName: "paperclip",
-    source: "/runtime/paperclip",
-  };
-
-  it("returns [] when no explicit desiredSkills and no alwaysInclude option (unchanged)", () => {
-    expect(resolvePaperclipDesiredSkillNames({}, [createAgentEntry, otherEntry])).toEqual([]);
-  });
-
-  it("includes an always-include skill even without any explicit desiredSkills", () => {
-    const result = resolvePaperclipDesiredSkillNames({}, [createAgentEntry, otherEntry], {
-      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
-    });
-    expect(result).toEqual([createAgentEntry.key]);
-  });
-
-  it("does not include an always-include skill that is not available (no phantom)", () => {
-    const result = resolvePaperclipDesiredSkillNames({}, [otherEntry], {
-      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
-    });
-    expect(result).toEqual([]);
-  });
-
-  it("unions the always-include skill with explicit desiredSkills, deduped", () => {
-    const config = {
-      paperclipSkillSync: { desiredSkills: [otherEntry.key, PAPERCLIP_CREATE_AGENT_SKILL_KEY] },
-    };
-    const result = resolvePaperclipDesiredSkillNames(config, [createAgentEntry, otherEntry], {
-      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
-    });
-    expect(result).toContain(createAgentEntry.key);
-    expect(result).toContain(otherEntry.key);
-    expect(result.filter((key) => key === createAgentEntry.key)).toHaveLength(1);
-  });
-
-  it("preserves existing explicit desiredSkills behavior when the option is absent", () => {
-    const config = { paperclipSkillSync: { desiredSkills: [otherEntry.key] } };
-    expect(resolvePaperclipDesiredSkillNames(config, [createAgentEntry, otherEntry])).toEqual([
-      otherEntry.key,
-    ]);
-  });
-});
-
 describe("runChildProcess", () => {
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
@@ -958,6 +912,30 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "chat", workMode: "planning", status: "in_progress" },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(ordinary).toContain("Execution contract:");
+    expect(ordinary).toContain("Create child issues from the approved plan");
+    for (const resumedSession of [false, true]) {
+      const chat = renderPaperclipWakePrompt(payload, {
+        resumedSession, conversationMode: true, includeExecutionContract: true,
+      });
+      expect(chat).not.toContain("Execution contract:");
+      expect(chat).not.toContain("clear final disposition");
+      expect(chat).not.toContain("Create child issues");
+      expect(chat).not.toContain("you may create child implementation issues");
+    }
+  });
+
   const ordinaryExternalChatWake = {
     reason: "External chat message received",
     externalChatProvider: " GitHub ",
@@ -3428,6 +3406,13 @@ describe("applyPaperclipWorkspaceEnv", () => {
 });
 
 describe("shapePaperclipWorkspaceEnvForExecution", () => {
+  it("maps editable project repositories inside the remote workspace", () => {
+    const result = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/host/task", executionCwd: "/sandbox/task", executionTargetIsRemote: true,
+      workspaceHints: [{ workspaceId: "backend", cwd: "/host/task/.paperclip-repositories/backend" }],
+    });
+    expect(result.workspaceHints).toEqual([{ workspaceId: "backend", cwd: "/sandbox/task/.paperclip-repositories/backend" }]);
+  });
   it("rewrites workspace env paths for remote execution", () => {
     const shaped = shapePaperclipWorkspaceEnvForExecution({
       workspaceCwd: "/tmp/workspace",
@@ -3802,5 +3787,21 @@ describe("buildPaperclipEnv", () => {
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );
+  });
+});
+
+
+describe("runtime skill assignment boundaries", () => {
+  it("preserves an explicitly empty assignment instead of discovering bundled connector skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-empty-"));
+    try {
+      await fs.mkdir(path.join(root, "agentmail"));
+      await fs.writeFile(path.join(root, "agentmail", "SKILL.md"), "---\nname: agentmail\ndescription: Email connector\n---\n");
+      const discovered = await readPaperclipRuntimeSkillEntries({}, root, [root]);
+      expect(discovered.some((entry) => entry.runtimeName === "agentmail")).toBe(true);
+      expect(await readPaperclipRuntimeSkillEntries({ paperclipRuntimeSkills: [] }, root, [root])).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

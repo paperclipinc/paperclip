@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getAppStoreDefinition } from "@paperclipai/shared";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -1336,6 +1337,14 @@ describe("AppDetail", () => {
     return Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === label);
   }
+
+  it("does not label a revoked AI credential as Connected", async () => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose: "ai", transport: "runtime_auth", healthStatus: "ok", config: { provider: "openai", method: "api_key" } }));
+    listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, grants: [organizationGrant({ status: "revoked" })], capabilities: fullCapabilities(), currentUserId: "user-1", members: [] });
+    await renderAppDetail();
+    expect(container.textContent).toContain("Revoked");
+    expect(container.textContent).not.toContain("Connected");
+  });
 
   it("keeps the app header concise on every tab", async () => {
     mockParams.tab = "permissions";

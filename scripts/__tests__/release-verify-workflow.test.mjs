@@ -38,10 +38,32 @@ test("chaos verification isolates callers that verify the same source commit", (
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
-  assert.match(
-    releaseWorkflow,
-    /verify_canary:\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
-  );
+  // GitHub supplies the top-level caller's workflow name to reusable calls.
+  const resolveGroup = (caller, ref) => group
+    .replaceAll("${{ github.workflow }}", readWorkflow(caller).match(/^name: (.+)$/m)[1])
+    .replaceAll("${{ inputs.ref || github.ref }}", ref)
+    .toLowerCase();
+  const sha = "a".repeat(40);
+  const callers = ["cloud-readiness.yml", "release.yml", "runner-chaos-evals.yml"];
+  const groups = callers.map((caller) => resolveGroup(caller, sha));
+  assert.equal(new Set(groups).size, callers.length,
+    "Cloud readiness, Release, and standalone evals must not cancel each other");
+  assert.ok(groups.every((value) => !value.includes("${{")), "resolve every group input");
+  assert.notEqual(resolveGroup("cloud-readiness.yml", sha),
+    resolveGroup("cloud-readiness.yml", "b".repeat(40)), "different sources remain independent");
+  assert.match(chaosWorkflow, /cancel-in-progress: true/);
+});
+
+test("canary reuses exact-source proof while stable keeps full verification", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+  const canary = releaseWorkflow.split("  verify_canary:\n")[1].split("\n  publish_canary:")[0];
+  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(canary, /actions: read/);
+  assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
+  assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
+  assert.match(releaseWorkflow, /publish_canary:\n\s+if: github\.event_name == 'push'\n\s+needs: verify_canary/);
   // The stable lane is gated on the stable channel since the nightly lane
   // was added; a `needs:` line (for example a preflight job) may sit between
   // the gate and the delegation.
@@ -55,6 +77,17 @@ test("release workflow delegates stable and canary verification to the reusable 
     releaseWorkflow,
     /verify_(?:canary|stable):[\s\S]*?pnpm test:run(?:\n|$)/,
   );
+});
+
+test("source proof requires every source check and does not wait on image publication", () => {
+  const readiness = readWorkflow("cloud-readiness.yml");
+  const proof = readiness.split("  source_verified:\n")[1].split("\n  ready:")[0];
+  assert.match(proof, /name: Cloud source verified v1/);
+  assert.match(proof, /needs: \[verify\]/);
+  assert.match(proof, /node --test scripts\/cloud-source-verification.test.mjs/);
+  assert.match(proof, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
+  assert.doesNotMatch(proof, /always\(\)|continue-on-error|needs:.*(?:image|artifacts)/);
+  assert.match(readiness.split("  ready:\n")[1], /needs: \[verify, image, artifacts\]/);
 });
 
 test("onboard smoke container binds beyond loopback so the mapped port is reachable", () => {
@@ -207,10 +240,12 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(verifyWorkflow, /pnpm -r typecheck/);
   assert.match(verifyWorkflow, /pnpm build/);
-  assert.match(
-    verifyWorkflow,
-    /pnpm --filter @paperclipai\/paperclip-runner check:all/,
-  );
+  const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, "packages/paperclip-runner/package.json"), "utf8")).scripts;
+  const runnerChecks = [...verifyWorkflow.matchAll(/^            checks: (.+)$/gm)]
+    .flatMap(([, checks]) => checks.split(" "));
+  assert.deepEqual(runnerChecks, runnerScripts["check:all"].split(" && ")
+    .map((command) => command.replace(/^pnpm run /, "")));
+  assert.match(verifyWorkflow, /pnpm --filter @paperclipai\/paperclip-runner "\$check"/);
   assert.match(verifyWorkflow, /runner_workflow_evals:/);
   assert.match(verifyWorkflow, /runner_chaos_evals:/);
   assert.match(
@@ -219,7 +254,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(
     verifyWorkflow,
-    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
+    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
   );
   assert.match(verifyWorkflow, /pnpm test:runner-workflow-evals/);
 

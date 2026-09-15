@@ -6,6 +6,13 @@ import {
 import { Router } from "express";
 import { z } from "zod";
 import {
+  createAiConnectionSchema,
+  aiConnectionLoginIntentSchema,
+  localAiConnectionSchema,
+  localAiLoginStartSchema,
+  emailEndpointSetupSchema,
+  emailConnectionSchema,
+  emailSendSchema,
   // Agent
   createAgentSchema,
   createAgentHireSchema,
@@ -105,6 +112,10 @@ import {
   resolveBudgetIncidentSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
+  // Announcements
+  announcementIdSchema,
+  announcementSchema,
+  dismissAnnouncementSchema,
   // Execution workspaces
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
@@ -1209,6 +1220,7 @@ type OpenApiAuthLevel =
 const BOARD_SESSION_AUTH_SCHEME = "BoardSessionAuth";
 const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
+const AGENT_RUN_AUTH_SCHEME = "AgentRunAuth";
 const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
@@ -1260,6 +1272,7 @@ const PUBLIC_OPERATIONS = new Set([
 ]);
 
 const BOARD_ONLY_PREFIXES = [
+  "/api/announcements/",
   "/api/auth/",
   "/api/admin/",
   "/api/plugins",
@@ -1267,6 +1280,16 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/ai-connections",
+  "POST /api/companies/{companyId}/ai-connections",
+  "POST /api/companies/{companyId}/ai-connections/local",
+  "POST /api/companies/{companyId}/ai-connections/local/attempts",
+  "POST /api/companies/{companyId}/ai-connections/local/check",
+  "DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
+  "PUT /api/companies/{companyId}/ai-connections/default",
+  "GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
+  "GET /api/companies/{companyId}/ai-connections/login/{sessionId}",
+
   "GET /api/companies/{companyId}/project-repositories",
   "PUT /api/projects/{id}/repositories",
   "DELETE /api/issues/{id}/documents/{key}",
@@ -1519,6 +1542,7 @@ const CREATED_OPERATIONS = new Set([
 ]);
 
 const ACCEPTED_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/email/send",
   "POST /api/companies/import",
   "POST /api/health/dev-server/restart",
   "POST /api/invites/{token}/accept",
@@ -1549,6 +1573,7 @@ function resolveOperationAuthLevel(
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (key === "POST /api/mcp/project-tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (
@@ -1601,6 +1626,12 @@ function applyDocumentFixups(document: any): any {
       description:
         "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
+    [AGENT_RUN_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Task-bound agent JWT",
+      description: "Paperclip-issued JWT bound to an active task run. Agent API keys, board sessions, and connection-only tokens are rejected.",
+    },
   };
   document.security = AUTHENTICATED_SECURITY;
 
@@ -1611,6 +1642,8 @@ function applyDocumentFixups(document: any): any {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
+      } else if (authLevel === "agent_run") {
+        operation.security = [securityRequirement(AGENT_RUN_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
       } else if (authLevel === "authenticated") {
@@ -1624,6 +1657,8 @@ function applyDocumentFixups(document: any): any {
           ? { actor: "board", instanceAdmin: true }
           : authLevel === "board"
             ? { actor: "board" }
+            : authLevel === "agent_run"
+              ? { actor: "agent", heartbeatBound: true, taskBound: true }
             : authLevel === "runtime_tools"
               ? { actor: "runtime_tools", heartbeatBound: true }
               : authLevel === "authenticated"
@@ -5675,6 +5710,87 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// ─── Announcements ───────────────────────────────────────────────────────────
+
+const announcementResponseHeaders = {
+  "Cache-Control": { schema: { type: "string", enum: ["private, no-store"] } },
+};
+
+registry.registerPath({
+  method: "get",
+  path: "/api/announcements/current",
+  tags: ["announcements"],
+  summary: "Get the current user's eligible announcement",
+  description: "Returns null for dismissed, disabled, unavailable, expired or incompatible content. Dismissals follow the board user across companies within this instance; no-login installations use local-board.",
+  responses: {
+    200: { ...r.ok(announcementSchema.nullable()), headers: announcementResponseHeaders },
+    401: r.unauthorized,
+    403: r.forbidden,
+    500: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/announcements/{id}/image",
+  tags: ["announcements"],
+  summary: "Get the current announcement's validated image",
+  description: "Proxies only the content-addressed raster asset in the eligible manifest. Arbitrary URLs and asset paths are not accepted.",
+  request: { params: z.object({ id: announcementIdSchema }) },
+  responses: {
+    200: {
+      description: "Validated announcement image",
+      headers: announcementResponseHeaders,
+      content: {
+        "image/png": { schema: { type: "string", format: "binary" } },
+        "image/jpeg": { schema: { type: "string", format: "binary" } },
+        "image/webp": { schema: { type: "string", format: "binary" } },
+      },
+    },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/announcements/{id}/animation",
+  tags: ["announcements"],
+  summary: "Get the current announcement's isolated HTML/CSS animation",
+  description: "Board-only, validated content-addressed HTML. Scripts, links, forms and embedded resources are rejected; CSP sandbox and resource restrictions also apply to direct visits. Missing or invalid assets return 404 and the card uses its static image.",
+  request: { params: z.object({ id: announcementIdSchema }) },
+  responses: {
+    200: {
+      description: "Validated visual HTML/CSS document",
+      headers: { ...announcementResponseHeaders, "Content-Security-Policy": { schema: { type: "string" } } },
+      content: { "text/html": { schema: { type: "string" } } },
+    },
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/announcements/{id}/dismiss",
+  tags: ["announcements"],
+  summary: "Dismiss an announcement for the current user",
+  description: "Idempotently saves a personal preference. The supplied company is validated audit context; viewers may dismiss their own announcement. The first dismissal and its audit entry commit together. IDs from a previously validated feed remain valid for offline retries; unknown IDs return 404 without creating records.",
+  request: {
+    params: z.object({ id: announcementIdSchema }),
+    body: jsonBody(dismissAnnouncementSchema),
+  },
+  responses: {
+    204: { ...r.noContent, headers: announcementResponseHeaders },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    500: r.serverError,
+  },
+});
+
 // ─── Inbox dismissals ────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -9705,6 +9821,20 @@ for (const route of [
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/mcp/project-tools",
+  tags: ["projects"],
+  summary: "Call project and task tools through the active task run's MCP transport",
+  body: z.object({
+    jsonrpc: z.literal("2.0"),
+    id: z.union([z.string(), z.number()]).nullable().optional(),
+    method: z.string(),
+    params: z.record(z.string(), z.unknown()).optional(),
+  }),
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/runtime-tools/github/credentials",
   tags: ["connection-intents"],
   summary:
@@ -9795,6 +9925,51 @@ registerCurrentRoute({
   tags: ["connection-intents"],
   summary: "Decline an addressed connection request",
   body: declineConnectionIntentSchema,
+});
+
+// --- AI runtime connections -------------------------------------------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections",
+  tags: ["ai-connections"],
+  summary: "List available AI connections and personal defaults",
+  query: z.object({ agentId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections",
+  tags: ["ai-connections"],
+  summary: "Validate and connect an AI API key, or reconnect its existing grant",
+  body: createAiConnectionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/ai-connections/default",
+  tags: ["ai-connections"],
+  summary: "Set the signed-in owner’s personal AI default",
+  body: z.object({ grantId: z.string().uuid() }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
+  tags: ["ai-connections"],
+  summary: "List active runs attributed to an AI connection",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections/login/{sessionId}",
+  tags: ["ai-connections"],
+  summary: "Get the connection saved by an owned completed login",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 // --- Tool access -------------------------------------------------------------
@@ -10944,3 +11119,32 @@ export function openApiRoutes() {
   });
   return router;
 }
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local",
+  tags: ["ai-connections"],
+  summary: "Verify and save the local operator's CLI subscription account",
+  body: localAiConnectionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts",
+  tags: ["ai-connections"], summary: "Prepare an isolated local subscription sign-in",
+  body: localAiLoginStartSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
+  tags: ["ai-connections"], summary: "Cancel an owned local subscription sign-in",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/check",
+  tags: ["ai-connections"], summary: "Check the local operator's subscription sign-in without saving a connection",
+  body: localAiConnectionSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});

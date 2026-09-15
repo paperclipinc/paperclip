@@ -1,18 +1,25 @@
 /**
  * Per-task composer draft persistence, shared by the chat composers.
  *
- * Draft text is kept in localStorage under the caller-provided key. All
+ * Ordinary task drafts use localStorage; agent chat drafts use tab-scoped
+ * sessionStorage under the caller-provided key. All
  * access is guarded so disabled or full storage never throws into React.
  * Empty drafts remove the text key. Uploaded receipt metadata has a separate,
  * versioned task-keyed record; legacy text drafts remain plain strings.
  */
 
-/** Debounce before a keystroke lands in localStorage. */
+/** Debounce before a keystroke lands in browser storage. */
 export const DRAFT_DEBOUNCE_MS = 800;
+
+// Chat drafts and uncertain submissions belong to this browser tab. Sharing a
+// submission fence across tabs prevents intentional concurrent conversation turns.
+function draftStorage(draftKey: string): Storage {
+  return draftKey.startsWith("paperclip:agent-chat-draft:") ? sessionStorage : localStorage;
+}
 
 export function loadDraft(draftKey: string): string {
   try {
-    return localStorage.getItem(draftKey) ?? "";
+    return draftStorage(draftKey).getItem(draftKey) ?? "";
   } catch {
     return "";
   }
@@ -27,12 +34,12 @@ export function saveDraft(draftKey: string, value: string, attemptId?: string) {
   try {
     if (!mayWriteDraft(draftKey, attemptId)) return;
     if (value.trim()) {
-      localStorage.setItem(draftKey, value);
+      draftStorage(draftKey).setItem(draftKey, value);
     } else {
-      localStorage.removeItem(draftKey);
+      draftStorage(draftKey).removeItem(draftKey);
     }
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }
 
@@ -43,7 +50,7 @@ export function clearDraft(draftKey: string, attemptId?: string) {
     localStorage.removeItem(`${draftKey}:attachments:v1`);
     localStorage.removeItem(`${draftKey}:submission:v1`);
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }
 
@@ -198,8 +205,8 @@ export function loadStructuredDraft<T>(draftKey: string, fallback: T): T {
 
 export function saveStructuredDraft(draftKey: string, value: unknown) {
   try {
-    localStorage.setItem(draftKey, JSON.stringify(value));
+    draftStorage(draftKey).setItem(draftKey, JSON.stringify(value));
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }

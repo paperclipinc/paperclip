@@ -4,6 +4,7 @@ import { planArtifacts } from "./preview-artifacts.mjs";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
 import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
@@ -93,6 +94,59 @@ test("publishing reuses existing previews and never executes package lifecycle h
     assert.ok(calls[0].args.includes("--ignore-scripts"));
     assert.equal(calls[0].args[calls[0].args.indexOf("--tag") + 1], "preview");
     assert.ok(!calls[0].args.includes("canary"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("publishing submits both packages before waiting for either to propagate", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-overlap-"));
+  const submitted = [];
+  let polls = 0;
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await publishPreview(dir, sha, {
+      exec: (_command, args) => submitted.push(path.basename(args[1], ".tgz")),
+      fetchImpl: async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+        // Both packages become visible after the first shared visibility wait.
+        return submitted.length === 2 && polls > 0
+          ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } })
+          : json({}, 404);
+      },
+      sleep: async () => { assert.deepEqual(submitted, ["shared", "db"]); polls++; },
+    });
+    assert.deepEqual(submitted, ["shared", "db"]);
+    assert.equal(polls, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a visibility timeout identifies the missing package after both were submitted", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-timeout-"));
+  const submitted = [];
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await assert.rejects(publishPreview(dir, sha, {
+      exec: (_command, args) => submitted.push(path.basename(args[1], ".tgz")),
+      fetchImpl: async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+        return name === "@paperclipai/db" && submitted.includes("db")
+          ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } })
+          : json({}, 404);
+      },
+      sleep: async () => {},
+    }), /not yet visible: @paperclipai\/shared\./);
+    assert.deepEqual(submitted, ["shared", "db"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("invalid DB package metadata prevents publication of either package", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-invalid-"));
+  try {
+    writeFileSync(path.join(dir, "shared.tgz"), pack(manifest("@paperclipai/shared")));
+    writeFileSync(path.join(dir, "db.tgz"), pack({ ...manifest("@paperclipai/db"), gitHead: "b".repeat(40) }));
+    await assert.rejects(publishPreview(dir, sha, {
+      exec: () => assert.fail("Invalid package pairs must not be published"),
+      fetchImpl: async () => assert.fail("Validate the pair before registry requests"),
+    }), /identity or dependency pin mismatch/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

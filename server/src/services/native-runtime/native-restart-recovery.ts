@@ -1,3 +1,4 @@
+import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -472,6 +473,10 @@ export async function claimNativeRestartRecoveries(input: {
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
+    // Set inside the transaction only when the write below genuinely
+    // transitions the run into "failed". Read after the transaction
+    // commits, so a rolled-back write never reports a false failure.
+    let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
     const disposition = await input.db.transaction(async (tx) => {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -909,6 +914,10 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      if (claimKind !== "reattach_existing_runner") {
+        await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
+      }
+
       await tx
         .update(heartbeatRuns)
         .set({
@@ -953,6 +962,7 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     });
+    if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport);
     dispositions.push(disposition);
   }
   return dispositions;

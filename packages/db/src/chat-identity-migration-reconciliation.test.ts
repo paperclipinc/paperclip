@@ -157,7 +157,7 @@ describe("chat and execution identity migration reconciliation", () => {
     ).toEqual(chatMigrations.map(([tag]) => tag));
     let previous = JSON.parse(
       await readFile(
-        new URL("./migrations/meta/0257_snapshot.json", import.meta.url),
+        new URL("./migrations/meta/0281_snapshot.json", import.meta.url),
         "utf8",
       ),
     );
@@ -355,7 +355,7 @@ const support = await getEmbeddedPostgresTestSupport();
             },
             {
               name: "unrelated migration",
-              dedupe: { ...retired, migration: "0245_misty_nightshade" },
+              dedupe: { ...retired, migration: "0248_misty_nightshade" },
               error: oldLine,
             },
             { name: "array metadata", dedupe: [retired] },

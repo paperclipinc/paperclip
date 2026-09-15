@@ -135,6 +135,7 @@ describe("runner API request boundary", () => {
     },
   );
   it.each([
+    "POST /api/mcp/project-tools",
     "POST /api/agents/{id}/claude-login",
     "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
     "POST /api/agents/me/connections/{connectionId}/start-authorization",

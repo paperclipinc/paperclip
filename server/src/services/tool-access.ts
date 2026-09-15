@@ -203,6 +203,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   readSignedToolArgumentsPayload,
@@ -232,6 +233,26 @@ import {
   createComposioSessionManager,
 } from "./composio-session-manager.js";
 import {
+  recordToolRuntimeAuditWriteFailure,
+  TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC,
+} from "./tool-runtime-metrics.js";
+import {
+  createToolRuntimeSupervisor,
+  ToolRuntimeSupervisorError,
+} from "./tool-runtime-supervisor.js";
+import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
+import {
+  ComposioApiError,
+  createComposioClient,
+  type ComposioClient,
+} from "./composio.js";
+import {
+  composioChildConfig,
+  createComposioSessionManager,
+} from "./composio-session-manager.js";
+import {
+  appWithPaperclipCloudConnectorAvailability,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
   paperclipCloudConnectorConfigFromEnv,
@@ -2767,6 +2788,7 @@ function healthFailureHttpStatus(failure: {
 }): number {
   if (failure.status === "missing_secret") return 422;
   if (failure.code === "composio_api_key_rejected") return 422;
+  if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
   return 502;
 }
@@ -2788,6 +2810,9 @@ function sanitizeHttpFailure(error: unknown): {
   }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "tool_connection_transport_unsupported") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "composio_connected_account_inactive") {
       return { status: "degraded", message: error.message, code };
     }
@@ -2979,6 +3004,15 @@ export function toolAccessService(
       : null;
     return cachedCloudConnector;
   };
+  async function appForConnectionSetup(app: AppDefinition): Promise<AppDefinition> {
+    if (!app.methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy))) {
+      return app;
+    }
+    const profiles = connectorWasProvided
+      ? (await currentCloudConnector()?.getCapabilities() ?? [])
+      : await paperclipCloudConnectorCapabilitiesFromEnv();
+    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+  }
   let nextGitHubContinuitySweepAt = 0;
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -7372,6 +7406,9 @@ export function toolAccessService(
       await validateComposioConnection(connection);
       return [];
     }
+    if (connection.transport !== "local_stdio") {
+      throw unsupportedToolConnectionTransport();
+    }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
   }
@@ -7453,6 +7490,7 @@ export function toolAccessService(
     actor?: ActorInfo,
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
     try {
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
@@ -7504,9 +7542,11 @@ export function toolAccessService(
         await remoteTools(connection, credentialHeaders, actor);
       } else if (isComposioConnection(connection)) {
         await validateComposioConnection(connection);
-      } else {
+      } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
+      } else {
+        throw unsupportedToolConnectionTransport();
       }
       const updated = await updateConnectionHealth(
         connection,
@@ -7578,6 +7618,7 @@ export function toolAccessService(
     } = {},
   ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
@@ -7757,7 +7798,9 @@ export function toolAccessService(
         config: normalizedConfig,
         transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
-        healthMessage: "Tool catalog refreshed.",
+        healthMessage: isAgentMailConnection(connection)
+          ? "AgentMail API key is connected."
+          : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,
@@ -8015,8 +8058,12 @@ export function toolAccessService(
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
     const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
-    const connections = await db
-      .select()
+    // Legacy plugin backfills use a remote transport as a placeholder, but
+    // their tools run in the plugin worker and have no remote MCP endpoint.
+    // Select only due IDs in SQL so each scheduler tick does not decode every
+    // active connection's config and credential metadata.
+    const due = await db
+      .select({ id: toolConnections.id })
       .from(toolConnections)
       .where(
         and(
@@ -17746,6 +17793,9 @@ export function toolAccessService(
       ownerUserId: string,
     ) => {
       const connection = await getConnectionRow(idOrUid);
+      if (connection.connectionPurpose === "ai") {
+        throw badRequest("AI credentials use the connection's human access settings, not agent delegation");
+      }
       return db.transaction(async (tx) => {
         // Membership removal/suspension takes this same row lock before sweeping
         // personal grants. Whichever operation wins is therefore authoritative:
@@ -18233,7 +18283,7 @@ export function toolAccessService(
             })),
           );
         }
-        if (requested.size > 0) {
+        if (requested.size > 0 && connection.connectionPurpose !== "ai") {
           const profile = await appProfileForConnection(tx, connection);
           for (const install of requested.values()) {
             const [binding] = await tx

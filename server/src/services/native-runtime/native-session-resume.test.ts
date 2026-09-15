@@ -2533,7 +2533,7 @@ describe("buildNativeExecutionInput wake projection", () => {
     );
   });
 
-  it("places child completion summaries in the closed provider prompt", () => {
+  it.each([false, true])("projects wake context with the appropriate execution contract (conversation=%s)", (conversationMode) => {
     const input = buildNativeExecutionInput({
       companyId,
       runId: currentRunId,
@@ -2569,6 +2569,7 @@ describe("buildNativeExecutionInput wake projection", () => {
         checkedOutByHarness: true,
       },
       resumedSession: true,
+      conversationMode,
       agentId,
       workspace: {
         id: currentRunId,
@@ -2595,6 +2596,8 @@ describe("buildNativeExecutionInput wake projection", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
 
+    expect(input.task.prompt.includes("Execution contract:")).toBe(!conversationMode);
+    expect(input.task.prompt.includes("Use child issues")).toBe(!conversationMode);
     expect(input.task.prompt).toContain("## Paperclip Resume Delta");
     expect(input.task.prompt).toContain("reason: issue_children_completed");
     expect(input.task.prompt).toContain("DOT-147 Build utility (done)");

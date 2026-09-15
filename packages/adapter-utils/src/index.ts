@@ -31,7 +31,6 @@ export type {
   ConfigFieldSchema,
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
-  AdapterRuntimeCommandSpecOptions,
   AcpTargetDescriptor,
   ServerAdapterModule,
   QuotaWindow,
@@ -44,8 +43,6 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
-  AdapterCredentialOption,
-  AdapterCredentialSetup,
 } from "./types.js";
 export type {
   SessionCompactionPolicy,
@@ -71,12 +68,7 @@ export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
   redactDiagnosticText,
-  redactSensitiveText,
 } from "./command-redaction.js";
-export {
-  firstMeaningfulStderrLine,
-  isBenignAdapterStderrLine,
-} from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
   buildAdapterEnvConfig,
@@ -95,25 +87,6 @@ export type {
   RuntimeStatusSink,
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
-export type {
-  InferenceFailureCode,
-  InferenceFailureClassification,
-  InferenceFailureRetryPolicy,
-  InferenceFailureDescription,
-  InferenceFailureInput,
-} from "./inference-failure.js";
-export {
-  classifyInferenceFailure,
-  inferenceFailureRetryPolicy,
-  inferenceFailureErrorCode,
-  describeRunFailure,
-} from "./inference-failure.js";
-export type { SandboxInfraFailureCode } from "./sandbox-infra-failure.js";
-export {
-  SANDBOX_NOT_READY_ERROR_CODE,
-  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
-  classifySandboxInfraFailure,
-} from "./sandbox-infra-failure.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,

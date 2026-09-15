@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -316,8 +318,10 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         .set({ assigneeAgentId: newAssigneeAgentId })
         .where(eq(issues.id, issueId));
     });
-    await locked;
-    return transaction;
+    // Await lock acquisition before starting the competing operation. Keep
+    // completion separate so setup does not wait for that operation to finish.
+    await Promise.race([locked, transaction]);
+    return { done: transaction };
   }
 
   describe("evaluateScheduledRetryGate", () => {
@@ -569,7 +573,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
           contextSnapshot: { issueId, wakeReason: "issue_assigned" },
         });
 
-        const holderDone = reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
+        const { done: holderDone } = await reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
           issueId,
           runId,
           replacementAgentId,
@@ -730,7 +734,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         // Acquire the issue row lock first and hold it until it observes a
         // concurrent `for update` waiter — the promote call below — proving
         // this is a real block, not a race the assertion got lucky on.
-        const holderDone = reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
+        const { done: holderDone } = await reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
           issueId,
           runId,
           newAgentId,

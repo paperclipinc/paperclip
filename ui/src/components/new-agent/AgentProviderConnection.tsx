@@ -1,3 +1,7 @@
+import { healthApi } from "@/api/health";
+import { aiConnectionsApi } from "@/api/ai-connections";
+import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
+import type { AiConnectionBinding, AiConnectionLoginIntent } from "@paperclipai/shared";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
@@ -9,6 +13,7 @@ import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { AdapterLoginPanel } from "../AgentConfigForm";
 import {
+  LocalProviderLoginInstructions,
   OnboardingCardField,
   OnboardingLoginCard,
 } from "../AdapterLoginChrome";
@@ -21,6 +26,7 @@ import type { EnvBinding } from "@paperclipai/shared";
 
 export type ProviderConnection = {
   env: Record<string, EnvBinding>;
+  aiConnection?: AiConnectionBinding;
   /** Kept in memory until the user finishes setup. */
   credentials?: Record<string, string>;
   storedSessionId?: string;
@@ -31,20 +37,33 @@ export function AgentProviderConnection({
   adapterType,
   environmentId,
   canLogin,
+  localEnvironment = false,
   onConnected,
   onBack,
   testConnection,
   testError,
+  managedAccount,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local";
+  adapterType: "claude_local" | "codex_local" | "grok_local";
   environmentId: string | null;
   canLogin: boolean;
+  localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
   onBack: () => void;
   testConnection: (connection: ProviderConnection) => Promise<boolean>;
   testError?: string | null;
+  /** Connections supplies its access intent; presentation and login controllers stay shared. */
+  managedAccount?: {
+    intent: AiConnectionLoginIntent;
+    initialMethod?: "subscription" | "api_key";
+    fixedMethod?: boolean;
+    disabled?: boolean;
+    onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
+  };
 }) {
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
+  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -56,15 +75,20 @@ export function AgentProviderConnection({
     epoch.current++;
     setBusy(false);
     setOpened(false);
+    setAuthorizationUrl(null);
+    setLoginPhase("preparing");
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(null);
   const [opened, setOpened] = useState(false);
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
+  const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "claude_local" ? "Claude" : "OpenAI";
+  const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   const savedKeys = useSavedProviderKeys(companyId, envKey);
@@ -98,14 +122,25 @@ export function AgentProviderConnection({
         environmentId ?? undefined,
       ),
     retry: false,
+    enabled: !managedAccount,
   });
   async function connect() {
-    if (busy) return;
+    if (busy || managedAccount?.disabled) return;
     const run = ++epoch.current;
     setBusy(true);
     setError(null);
     try {
-      const connection =
+      if (managedAccount) {
+        if (method === "subscription" && !canUseLocalLogin) return;
+        const result = savedManagedAccount.current ?? await (method === "api"
+          ? aiConnectionsApi.create(companyId, { ...managedAccount.intent, method: "api_key", apiKey: apiKey.trim() })
+          : localLogin.connect(managedAccount.intent));
+        savedManagedAccount.current = result;
+        setApiKey("");
+        if (run === epoch.current) managedAccount.onComplete({ ...result, method: method === "api" ? "api_key" : "subscription" });
+        return;
+      }
+      let connection: ProviderConnection =
         method === "api"
           ? selectedKey
             ? { env: { [envKey]: selectedKey.binding } }
@@ -124,6 +159,14 @@ export function AgentProviderConnection({
                   }
                 : {}),
             };
+      if (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data) {
+        savedManagedAccount.current ??= await localLogin.connect();
+        connection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
+      }
+      if (connection.credentials) {
+        await aiConnectionsApi.create(companyId, { provider: aiProvider, method: "api_key", name: `My ${provider} API`, ownership: "personal", apiKey: connection.credentials[envKey], agentIds: [], allAgents: true });
+        connection = { env: {}, aiConnection: { provider: aiProvider, method: "api_key", mode: "responsible_user" } };
+      }
       if (run !== epoch.current) return;
       if (method === "api") {
         setApiKey("");
@@ -138,6 +181,7 @@ export function AgentProviderConnection({
         );
     } catch (cause) {
       if (run !== epoch.current) return;
+      if (managedAccount) setApiKey("");
       setError(
         cause instanceof Error
           ? cause.message
@@ -156,7 +200,7 @@ export function AgentProviderConnection({
     !storedLogin.data &&
     (auth.data?.status !== "present" || subscriptionId === "");
   return (
-    <div>
+    <div className="min-w-0 max-w-full">
       <ModelSourceTiles
         label="Connect your model provider"
         sources={[
@@ -165,7 +209,7 @@ export function AgentProviderConnection({
             label: provider,
             icon: (
               <img
-                src={`/brands/${adapterType === "claude_local" ? "claude" : "codex"}-color.svg`}
+                src={adapterType === "grok_local" ? "/brands/adapters/grok.svg" : `/brands/${adapterType === "claude_local" ? "claude" : "codex"}-color.svg`}
                 className="size-6"
                 alt=""
               />
@@ -175,13 +219,14 @@ export function AgentProviderConnection({
         mode={method}
         selectedId={opened ? adapterType : null}
         collapsed={opened}
-        onSelect={() => setOpened(true)}
+        onSelect={() => { if (!managedAccount?.disabled) setOpened(true); }}
       />
-      {!opened && (
+      {!opened && !managedAccount?.fixedMethod && (
         <div className="-ml-3 mt-1">
           <CredentialModeLink
             mode={method}
             onChange={(next) => {
+              savedManagedAccount.current = null;
               setMethod(next);
               setError(null);
             }}
@@ -261,17 +306,37 @@ export function AgentProviderConnection({
                 adapterType={adapterType}
                 environmentId={environmentId}
                 chrome="onboarding"
+                aiConnection={managedAccount?.intent ?? { provider: aiProvider, method: "subscription", name: `My ${provider} subscription`, ownership: "personal", agentIds: [], allAgents: true }}
                 autoStart
-                onStored={(storedSessionId) => {
-                  const connection = {
-                    env: buildFixedClaudeOAuthBinding(),
-                    storedSessionId,
-                  };
+                onStored={() => {}}
+                onPromptReady={(url) => {
+                  setAuthorizationUrl(url);
+                  setLoginPhase((phase) => url ? (phase === "preparing" ? "ready" : phase) : "preparing");
+                }}
+                onCodeSubmitted={() => {
+                  phaseBeforeSubmit.current = loginPhase === "waiting" ? "waiting" : "ready";
+                  setLoginPhase("connecting");
+                }}
+                onSubmitFailed={() => {
+                  setLoginPhase((phase) => phase === "connecting" ? phaseBeforeSubmit.current : phase);
+                }}
+                onConnected={(sessionId) => {
+                  if (managedAccount) {
+                    if (!sessionId) { setError("The login did not return a saved connection. Try again."); return; }
+                    const run = epoch.current;
+                    setLoginPhase("connecting");
+                    void aiConnectionsApi.loginResult(companyId, sessionId).then((result) => {
+                      if (run === epoch.current) managedAccount.onComplete({ ...result, method: "subscription" });
+                    }).catch(() => {
+                      if (run !== epoch.current) return;
+                      setLoginPhase("ready");
+                      setError("Could not retrieve the saved connection. Go back and retry.");
+                    });
+                    return;
+                  }
+                  const connection: ProviderConnection = { env: {}, aiConnection: { provider: aiProvider, method: "subscription", mode: "responsible_user" } };
                   setStoredConnection(connection);
                   onConnected(connection);
-                }}
-                onConnected={() => {
-                  if (adapterType === "codex_local") onConnected({ env: {} });
                 }}
               />
             ) : savedSubscription ? null : (
@@ -295,6 +360,9 @@ export function AgentProviderConnection({
         <p role="alert" className="mt-4 text-sm text-destructive">
           {testError ?? error}
         </p>
+      )}
+      {localEnvironment && health.isError && (
+        <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
         onBack={() => {
@@ -323,7 +391,14 @@ export function AgentProviderConnection({
             !selectedKey)
         }
         loading={busy}
-        onPrimary={() => void connect()}
+        primaryIcon={opened && needsLogin ? loginPhase === "ready" ? "none" : "spinner" : undefined}
+        onPrimary={() => {
+          if (needsLogin) {
+            if (!authorizationUrl || loginPhase !== "ready") return;
+            window.open(authorizationUrl, "_blank", "noreferrer,noopener");
+            setLoginPhase("waiting");
+          } else void connect();
+        }}
       />
     </div>
   );

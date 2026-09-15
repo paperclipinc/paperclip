@@ -269,7 +269,7 @@ interface IssueChatMessageContext {
   stoppingRunLabel?: string;
   stopRunVariant?: "stop" | "pause";
   runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
@@ -517,6 +517,7 @@ interface IssueChatComposerProps {
   hasActiveRun?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
@@ -617,6 +618,7 @@ interface IssueChatThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
@@ -644,7 +646,7 @@ interface IssueChatThreadProps {
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   /** Authoritative PRP queue. The classic thread intentionally ignores it. */
   queuedCommentQueue?: IssueQueuedCommentQueue | null;
@@ -2121,7 +2123,7 @@ function IssueChatUserMessage({
             >
               {queueBadgeLabel}
             </Badge>
-            {queueTargetRunId && onInterruptQueued ? (
+            {onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
@@ -2158,6 +2160,11 @@ function IssueChatUserMessage({
         )}
       </div>
 
+      {sentFromIMessage && !deleted ? (
+        <div className="mt-1 px-1 text-xs text-muted-foreground">
+          Sent from iMessage
+        </div>
+      ) : null}
       {pending ? (
         <div
           className={cn(
@@ -3497,7 +3504,12 @@ function CompactSystemNoticeRow({
   );
 }
 
-function SystemNoticeCommentRow({
+function SystemNoticeCommentRow(props: { message: ThreadMessage; anchorId?: string }) {
+  const custom = props.message.metadata.custom as Record<string, unknown>;
+  const email = useEmailComment(typeof custom.commentId === "string" ? custom.commentId : props.message.id);
+  return email ?? <SystemNoticeCommentContent {...props} />;
+}
+function SystemNoticeCommentContent({
   message,
   anchorId,
 }: {
@@ -4804,6 +4816,8 @@ const IssueChatComposer = forwardRef<
     );
   }, [draftKey]);
 
+  // A server receipt for this exact request settles a restored submission.
+  // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
     if (
       !draftKey ||
@@ -4877,6 +4891,7 @@ const IssueChatComposer = forwardRef<
     Boolean(onStop || stopControl.stopping);
 
   async function handleSubmit() {
+    if (composerPause) return;
     const trimmed = body.trim();
     if (
       (!trimmed && attachedFiles.length === 0) ||
@@ -4900,6 +4915,7 @@ const IssueChatComposer = forwardRef<
   }
 
   async function submitComment() {
+    if (composerPause) return;
     const trimmed = body.trim();
     if (
       (!trimmed && attachedFiles.length === 0) ||
@@ -4952,6 +4968,7 @@ const IssueChatComposer = forwardRef<
     const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     if (draftKey) saveDraft(draftKey, trimmed);
     setSubmitting(true);
+    bodyRef.current = "";
     setBody("");
     let attemptId: string | null = null;
     try {
@@ -4999,6 +5016,7 @@ const IssueChatComposer = forwardRef<
       if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
+      if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
       setSubmitting(false);
       queueViewportRestore(viewportSnapshot);
     }
@@ -5243,6 +5261,10 @@ const IssueChatComposer = forwardRef<
     setDismissedCoachToken(plainNameCandidate.matchedText);
   }
 
+  if (composerPause) {
+    return <TaskChatPausedTakeover {...composerPause} hasDraft={Boolean(body.trim() || attachedFiles.length)} />;
+  }
+
   if (composerDisabledReason) {
     return (
       <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
@@ -5373,7 +5395,7 @@ const IssueChatComposer = forwardRef<
         ref={editorRef}
         readOnly={!!uncertainSubmission}
         value={body}
-        onChange={setBody}
+        onChange={changeBody}
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
@@ -5759,6 +5781,7 @@ export function IssueChatThread({
   currentAssigneeValue = "",
   suggestedAssigneeValue,
   mentions = [],
+  composerPause = null,
   composerDisabledReason = null,
   composerHint = null,
   showComposer = true,
@@ -6447,8 +6470,8 @@ export function IssueChatThread({
       stoppingRunLabel,
       stopRunVariant,
       runFinalizationActions,
-      onInterruptQueued: stableOnInterruptQueued,
-      onCancelQueued: stableOnCancelQueued,
+      onInterruptQueued: composerPause ? undefined : stableOnInterruptQueued,
+      onCancelQueued: composerPause ? undefined : stableOnCancelQueued,
       onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
@@ -6476,6 +6499,7 @@ export function IssueChatThread({
       stoppingRunLabel,
       stopRunVariant,
       runFinalizationActions,
+      composerPause,
       stableOnInterruptQueued,
       stableOnCancelQueued,
       stableOnDeleteComment,

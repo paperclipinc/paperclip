@@ -67,6 +67,12 @@ vi.mock("../adapters/index.js", async () => {
   };
 });
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.js")>("../sentry.js");
+  return { ...actual, captureRunFailure: mockCaptureRunFailure };
+});
+
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
@@ -528,7 +534,6 @@ describe("P6-25 pre-result native session recovery", () => {
       expect.objectContaining({ phase: "observed", attempt: 0, failureCode: null }),
     ]);
   });
-});
 
 describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
   "P6-25 persisted reaper-to-finalization recovery (%s)",
