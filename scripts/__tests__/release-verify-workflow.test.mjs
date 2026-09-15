@@ -35,25 +35,6 @@ test("chaos verification isolates callers that verify the same source commit", (
   assert.match(chaosWorkflow, /cancel-in-progress: true/);
 });
 
-test("release workflow delegates stable and canary verification to the reusable workflow", () => {
-  const releaseWorkflow = readWorkflow("release.yml");
-
-  // GitHub supplies the top-level caller's workflow name to reusable calls.
-  const resolveGroup = (caller, ref) => group
-    .replaceAll("${{ github.workflow }}", readWorkflow(caller).match(/^name: (.+)$/m)[1])
-    .replaceAll("${{ inputs.ref || github.ref }}", ref)
-    .toLowerCase();
-  const sha = "a".repeat(40);
-  const callers = ["cloud-readiness.yml", "release.yml", "runner-chaos-evals.yml"];
-  const groups = callers.map((caller) => resolveGroup(caller, sha));
-  assert.equal(new Set(groups).size, callers.length,
-    "Cloud readiness, Release, and standalone evals must not cancel each other");
-  assert.ok(groups.every((value) => !value.includes("${{")), "resolve every group input");
-  assert.notEqual(resolveGroup("cloud-readiness.yml", sha),
-    resolveGroup("cloud-readiness.yml", "b".repeat(40)), "different sources remain independent");
-  assert.match(chaosWorkflow, /cancel-in-progress: true/);
-});
-
 test("canary reuses exact-source proof while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
   const canary = releaseWorkflow.split("  verify_canary:\n")[1].split("\n  publish_canary:")[0];
@@ -265,7 +246,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-  for (const [group, count] of [["general-server-without-chat", 5], ["general-chat", 3]]) {
+  for (const [group, count] of [["general-server-without-chat", 10], ["general-chat", 3]]) {
     const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));

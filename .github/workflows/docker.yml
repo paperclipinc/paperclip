@@ -4,21 +4,14 @@ on:
   push:
     branches:
       - "master"
-      - "main"
-      # Staging image channel: pushes to `staging` build staging-<ts>-<sha>
-      # tags that only the staging.paperclip.inc Flux ImagePolicy tracks.
-      # Prod keeps tracking main-* — promotion is merging staging -> main.
-      - "staging"
     tags:
       - "v*"
-  # Fallback: pushes made with the default GITHUB_TOKEN (e.g. a bot's
-  # `gh pr merge --auto`) never fire `on: push` workflow runs -- GitHub
-  # suppresses it to prevent recursive workflow chains. workflow_dispatch is
-  # explicitly exempt from that restriction. Confirmed root cause 2026-07-18:
-  # PR #263's lockfile-refresh auto-merge (github-actions[bot], GITHUB_TOKEN)
-  # landed on main with no docker build. refresh-lockfile.yml now force-triggers
-  # this dispatch right after its own auto-merges land; this stays as the
-  # general operator escape hatch for any other case (or manual force-build).
+      - "nightly/v*"
+      - "beta/v*"
+  # Release workflows push lane tags with GITHUB_TOKEN, and GitHub suppresses
+  # push-triggered runs for those, so release.yml dispatches this workflow at
+  # the new tag ref instead. The tag mapping below keys off github.ref either
+  # way.
   workflow_dispatch:
 
 # Least privilege: nothing at the workflow level; each job declares exactly
@@ -81,7 +74,7 @@ jobs:
     # Native builds land well inside this; it is a backstop, not a budget.
     # (The interim fix while this PR landed raised the single QEMU job's cap
     # to 120 minutes; native per-arch legs make that headroom unnecessary.)
-    timeout-minutes: 120
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -103,9 +96,28 @@ jobs:
         id: build-version
         run: |
           set -euo pipefail
-          version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+          case "${GITHUB_REF}" in
+            refs/tags/nightly/v*)
+              # Lane tags carry the exact published version; stamp it verbatim
+              # instead of describing drift from the nearest stable tag.
+              version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
+              ;;
+            *)
+              version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+              ;;
+          esac
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
+
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -199,11 +211,11 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=main-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
-            type=raw,value=staging-{{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/staging' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=sha
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
