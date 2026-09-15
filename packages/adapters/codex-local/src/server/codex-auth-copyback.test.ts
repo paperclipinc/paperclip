@@ -203,6 +203,25 @@ describe("copyBackCodexAuth", () => {
     }
   });
 
+  it("creates a missing shared Codex home before staging copy-back", async () => {
+    const rootDir = await makeHostDir();
+    const hostDir = path.join(rootDir, "missing-codex-home");
+    const hostAuthPath = path.join(hostDir, "auth.json");
+    const logs: string[] = [];
+
+    const outcome = await copyBackCodexAuth({
+      readSandboxAuth: async () => Buffer.from(apiKeyAuth("sandbox-only"), "utf8"),
+      hostAuthPath,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+
+    expect(outcome).toBe("kept-host");
+    expect(await readdir(hostDir)).toEqual([]);
+    expect(logs.join("\n")).not.toContain("sandbox-only");
+  });
+
   it("preserves the host file atomically when the install cannot be staged (no partial write, no leaked temp)", async () => {
     // Make the host directory read-only so staging the same-filesystem temp fails
     // with EACCES. The host credential must be left byte-for-byte intact and no
@@ -257,78 +276,6 @@ describe("copyBackCodexAuth", () => {
     // No staging temp is ever created on the ENOENT path.
     expect(result.leftoverEntries).toEqual([]);
     expect(result.logs.join("\n")).toContain("no sandbox credential to copy back");
-  });
-
-  it("treats a missing host credential directory (ENOENT on staging) as a keep-host no-op and never creates it", async () => {
-    // The prod shape: on a multi-tenant cloud server the shared host codex home
-    // (`~/.codex`) never existed, so staging the copy-back temp file fails with
-    // ENOENT on the missing parent directory. That must be a benign "nothing to
-    // merge into" outcome, not a teardown failure that marks a completed run
-    // failed. Crucially the directory must NOT be created either: on a
-    // multi-tenant server that would leak this run's credential into the store
-    // every other tenant's managed home is seeded from.
-    const parentDir = await makeHostDir();
-    const hostDir = path.join(parentDir, "missing-codex-home");
-    const hostAuthPath = path.join(hostDir, "auth.json");
-    const sandboxAuth = subscriptionAuth({
-      accountId: "acct-same",
-      lastRefresh: NEWER,
-      marker: "sandbox-SENTINEL",
-    });
-
-    const logs: string[] = [];
-    const outcome = await copyBackCodexAuth({
-      readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
-      hostAuthPath,
-      log: (line) => {
-        logs.push(line);
-      },
-    });
-
-    expect(outcome).toBe("kept-host");
-    // The shared host directory must stay absent.
-    await expect(stat(hostDir)).rejects.toMatchObject({ code: "ENOENT" });
-    // No leftover artifacts (the merge-lock sibling dir must be cleaned up too).
-    expect(await readdir(parentDir)).toEqual([]);
-    const combined = logs.join("\n");
-    expect(combined).toContain("no shared host credential store");
-    expect(combined).not.toContain("SENTINEL");
-  });
-
-  it("treats a missing ANCESTOR of the host directory (ENOENT on lock acquisition) as a keep-host no-op and never creates it", async () => {
-    // Variant of the missing-host-dir case: the merge lock lives in a SIBLING
-    // of the host directory (`${hostDir}.paperclip-restore.lock`), so when the
-    // host dir itself is the missing leaf the lock still acquires and the
-    // staging `open` is the first ENOENT. But when an ANCESTOR of the host dir
-    // is missing too, the lock `mkdir` itself throws ENOENT before staging ever
-    // runs. Both shapes mean the same thing (no shared store to merge into) and
-    // must resolve to the same benign kept-host outcome without creating any
-    // part of the missing tree.
-    const parentDir = await makeHostDir();
-    const hostDir = path.join(parentDir, "missing-ancestor", "missing-codex-home");
-    const hostAuthPath = path.join(hostDir, "auth.json");
-    const sandboxAuth = subscriptionAuth({
-      accountId: "acct-same",
-      lastRefresh: NEWER,
-      marker: "sandbox-SENTINEL",
-    });
-
-    const logs: string[] = [];
-    const outcome = await copyBackCodexAuth({
-      readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
-      hostAuthPath,
-      log: (line) => {
-        logs.push(line);
-      },
-    });
-
-    expect(outcome).toBe("kept-host");
-    // Neither the missing ancestor nor anything below it may be created.
-    await expect(stat(path.join(parentDir, "missing-ancestor"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await readdir(parentDir)).toEqual([]);
-    const combined = logs.join("\n");
-    expect(combined).toContain("no shared host credential store");
-    expect(combined).not.toContain("SENTINEL");
   });
 
   it("fails loud when the sandbox read errors and leaves the host untouched", async () => {

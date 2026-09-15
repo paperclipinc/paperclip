@@ -67,10 +67,3 @@ describe("buildGeminiLocalConfig", () => {
     });
   });
 });
-
-describe("gemini CLI sandbox", () => {
-  it("does not enable the Gemini CLI sandbox from the Codex-shaped bypass toggle", () => {
-    expect(buildGeminiLocalConfig(makeValues({ dangerouslyBypassSandbox: false })).sandbox).toBeUndefined();
-    expect(buildGeminiLocalConfig(makeValues({ dangerouslyBypassSandbox: true })).sandbox).toBeUndefined();
-  });
-});

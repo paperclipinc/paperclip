@@ -1,13 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -584,22 +578,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       isRetry = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
 
       const failed = (attempt.proc.exitCode ?? 0) !== 0;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||

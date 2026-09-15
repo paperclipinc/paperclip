@@ -61,11 +61,6 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
-import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -78,7 +73,6 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
-  isClaudeInvalidCredentialError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
@@ -107,9 +101,6 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
-
-const CLAUDE_INVALID_CREDENTIAL_MESSAGE =
-  "Claude rejected the connected credential. Reconnect a valid Claude credential, then resume.";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -172,7 +163,7 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
-export function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
 }
@@ -1018,15 +1009,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
-      const sandboxExecTimedOut = detectSandboxExecTimeout(proc.stderr);
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
-        errorMessage: sandboxExecTimedOut
-          ? extractSandboxExecTimeoutMessage(proc.stderr) ?? "Sandbox exec channel timed out"
-          : `Timed out after ${timeoutSec}s`,
-        errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : "timeout",
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: "timeout",
         errorMeta,
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
@@ -1034,22 +1022,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
-      // A rejected credential is classified alongside (not instead of) the
-      // login prompt: both resolve to claude_auth_required so the heartbeat's
-      // permanent-auth pause covers them, but the surfaced message names the
-      // actionable fix instead of echoing the provider's 401.
-      const invalidCredential =
-        (proc.exitCode ?? 0) !== 0 &&
-        (loginMeta.credentialRejected ||
-          isClaudeInvalidCredentialError({
-            parsed: null,
-            stdout: proc.stdout,
-            stderr: proc.stderr,
-            errorMessage: fallbackErrorMessage,
-          }));
       const providerQuota =
         !loginMeta.requiresLogin &&
-        !invalidCredential &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeProviderQuotaError({
           parsed: null,
@@ -1059,7 +1033,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         !loginMeta.requiresLogin &&
-        !invalidCredential &&
         !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
@@ -1082,7 +1055,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // surfaces the typed `duplex_channel_lost` code before any provider
         // classification, so the CLI lane and the ACP lane report it alike.
         ? proc.errorCode
-        : loginMeta.requiresLogin || invalidCredential
+        : loginMeta.requiresLogin
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1101,7 +1074,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : fallbackErrorMessage,
+        errorMessage: fallbackErrorMessage,
         errorCode,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
@@ -1181,39 +1154,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const rawErrorMessage = failed
+    const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
-    const invalidCredential =
-      failed &&
-      !clearSessionForMaxTurns &&
-      !poisonedPreviousMessageId &&
-      (loginMeta.credentialRejected ||
-        isClaudeInvalidCredentialError({
-          parsed,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: rawErrorMessage,
-        }));
-    // The raw CLI text stays in resultJson; the surfaced message must tell the
-    // user what to do, not echo the provider's 401.
-    const errorMessage = invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : rawErrorMessage;
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
-      !invalidCredential &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage: rawErrorMessage,
+        errorMessage,
       });
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
-      !invalidCredential &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
@@ -1236,7 +1193,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // first. A lost duplex control channel surfaces the typed
       // `duplex_channel_lost` code before any provider classification.
       ? proc.errorCode
-      : loginMeta.requiresLogin || invalidCredential
+      : loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,

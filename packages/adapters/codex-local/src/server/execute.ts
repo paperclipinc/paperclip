@@ -1,17 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  firstMeaningfulStderrLine,
-  inferOpenAiCompatibleBiller,
-  type AdapterExecutionContext,
-  type AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -73,7 +63,6 @@ import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
-  isCodexInvalidApiKeyError,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -92,7 +81,6 @@ import {
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
-  shouldReplaceStoredCodexAuth,
 } from "./codex-home.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
@@ -140,11 +128,14 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-// The benign-banner filter this adapter used to carry privately now lives in
-// adapter-utils, so every adapter that derives a fallback run error from stderr
-// shares one list. Re-exported here because callers (and the adapter's own
-// regression suite) import it from this module.
-export { firstMeaningfulStderrLine };
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
 
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
@@ -161,6 +152,13 @@ function isBenignCodexStderrLine(line: string): boolean {
   return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
 }
 
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
+}
 
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },
@@ -662,15 +660,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
-  // A Codex `auth.json` the user minted with `codex login` on their own machine.
-  // This is how a ChatGPT plan reaches a hosted install: there is no shared host
-  // login for a tenant to inherit, and inheriting one would be another tenant's.
-  // An explicit OPENAI_API_KEY still wins, matching the precedence Codex itself
-  // applies inside auth.json.
-  const configuredCodexAuthJson =
-    typeof envConfig.CODEX_AUTH_JSON === "string" && envConfig.CODEX_AUTH_JSON.trim().length > 0
-      ? envConfig.CODEX_AUTH_JSON.trim()
-      : null;
   // A configured CODEX_HOME that lives under the Paperclip-managed company tree
   // (the per-agent home set by the server isolation guard) still needs auth
   // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
@@ -708,7 +697,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
-      authJson: configuredCodexAuthJson,
     });
   }
   if (configuredHomeIsManaged && configuredCodexHome) {
@@ -717,7 +705,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } : process.env;
     await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
-      authJson: configuredCodexAuthJson,
     });
   }
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
@@ -814,13 +801,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             "stdout",
             `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "CODEX_HOME" : "workspace and CODEX_HOME"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
-          // Captured at launch time, before the sandbox runs: does the SHARED
-          // host credential store (the symlink source the managed homes point
-          // their `auth.json` at) hold usable auth? The teardown copy-back
-          // below gates on this instead of re-probing, so a run can never
-          // manufacture a copy-back target that did not exist at launch.
-          const sharedHostCodexHome = resolveSharedCodexHomeDir(process.env);
-          const sharedHostHasUsableAuth = await codexHomeHasUsableAuth(sharedHostCodexHome);
           // Stage only the files Codex actually needs into a curated temp dir and
           // ship THAT as the `home` asset, instead of the whole managed
           // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
@@ -865,62 +845,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) => {
-                  // Hosted path first. When the run authenticated with a
-                  // credential the USER supplied, the refreshed copy has to go
-                  // back to where that credential came from — the credential
-                  // store — not to any host file. This is not an optimisation:
-                  // OpenAI rotates the refresh token on every refresh and the
-                  // old one dies immediately, so skipping this would leave the
-                  // stored credential invalid from the next run onward. The
-                  // feature would look fine for about an hour and then break
-                  // permanently, which is worse than not shipping it.
-                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
-                    try {
-                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
-                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
-                        await ctx.onCredentialRotated({
-                          envKey: "CODEX_AUTH_JSON",
-                          value: rotated,
-                        });
-                        await onLog(
-                          "stdout",
-                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
-                        );
-                      }
-                    } catch (err) {
-                      // A failed copy-back must never fail a run that already
-                      // did the user's work. The cost is a stale stored
-                      // credential, which surfaces as a normal auth error on a
-                      // later run, not as a lost result here.
-                      await onLog(
-                        "stdout",
-                        `[paperclip] Codex plan credential copy-back skipped: ${
-                          err instanceof Error ? err.message : String(err)
-                        }\n`,
-                      );
-                    }
-                    return;
-                  }
-                  // The copy-back exists to persist refreshed ChatGPT-subscription
-                  // tokens back to the credential the managed homes symlink to.
-                  // When no shared host credential store exists (cloud/multi-tenant
-                  // servers whose auth lives only in managed per-company homes, or
-                  // a host that never ran `codex login`) there is nothing to merge
-                  // into, and creating a shared `~/.codex` on a multi-tenant server
-                  // would leak one tenant's credential into the store every other
-                  // tenant's managed home is seeded from. Skip instead of letting
-                  // the ENOENT fail the teardown and mark a completed run failed.
-                  if (!sharedHostHasUsableAuth) {
-                    await onLog(
-                      "stdout",
-                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
-                    );
-                    return;
-                  }
+                restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
+                    hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
                     // Additive cache write (sandbox to host): also cache the
                     // sandbox subscription credential in its per-identity slot,
@@ -930,8 +858,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  }));
-                },
+                  })),
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
@@ -1497,15 +1424,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -1550,18 +1473,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
-      const invalidApiKey =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
-        !authRefreshFailure &&
-        isCodexInvalidApiKeyError({
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
-        !invalidApiKey &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1570,7 +1484,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
-        !invalidApiKey &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
@@ -1606,8 +1519,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? attempt.proc.errorCode
             : authRefreshFailure
             ? authRefreshFailure
-            : invalidApiKey
-            ? "codex_auth_required"
             : providerQuota
             ? "provider_quota"
             : transientUpstream

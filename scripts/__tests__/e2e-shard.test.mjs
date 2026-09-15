@@ -25,11 +25,6 @@ function runShard(args) {
   return result.stdout.trim().split(/\s+/).filter(Boolean);
 }
 
-function hasTrustedWorkflowPin() {
-  const caller = readFileSync(prCallerWorkflow, "utf8");
-  return /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@[0-9a-f]{40}/.test(caller);
-}
-
 function readPinnedTrustedPrWorkflow() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
   const pin = caller.match(
@@ -166,11 +161,11 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow at an immutable SHA", { skip: !hasTrustedWorkflowPin() }, () => {
+test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
   assert.ok(readPinnedTrustedPrWorkflow().length > 0);
 });
 
-test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
@@ -216,7 +211,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("the trusted PR workflow limits full CI to merge-relevant stack layers", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
   const gate = jobs.get("gate");
@@ -295,7 +290,7 @@ test("the stacked PR scope selector runs full CI only where intended", () => {
   );
 });
 
-test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", { skip: !hasTrustedWorkflowPin() }, () => {
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
   const workflow = readPinnedTrustedPrWorkflow();

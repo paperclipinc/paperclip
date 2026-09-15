@@ -153,9 +153,13 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
-        // Explicit credential so the preflight outcome never depends on the
-        // host machine running the tests.
-        env: { OPENAI_API_KEY: "test-preflight-key" },
+        ...(managed ? {
+          managedAiConnection: { provider: "openrouter", method: "api_key" },
+        } : {}),
+        env: {
+          XDG_CONFIG_HOME: path.join(rootDir, "config"),
+          ...(managed ? { HOME: "/var/folders/qa-managed", XDG_DATA_HOME: "/var/folders/qa-managed/data" } : {}),
+        },
       },
       context: {
         paperclipWorkspace: {
@@ -303,7 +307,6 @@ describe("opencode remote execution", () => {
         config: {
           command: "opencode",
           model: "opencode/gpt-5-nano",
-          env: { OPENAI_API_KEY: "test-preflight-key" },
         },
         context: {
           paperclipWorkspace: {
@@ -367,9 +370,6 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
-        // Explicit credential so the preflight outcome never depends on the
-        // host machine running the tests.
-        env: { OPENAI_API_KEY: "test-preflight-key" },
       },
       context: {
         paperclipWorkspace: {
