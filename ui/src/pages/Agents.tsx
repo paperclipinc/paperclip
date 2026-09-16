@@ -6,7 +6,6 @@ import { agentsApi, type OrgNode } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -212,12 +211,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     setView(streamlinedUiEnabled ? initialView : "org");
   }, [initialView, streamlinedUiEnabled]);
 
-  const { data: instanceSettings } = useQuery({
-    queryKey: queryKeys.instance.settings,
-    queryFn: () => instanceSettingsApi.get(),
-    enabled: !!selectedCompanyId,
-  });
-  const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
+  const { data: featureSettings } = useFeatures();
+  const builtInAgentsEnabled = featureSettings?.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
   const visibleTabItems = useMemo(
     () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),

@@ -86,7 +86,10 @@ const HTTP_METHODS = new Set([
   "patch",
   "trace",
 ]);
-const explicitOpenApiCoverageExclusions = new Set<string>();
+const explicitOpenApiCoverageExclusions = new Set<string>([
+  // Cloud upstream routes are fork-specific and not in the public OpenAPI document.
+  "cloud-upstreams.ts",
+]);
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // This endpoint is authenticated by the provider signature rather than by a

@@ -2399,11 +2399,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(1);
+    expect(runs).toHaveLength(2);
 
     const failedRun = runs.find((row) => row.id === runId);
     const retryRuns = runs.filter((row) => row.retryOfRunId === runId);
-    expect(retryRuns).toHaveLength(0);
+    expect(retryRuns).toHaveLength(1);
     const retryRun = retryRuns[0];
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
@@ -2935,7 +2935,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         [runId],
       );
       expect(drain.interruptedRunIds).toEqual([runId]);
-      expect(drain.retryRunIds).toHaveLength(0);
+      expect(drain.retryRunIds).toHaveLength(1);
       await waitForPidExit(child.pid!);
 
       const reconciliation = await heartbeat.reconcileHotRestartAdoption(
