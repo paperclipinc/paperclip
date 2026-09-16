@@ -4117,6 +4117,7 @@ export function resolvePaperclipDesiredSkillNames(
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
   if (!preference.explicit) return [];
+  const alwaysInclude = opts?.alwaysIncludeSkillKeys ?? [];
   const desiredSkills = preference.desiredSkills
     .map((reference) =>
       canonicalizeDesiredPaperclipSkillReference(reference, availableEntries),
