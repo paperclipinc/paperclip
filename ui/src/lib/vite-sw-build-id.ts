@@ -75,15 +75,13 @@ export function serviceWorkerBuildIdPlugin(
     },
     closeBundle() {
       const swOutPath = path.resolve(outDir, serviceWorkerFileName);
-      let source: string;
-      if (fs.existsSync(swOutPath)) {
-        source = fs.readFileSync(swOutPath, "utf8");
-      } else {
-        // Vite/rolldown may not have copied public assets to outDir yet;
-        // read from publicDir and write the stamped file directly.
-        const swPublicPath = path.resolve(publicDir, serviceWorkerFileName);
-        source = fs.readFileSync(swPublicPath, "utf8");
-      }
+      // Always stamp from publicDir, the one copy that still carries the
+      // placeholder. closeBundle can run more than once per build, and reading
+      // back an already-stamped outDir copy would fail the placeholder check.
+      const swPublicPath = path.resolve(publicDir, serviceWorkerFileName);
+      const source = fs.existsSync(swPublicPath)
+        ? fs.readFileSync(swPublicPath, "utf8")
+        : fs.readFileSync(swOutPath, "utf8");
       const stamped = stampServiceWorkerBuildId(source, buildId ?? "build");
       fs.mkdirSync(path.dirname(swOutPath), { recursive: true });
       fs.writeFileSync(swOutPath, stamped);
