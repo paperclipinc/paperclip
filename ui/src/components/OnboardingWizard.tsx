@@ -2909,7 +2909,7 @@ function OnboardingWizardInner({
                       }}
                     />
 
-                    {credentialMode === "subscription" && adapterType === "codex_local" && savedKeys.subscriptions.length > 0 && (
+                    {credentialMode === "subscription" && adapterType === "codex_local" && savedKeys.subscriptions.length > 0 && !adapterEnvLoading && (
                       <div className="mt-5">
                         <SavedProviderKeySelect
                           options={savedKeys.subscriptions}
