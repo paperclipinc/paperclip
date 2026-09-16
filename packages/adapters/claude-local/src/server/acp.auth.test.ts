@@ -514,13 +514,18 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
       environmentName: null,
     });
 
-    expect(result.status).toBe("pass");
+    // The fork probes the configured command with a real `claude` hello call.
+    // `agentCommand` here is a bare node binary, so that probe legitimately
+    // fails and the overall status cannot be `pass`. What this test is about is
+    // the credential: it must read as normal authentication and never leak.
     expect(result.checks).toContainEqual(expect.objectContaining({
       code: "claude_acp_anthropic_api_key_detected",
       level: "info",
       message: "Using the selected Claude API connection.",
       hint: undefined,
     }));
+    expect(result.checks.filter((check) => check.level === "error").map((check) => check.code))
+      .not.toContain("claude_acp_anthropic_api_key_missing");
     expect(JSON.stringify(result.checks)).not.toContain("selected-test-key");
   });
 

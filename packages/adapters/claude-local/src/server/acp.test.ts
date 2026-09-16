@@ -453,9 +453,15 @@ describe("claude_local ACP lane", () => {
   it.each([undefined, "/sandbox/configured-workspace"])("checks sandbox directories on the sandbox (configured cwd=%s)", async (configuredCwd) => {
     const remoteCwd = "/sandbox/workspace";
     const mkdir = vi.spyOn(fs, "mkdir").mockRejectedValue(new Error("Host filesystem must not be used"));
-    const execute = vi.fn(async () => ({
-      exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "",
-      pid: null, startedAt: new Date().toISOString(),
+    // The fork runs a `claude` hello probe as part of the environment test, so
+    // answer it with a successful stream-json result. A bare empty stdout would
+    // warn and drop the overall status below `pass`.
+    const execute = vi.fn(async (...args: unknown[]) => ({
+      exitCode: 0, signal: null, timedOut: false,
+      stdout: JSON.stringify(args).includes("--output-format")
+        ? '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}'
+        : "",
+      stderr: "", pid: null, startedAt: new Date().toISOString(),
     }));
     try {
       const result = await testClaudeAcpEnvironment({
