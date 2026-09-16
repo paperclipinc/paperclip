@@ -750,9 +750,14 @@ function OnboardingWizardInner({
     apiKeyEnvKeyFor(adapterType),
     effectiveOnboardingOpen && step === 4,
   );
-  // The chooser is absent in onboarding. Prefer the user's explicit default;
-  // otherwise only reuse an unambiguous account, regardless of list ordering.
-  const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
+  const [subscriptionId, setSubscriptionId] = useState<{ companyId: string; id: string } | null>(null);
+  // The fork shows a subscription chooser, so an explicit pick wins. Without
+  // one, prefer the user's default and otherwise only reuse an unambiguous
+  // account, regardless of list ordering.
+  const savedSubscription = (subscriptionId?.companyId === createdCompanyId
+    ? savedKeys.subscriptions.find((option) => option.id === subscriptionId.id)
+    : undefined)
+    ?? savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
     ?? (savedKeys.subscriptions.length === 1 ? savedKeys.subscriptions[0] : undefined);
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
   const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
