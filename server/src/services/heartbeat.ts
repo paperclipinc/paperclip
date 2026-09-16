@@ -26,6 +26,7 @@ import {
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
+import { rebindContinuationContract } from "./native-runtime/continuation-contract.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
@@ -271,6 +272,11 @@ import {
   MAX_EXCERPT_BYTES,
 } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import {
+  createDrizzleActivationStore,
+  recordActivationEvent,
+  resolveActivationSink,
+} from "./activation.js";
 import {
   authorizeChatConversationForBoundRun,
   isExternalChatWaitAuthorizationContention,
@@ -18905,7 +18911,7 @@ export function heartbeatService(
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
