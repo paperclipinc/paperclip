@@ -1,4 +1,4 @@
-CREATE TABLE "activation_events" (
+CREATE TABLE IF NOT EXISTS "activation_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"agent_id" uuid NOT NULL,
@@ -9,7 +9,7 @@ CREATE TABLE "activation_events" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cloud_upstream_connections" (
+CREATE TABLE IF NOT EXISTS "cloud_upstream_connections" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"remote_url" text NOT NULL,
@@ -41,7 +41,7 @@ CREATE TABLE "cloud_upstream_connections" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "cloud_upstream_runs" (
+CREATE TABLE IF NOT EXISTS "cloud_upstream_runs" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"connection_id" uuid NOT NULL,
 	"company_id" uuid NOT NULL,
@@ -64,19 +64,19 @@ CREATE TABLE "cloud_upstream_runs" (
 	"completed_at" timestamp with time zone
 );
 --> statement-breakpoint
-ALTER TABLE "heartbeat_run_events" DROP CONSTRAINT "heartbeat_run_events_run_id_heartbeat_runs_id_fk";
+ALTER TABLE "heartbeat_run_events" DROP CONSTRAINT IF EXISTS "heartbeat_run_events_run_id_heartbeat_runs_id_fk";
 --> statement-breakpoint
-ALTER TABLE "agents" ADD COLUMN "managed_instructions_snapshot" jsonb;--> statement-breakpoint
-ALTER TABLE "instance_settings" ADD COLUMN "visibility" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
-ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_heartbeat_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("heartbeat_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "cloud_upstream_connections" ADD CONSTRAINT "cloud_upstream_connections_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_connection_id_cloud_upstream_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."cloud_upstream_connections"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "activation_events_company_idx" ON "activation_events" USING btree ("company_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "activation_events_first_per_company_uq" ON "activation_events" USING btree ("company_id","event_type") WHERE "activation_events"."first_for_company" = true;--> statement-breakpoint
-CREATE INDEX "cloud_upstream_connections_company_idx" ON "cloud_upstream_connections" USING btree ("company_id");--> statement-breakpoint
-CREATE INDEX "cloud_upstream_runs_company_created_idx" ON "cloud_upstream_runs" USING btree ("company_id","created_at");--> statement-breakpoint
-CREATE INDEX "cloud_upstream_runs_connection_idx" ON "cloud_upstream_runs" USING btree ("connection_id");--> statement-breakpoint
+ALTER TABLE "agents" ADD COLUMN IF NOT EXISTS "managed_instructions_snapshot" jsonb;--> statement-breakpoint
+ALTER TABLE "instance_settings" ADD COLUMN IF NOT EXISTS "visibility" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "activation_events" ADD CONSTRAINT "activation_events_heartbeat_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("heartbeat_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "cloud_upstream_connections" ADD CONSTRAINT "cloud_upstream_connections_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_connection_id_cloud_upstream_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."cloud_upstream_connections"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+DO $$ BEGIN ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "activation_events_company_idx" ON "activation_events" USING btree ("company_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "activation_events_first_per_company_uq" ON "activation_events" USING btree ("company_id","event_type") WHERE "activation_events"."first_for_company" = true;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cloud_upstream_connections_company_idx" ON "cloud_upstream_connections" USING btree ("company_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cloud_upstream_runs_company_created_idx" ON "cloud_upstream_runs" USING btree ("company_id","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "cloud_upstream_runs_connection_idx" ON "cloud_upstream_runs" USING btree ("connection_id");--> statement-breakpoint
 ALTER TABLE "heartbeat_run_events" ADD CONSTRAINT "heartbeat_run_events_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE cascade ON UPDATE no action;
