@@ -4116,8 +4116,10 @@ export function resolvePaperclipDesiredSkillNames(
   opts?: { alwaysIncludeSkillKeys?: string[] },
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  if (!preference.explicit) return [];
-  const alwaysInclude = opts?.alwaysIncludeSkillKeys ?? [];
+  const alwaysInclude = (opts?.alwaysIncludeSkillKeys ?? [])
+    .map((key) => availableEntries.find((e) => e.key.endsWith(`/${key}`))?.key)
+    .filter(Boolean) as string[];
+  if (!preference.explicit) return alwaysInclude;
   const desiredSkills = preference.desiredSkills
     .map((reference) =>
       canonicalizeDesiredPaperclipSkillReference(reference, availableEntries),
