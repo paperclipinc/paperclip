@@ -4434,7 +4434,7 @@ export function agentRoutes(
       ),
       hireInput.runtimeConfig,
     );
-    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
