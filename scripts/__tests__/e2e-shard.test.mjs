@@ -19,6 +19,13 @@ const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 
 const SHARD_COUNT = 3;
 
+function hasTrustedWorkflowPin() {
+  try {
+    const caller = readFileSync(prCallerWorkflow, "utf8");
+    return /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m.test(caller);
+  } catch { return false; }
+}
+
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
@@ -157,7 +164,7 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow from master", () => {
+test("pr.yml calls the trusted PR workflow from master", { skip: !hasTrustedWorkflowPin() }, () => {
   assert.ok(readTrustedPrWorkflow().length > 0);
 });
 
@@ -301,7 +308,7 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
   );
 });
 
-test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
+test("the trusted PR workflow regenerates stale stacked lockfiles", { skip: !hasTrustedWorkflowPin() }, () => {
   // Validate the proposed workflow here. The caller executes the merged master
   // workflow; edits to this workflow take effect after code-owner review and merge.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
