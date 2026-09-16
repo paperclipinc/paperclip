@@ -1,7 +1,5 @@
 import { createDiscordAdapter } from "@chat-adapter/discord";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1699,10 +1697,9 @@ type DiscordClientForLifecycleTest = {
   login(token?: string): Promise<string>;
 };
 
-const chatAdapterDiscordDir = dirname(
-  fileURLToPath(new URL("../../node_modules/@chat-adapter/discord/package.json", import.meta.url)),
+const discordRequire = createRequire(
+  import.meta.resolve("@chat-adapter/discord"),
 );
-const discordRequire = createRequire(chatAdapterDiscordDir + "/index.js");
 const { Client, Events } = discordRequire("discord.js") as {
   Client: {
     prototype: DiscordClientForLifecycleTest;

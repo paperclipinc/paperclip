@@ -1,8 +1,11 @@
+import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
+  agentWakeupRequests,
   completionContracts,
   heartbeatRuns,
   heartbeatRunEvents,
@@ -37,6 +40,7 @@ import {
   readNativeBoardResponseWaitSource,
 } from "./native-board-response-wait.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import {
   authorizeNativeChatReviewPresentation,
@@ -113,7 +117,7 @@ export function resolveNativeFinalizerStatus(
   return arbitrateNativeStatus(input);
 }
 
-async function pendingNativeGovernance(input: {
+export async function pendingNativeGovernance(input: {
   db: Db;
   companyId: string;
   issueId: string;
@@ -483,7 +487,10 @@ async function recordRetryableFailure(input: {
       nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
     };
   });
-  if (terminalRunToEmit) await emitAgentTaskRun(input.db, terminalRunToEmit);
+  if (terminalRunToEmit) {
+    await emitAgentTaskRun(input.db, terminalRunToEmit);
+    void reportRunFailure(input.db, terminalRunToEmit);
+  }
   return {
     ...input.coordinator,
     ...outcome,
@@ -624,6 +631,7 @@ async function projectCommittedRun(input: {
   // committed terminal result.
   if (updatedRun && updatedRun.status !== input.run.status) {
     await emitAgentTaskRun(input.db, updatedRun);
+    void reportRunFailure(input.db, updatedRun);
   }
 }
 
@@ -1089,6 +1097,13 @@ export async function finalizeNativeRun(input: {
     ],
   };
 
+  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+  const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
+  // One follow-up may repair an incomplete report. Repeated incomplete results
+  // require a visible recovery action instead of an unbounded wake loop.
+  const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const authoritativeIssue = await input.db
@@ -1154,11 +1169,12 @@ export async function finalizeNativeRun(input: {
         runId: run.id,
       }),
     ]);
-    const decision = resolveNativeFinalizerStatus({
+    const proposedDecision = resolveNativeFinalizerStatus({
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       governanceGate,
+      allowIncompleteContinuation,
       completionClaimPolicyAccepted:
         contractRow.risk === "low" &&
         contractRow.completionAuthority === "agent_claim_policy",
@@ -1174,6 +1190,11 @@ export async function finalizeNativeRun(input: {
         null,
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
+    });
+    const decision = conversationNativeDecision({
+      conversation: isConversation(authoritativeIssue), terminalState,
+      workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,
+      priorStatus: authoritativeStatus(authoritativeIssue.status), decision: proposedDecision,
     });
     const assessmentRow = await recordNativeWorkAssessment({
       db: input.db,
@@ -1315,6 +1336,7 @@ export async function finalizeNativeRun(input: {
         updatedRun
       ) {
         await emitAgentTaskRun(input.db, updatedRun);
+        void reportRunFailure(input.db, updatedRun);
       }
       if (input.projectRunStatus)
         await materializeCommittedReviewResponse(input.db, input.runId);

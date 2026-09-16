@@ -8,7 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "/brands/apps/slack.png"
+    "logoUrl": "/brands/apps/slack.svg"
   },
   "urlPatterns": [
     "https://mcp.slack.com/*",

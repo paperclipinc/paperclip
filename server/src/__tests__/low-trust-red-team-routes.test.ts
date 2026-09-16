@@ -895,7 +895,6 @@ describeEmbeddedPostgres(
     });
 
     afterAll(async () => {
-      await closeDbClient(db);
       await tempDb?.cleanup();
     });
 

@@ -149,6 +149,10 @@ vi.mock("./ToastViewport", () => ({
   ToastViewport: () => null,
 }));
 
+vi.mock("./AnnouncementWell", () => ({
+  AnnouncementWell: () => <div data-announcement-well />,
+}));
+
 vi.mock("./MobileBottomNav", () => ({
   MobileBottomNav: () => null,
 }));
@@ -363,6 +367,7 @@ describe("Layout", () => {
     expect(mockHealthApi.get).toHaveBeenCalled();
     expect(container.textContent).toContain("Breadcrumbs");
     expect(container.textContent).toContain("Outlet content");
+    expect(container.querySelectorAll("[data-announcement-well]")).toHaveLength(1);
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Authenticated private");
     expect(container.textContent).not.toContain(
@@ -738,9 +743,6 @@ describe("Layout", () => {
 
   it("mounts the Apps secondary sidebar regardless of the retired experimental flag", async () => {
     currentPathname = "/PAP/apps";
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
-    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: false,
     });

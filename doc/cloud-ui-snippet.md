@@ -10,6 +10,47 @@ application origin and is visible to every browser that receives the UI shell.
 Do not include secrets or customer data. Restart the app after changing it.
 Operators must review scripts and any required CSP changes before deployment.
 
+## Base64 variant
+
+Delivery pipelines that write env vars through provider APIs can sit behind
+web application firewalls that reject values containing raw script markup.
+`PAPERCLIP_CLOUD_UI_SNIPPET_B64` carries the same snippet through them as
+standard base64 of the UTF-8 HTML:
+
+```sh
+PAPERCLIP_CLOUD_UI_SNIPPET_B64="$(base64 < snippet.html)"
+```
+
+Whitespace and line wrapping in the value are tolerated. A value that is not
+canonical padded base64 of UTF-8 text, or that decodes to blank, is ignored —
+if the widget does not appear, check that the value round-trips through
+`base64 -d`. A present `PAPERCLIP_CLOUD_UI_SNIPPET` always wins, blank
+included: clearing the plain variable to blank disables injection even while
+a base64 value is still deployed. Everything else about the snippet is
+unchanged.
+
+Base64 does not defeat every firewall. Some decode the value before matching,
+so they reject a base64 snippet whose decoded bytes still contain script
+markup. Deliver a bare script body (below) through one of these.
+
+## Bare script body
+
+Set the value to the script body alone — the JavaScript with no surrounding
+`<script>` element:
+
+```sh
+PAPERCLIP_CLOUD_UI_SNIPPET_B64="$(base64 < snippet.body.js)"
+```
+
+The server wraps a bare body in a `<script>` element before it inserts it. The
+first non-whitespace character decides the form: a value that starts with `<`
+is treated as markup and injected unchanged; any other value is treated as a
+body and wrapped. This applies to both the plain and the base64 variant.
+
+The body must be safe to embed inline. It must not contain a literal
+`</script>`, which would close the wrapper early. Because the value carries no
+`<script` marker, a firewall that decodes base64 before matching passes it.
+
 ## Plain closed beta
 
 Set the value to this standard embed, replacing `YOUR_CHAT_APP_ID` with the

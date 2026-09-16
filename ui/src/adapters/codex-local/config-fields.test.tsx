@@ -66,7 +66,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");
-    expect(html).toContain("Conservative (fail closed)");
+    expect(html).toContain("Allow Paperclip reads");
   });
 
   it("falls back to the fail-closed Codex permission mode", () => {

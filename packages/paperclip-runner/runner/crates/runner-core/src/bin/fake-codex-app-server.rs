@@ -1140,6 +1140,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if descendant_notifications
+                    && message.pointer("/params/threadId").and_then(Value::as_str)
+                        == Some("descendant-1")
+                {
+                    send(json!({"id": id, "result": {"thread": {
+                        "id": "descendant-1", "parentThreadId": state.thread_id
+                    }}}))?;
+                    continue;
+                }
                 if args
                     .iter()
                     .any(|arg| arg == "--require-lightweight-history")
@@ -1182,7 +1191,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
             }
@@ -1431,10 +1440,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
                 if descendant_notifications {
-                    for index in 0..300 {
+                    // Codex can announce a helper through the root's spawn receipt
+                    // before emitting any thread/started notification for that helper.
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "spawn-first-child", "type": "collabAgentToolCall",
+                            "tool": "spawnAgent", "status": "completed",
+                            "senderThreadId": state.thread_id,
+                            "receiverThreadIds": ["descendant-0"]}
+                    }}))?;
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-0", "turnId": "first-child-turn"
+                    }}))?;
+                    // A helper turn may arrive before either spawn completion or thread/started.
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-1", "turnId": "second-child-turn"
+                    }}))?;
+                    for index in 2..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
                             "id": format!("descendant-{index}"),
-                            "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                            "parentThreadId": state.thread_id
                         }}}))?;
                     }
                     send(json!({"method": "turn/completed", "params": {
@@ -1444,7 +1469,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if args.iter().any(|value| value == "--descendant-overflow") {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
                 if fail_after_second_turn_start && turn_start_count == 2 {

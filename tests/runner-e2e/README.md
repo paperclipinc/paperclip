@@ -72,7 +72,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains four suites. `core-compatibility` (**Core Runner
+The catalog contains five suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -120,7 +120,44 @@ runner instance, PID, and process-start identity. Each turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
-The complete catalog is 68 cells (45 local and 23 Daytona) and 120 expected
+`agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **24 local cells**.
+They cover continuity across server restart, fresh context after `/new`,
+Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
+project reuse, and a new project with two repository URLs. Each cell opens the
+production chat surface and resolves the backing issue through the chat API.
+The source conversation must settle to `in_review` / `waiting`; handed-off
+execution tasks must finish with their initial Plan and output documents.
+Reset runs are retained separately from the 68 expected provider turns in this
+suite. Cancelled turns and execution-task runs remain included in billing and
+cleanup. The production chat directive is injected normally; fixtures do not
+replace it with completion instructions. Daytona is excluded.
+
+```bash
+# Run these after deterministic checks, with the required provider keys set.
+pnpm test:e2e:runner -- --id agent-chat.legacy-codex.local.continuity-restart
+pnpm test:e2e:runner -- --id agent-chat.legacy-claude.local.continuity-restart
+pnpm test:e2e:runner -- --suite agent-chat
+```
+
+The regular browser suite has deterministic process providers in
+`tests/e2e/fixtures/agent-chat.mjs`. It exercises the real queue, APIs, database,
+MCP project tools, and shared task UI without provider billing. Only upstream
+GitHub discovery is simulated, scoped to a fixture-only credential; repository
+permissions and mutations remain real. Run it with:
+
+```bash
+pnpm --filter @paperclipai/ui build
+pnpm test:e2e tests/e2e/agent-chat.spec.ts
+# Against a dedicated authenticated test instance configured per that suite:
+pnpm test:e2e:multiuser-authenticated --grep 'agent chats'
+```
+
+Both suites save and restore experimental settings. Browser E2E always starts a
+throwaway instance; never point the authenticated suite at the running demo.
+Missing provider credentials fail paid preflight and are not passing coverage.
+
+The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
 paid agent turns. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
@@ -219,6 +256,12 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
+The trusted publisher discovers display-only entries for selected execution IDs
+absent from its local catalog, so branch-only suites remain visible in the
+dashboard, filters, gallery, and summary image. It validates execution identity
+and escapes display text without loading target-branch executable code. Unknown
+suite cardinality is not treated as proof of full-suite coverage.
+
 Permanent publication uses two explicit bundles. Both retain only normalized
 result PNG files with the explicit `public-runner-fixture` publication marker,
 including marked `failure.png` captures, so every campaign dashboard has its
@@ -236,6 +279,10 @@ retains allowlisted inert per-attempt evidence (`.json`, `.log`, `.md`, and
 `.txt`); `.log` copies have already passed exact-value/key-shape scanning and
 redaction. The GitHub Pages bundle is regenerated separately with the same
 declared-screenshot boundary.
+
+Publication fails if any declared public screenshot is missing from the bundle.
+The evidence packager explicitly retains `chat-plan-draft.png` and
+`chat-plan-revised.png`; arbitrary chat-prefixed files remain excluded.
 
 Both public bundles exclude video, archives, raw/unallowlisted logs, SVG or
 other active content, generated Playwright/blob/HTML report trees, and
@@ -271,6 +318,12 @@ report, the workflow and per-cell logs, and the access-controlled report
 artifacts. Each cell name links to its exact section in the campaign report.
 The public campaign links become available after the history publisher
 finishes. The artifact links remain available for 30 days.
+
+For a development branch that adds a suite, the trusted default-branch dashboard
+may not yet include that suite's interactive cards. Its published `summary.md`
+and `normalized-results.json` still contain every selected cell. Use those files,
+the GitHub job summary, or `html/index.html` in the merged Playwright artifact
+to inspect branch-only results; an absent dashboard card is not passing coverage.
 
 ### Iterate on a published dashboard without rerunning paid tests
 
@@ -369,7 +422,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100); use at least 68 to run the current
+integer from 1–100 on AWS (default 100); use at least 92 to run the current
 complete catalog in one wave. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
@@ -426,3 +479,33 @@ See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.
 See [SECURITY.md](./SECURITY.md) before enabling paid dispatch, the runner
 group, or permanent public history in this public repository.
+
+## Everyday user-story evals
+
+See [EVERYDAY-WORKFLOWS.md](EVERYDAY-WORKFLOWS.md) for the explicit-only native-runner stories and their canonical Evalbook importer. These cells do not expand scheduled `--all` runs.
+
+### Everyday hiring prerequisites and timeout evidence
+
+The manual `everyday-workflows` / `hire-reuse` story enables native API tools in
+its isolated harness and creates a personal managed AI account through the public
+API. The lead uses the responsible user's default account, without adapter env
+credential overrides. The hire must inherit that binding and finish a real run
+attributed to the same account. The evidence records this fixture configuration.
+Other suites retain their existing API-tool defaults.
+
+A polling deadline after successful state reads is a candidate workflow failure,
+not a reason to retry as infrastructure. State snapshots remain in the evidence;
+the timeout message does not serialize task data into the failure classifier.
+Explicit server-health waits and failed network reads retain infrastructure
+classification.
+
+The product execution prompt v3 tells agents to record child dependencies and
+end the parent turn when no independent work remains. The user-story prompts
+stay unchanged, so live retests measure the product guidance itself.
+
+Delegated ZIP delivery can appear on the user-facing parent or its child task.
+The grader selects the newest ZIP only within that task family; a reuse request
+requires a new attachment after the request. The hired-agent execution/account
+checks and independent downloaded-code checks remain mandatory.
+
+Revision delivery checks exclude preserved originals by their content hash, even when the agent republishes an original after the revised ZIP. The browser downloads the exact selected attachment ID; its bytes still pass through the independent artifact checker.

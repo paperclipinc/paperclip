@@ -73,6 +73,8 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
+const PROBE_CLEANUP_WARNING = "[paperclip] Codex probe cleanup incomplete";
+
 async function prepareCodexHelloProbe(input: {
   runId: string;
   companyId: string;
@@ -83,6 +85,7 @@ async function prepareCodexHelloProbe(input: {
   args: string[];
   env: Record<string, string>;
   probeApiKey: string | null;
+  managedAiConnection?: boolean;
 }): Promise<{
   command: string;
   args: string[];
@@ -118,7 +121,7 @@ async function prepareCodexHelloProbe(input: {
     const configuredHomeIsManaged =
       configuredCodexHome != null &&
       isManagedCodexHomePath(process.env, input.companyId, configuredCodexHome);
-    if (isCodexAuthCacheEnabled(process.env)) {
+    if (!input.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
       // Identity-anchored cache vend, exactly as execute runs it before the
       // seeding below. Best-effort: a vend failure never blocks the probe, and
       // the probe then stages the shared credential as-is.
@@ -213,11 +216,13 @@ async function prepareCodexHelloProbe(input: {
     const probeHome = input.targetIsRemote
       ? path.posix.join(input.cwd, ".paperclip-runtime", "codex", `probe-home-${input.runId}`)
       : path.join(os.tmpdir(), `paperclip-codex-probe-${input.runId}`);
+    // The local finally path retries cleanup independently of the model result.
+    if (!input.targetIsRemote) probeHomeLocalDir = probeHome;
     return {
       command: "sh",
       args: [
         "-c",
-        'set -e; mkdir -p "$CODEX_HOME"; umask 077; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; trap \'rm -rf "$CODEX_HOME"\' EXIT INT TERM; "$0" "$@"',
+        `set -e; umask 077; mkdir -p "$CODEX_HOME"; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; cleanup() { result=$?; trap - EXIT; rm -f "$CODEX_HOME/auth.json" || true; rm -rf "$CODEX_HOME" || printf '%s\\n' '${PROBE_CLEANUP_WARNING}' >&2; exit "$result"; }; trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; "$0" "$@"`,
         input.command,
         ...input.args,
       ],
@@ -253,6 +258,9 @@ export async function testEnvironment(
         code: "adapter_engine_unavailable",
         level: "error",
         message: engineSelection.unavailableReason,
+        hint: ctx.executionTarget?.kind === "remote"
+          ? "In the agent’s runtime settings, select the CLI engine, or use a sandbox image with the Codex ACP server installed."
+          : undefined,
       }],
       testedAt: new Date().toISOString(),
     };
@@ -391,7 +399,16 @@ export async function testEnvironment(
         { ...config, fastMode: false },
         { skipGitRepoCheck: targetIsSandbox },
       );
-      const args = execArgs.args;
+      // A connection test needs one small response, not plugin catalog sync,
+      // repository instructions, or a durable session. Keep provider/model
+      // configuration intact while removing unrelated startup work.
+      const args = [...execArgs.args];
+      args.splice(args.length - 1, 0,
+        "-c", "features.plugins=false",
+        "-c", "features.remote_plugin=false",
+        "-c", "project_doc_max_bytes=0",
+        ...(args.includes("--ephemeral") ? [] : ["--ephemeral"]),
+      );
       if (execArgs.fastModeIgnoredReason) {
         checks.push({
           code: "codex_fast_mode_unsupported_model",
@@ -420,6 +437,7 @@ export async function testEnvironment(
           ? hostOpenAiKey
           : null;
       const preparedProbe = await prepareCodexHelloProbe({
+        managedAiConnection: Boolean(config.managedAiConnection),
         runId,
         companyId: ctx.companyId,
         target,
@@ -446,8 +464,20 @@ export async function testEnvironment(
           },
         );
         const parsed = parseCodexJsonl(probe.stdout);
-        const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
-        const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+        // Plugin-catalog login is separate from model authentication. Its
+        // warnings must not explain an unrelated provider/process failure.
+        const providerStderr = probe.stderr.split(/\r?\n/)
+          .filter((line) => !/\bcodex_core_plugins(?:::|:)/.test(line) && !line.includes(PROBE_CLEANUP_WARNING))
+          .join("\n");
+        const detail = summarizeProbeDetail(probe.stdout, providerStderr, parsed.errorMessage);
+        const authEvidence = parsed.errorMessage?.trim() || providerStderr;
+        if (probe.stderr.includes(PROBE_CLEANUP_WARNING)) {
+          checks.push({
+            code: "codex_probe_cleanup_incomplete",
+            level: "info",
+            message: "Temporary probe files could not be fully removed; this does not change the connection result.",
+          });
+        }
 
         if (probe.timedOut) {
           checks.push({

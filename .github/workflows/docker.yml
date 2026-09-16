@@ -81,7 +81,7 @@ jobs:
     # Native builds land well inside this; it is a backstop, not a budget.
     # (The interim fix while this PR landed raised the single QEMU job's cap
     # to 120 minutes; native per-arch legs make that headroom unnecessary.)
-    timeout-minutes: 120
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
