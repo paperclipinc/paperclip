@@ -1,11 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "@/api/instanceSettings";
-import { queryKeys } from "@/lib/queryKeys";
+import { useFeatures } from "./useFeatures";
+
+// Board users cannot read /instance/settings in this fork (instance-admin
+// only), so the flag rides the capabilities payload like every other one.
 export function useAgentChatEnabled() {
-  const query = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
+  const query = useFeatures();
   return {
     enabled: query.data?.enableAgentChat === true,
     loaded: query.isFetched,

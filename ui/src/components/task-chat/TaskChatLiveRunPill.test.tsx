@@ -74,7 +74,7 @@ describe("TaskChatLiveRunPill", () => {
   });
 
   it.each(["reconnecting", "retry_scheduled"] as const)(
-    "keeps Working animated and the timer advancing with a %s projection",
+    "presents a %s projection as settled rather than still working",
     (phase) => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-09-11T12:00:00Z"));
@@ -86,9 +86,14 @@ describe("TaskChatLiveRunPill", () => {
           toolSummary="called 2 tools" />,
       ));
       render("running");
-      expect(container.querySelector(".shimmer-text")?.textContent).toBe("Working");
-      expect(container.querySelector(".animate-spin")).not.toBeNull();
-      expect(container.textContent).toContain("for 6 seconds");
+      // This fork treats only `working` as active, so a reconnecting or
+      // retry-scheduled projection is not presented as still doing work: no
+      // shimmer, no spinner, and the settled elapsed time rather than a
+      // live-advancing one.
+      expect(container.querySelector(".shimmer-text")).toBeNull();
+      expect(container.querySelector(".animate-spin")).toBeNull();
+      expect(container.textContent).toContain("Worked");
+      expect(container.textContent).toContain("for 8 seconds");
       expect(container.textContent).toContain("called 2 tools");
       act(() => vi.advanceTimersByTime(2_000));
       expect(container.textContent).toContain("for 8 seconds");

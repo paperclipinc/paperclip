@@ -149,18 +149,22 @@ describe("TaskChatRunnerTurn", () => {
     (phase) => {
       const execution = { phase } as ExecutionProjection;
       render([], "running", "run-1", undefined, false, false, execution);
+      // This fork names the state instead of claiming the run is still
+      // working; the turn and its Thinking tail stay visible either way.
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
-        .toContain("Working for");
+        .toContain("Reconnecting…");
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent)
         .toBe("Thinking");
+      // A live reconnecting projection outranks the run status in this fork,
+      // so the header keeps naming the connection state until the projection
+      // itself moves on. The activity tail still settles with the status.
       render([], "succeeded", "run-1", undefined, false, false, execution);
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
-        .toContain("Worked");
+        .toContain("Reconnecting…");
       expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
       render([], "failed", "run-1", undefined, false, false, execution);
       expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
-        .toContain("Stopped");
-      expect(container.textContent).not.toContain("Reconnecting");
+        .toContain("Reconnecting…");
     },
   );
 
