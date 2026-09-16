@@ -17,6 +17,7 @@ import { authApi } from "@/api/auth";
 import { cloudBillingApi } from "@/api/cloudBilling";
 import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -156,6 +157,7 @@ export function SidebarAccountMenu({
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const isCloud = Boolean(useCloudInstance());
   const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
@@ -283,7 +285,7 @@ export function SidebarAccountMenu({
             </div>
           </PopoverContent>
         </Popover>
-        {!rail && !cloudBilling ? (
+        {!rail && !cloudBilling && !isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a
