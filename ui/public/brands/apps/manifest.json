@@ -105,16 +105,6 @@
       "darkAsset": "/brands/apps/discord-dark.svg"
     },
     {
-      "slug": "discord",
-      "provider": "Discord",
-      "catalogVisible": true,
-      "localAsset": "/brands/apps/discord.svg",
-      "officialSourceUrl": "https://discord.com/branding",
-      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/discord.svg",
-      "assetType": "svg",
-      "darkVariantRequired": false
-    },
-    {
       "slug": "egnyte",
       "provider": "Egnyte",
       "catalogVisible": false,
@@ -273,16 +263,6 @@
       ]
     },
     {
-      "slug": "microsoft-teams",
-      "provider": "Microsoft Teams",
-      "catalogVisible": true,
-      "localAsset": "/brands/apps/microsoft-teams.svg",
-      "officialSourceUrl": "https://www.microsoft.com/en-us/microsoft-365/microsoft-teams/group-chat-software",
-      "upstreamAssetUrl": "https://github.com/vercel/chat/blob/51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c/apps/docs/lib/logos.tsx",
-      "assetType": "svg",
-      "darkVariantRequired": false
-    },
-    {
       "slug": "netlify",
       "provider": "Netlify",
       "catalogVisible": true,
@@ -391,16 +371,6 @@
       "provider": "Telegram",
       "catalogVisible": true,
       "localAsset": "/brands/apps/telegram.svg"
-    },
-    {
-      "slug": "telegram",
-      "provider": "Telegram",
-      "catalogVisible": true,
-      "localAsset": "/brands/apps/telegram.svg",
-      "officialSourceUrl": "https://telegram.org/tour/screenshots",
-      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/telegram.svg",
-      "assetType": "svg",
-      "darkVariantRequired": false
     },
     {
       "slug": "ticket-tailor",
