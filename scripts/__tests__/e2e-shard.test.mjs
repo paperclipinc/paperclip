@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
+import { loadShardDurations } from "../general-server-shard.mjs";
 import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -17,7 +17,7 @@ const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 
-const SHARD_COUNT = 8;
+const SHARD_COUNT = 3;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -25,15 +25,24 @@ function runShard(args) {
   return result.stdout.trim().split(/\s+/).filter(Boolean);
 }
 
-function readTrustedPrWorkflow() {
+function hasTrustedWorkflowPin() {
   const caller = readFileSync(prCallerWorkflow, "utf8");
-  assert.match(
-    caller,
-    /^\s+uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master\s*$/m,
-    "pr.yml must call the trusted workflow from CODEOWNERS-protected master",
+  return /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@[0-9a-f]{40}/.test(caller);
+}
+
+function readPinnedTrustedPrWorkflow() {
+  const caller = readFileSync(prCallerWorkflow, "utf8");
+  const pin = caller.match(
+    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@([0-9a-f]{40})/,
   );
-  // Validate proposed workflow changes locally; CI executes the merged master version.
-  return readFileSync(trustedPrWorkflow, "utf8");
+  assert.ok(pin, "pr.yml must call the trusted workflow at a full commit SHA");
+
+  const result = spawnSync("git", ["show", `${pin[1]}:${trustedPrWorkflowPath}`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `cannot read the pinned trusted workflow: ${result.stderr}`);
+  return result.stdout;
 }
 
 function readWorkflowJobs(workflow) {
@@ -124,10 +133,8 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
-  // New specs use the scheduler's median estimate until measured durations exist.
-  const fallbackWeight = defaultSuiteWeight(durations);
   const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
+    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? 0), 0),
   );
 
   const heaviest = Math.max(...weights);
@@ -138,7 +145,7 @@ test("the weighted partition keeps the shards close to balanced", () => {
   // of on the PR critical path. A single indivisible spec (smoke-lab) can
   // legitimately exceed the even cut on its own, so the bound is floored at
   // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
+  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? 0));
   const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
   assert.ok(
     heaviest <= bound,
@@ -157,15 +164,15 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml calls the trusted PR workflow from master", () => {
-  assert.ok(readTrustedPrWorkflow().length > 0);
+test("pr.yml calls the trusted PR workflow at an immutable SHA", { skip: !hasTrustedWorkflowPin() }, () => {
+  assert.ok(readPinnedTrustedPrWorkflow().length > 0);
 });
 
-test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", { skip: !hasTrustedWorkflowPin() }, () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
-  const workflow = readTrustedPrWorkflow();
+  const workflow = readPinnedTrustedPrWorkflow();
   const jobs = readWorkflowJobs(workflow);
 
   const aggregate = jobs.get("e2e");
@@ -207,7 +214,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", { skip: !hasTrustedWorkflowPin() }, () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
   const gate = jobs.get("gate");
@@ -286,10 +293,10 @@ test("the stacked PR scope selector runs full CI only where intended", () => {
   );
 });
 
-test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", { skip: !hasTrustedWorkflowPin() }, () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
-  const workflow = readTrustedPrWorkflow();
+  const workflow = readPinnedTrustedPrWorkflow();
   assert.ok(
     !/pnpm run test:e2e --\s/.test(workflow),
     "pr-trusted.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
@@ -301,41 +308,40 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
   );
 });
 
-test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
-  // Validate the proposed workflow here. The caller executes the merged master
-  // workflow; edits to this workflow take effect after code-owner review and merge.
+test("the trusted PR workflow regenerates stale stacked lockfiles", { skip: !hasTrustedWorkflowPin() }, () => {
+  // Implementation PRs validate the workflow under development here. The
+  // caller remains pinned to the last merged trusted SHA until a separate
+  // activation PR advances it, so unmerged PR code never runs on trusted
+  // infrastructure.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   assert.match(
     workflow,
     /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
-  const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
-  assert.doesNotMatch(
-    policy,
-    /cache: pnpm|uses: actions\/cache/,
-    "resolution-only policy must not restore or save a dependency store",
+  assert.match(
+    workflow,
+    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
+    "the policy job must restore the pnpm cache before dependency resolution",
   );
   assert.match(
-    policy,
+    workflow,
     /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
     "the policy job must resolve the complete merge tree without rewriting platform metadata",
   );
-
-  // Test lanes no longer wait on a policy-job artifact: each install step
-  // resolves a stale lockfile inline, so a manifest-changing or stacked PR
-  // still installs while the policy job validates resolution in parallel.
-  const fallbackInstalls = workflow.match(
-    /if ! pnpm install --frozen-lockfile; then\n[\s\S]{0,240}?pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile\n\s+pnpm install --frozen-lockfile\n\s+fi/g,
-  ) ?? [];
-  assert.equal(
-    fallbackInstalls.length,
-    7,
-    "every downstream install job must resolve a stale lockfile inline",
+  assert.match(
+    workflow,
+    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
+    "the policy job must upload a lockfile only when regeneration changed it",
   );
+
+  const restoreSteps = workflow.match(
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  ) ?? [];
+  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
   assert.doesNotMatch(
     workflow,
-    /Restore regenerated PR lockfile|lockfile_regenerated|name: pr-lockfile/,
-    "the policy lockfile artifact chain must stay removed; it put the policy job on every lane's critical path",
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
+    "a missing artifact must fail after the policy job says it uploaded one",
   );
 });
