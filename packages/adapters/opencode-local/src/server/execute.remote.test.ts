@@ -307,6 +307,7 @@ describe("opencode remote execution", () => {
         config: {
           command: "opencode",
           model: "opencode/gpt-5-nano",
+          env: { OPENAI_API_KEY: "test-preflight-key" },
         },
         context: {
           paperclipWorkspace: {
@@ -370,6 +371,9 @@ describe("opencode remote execution", () => {
       config: {
         command: "opencode",
         model: "opencode/gpt-5-nano",
+        // Explicit credential so the preflight outcome never depends on the
+        // host machine running the tests.
+        env: { OPENAI_API_KEY: "test-preflight-key" },
       },
       context: {
         paperclipWorkspace: {

@@ -39,6 +39,7 @@ import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { ApiError } from "../api/client";
 
@@ -99,6 +100,11 @@ const mockAccessApi = vi.hoisted(() => ({
   listUserDirectory: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
+}));
+
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
 }));
@@ -109,11 +115,6 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockDecisionsApi = vi.hoisted(() => ({
   list: vi.fn(),
-}));
-
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -193,6 +194,10 @@ vi.mock("../api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -205,9 +210,6 @@ vi.mock("../api/decisions", () => ({
   decisionsApi: mockDecisionsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -2811,6 +2813,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
     });
+    // Keyboard shortcuts come from board access on the fork.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { keyboardShortcuts: true } }),
+    );
 
     await act(async () => {
       root.render(
@@ -4142,10 +4148,13 @@ describe("IssueDetail", () => {
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: true },
+      }),
+    );
 
     await act(async () => {
       root.render(
@@ -6025,6 +6034,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -6039,6 +6049,7 @@ describe("canBoardResolveRecoveryAction", () => {
   it("uses populated memberships as the authoritative board access source", () => {
     expect(
       canBoardResolveRecoveryAction("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -6061,6 +6072,7 @@ describe("canBoardManageRuntime", () => {
   it("falls back to companyIds when memberships are not populated", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [],
         isInstanceAdmin: false,
@@ -6075,6 +6087,7 @@ describe("canBoardManageRuntime", () => {
   it("denies viewers the runtime-manage-gated break-glass affordance", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {
@@ -6095,6 +6108,7 @@ describe("canBoardManageRuntime", () => {
   it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
     expect(
       canBoardManageRuntime("company-1", {
+        ...buildCurrentBoardAccess(),
         companyIds: ["company-1"],
         memberships: [
           {

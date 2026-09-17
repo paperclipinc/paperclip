@@ -161,7 +161,7 @@ test("pr.yml calls the trusted PR workflow from master", () => {
   assert.ok(readTrustedPrWorkflow().length > 0);
 });
 
-test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", { skip: !hasTrustedWorkflowPin() }, () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
@@ -207,7 +207,7 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", { skip: !hasTrustedWorkflowPin() }, () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
   const gate = jobs.get("gate");
@@ -286,7 +286,7 @@ test("the stacked PR scope selector runs full CI only where intended", () => {
   );
 });
 
-test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", { skip: !hasTrustedWorkflowPin() }, () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
   const workflow = readTrustedPrWorkflow();

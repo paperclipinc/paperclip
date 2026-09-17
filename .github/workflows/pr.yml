@@ -2,11 +2,13 @@ name: PR
 
 on:
   pull_request:
+    branches:
+      - master
+      - main
 
-permissions:
-  actions: read
-  contents: read
-  pull-requests: read
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   ci:

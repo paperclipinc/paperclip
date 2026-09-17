@@ -4,7 +4,7 @@ import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
-import { instanceSettingsApi } from "../../api/instanceSettings";
+import { useFeatures } from "../../hooks/useFeatures";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
@@ -164,10 +164,7 @@ export function useLiveRunTranscripts({
   useEffect(() => {
     return onAdapterChange(() => setParserTick((t) => t + 1));
   }, []);
-  const { data: generalSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  });
+  const { data: generalSettings } = useFeatures();
 
   const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(

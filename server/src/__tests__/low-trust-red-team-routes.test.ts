@@ -42,6 +42,7 @@ import {
 } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
@@ -894,6 +895,7 @@ describeEmbeddedPostgres(
     });
 
     afterAll(async () => {
+      await closeDbClient(db);
       await tempDb?.cleanup();
     });
 

@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { buildCurrentBoardAccess } from "../test-utils/currentBoardAccess";
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -13,6 +14,9 @@ const mockHealthApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
+}));
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -161,6 +165,10 @@ vi.mock("./DevRestartBanner", () => ({
   DevRestartBanner: () => null,
 }));
 
+vi.mock("./CloudTrialBanner", () => ({
+  CloudTrialBanner: () => null,
+}));
+
 vi.mock("./SidebarAccountMenu", () => ({
   SidebarAccountMenu: () => <div>Account menu</div>,
 }));
@@ -259,6 +267,10 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
   // No bounce in the shared harness: these tests exercise layout chrome, not
@@ -311,6 +323,9 @@ describe("Layout", () => {
       deploymentExposure: "private",
       version: "1.2.3",
     });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: true } }),
+    );
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
     });
@@ -603,6 +618,9 @@ describe("Layout", () => {
 
   it("renders a mobile company settings selector on company settings routes", async () => {
     currentPathname = "/PAP/company/settings/secrets";
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { enableCloudSync: true } }),
+    );
     mockSidebarState.isMobile = true;
     mockSidebarState.sidebarOpen = false;
     const root = createRoot(container);
@@ -725,6 +743,9 @@ describe("Layout", () => {
 
   it("mounts the Apps secondary sidebar regardless of the retired experimental flag", async () => {
     currentPathname = "/PAP/apps";
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { keyboardShortcuts: false, enableApps: false } }),
+    );
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: false,
     });

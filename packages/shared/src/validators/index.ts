@@ -47,9 +47,12 @@ export {
   instanceExperimentalSettingsWithManagedSchema,
   managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceVisibilitySettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   patchInstanceSettingsSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
+  type PatchInstanceVisibilitySettings,
   type PatchInstanceSettings,
 } from "./instance.js";
 

@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
+  CreditCard,
   Flag,
+  Megaphone,
   LogOut,
   Settings,
   type LucideIcon,
@@ -12,6 +14,8 @@ import {
 import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { cloudBillingApi } from "@/api/cloudBilling";
+import { useFeatures } from "@/hooks/useFeatures";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -26,6 +30,12 @@ import { SidebarServerInfo } from "./SidebarServerInfo";
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
+// Cloud-only: feedback from managed tenants goes to the hosting company's
+// support inbox, not the upstream project's feedback form.
+const CLOUD_FEEDBACK_MAILTO = "mailto:support@paperclip.inc?subject=Paperclip%20Cloud%20feedback";
+// Cloud-only: the hosting layer's account page (plan and billing).
+// Served by the gateway OUTSIDE the SPA, so it needs a full-page navigation.
+const CLOUD_ACCOUNT_PATH = "/account";
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
@@ -41,6 +51,8 @@ interface MenuActionProps {
   onClick?: () => void;
   href?: string;
   external?: boolean;
+  // Same-tab full-page navigation for destinations outside the SPA router.
+  nativeAnchor?: boolean;
 }
 
 function deriveInitials(name: string) {
@@ -71,6 +83,7 @@ function MenuAction({
   onClick,
   href,
   external = false,
+  nativeAnchor = false,
 }: MenuActionProps) {
   const className =
     "flex h-(--profile-popover-row-height) w-full items-center gap-(--profile-popover-row-gap) rounded-lg px-2.5 text-left text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) text-foreground transition-colors hover:bg-accent";
@@ -88,6 +101,14 @@ function MenuAction({
     if (external) {
       return (
         <a href={href} target="_blank" rel="noreferrer" className={className} onClick={onClick}>
+          {content}
+        </a>
+      );
+    }
+
+    if (nativeAnchor) {
+      return (
+        <a href={href} className={className} onClick={onClick}>
           {content}
         </a>
       );
@@ -124,6 +145,20 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+
+  const { data: experimentalSettings } = useFeatures();
+  // Cloud-only: expose the hosting layer's plan/billing page.
+  const summaryQuery = useQuery({
+    queryKey: queryKeys.cloudBilling.summary,
+    queryFn: () => cloudBillingApi.summary(),
+    retry: false,
+    retryOnMount: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+  const cloudBilling = experimentalSettings?.cloudBilling === true || summaryQuery.isSuccess;
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
@@ -209,7 +244,25 @@ export function SidebarAccountMenu({
                 external
                 onClick={() => setOpen(false)}
               />
+              {cloudBilling ? (
+                <MenuAction
+                  label="Feedback"
+                  icon={Megaphone}
+                  href={CLOUD_FEEDBACK_MAILTO}
+                  external
+                  onClick={() => setOpen(false)}
+                />
+              ) : null}
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
+              {cloudBilling ? (
+                <MenuAction
+                  label="Plan & billing"
+                  icon={CreditCard}
+                  href={CLOUD_ACCOUNT_PATH}
+                  nativeAnchor
+                  onClick={closeNavigationChrome}
+                />
+              ) : null}
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

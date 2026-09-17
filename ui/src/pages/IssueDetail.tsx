@@ -47,12 +47,8 @@ import { issuesApi } from "../api/issues";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
-import {
-  heartbeatsApi,
-  type ActiveRunForIssue,
-  type LiveRunForIssue,
-} from "../api/heartbeats";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
+import { useFeatures } from "../hooks/useFeatures";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   canBoardManageRuntime,
@@ -160,13 +156,8 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { recordRecentTask } from "../lib/recent-tasks";
-import {
-  relativeTime,
-  cn,
-  formatDurationMs,
-  formatTokens,
-  visibleRunCostUsd,
-} from "../lib/utils";
+import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { getDisplayCurrency } from "../lib/display-currency";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ProjectTile } from "../components/ProjectTile";
@@ -394,7 +385,10 @@ type ActionableIssueThreadInteraction =
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction;
 type ResolveRecoveryActionOutcome =
-  "restored" | "false_positive" | "blocked" | "cancelled";
+  | "restored"
+  | "false_positive"
+  | "blocked"
+  | "cancelled";
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;
   runAgentId?: string | null;
@@ -1486,7 +1480,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   );
   const assigneeUsesPaperclipRunner = Boolean(
     issueAssigneeAgentId &&
-    agentMap.get(issueAssigneeAgentId)?.adapterType === "paperclip_runner",
+      agentMap.get(issueAssigneeAgentId)?.adapterType === "paperclip_runner",
   );
   const liveRuntimeRun =
     resolvedActiveRun ??
@@ -1779,29 +1773,29 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         : Number.NaN;
       const submittedDuringSourceRun = Boolean(
         targetRun?.contextIssueId === issueId &&
-        Number.isFinite(targetStartedAtMs) &&
-        Number.isFinite(submittedAtMs) &&
-        resolvedLinkedRuns.some((run) => {
-          if (
-            run.runId === targetRun.runId ||
-            run.agentId !== targetRun.agentId ||
-            run.contextIssueId !== issueId ||
-            !run.finishedAt
-          ) {
-            return false;
-          }
-          const startedAtMs = new Date(
-            run.startedAt ?? run.createdAt,
-          ).getTime();
-          const finishedAtMs = new Date(run.finishedAt).getTime();
-          return (
-            Number.isFinite(startedAtMs) &&
-            Number.isFinite(finishedAtMs) &&
-            startedAtMs <= submittedAtMs &&
-            submittedAtMs <= finishedAtMs &&
-            finishedAtMs <= targetStartedAtMs
-          );
-        }),
+          Number.isFinite(targetStartedAtMs) &&
+          Number.isFinite(submittedAtMs) &&
+          resolvedLinkedRuns.some((run) => {
+            if (
+              run.runId === targetRun.runId ||
+              run.agentId !== targetRun.agentId ||
+              run.contextIssueId !== issueId ||
+              !run.finishedAt
+            ) {
+              return false;
+            }
+            const startedAtMs = new Date(
+              run.startedAt ?? run.createdAt,
+            ).getTime();
+            const finishedAtMs = new Date(run.finishedAt).getTime();
+            return (
+              Number.isFinite(startedAtMs) &&
+              Number.isFinite(finishedAtMs) &&
+              startedAtMs <= submittedAtMs &&
+              submittedAtMs <= finishedAtMs &&
+              finishedAtMs <= targetStartedAtMs
+            );
+          }),
       );
       const nextComment: IssueDetailComment = {
         ...comment,
@@ -2689,16 +2683,12 @@ function IssueDetailActivityTab({
               {hasIssueTreeCost && issueTreeCostSummary ? (
                 <div className="flex flex-wrap gap-3">
                   <span className="font-medium text-foreground">
-                    Including sub-tasks{" "}
-                    {(issueTreeCostSummary.costCents / 100).toLocaleString(
-                      undefined,
-                      {
-                        style: "currency",
-                        currency: "USD",
-                        minimumFractionDigits: 4,
-                        maximumFractionDigits: 4,
-                      },
-                    )}
+                    Including sub-tasks {(issueTreeCostSummary.costCents / 100).toLocaleString(undefined, {
+                      style: "currency",
+                      currency: getDisplayCurrency(),
+                      minimumFractionDigits: 4,
+                      maximumFractionDigits: 4,
+                    })}
                   </span>
                   <span>
                     Tokens {formatTokens(issueTreeCostTokens)}
@@ -3031,7 +3021,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     () =>
       Boolean(
         issue?.currentExecutionWorkspace &&
-        isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace),
+          isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace),
       ),
     [issue?.currentExecutionWorkspace],
   );
@@ -3373,20 +3363,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => issuesApi.listFeedbackVotes(issueId!),
     enabled: !!issueId && !!currentUserId,
   });
-  const { data: instanceGeneralSettings } = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-    enabled: !!issueId,
-    retry: false,
-  });
-  const { data: instanceExperimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: !!issueId,
-    retry: false,
-  });
-  const keyboardShortcutsEnabled =
-    instanceGeneralSettings?.keyboardShortcuts === true;
+  const { data: instanceGeneralSettings } = useFeatures();
+  const { data: instanceExperimentalSettings } = useFeatures();
+  const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference =
@@ -5167,9 +5146,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         queryKey: queryKeys.issues.feedbackVotes(issueId!),
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.instance.generalSettings,
-      });
+      queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       pushToast({
         title:
           variables.sharingPreferenceAtSubmit === "prompt"
@@ -6132,7 +6109,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const loaded = await loadRemainingIssueCommentPages<IssueComment>({
       pages: refreshed.data?.pages,
       pageParams: refreshed.data?.pageParams as
-        Array<string | null> | undefined,
+        | Array<string | null>
+        | undefined,
       pageSize: ISSUE_COMMENT_PAGE_SIZE,
       maxPages: JUMP_TO_LATEST_MAX_COMMENT_PAGES,
       fetchPage: (afterCommentId) =>

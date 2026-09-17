@@ -189,6 +189,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
+  patchInstanceVisibilitySettingsSchema,
   startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
@@ -1325,6 +1326,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
+  "GET /api/companies/{companyId}/activation",
   "GET /api/companies/{companyId}/user-directory",
   "GET /api/companies/{companyId}/managed-agent-profiles",
   "POST /api/companies/{companyId}/managed-agent-profiles",
@@ -1519,6 +1521,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
+  "POST /api/companies/{companyId}/budgets/increment",
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
@@ -6000,6 +6003,23 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Get instance visibility settings",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/instance/settings/visibility",
+  tags: ["instance"],
+  summary: "Update instance visibility settings",
+  request: { body: jsonBody(patchInstanceVisibilitySettingsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({
@@ -9151,6 +9171,43 @@ registry.registerPath({
   summary: "Get adapter UI parser script",
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/activation",
+  tags: ["access"],
+  summary: "Get company activation status",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/budgets/increment",
+  tags: ["costs"],
+  summary: "Increment company budget (cloud-internal)",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ deltaCents: z.number().int().positive() })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/budget-paused",
+  tags: ["costs"],
+  summary: "List companies with paused budgets (cloud-internal)",
+  responses: { 200: r.ok(), 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/activation-signals",
+  tags: ["costs"],
+  summary: "List per-company activation signals for lifecycle-email gating (cloud-internal)",
+  responses: { 200: r.ok(), 403: r.forbidden },
 });
 
 // ─── Current route coverage ─────────────────────────────────────────────────
