@@ -630,6 +630,21 @@ describe("agent routes adapter validation", () => {
     expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
+  it("does not materialize a default instructions bundle for an inert process agent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Inert Worker",
+          adapterType: "process",
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
+  });
+
   it("restores a saved agent's redacted CODEX_HOME before testing its adapter", async () => {
     const agentId = "11111111-1111-4111-8111-111111111111";
     const storedHome = "/paperclip/companies/company-1/agents/agent-1/codex-home";

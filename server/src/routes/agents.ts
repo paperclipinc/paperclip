@@ -63,7 +63,8 @@ import {
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
-import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";import {
+import { inheritCompanyCredentialEnv } from "../services/agent-credential-inheritance.js";
+import {
   agentService,
   agentInstructionsService,
   accessService,
@@ -4437,7 +4438,7 @@ export function agentRoutes(
       ),
       hireInput.runtimeConfig,
     );
-    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    let requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -4454,7 +4455,8 @@ export function agentRoutes(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-    );    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
+    );
+    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
