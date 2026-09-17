@@ -1968,6 +1968,13 @@
       "when": 1789390281190,
       "tag": "0282_tired_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 283,
+      "version": "7",
+      "when": 1789631822616,
+      "tag": "0283_first_captain_marvel",
+      "breakpoints": true
     }
   ]
 }
