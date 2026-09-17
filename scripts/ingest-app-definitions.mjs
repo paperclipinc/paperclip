@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 const root = process.cwd();
+// Provider definitions can be regenerated without the external research corpus.
+// This mode preserves the checked-in ingestion report.
+const definitionsOnly = process.argv.includes("--definitions-only");
 const corpus =
   process.env.PAPERCLIP_CONTENT_TEMPLATES ??
   path.resolve(
@@ -65,6 +68,7 @@ const chatProviderName = (provider) =>
     "microsoft-teams": "Microsoft Teams",
     slack: "Slack",
     telegram: "Telegram",
+    "imessage-photon": "iMessage Photon",
   })[provider];
 const channelMethod = (
   provider,
@@ -177,6 +181,12 @@ const posthogMethod = (key, auth, extra = {}) =>
     { tenantFields: posthogConfigFields(), ...extra },
   );
 const apps = [
+  ["agentmail", "AgentMail", "Give agents email inboxes and handle each conversation as a task.", "communication", "agentmail.to", ["https://console.agentmail.to/*"], {
+    key: "email-agent", label: "Email with an agent", purpose: "channel", provider: "agentmail", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
+    whenToUse: "Assign an inbox to an agent and manage email conversations in tasks.", credentialFields: [{ key: "apiKey", label: "AgentMail API key", type: "password", placeholder: "am_…", required: true, secret: true }],
+    guidanceMd: "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
+    consoleLinks: { keys: "https://console.agentmail.to", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
+  }],
   [
     "zapier",
     "Zapier",
@@ -196,6 +206,44 @@ const apps = [
         whenToUse: "Use the complete provider-generated MCP URL from Zapier.",
       },
     ),
+  ],
+  [
+    "railway",
+    "Railway",
+    "Inspect services and logs, deploy applications, and run commands in your Railway containers.",
+    "developer",
+    "railway.com",
+    ["https://mcp.railway.com/"],
+    method(
+      "mcp-oauth",
+      "mcp_remote",
+      "oauth",
+      {
+        serverUrl: "https://mcp.railway.com",
+        scopesHint: ["openid", "offline_access", "workspace:member"],
+        oauthAuthorizationParams: { prompt: "consent" },
+      },
+      "S4",
+      "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
+      {
+        label: "Connect Railway",
+        ownershipModes: ["dcr", "customer"],
+        whenToUse: "Authorize your Railway account in the browser.",
+        consoleLinks: {
+          docs: "https://docs.railway.com/ai/mcp-server",
+          register: "https://docs.railway.com/integrations/oauth/creating-an-app",
+          settings: "https://railway.com/account",
+        },
+        warnings: [
+          "Railway enforces the workspaces selected at consent. Selected actions start Allowed; choose Ask first for operations you want to approve.",
+          "Logs and container commands can expose application data and secrets. Grant access only to agents trusted with the selected services.",
+          "The general Railway agent and committing staged changes are unavailable because their internal changes cannot be individually reviewed in Paperclip.",
+          "Live Railway qualification is pending. If Railway rejects API access, reconnect with the required permissions; Paperclip never falls back to another credential.",
+        ],
+        requiredResourceFilters: ["workspace", "project", "environment", "service"],
+      },
+    ),
+    { redirectConstraints: "https-or-loopback-http" },
   ],
   [
     "github",
@@ -357,6 +405,14 @@ const apps = [
         docs: "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/create-a-bot-for-teams",
       },
     ),
+  ],
+  [
+    "imessage-photon", "iMessage Photon",
+    "Message a Paperclip agent from Apple Messages using Photon Cloud. Pro supports DMs; dedicated lines also support groups.",
+    "communication", "photon.codes", ["https://photon.codes/*"],
+    channelMethod("imessage-photon", [field("projectSecret", "Project secret", "Photon project secret")], ["direct_message", "group_chat"],
+      "Connect a Photon Cloud project. Pro shared lines support DMs after sender enrollment in Photon and identity linking in Paperclip. Dedicated lines also support individually enabled groups.",
+      { register: "https://photon.codes/", docs: "https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing" }),
   ],
   [
     "telegram",
@@ -1371,6 +1427,7 @@ const reviewedGoogleSlugs = [
   "google-chat",
   "google-people",
   "google-workspace-search",
+
 ];
 for (const slug of reviewedGoogleSlugs) {
   const existingIndex = apps.findIndex((app) => app.slug === slug);
@@ -1470,6 +1527,15 @@ const inferState = (slug, state) => {
     linkCount: state.links.length,
   };
 };
+// Runtime credentials share the provider catalog, but never expose tool actions.
+for (const [slug, name, subscription, envKey] of [["anthropic", "Claude", true, "ANTHROPIC_API_KEY"], ["openai", "OpenAI", true, "OPENAI_API_KEY"], ["openrouter", "OpenRouter", false, "OPENROUTER_API_KEY"], ["xai", "Grok", true, "XAI_API_KEY"]]) {
+ let app=apps.find(a=>a.slug===slug);
+ if(!app){app={schemaVersion:1,slug,name,description:`Connect ${name} accounts for your agents.`,categories:["ai"],branding:brandingFor(slug),urlPatterns:[{"openai":"https://api.openai.com/*","openrouter":"https://openrouter.ai/api/*","xai":"https://api.x.ai/*"}[slug]],methods:[]};apps.push(app);}
+ const methods=(subscription?["subscription","api_key"]:["api_key"]).map(authMethod=>({key:`ai-${authMethod}`,label:authMethod==="subscription"?`${name} subscription`:`${name} API key`,purpose:"ai",transport:"runtime_auth",auth:authMethod==="subscription"?"oauth":"api_key",ai:{provider:slug,method:authMethod},grantKinds:["user","organization"],ownershipModes:["customer"],whenToUse:"Authenticate an agent with this account.",guidanceMd:"Use your personal account or an explicitly shared company account.",riskTier:"S3",...(authMethod==="api_key"?{credentialFields:[field("apiKey","API key","Enter API key")],keyPlacement:{location:"env",name:envKey}}:{})}));
+ // Legacy REST entries have no tool execution adapter. Only offer the supported
+ // AI account flow; saved REST connections remain removable through Connections.
+ app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
+}
 const validateApp = (app) => {
   if (
     app.schemaVersion !== 1 ||
@@ -1510,11 +1576,11 @@ const validateApp = (app) => {
         );
   }
 };
-const captureFiles = fs
+const captureFiles = definitionsOnly ? [] : fs
   .readdirSync(corpus)
   .filter((fileName) => fileName.endsWith(".md") && fileName !== "INDEX.md")
   .sort();
-if (captureFiles.length !== 99)
+if (!definitionsOnly && captureFiles.length !== 99)
   throw new Error(`Expected 99 captures, found ${captureFiles.length}`);
 const parsedCaptures = Object.fromEntries(
   captureFiles.map((fileName) => [
@@ -1551,7 +1617,7 @@ for (const app of apps)
     path.join(out, `${app.slug}.json`),
     JSON.stringify(app, null, 2) + "\n",
   );
-fs.writeFileSync(
+if (!definitionsOnly) fs.writeFileSync(
   path.join(root, "packages/shared/src/app-definitions.ingestion-report.json"),
   JSON.stringify(reviewReport, null, 2) + "\n",
 );

@@ -73,6 +73,8 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 const CODEX_AUTH_REQUIRED_RE =
   /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
+const PROBE_CLEANUP_WARNING = "[paperclip] Codex probe cleanup incomplete";
+
 async function prepareCodexHelloProbe(input: {
   runId: string;
   companyId: string;
@@ -83,6 +85,7 @@ async function prepareCodexHelloProbe(input: {
   args: string[];
   env: Record<string, string>;
   probeApiKey: string | null;
+  managedAiConnection?: boolean;
 }): Promise<{
   command: string;
   args: string[];
@@ -118,7 +121,7 @@ async function prepareCodexHelloProbe(input: {
     const configuredHomeIsManaged =
       configuredCodexHome != null &&
       isManagedCodexHomePath(process.env, input.companyId, configuredCodexHome);
-    if (isCodexAuthCacheEnabled(process.env)) {
+    if (!input.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
       // Identity-anchored cache vend, exactly as execute runs it before the
       // seeding below. Best-effort: a vend failure never blocks the probe, and
       // the probe then stages the shared credential as-is.
@@ -213,11 +216,13 @@ async function prepareCodexHelloProbe(input: {
     const probeHome = input.targetIsRemote
       ? path.posix.join(input.cwd, ".paperclip-runtime", "codex", `probe-home-${input.runId}`)
       : path.join(os.tmpdir(), `paperclip-codex-probe-${input.runId}`);
+    // The local finally path retries cleanup independently of the model result.
+    if (!input.targetIsRemote) probeHomeLocalDir = probeHome;
     return {
       command: "sh",
       args: [
         "-c",
-        'set -e; mkdir -p "$CODEX_HOME"; umask 077; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; trap \'rm -rf "$CODEX_HOME"\' EXIT INT TERM; "$0" "$@"',
+        `set -e; umask 077; mkdir -p "$CODEX_HOME"; printf "%s" "$_PAPERCLIP_CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"; unset _PAPERCLIP_CODEX_AUTH_JSON; cleanup() { result=$?; trap - EXIT; rm -f "$CODEX_HOME/auth.json" || true; rm -rf "$CODEX_HOME" || printf '%s\\n' '${PROBE_CLEANUP_WARNING}' >&2; exit "$result"; }; trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; "$0" "$@"`,
         input.command,
         ...input.args,
       ],
@@ -253,6 +258,9 @@ export async function testEnvironment(
         code: "adapter_engine_unavailable",
         level: "error",
         message: engineSelection.unavailableReason,
+        hint: ctx.executionTarget?.kind === "remote"
+          ? "In the agent’s runtime settings, select the CLI engine, or use a sandbox image with the Codex ACP server installed."
+          : undefined,
       }],
       testedAt: new Date().toISOString(),
     };
@@ -266,7 +274,6 @@ export async function testEnvironment(
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
-  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
@@ -343,16 +350,6 @@ export async function testEnvironment(
       message: "OPENAI_API_KEY is set for Codex authentication.",
       detail: `Detected in ${source}.`,
     });
-  } else if (!callerControlsHost) {
-    // Hosted multi-tenant: see the matching branch in acp.ts. The host's
-    // auth.json is not this user's and `codex auth` is not a command they can
-    // run, so both halves of the advice below would be dead ends.
-    checks.push({
-      code: "codex_openai_api_key_missing",
-      level: "warn",
-      message: "No OpenAI API key is configured for this agent. Codex runs will fail until one is added.",
-      hint: "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
-    });
   } else if (!targetIsRemote) {
     // Local-only auth file check. On remote targets, the probe will surface
     // any missing-auth errors directly from the remote `codex` invocation.
@@ -391,7 +388,16 @@ export async function testEnvironment(
         { ...config, fastMode: false },
         { skipGitRepoCheck: targetIsSandbox },
       );
-      const args = execArgs.args;
+      // A connection test needs one small response, not plugin catalog sync,
+      // repository instructions, or a durable session. Keep provider/model
+      // configuration intact while removing unrelated startup work.
+      const args = [...execArgs.args];
+      args.splice(args.length - 1, 0,
+        "-c", "features.plugins=false",
+        "-c", "features.remote_plugin=false",
+        "-c", "project_doc_max_bytes=0",
+        ...(args.includes("--ephemeral") ? [] : ["--ephemeral"]),
+      );
       if (execArgs.fastModeIgnoredReason) {
         checks.push({
           code: "codex_fast_mode_unsupported_model",
@@ -420,6 +426,7 @@ export async function testEnvironment(
           ? hostOpenAiKey
           : null;
       const preparedProbe = await prepareCodexHelloProbe({
+        managedAiConnection: Boolean(config.managedAiConnection),
         runId,
         companyId: ctx.companyId,
         target,
@@ -446,8 +453,20 @@ export async function testEnvironment(
           },
         );
         const parsed = parseCodexJsonl(probe.stdout);
-        const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
-        const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+        // Plugin-catalog login is separate from model authentication. Its
+        // warnings must not explain an unrelated provider/process failure.
+        const providerStderr = probe.stderr.split(/\r?\n/)
+          .filter((line) => !/\bcodex_core_plugins(?:::|:)/.test(line) && !line.includes(PROBE_CLEANUP_WARNING))
+          .join("\n");
+        const detail = summarizeProbeDetail(probe.stdout, providerStderr, parsed.errorMessage);
+        const authEvidence = parsed.errorMessage?.trim() || providerStderr;
+        if (probe.stderr.includes(PROBE_CLEANUP_WARNING)) {
+          checks.push({
+            code: "codex_probe_cleanup_incomplete",
+            level: "info",
+            message: "Temporary probe files could not be fully removed; this does not change the connection result.",
+          });
+        }
 
         if (probe.timedOut) {
           checks.push({
@@ -479,12 +498,8 @@ export async function testEnvironment(
             message: "Codex CLI is installed, but authentication is not ready.",
             ...(detail ? { detail } : {}),
             hint: probeApiKey
-              ? callerControlsHost
-                ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
-                : "The key was provided but Codex still rejected it. Check that it is a valid OpenAI API key and that the account behind it has credit, then paste it again."
-              : callerControlsHost
-                ? "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first."
-                : "Add an OpenAI API key, or use your ChatGPT Plus or Pro plan: run `codex login` on your own computer and paste the contents of ~/.codex/auth.json.",
+              ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
+              : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
           });
           if (targetIsSandbox) {
             // Emit the neutral canonical check so the user interface can decide

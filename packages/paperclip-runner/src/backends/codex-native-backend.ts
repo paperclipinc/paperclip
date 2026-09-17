@@ -11,6 +11,7 @@ import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boun
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import {
   nativeSystemInstructions,
+  nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
 
@@ -35,6 +36,8 @@ export interface CodexNativeSessionBackendOptions {
       | "activeTurnId"
     >;
   }) => CodexAppServerTransport;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: {
     tool: string;
@@ -137,6 +140,12 @@ function createTransportBackedNativeSessionBackend(
           : "never",
       baseInstructions: nativeSystemInstructions(input),
       includeSkillInstructions: isCodex && "runtimeContext" in input,
+      skillInputs: isCodex
+        ? nativeTaskSkillInputs(
+            input.task.description,
+            "runtimeContext" in input ? input.runtimeContext : null,
+          )
+        : [],
       requestedCollaborationMode:
         supportsCollaborativePlanning && "executionMode" in input
           ? input.executionMode
@@ -167,6 +176,7 @@ function createTransportBackedNativeSessionBackend(
       transportFactory: options.transportFactory,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
+      completionFeedback: options.completionFeedback,
       environment: options.environment,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,

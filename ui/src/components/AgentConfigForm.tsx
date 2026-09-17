@@ -1,3 +1,5 @@
+import { AiConnectionField } from "./ai-connections/AiConnectionField";
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
@@ -44,7 +46,7 @@ import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   connectSourceName,
-  OnboardingLoginCard,
+  ProviderSubscriptionCard,
   OnboardingCardField,
   OnboardingLoginCodeRow,
   type AdapterLoginChrome,
@@ -71,7 +73,6 @@ import {
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
-import { AdapterCredentialConnect } from "./AdapterCredentialConnect";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -609,7 +610,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
-  const credentialSetup = uiAdapter.credentialSetup;
   const supportedEnvironmentDrivers = useMemo(
     () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
     [adapterType],
@@ -618,46 +618,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
-
-  // Env editor state: single source of truth shared by the environment
-  // variables editor and the guided credential-connect card, so a bind from
-  // either surface persists through the same save path.
-  const currentEnv = isCreate
-    ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-    : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
-
-  function updateEnv(env: Record<string, EnvBinding> | undefined) {
-    if (isCreate) {
-      set!({ envBindings: env ?? {}, envVars: "" });
-    } else {
-      mark("adapterConfig", "env", env);
-    }
-  }
-
-  function isEnvValueBound(binding: EnvBinding | undefined): boolean {
-    if (binding === undefined) return false;
-    if (typeof binding === "string") return binding.trim().length > 0;
-    if (binding.type === "plain") return binding.value.trim().length > 0;
-    return binding.type === "secret_ref" || binding.type === "user_secret_ref";
-  }
-
-  const boundEnvKeys = useMemo(() => {
-    if (!credentialSetup) return [];
-    return credentialSetup.options
-      .map((option) => option.envKey)
-      .filter((envKey) => isEnvValueBound(currentEnv[envKey]));
-  }, [credentialSetup, currentEnv]);
-
-  function handleCredentialBind(envKey: string, secretId: string) {
-    updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
-    // The newly created secret isn't in the company secrets list query cache
-    // yet, so without invalidating, SecretPicker would render this env row
-    // as "Missing secret (…)" until something else happens to refetch.
-    if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    }
-  }
-
 
   // Create mode holds the non-secret stored-session claim after a Claude
   // subscription login reaches the server `stored` state. The claim marks the
@@ -930,9 +890,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
       : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
     : undefined;
+  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
+    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+  ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, runnerProvider)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -941,7 +904,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
-      provider: runnerProvider,
+      provider: modelProvider,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -1096,15 +1059,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      const agentId = isCreate ? undefined : props.agent.id;
+      const aiConnection = isCreate ? undefined : aiConnectionBindingSchema.safeParse(
+        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+      ).data;
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1180,6 +1147,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
+    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1284,7 +1252,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: runnerProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1682,6 +1650,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
+          {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
+            value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
+            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
+
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
@@ -1934,68 +1907,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   {renderAdapterFields("advanced")}
                 </div>
               </CollapsibleSection>
-              )}
-
-              {credentialSetup && selectedCompanyId && (
-                <AdapterCredentialConnect
-                  key={adapterType}
-                  companyId={selectedCompanyId}
-                  adapterType={adapterType}
-                  setup={credentialSetup}
-                  boundEnvKeys={boundEnvKeys}
-                  onBind={handleCredentialBind}
-                />
-              )}
-
-              <Field label="Environment variables" hint={help.envVars}>
-                <EnvironmentVariablesEditor
-                  ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                  }
-                  secrets={availableSecrets}
-                  userSecretDefinitions={userSecretDefinitions}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
-                />
-              </Field>
-
-              {!isCreate && (
-                <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "graceSec",
-                        Number(config.graceSec ?? 15),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                </>
               )}
 
           </div>
@@ -2346,6 +2257,7 @@ export type AdapterLoginDescriptor = {
 // correctly, and the first thing to rot would have been the timeout and
 // cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
   // Applies the non-secret Codex account-binding claim from an authenticated
@@ -2364,7 +2276,7 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // The login reached its success state. Onboarding advances on this, which is
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
-  onConnected?: () => void;
+  onConnected?: (sessionId?: string) => void;
   // The pasted code went to the server. Fires as the submit starts rather than
   // when the login finishes, so a caller can show the work the moment the
   // customer has done their part: the round trip to `onConnected` is a poll
@@ -2429,6 +2341,7 @@ function DisplayedCodeLoginPanel({
   onConnected,
   onAccountBinding,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -2453,7 +2366,7 @@ function DisplayedCodeLoginPanel({
   const resumedRef = useRef(false);
 
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection }),
     onSuccess: (session) => {
       resumedRef.current = false;
       setStartError(null);
@@ -2492,7 +2405,10 @@ function DisplayedCodeLoginPanel({
     queryKey: ["adapter-login-active-session", companyId, adapterType],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -2634,7 +2550,7 @@ function DisplayedCodeLoginPanel({
   useEffect(() => {
     if (status !== "authenticated" || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [status]);
 
   // Drive the account-binding hand-off as a visible state machine, not a
@@ -2686,24 +2602,11 @@ function DisplayedCodeLoginPanel({
   if (chrome === "onboarding") {
     const failed = isTerminal && status && status !== "authenticated";
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!prompt && !startError && !failed}
-        instruction={
-          <>
-            {/* The same destination as the step's own button. Two ways to one
-                link: the button for the customer following the flow, the anchor
-                for anyone finishing in another browser. */}
-            <a
-              href={prompt?.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" by providing the authorization code below"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={prompt?.url}
+        mode="displayed_code"
       >
         {startError ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
@@ -2720,7 +2623,7 @@ function DisplayedCodeLoginPanel({
         ) : (
           <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 
@@ -2920,6 +2823,7 @@ function SubmittedBrowserCodeLoginPanel({
   onCodeSubmitted,
   onSubmitFailed,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -3007,10 +2911,11 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: () =>
       agentsApi.startClaudeSetupTokenLogin(companyId, {
         environmentId,
+        aiConnection,
         // When the owner already has a stored token, the login rotates it under
         // the captured version, so a replacement login never conflicts with an
         // existing value. Without a stored token the login is a first write.
-        ...(storedToken
+        ...(storedToken && !aiConnection
           ? {
               overwrite: {
                 expectedSecretId: storedToken.secretId,
@@ -3084,7 +2989,10 @@ function SubmittedBrowserCodeLoginPanel({
     queryKey: ["claude-setup-token-active-session", companyId],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        const active = await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -3404,7 +3312,7 @@ function SubmittedBrowserCodeLoginPanel({
   useEffect(() => {
     if (!isStored || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [isStored]);
 
   // The other end of `onCodeSubmitted`. Any of these after a submit means the
@@ -3428,21 +3336,11 @@ function SubmittedBrowserCodeLoginPanel({
   if (chrome === "onboarding") {
     const failedNow = isFailure || timedOut;
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!authorizationUrl && !startError && !failedNow}
-        instruction={
-          <>
-            <a
-              href={authorizationUrl ?? undefined}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" then come back and enter authorization code"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={authorizationUrl ?? undefined}
+        mode="submitted_code"
       >
         {/* The plain-HTTP advisory survives the redesign. It is the one thing on
             this card not about getting the login done, and dropping it to keep
@@ -3478,7 +3376,7 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={submitCode.isPending || isCompleting || codeSubmitted}
           />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 

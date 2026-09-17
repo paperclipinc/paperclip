@@ -65,6 +65,39 @@ fn remember_descendant_thread(ids: &mut BTreeSet<String>, id: &str) -> Result<bo
     }
     Ok(ids.insert(id.to_owned()))
 }
+// Call only after validating the outer notification against the active root turn.
+fn remember_spawned_descendants(
+    ids: &mut BTreeSet<String>,
+    root: &str,
+    method: &str,
+    params: &Value,
+) -> Result<(), &'static str> {
+    let item = &params["item"];
+    if method != "item/completed"
+        || item["type"] != "collabAgentToolCall"
+        || item["tool"] != "spawnAgent"
+        || item["status"] != "completed"
+    {
+        return Ok(());
+    }
+    if params["threadId"] != root || item["senderThreadId"] != root {
+        return Err("invalid_spawn_lineage");
+    }
+    let receivers = item["receiverThreadIds"]
+        .as_array()
+        .ok_or("invalid_spawn_lineage")?;
+    if receivers.iter().any(|id| {
+        id.as_str()
+            .is_none_or(|id| id.is_empty() || id.len() > 240 || id == root)
+    }) {
+        return Err("invalid_spawn_lineage");
+    }
+    for id in receivers {
+        remember_descendant_thread(ids, id.as_str().expect("validated receiver"))?;
+    }
+    Ok(())
+}
+
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
 
@@ -320,9 +353,51 @@ pub struct CodexProviderConfig {
     pub approval_policy: String,
     #[serde(default)]
     pub externally_sandboxed: bool,
+    // Older persisted configurations deliberately retain the provider default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_skill_instructions: Option<bool>,
+}
+
+/// Explicit per-turn skill selection. The controller resolves assigned skill
+/// names to paths on the provider filesystem before submitting the command.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CodexSkillInput {
+    #[serde(rename = "type")]
+    pub input_type: String,
+    pub name: String,
+    pub path: String,
+}
+
+impl CodexSkillInput {
+    pub fn validate(&self) -> Result<(), LocalRunnerError> {
+        if self.input_type != "skill"
+            || self.name.is_empty()
+            || self.name.len() > 256
+            || !self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            || self.path.contains('\0')
+            || self.path.len() > 4096
+            || !std::path::Path::new(&self.path).is_absolute()
+        {
+            return Err(LocalRunnerError::invalid(
+                "invalid explicit Codex skill input",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CodexProviderConfig {
+    fn skill_instructions_config(&self) -> Option<Value> {
+        (self.provider == "codex")
+            .then_some(self.include_skill_instructions)
+            .flatten()
+            .map(|include| json!({"skills.include_instructions": include}))
+    }
+
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
@@ -977,6 +1052,9 @@ impl CodexProvider {
                     );
                 }
             }
+            if let Some(skill_config) = config.skill_instructions_config() {
+                params_object.insert("config".to_owned(), skill_config);
+            }
             let method = if let Some(thread_id) = resume_thread_id {
                 params_object.insert("threadId".to_owned(), json!(thread_id));
                 if config.provider == "codex" {
@@ -1550,6 +1628,23 @@ impl CodexProvider {
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_skills(message, cwd, &[])
+    }
+
+    pub fn start_turn_with_skills(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        skills: &[CodexSkillInput],
+    ) -> Result<Value, LocalRunnerError> {
+        if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
+            return Err(LocalRunnerError::invalid(
+                "explicit skills require Codex and at most 64 selections",
+            ));
+        }
+        for skill in skills {
+            skill.validate()?;
+        }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
                 "Codex provider is quarantined after unsafe recovered work",
@@ -1579,11 +1674,13 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
+        let mut input = vec![json!({"type": "text", "text": message, "text_elements": []})];
+        input.extend(skills.iter().map(|skill| json!(skill)));
         let mut turn_params = json!({
             "threadId": self.thread_id,
             "cwd": cwd,
             "runtimeWorkspaceRoots": [cwd],
-            "input": [{"type": "text", "text": message, "text_elements": []}],
+            "input": input,
         });
         let turn_params_object = turn_params
             .as_object_mut()
@@ -2424,11 +2521,53 @@ impl CodexProvider {
             ) {
                 Ok(identity) => identity,
                 Err(_) => {
-                    return Ok(Some(self.identity_failure(
-                        method,
-                        &params,
-                        "thread_binding_mismatch",
-                    )))
+                    // Helpers can start before Codex publishes their spawn receipt.
+                    // Verify lineage with the provider; never infer authority from
+                    // the arrival of an otherwise foreign execution event.
+                    let candidate = notification_thread_id(&params)
+                        .filter(|id| !id.is_empty() && id.len() <= 240 && *id != self.thread_id)
+                        .map(str::to_owned);
+                    let verified = candidate.as_ref().is_some_and(|candidate| {
+                        self.request(
+                            "thread/read",
+                            json!({"threadId": candidate, "includeTurns": false}),
+                        )
+                        .ok()
+                        .is_some_and(|metadata| {
+                            metadata.pointer("/thread/id").and_then(Value::as_str)
+                                == Some(candidate.as_str())
+                                && matches!(
+                                    classify_notification_thread(
+                                        "thread/started",
+                                        &self.thread_id,
+                                        &self.descendant_thread_ids,
+                                        &metadata
+                                    ),
+                                    Ok(NotificationThread::Descendant)
+                                )
+                        })
+                    });
+                    if verified {
+                        let mut known = self.descendant_thread_ids.clone();
+                        known.insert(candidate.expect("verified candidate"));
+                        match classify_notification_thread(method, &self.thread_id, &known, &params)
+                        {
+                            Ok(NotificationThread::Descendant) => NotificationThread::Descendant,
+                            _ => {
+                                return Ok(Some(self.identity_failure(
+                                    method,
+                                    &params,
+                                    "thread_binding_mismatch",
+                                )))
+                            }
+                        }
+                    } else {
+                        return Ok(Some(self.identity_failure(
+                            method,
+                            &params,
+                            "thread_binding_mismatch",
+                        )));
+                    }
                 }
             };
             if identity == NotificationThread::Descendant {
@@ -2534,6 +2673,22 @@ impl CodexProvider {
                     &params,
                     "turn_binding_mismatch",
                 )));
+            }
+            if let Err(code) = remember_spawned_descendants(
+                &mut self.descendant_thread_ids,
+                &self.thread_id,
+                method,
+                &params,
+            ) {
+                if code == "provider_descendant_capacity_exhausted" {
+                    return Ok(Some(CodexProviderEvent::ResourceLimit {
+                        diagnostic: json!({"code": code, "recoverable": false,
+                            "classification": "resource_capacity", "limit": MAX_DESCENDANT_THREAD_IDS,
+                            "message": "Codex reached the child-thread inventory limit.",
+                            "method": bounded_method(method), "expectedThreadId": self.thread_id}),
+                    }));
+                }
+                return Ok(Some(self.identity_failure(method, &params, code)));
             }
             if let Some(terminal_event_type) = terminal_event_type {
                 if self.active_provider_turn_id.is_none() {
@@ -3186,6 +3341,11 @@ fn classify_notification_thread(
             "Codex notification has malformed turn identity",
         ));
     }
+    // This connection-level notification carries no task authority. Codex can
+    // emit it while loading skills during the first turn.
+    if method == "skills/changed" && !contains_provider_work_binding(params) {
+        return Ok(NotificationThread::UnrelatedInformation);
+    }
     let thread = notification_thread_id(params);
     if thread.is_none()
         && turn_ids.is_empty()
@@ -3209,13 +3369,21 @@ fn classify_notification_thread(
     if thread.is_none() || thread == Some(root) {
         return Ok(NotificationThread::Root);
     }
-    let parent = [
+    let parents: Vec<&str> = [
+        "/thread/parentThreadId",
         "/thread/source/subAgent/thread_spawn/parent_thread_id",
         "/thread/source/subAgent/threadSpawn/parentThreadId",
         "/thread/source/subagent/thread_spawn/parent_thread_id",
     ]
     .iter()
-    .find_map(|path| params.pointer(path).and_then(Value::as_str));
+    .filter_map(|path| params.pointer(path).and_then(Value::as_str))
+    .collect();
+    if parents.windows(2).any(|pair| pair[0] != pair[1]) {
+        return Err(LocalRunnerError::invalid(
+            "Codex notification has conflicting parent identity",
+        ));
+    }
+    let parent = parents.first().copied();
     if thread.is_some()
         && (thread.is_some_and(|id| descendants.contains(id))
             || (method == "thread/started"
@@ -3805,6 +3973,7 @@ done
             instructions: "Test only.".to_owned(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
         let mut provider = CodexProvider::start(&config, None).unwrap();
         provider.start_turn("First turn", &config.cwd).unwrap();
@@ -4165,6 +4334,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
         let mut spawned = None;
         let mut failure = None;
@@ -4265,7 +4435,14 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            include_skill_instructions: None,
         };
+        config.include_skill_instructions = Some(true);
+        assert_eq!(
+            config.skill_instructions_config(),
+            None,
+            "OpenCode must not receive Codex skill settings"
+        );
         config.validate().unwrap();
         config.provider_version = "1.18.18".to_owned();
         let error = config.validate().unwrap_err();
@@ -4718,6 +4895,28 @@ mod notification_identity_tests {
         );
     }
     #[test]
+    fn skills_changed_is_connection_information_without_execution_authority() {
+        assert_eq!(
+            classify_notification_thread("skills/changed", "root", &BTreeSet::new(), &json!({}))
+                .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        for params in [
+            json!({"threadId": "other"}),
+            json!({"itemId": "unbound"}),
+            json!({"threadId": 7}),
+        ] {
+            assert!(classify_notification_thread(
+                "skills/changed",
+                "root",
+                &BTreeSet::new(),
+                &params
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn rejects_missing_authority_and_malformed_turn_identities() {
         for method in [
             "item/started",
@@ -4754,6 +4953,93 @@ mod notification_identity_tests {
             NotificationThread::Root
         );
     }
+    #[test]
+    fn spawn_receipts_require_completed_root_authority_and_preserve_capacity() {
+        let receipt = json!({"threadId":"root", "turnId":"turn", "item":{
+            "type":"collabAgentToolCall", "tool":"spawnAgent", "status":"completed",
+            "senderThreadId":"root", "receiverThreadIds":["helper"]}});
+        let mut ids = BTreeSet::new();
+        remember_spawned_descendants(&mut ids, "root", "item/completed", &receipt).unwrap();
+        assert!(ids.contains("helper"));
+        assert_eq!(
+            classify_notification_thread(
+                "turn/started",
+                "root",
+                &ids,
+                &json!({"threadId":"helper", "turn":{"id":"child-turn"}})
+            )
+            .unwrap(),
+            NotificationThread::Descendant
+        );
+        for (field, value) in [
+            ("senderThreadId", "foreign"),
+            ("receiverThreadIds", "malformed"),
+        ] {
+            let mut bad = receipt.clone();
+            bad["item"][field] = json!(value);
+            let mut empty = BTreeSet::new();
+            assert!(
+                remember_spawned_descendants(&mut empty, "root", "item/completed", &bad).is_err()
+            );
+            assert!(empty.is_empty());
+        }
+        for (field, value) in [
+            ("tool", "sendInput"),
+            ("status", "failed"),
+            ("status", "inProgress"),
+        ] {
+            let mut non_spawn = receipt.clone();
+            non_spawn["item"][field] = json!(value);
+            let mut empty = BTreeSet::new();
+            remember_spawned_descendants(&mut empty, "root", "item/completed", &non_spawn).unwrap();
+            assert!(empty.is_empty());
+        }
+        let mut full: BTreeSet<String> = (0..MAX_DESCENDANT_THREAD_IDS)
+            .map(|n| format!("child-{n}"))
+            .collect();
+        assert_eq!(
+            remember_spawned_descendants(&mut full, "root", "item/completed", &receipt),
+            Err("provider_descendant_capacity_exhausted")
+        );
+        assert_eq!(full.len(), MAX_DESCENDANT_THREAD_IDS);
+    }
+
+    #[test]
+    fn recognizes_explicit_parent_thread_lineage_without_granting_root_authority() {
+        let children = BTreeSet::from(["child".to_owned()]);
+        for parent in ["root", "child"] {
+            assert_eq!(
+                classify_notification_thread(
+                    "thread/started",
+                    "root",
+                    &children,
+                    &json!({"thread":{"id":"helper", "parentThreadId":parent}})
+                )
+                .unwrap(),
+                NotificationThread::Descendant
+            );
+        }
+        assert_eq!(
+            classify_notification_thread(
+                "thread/started",
+                "root",
+                &children,
+                &json!({"thread":{"id":"stranger", "parentThreadId":"foreign"}})
+            )
+            .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        assert!(classify_notification_thread(
+            "turn/started",
+            "root",
+            &children,
+            &json!({"threadId":"stranger", "parentThreadId":"root", "turn":{"id":"foreign-turn"}})
+        )
+        .is_err());
+        assert!(classify_notification_thread("thread/started", "root", &children,
+            &json!({"thread":{"id":"helper", "parentThreadId":"root", "source":{"subAgent":{"thread_spawn":{"parent_thread_id":"foreign"}}}}})).is_err());
+    }
+
     #[test]
     fn classifies_provider_lineage_before_root_authority() {
         let children = BTreeSet::from(["child".to_owned()]);

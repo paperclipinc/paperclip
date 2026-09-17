@@ -13,15 +13,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # 10 min for the refresh itself + up to ~30 min polling for auto-merge
-    # (see "Wait for auto-merge" step below).
-    timeout-minutes: 40
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
-      # Needed to force-trigger docker.yml via workflow_dispatch once this
-      # workflow's own auto-merge lands (see below).
-      actions: write
 
     steps:
       - name: Checkout repository
@@ -36,8 +31,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 20
-          cache: pnpm
+          node-version: 24
+          # Resolution-only installs do not populate the package store. Do not
+          # claim the shared cache key with an empty archive before full installs.
+          package-manager-cache: false
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
@@ -99,33 +96,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
-
-      - name: Wait for auto-merge and trigger image build
-        if: steps.upsert-pr.outputs.pr_url != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
-        run: |
-          # The merge above lands as github-actions[bot] using GITHUB_TOKEN.
-          # GitHub does not fire push-triggered workflow runs (docker.yml's
-          # `on: push`) for commits pushed with GITHUB_TOKEN -- this is an
-          # anti-recursion protection, and it is why the #263 lockfile merge
-          # (2026-07-18) left main unbuilt even though the push landed cleanly.
-          # workflow_dispatch is explicitly exempt from that restriction, so we
-          # poll for the merge and force-trigger the build ourselves once it lands.
-          for _ in $(seq 1 90); do
-            state="$(gh pr view "$PR_URL" --json state --jq .state)"
-            if [ "$state" = "MERGED" ]; then
-              base="$(gh pr view "$PR_URL" --json baseRefName --jq .baseRefName)"
-              echo "PR merged into $base; triggering docker.yml"
-              gh workflow run docker.yml --ref "$base"
-              exit 0
-            fi
-            if [ "$state" = "CLOSED" ]; then
-              echo "PR closed without merging; nothing to build."
-              exit 0
-            fi
-            sleep 20
-          done
-          echo "Timed out waiting for auto-merge (no required checks should normally cause this); trigger docker.yml manually if the PR later merges." >&2
-          exit 1

@@ -341,11 +341,6 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
-// Zod 4 keeps `.default()` active after `.partial()`; these strip the defaults
-// so a patch/override parse keeps only the keys the caller actually sent.
-export { objectWithoutDefaults, shapeWithoutDefaults } from "./validators/partial.js";
-export * from "./types/chat-channels.js";
-export * from "./validators/chat-channels.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./validators/chat-channels.js";
@@ -689,9 +684,6 @@ export {
   type BudgetIncidentResolutionAction,
   type HeartbeatInvocationSource,
   type HeartbeatRunStatus,
-  HEARTBEAT_RUN_TERMINAL_STATUSES,
-  type HeartbeatRunTerminalStatus,
-  isHeartbeatRunTerminalStatus,
   type RunLivenessState,
   type WakeupTriggerDetail,
   type WakeupRequestStatus,
@@ -733,10 +725,6 @@ export {
   type PluginApiRouteCheckoutPolicy,
   type PluginEventType,
   type PluginBridgeErrorCode,
-  COMPANY_SETTINGS_SURFACES,
-  INSTANCE_SETTINGS_SURFACES,
-  type CompanySettingsSurface,
-  type InstanceSettingsSurface,
 } from "./constants.js";
 
 export {
@@ -923,7 +911,6 @@ export type {
   InstanceExperimentalSettingsWithManaged,
   InstanceGeneralSettings,
   InstanceSettings,
-  InstanceVisibilitySettings,
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
   BackupRetentionPolicy,
@@ -1135,8 +1122,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   IssueWatchdog,
   IssueWatchdogStatus,
@@ -1768,16 +1753,8 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
-  DEFAULT_INSTANCE_VISIBILITY_SETTINGS,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
-
-export type {
-  PublicFeatureFlags,
-  EffectiveStanding,
-  BoardCapabilities,
-} from "./types/capabilities.js";
-export { derivePublicFeatureFlags } from "./types/capabilities.js";
 
 export type {
   SmokeLabServiceStatus,
@@ -1795,22 +1772,6 @@ export {
   SMOKE_RUN_STEP_STATUSES,
   SMOKE_RUN_TRIGGERS,
 } from "./types/smoke-lab.js";
-
-export type {
-  CloudUpstreamConnectStartResponse,
-  CloudUpstreamActivationDecision,
-  CloudUpstreamActivationEntityType,
-  CloudUpstreamConnection,
-  CloudUpstreamConflict,
-  CloudUpstreamPreview,
-  CloudUpstreamRun,
-  CloudUpstreamRunEvent,
-  CloudUpstreamsState,
-  CloudUpstreamStep,
-  CloudUpstreamSummaryCount,
-  CloudUpstreamTarget,
-  CloudUpstreamWarning,
-} from "./types/cloud-upstream.js";
 
 export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
 
@@ -1834,8 +1795,6 @@ export {
   instanceExperimentalSettingsWithManagedSchema,
   managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
-  instanceVisibilitySettingsSchema,
-  patchInstanceVisibilitySettingsSchema,
   patchInstanceSettingsSchema,
   createSmokeRunSchema,
   updateSmokeRunSchema,
@@ -1851,7 +1810,6 @@ export {
   protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   type PatchInstanceExperimentalSettings,
-  type PatchInstanceVisibilitySettings,
   type PatchInstanceSettings,
   type CreateSmokeRun,
   type UpdateSmokeRun,
@@ -2801,3 +2759,9 @@ export type { ExecutionContinuationEnvelope } from "./types/execution-continuati
 export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
+
+export * from "./ai-connections.js";
+export * from "./types/email.js";
+export * from "./validators/email.js";
+export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";
+export * from "./announcements.js";

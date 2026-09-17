@@ -1,3 +1,7 @@
+import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { projectToolRoutes } from "./routes/project-tools.js";
+import { emailChannelService } from "./services/email-channels.js";
+import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
 import {
@@ -87,6 +91,8 @@ import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { announcementRoutes } from "./routes/announcements.js";
+import { serverVersion } from "./version.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -116,7 +122,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { injectCloudUiSnippet } from "./cloud-ui-snippet.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
-import { applyUiBranding, BRAND_DIR_PUBLIC_PATH, getBrandDir } from "./ui-branding.js";
+import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import {
   DEFAULT_LOCAL_PLUGIN_DIR,
@@ -148,7 +154,6 @@ import {
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
-import { decideBundledPluginAction } from "./services/bundled-plugin-heal.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import {
   buildHostServices,
@@ -252,24 +257,6 @@ export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix)))
     return false;
   return req.accepts(["html"]) === "html";
-}
-
-/**
- * Serves the deployer-mounted brand directory (PAPERCLIP_BRAND_DIR) under
- * /branding — the stylesheet link applyUiBranding injects points here. Without
- * this route the request falls through to the SPA fallback and comes back as
- * text/html, which the browser refuses to apply as a stylesheet. A missing
- * brand asset 404s for the same reason. No-op when no brand dir is configured,
- * so the default build's routing is unchanged.
- */
-export function registerBrandStaticRoute(app: express.Express, env: NodeJS.ProcessEnv = process.env): boolean {
-  const brandDir = getBrandDir(env);
-  if (!brandDir) return false;
-  app.use(BRAND_DIR_PUBLIC_PATH, express.static(brandDir, { index: false, maxAge: "5m" }));
-  app.use(BRAND_DIR_PUBLIC_PATH, (_req, res) => {
-    res.status(404).end();
-  });
-  return true;
 }
 
 export function shouldEnablePrivateHostnameGuard(opts: {
@@ -489,6 +476,7 @@ export async function createApp(
     chatWebhookPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    announcements?: { enabled: boolean; feedUrl: string };
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -601,6 +589,8 @@ export async function createApp(
   // Provider-authenticated ingress is intentionally outside the board
   // mutation guard. The Chat SDK adapter verifies the provider signature
   // before Paperclip persists or acts on any event.
+  const emailChannels = emailChannelService(db, { heartbeat: connectionIntentHeartbeat, storage: opts.storageService, publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl });
+  app.use(emailWebhookRoutes(emailChannels));
   app.use(chatWebhookRoutes(chatChannels));
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
@@ -649,10 +639,10 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(companySkillRoutes(db));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
-  api.use(builtInAgentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
@@ -740,9 +730,10 @@ export async function createApp(
     }),
   );
   api.use(assetRoutes(db, opts.storageService));
+  api.use(projectToolRoutes(db));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
-  api.use(issueTreeControlRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
@@ -758,6 +749,7 @@ export async function createApp(
     }),
   );
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
@@ -787,6 +779,7 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(announcementRoutes(db, { ...opts.announcements, version: opts.hostVersion ?? serverVersion }));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
@@ -836,6 +829,7 @@ export async function createApp(
   app.locals.toolGateway = toolGateway;
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));
   api.use(
     toolAccessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -949,9 +943,6 @@ export async function createApp(
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
     }),
   );
-  // Deployer-mounted brand assets (must come before the SPA fallback / vite
-  // middleware so /branding/brand.css never resolves to the HTML shell).
-  registerBrandStaticRoute(app);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -981,23 +972,8 @@ export async function createApp(
       // short cache so operators who swap them out see the new version
       // reasonably fast, with must-revalidate overrides for index.html and
       // sw.js (see staticUiCacheControl for why those two).
-      // The HTML shell MUST go through the branded fallback below, which injects
-      // runtime branding + the `paperclip-default-theme` meta the pre-paint theme
-      // script reads. Serving the RAW index.html here (Express's default
-      // `index: 'index.html'` for `/`, or an explicit `/index.html` file hit)
-      // bypasses that injection -> no theme meta -> the script defaults to dark ->
-      // a dark->light flash on first paint until a branded route loads. So disable
-      // directory-index serving AND route an explicit `/index.html` to the fallback.
-      app.get("/index.html", (_req, res) => {
-        res
-          .status(200)
-          .set("Content-Type", "text/html")
-          .set("Cache-Control", "no-cache")
-          .end(readBrandedStaticIndexHtml(uiDist));
-      });
       app.use(
         express.static(uiDist, {
-          index: false,
           maxAge: "1h",
           setHeaders(res, filePath) {
             const override = staticUiCacheControl(filePath);
@@ -1161,6 +1137,7 @@ export async function createApp(
   if (opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
+  emailChannels.start();
   const flushChatPublications = async () => {
     await chatChannels.schedulePendingPublications();
   };
@@ -1332,6 +1309,7 @@ export async function createApp(
       viteHmrServer?.close();
       hostServiceCleanup.disposeAll();
       hostServiceCleanup.teardown();
+      await emailChannels.shutdown();
       await chatChannels.shutdown();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the

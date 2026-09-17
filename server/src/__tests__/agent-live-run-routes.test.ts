@@ -37,6 +37,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
   redactForRun: vi.fn(
     async (_companyId: string, _runId: string, value: unknown) => value,
   ),
@@ -347,7 +348,6 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
-      status: "running",
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -425,7 +425,7 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
-  }, 10_000);
+  });
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
@@ -486,7 +486,6 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-      status: "running",
     expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
       expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
@@ -517,7 +516,6 @@ describe("agent live run routes", () => {
       {
         id: "run-1",
         companyId: "company-1",
-        status: "running",
         logStore: "local_file",
         logRef: "logs/run-1.ndjson",
       },
@@ -535,59 +533,6 @@ describe("agent live run routes", () => {
     });
   });
 
-  it.each(["queued", "running", "scheduled_retry"] as const)(
-    "returns an empty log (not 404) for a %s run that has not opened its log yet",
-    async (status) => {
-      // The runner writes the log handle when it opens the file, so a
-      // non-terminal run legitimately has none — including a run waiting on a
-      // scheduled retry, which has no handle at all yet. The transcript poller
-      // only stops re-requesting on a 404 for TERMINAL runs, so 404ing these
-      // made every such run 404 on every poll for its whole life.
-      mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-        id: "run-1",
-        companyId: "company-1",
-        status,
-        logStore: null,
-        logRef: null,
-      });
-
-      const res = await requestApp(
-        await createApp(),
-        (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
-      );
-
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body).toEqual({
-        runId: "run-1",
-        store: null,
-        logRef: null,
-        content: "",
-        nextOffset: 12,
-      });
-      expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
-    },
-  );
-
-  it("still 404s the log of a terminal run that never wrote one", async () => {
-    // A cancelled/failed run with no handle never got one, so the client is
-    // right to stop asking — that path keeps its 404.
-    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
-      id: "run-1",
-      companyId: "company-1",
-      status: "cancelled",
-      logStore: null,
-      logRef: null,
-    });
-    const { notFound } = await import("../errors.js");
-    mockHeartbeatService.readLog.mockRejectedValue(notFound("Run log not found"));
-
-    const res = await requestApp(
-      await createApp(),
-      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log"),
-    );
-
-    expect(res.status).toBe(404);
-  });
   it.each(["skill_test", "task_bridge"])(
     "denies %s keys from company-wide run and workspace logs",
     async (kind) => {
@@ -671,6 +616,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
@@ -715,6 +662,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
   });
 
   it("does not pad with recent runs when no minCount is requested", async () => {
@@ -883,6 +832,7 @@ describe("agent live run routes", () => {
     // Optional wake fields retain their existing shape; execution identity
     // always comes from the authenticated caller.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_assigned",
@@ -914,6 +864,7 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -925,6 +876,18 @@ describe("agent live run routes", () => {
         originIdentityContextId: null,
       },
     });
+  });
+
+  it.each(["wakeup", "heartbeat/invoke"])("lets an operator start an existing agent via %s without creating agents", async (endpoint) => {
+    mockAccessService.decide.mockImplementation(async ({ action }) => ({
+      allowed: action === "agent:wake", explanation: "Missing permission: agents:create",
+    }));
+    const res = await requestApp(await createApp(undefined, {
+      type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
+    }), url => request(url).post(`/api/agents/${routeAgentId}/${endpoint}`).send({}));
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "agent:wake" }));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
   describe("exact failed chat run retry", () => {
@@ -952,6 +915,10 @@ describe("agent live run routes", () => {
         companyId: "company-1",
       });
       mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockIssueService.getById.mockResolvedValue({
+        id: failedChatIssueId, companyId: "company-1", assigneeAgentId: routeAgentId,
+        assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+      });
       mockChatRunRetries.prepareFailedChatRunRetry.mockResolvedValue({
         actionId: retryActionId,
         issueId: failedChatIssueId,
@@ -963,6 +930,50 @@ describe("agent live run routes", () => {
         status: "deferred",
       });
     });
+
+    it("retries a task for an operator without agent-creation permission", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: {
+        issueId: failedChatIssueId,
+      } });
+      mockAccessService.decide.mockImplementation(async ({ action }) => ({
+        allowed: action === "issue:comment" || action === "agent:wake", explanation: "Missing permission: agents:create",
+      }));
+      const res = await requestApp(await createApp(fixture.db, {
+        type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
+      }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "issue:comment", resource: expect.objectContaining({
+          type: "issue", companyId: "company-1", issueId: failedChatIssueId,
+        }),
+      }));
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+        requestedByActorType: "user", requestedByActorId: "operator", failedRunId: failedChatRunId,
+        payload: { issueId: failedChatIssueId },
+      }));
+    });
+
+    it.each(["viewer", "missing", "other-company", "reassigned", "other-chat-owner"])(
+      "rejects a %s task retry without dispatching or requiring agent creation", async (fault) => {
+        const fixture = createFailedChatRetryDb(false);
+        mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
+        if (fault === "viewer") mockAccessService.decide.mockResolvedValue({
+          allowed: false, explanation: "Viewer membership does not grant issue:comment.",
+        });
+        else mockIssueService.getById.mockResolvedValue(fault === "missing" ? null : {
+          id: failedChatIssueId, companyId: fault === "other-company" ? "elsewhere" : "company-1",
+          assigneeAgentId: "other-agent", assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+          ...(fault === "other-chat-owner" ? { conversationAgentId: routeAgentId, conversationUserId: "someone-else" } : {}),
+        });
+        const res = await requestApp(await createApp(fixture.db), url =>
+          request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
+        expect(res.status).toBe(fault === "viewer" || fault === "other-chat-owner" ? 403 : fault === "reassigned" ? 409 : 404);
+        expect(mockAccessService.decide.mock.calls.every(([input]) => input.action !== "agents:create")).toBe(true);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([
       ["failed", "deferred", null],
@@ -1124,7 +1135,7 @@ describe("agent live run routes", () => {
     );
 
     it.each(["agent", "company", "permission"])(
-      "denies %s authority before retry selection",
+      "denies %s authority before retry admission",
       async (denial) => {
         const fixture = createFailedChatRetryDb();
         const actor =
@@ -1666,7 +1677,7 @@ describe("agent live run routes", () => {
         id: "trace-1",
         status: "incomplete",
         deletedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       },
       "trace_incomplete",
     ],

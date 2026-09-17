@@ -130,7 +130,6 @@ Grouped by rough domain area. One line each; variants column is props-based wher
 | `ExternalObjectStatusIcon.tsx` / `ExternalObjectStatusSummary.tsx` / `ExternalObjectPill.tsx` | External-object (linked PR/doc/etc.) status glyph, rollup summary, and inline pill — a third, deliberately separate status-presentation family |
 | `BlockedReasonChip.tsx` | Chip explaining why a task is blocked |
 | `SourceTrustBadge.tsx` / `SourceResolvedFoldBadge.tsx` / `SourceResolvedFoldCallout.tsx` | Trust/fold badges for external content sources |
-| `ProductivityReviewBadge.tsx` | Review-status badge |
 
 **KNOWN-DUPLICATES.md lead verified:** StatusIcon / inline-mention chips / task chips are intentionally three separate systems (StatusIcon+StatusGlyph = task status glyph family; `ExternalObjectStatusIcon`/`Pill`/`Summary` = a second, external-object-specific family; mention chips in `lib/mention-chips.ts` + markdown CSS = a third, generic "chip in prose" family). **Documented here per instruction, not merged.**
 
@@ -419,3 +418,9 @@ Per-component rationale:
 | Setup completion | `ConnectionSetupCompletionScreen` in the shared setup module | Page and dialog; identity, granted agent access and enabled actions |
 
 Independently addressable examples live under `Connections/In-task connections` in Storybook. The task composer remains available while a card is pending. These components use the existing token and primitive layers.
+
+## Announcements
+
+- `AnnouncementCard`: image, eyebrow, headline, description, navigation links and dismissal; accepts an announcement and `onDismiss`.
+- `AnnouncementWell`: one app-shell placement that owns eligibility, dismissal sync, modal deferral and toast priority. Use only once in Layout.
+- Preview variants live in `/design-guide` and Storybook under `Announcements/AnnouncementCard`.

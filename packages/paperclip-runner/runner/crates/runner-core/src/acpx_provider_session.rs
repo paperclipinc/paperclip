@@ -63,6 +63,7 @@ pub struct AcpxProviderSessionConfig {
     pub permission_mode: AcpxPermissionMode,
     pub permission_mode_pinned: bool,
     pub system_instructions: String,
+    pub runtime_context: Value,
     pub tool_set: AuthorizedToolSet,
     pub expected_identity: Option<AcpxProviderSessionIdentity>,
 }
@@ -992,7 +993,7 @@ fn bootstrap(
             "permissionMode": config.permission_mode,
             "permissionModePinned": config.permission_mode_pinned,
             "systemInstructions": config.system_instructions,
-            "runtimeContext": Value::Null,
+            "runtimeContext": config.runtime_context,
             "tools": &sidecar_tools,
             "expectedIdentity": config.expected_identity,
         }),

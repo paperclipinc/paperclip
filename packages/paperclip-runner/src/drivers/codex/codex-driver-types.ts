@@ -20,6 +20,8 @@ export interface CodexAppServerDriverOptions {
   approvalPolicy?: "never" | "on-request" | "untrusted";
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
+  /** Explicit selected skills, resolved from this task's assigned runtime assets. */
+  skillInputs?: readonly import("../../contracts/runtime-context.js").NativeSkillInput[];
   conversationMode?: "task" | "direct";
   requestedCollaborationMode?: "default" | "plan";
   /**
@@ -48,6 +50,8 @@ export interface CodexAppServerDriverOptions {
     turnId: string;
     arguments: unknown;
   }) => Promise<unknown>;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   environment?: NodeJS.ProcessEnv;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;

@@ -3,6 +3,9 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  approvals,
+  issueApprovals,
+  issueThreadInteractions,
   agentRuntimeState,
   agentWakeupRequests,
   activityLog,
@@ -20,7 +23,6 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
-  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -53,40 +55,21 @@ vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
 });
 
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
-  CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
-import { environmentRuntimeService } from "../services/environment-runtime.ts";
 
 const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
-const AUTH_FAILURE_TEST_ADAPTER = "auth_failure_test";
-const CODEX_AUTH_FAILURE_TEST_ADAPTER = "codex_auth_failure_test";
-const IDENTICAL_FAILURE_TEST_ADAPTER = "identical_failure_test";
-const TRANSIENT_STORM_TEST_ADAPTER = "transient_storm_test";
-const TRANSIENT_STORM_TEST_ERROR_CODE = "inference_upstream_error";
-const IDENTICAL_FAILURE_TEST_ERROR_CODE = "stuck_failure_test";
-const SETUP_FAILURE_TEST_ADAPTER = "setup_failure_test";
-
-// Optional per-adapter gates: when set, the adapter's execute() blocks on the
-// promise before resolving. Tests that need to seed a queued sibling AFTER
-// the run under test has already claimed the agent's single concurrency slot
-// (mirroring the prod incident's timing) open a gate, wait for the run to
-// reach "running", seed the sibling, then release the gate. Left null
-// (default), execute() resolves immediately as before.
-let authFailureGate: Promise<void> | null = null;
-let identicalFailureGate: Promise<void> | null = null;
-let transientStormGate: Promise<void> | null = null;
-let setupFailureGate: Promise<void> | null = null;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -106,73 +89,6 @@ async function waitForRunToFinish(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return await heartbeat.getRun(runId);
-}
-
-// Waits until the run has left "queued" (i.e. claimQueuedRun has run and it's
-// at least "running"). Used to seed a queued sibling AFTER the run under test
-// has already claimed the agent's single concurrency slot, so the sibling
-// itself is never dequeued first (FIFO by createdAt would otherwise race it
-// ahead of the run this test is actually exercising).
-async function waitForRunClaimed(
-  heartbeat: ReturnType<typeof heartbeatService>,
-  runId: string,
-  timeoutMs = 5_000,
-) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const run = await heartbeat.getRun(runId);
-    if (run && run.status !== "queued") return run;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  return await heartbeat.getRun(runId);
-}
-
-function createGate() {
-  let release!: () => void;
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  return { promise, release };
-}
-
-// Reproduces the shape of the prod incident (run 5df36a9e): a retry run gets
-// enqueued for an agent moments before that agent auto-pauses. Auto-pause must
-// cancel it immediately, or it sits in "queued" forever (dequeue skips paused
-// agents).
-async function seedQueuedSiblingRun(
-  db: ReturnType<typeof createDb>,
-  input: { companyId: string; agentId: string },
-) {
-  const siblingId = randomUUID();
-  await db.insert(heartbeatRuns).values({
-    id: siblingId,
-    companyId: input.companyId,
-    agentId: input.agentId,
-    invocationSource: "assignment",
-    status: "queued",
-    contextSnapshot: {},
-  });
-  return siblingId;
-}
-
-async function expectSiblingCancelledAsPaused(db: ReturnType<typeof createDb>, siblingId: string) {
-  await expect
-    .poll(
-      () =>
-        db
-          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, siblingId))
-          .then((rows) => rows[0] ?? null),
-      { timeout: 5_000, interval: 50 },
-    )
-    .toMatchObject({ status: "cancelled", errorCode: "agent_paused" });
-  const sibling = await db
-    .select({ error: heartbeatRuns.error })
-    .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.id, siblingId))
-    .then((rows) => rows[0] ?? null);
-  expect(sibling?.error).toContain("paused");
 }
 
 describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
@@ -208,117 +124,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
-    registerServerAdapter({
-      type: IDENTICAL_FAILURE_TEST_ADAPTER,
-      execute: async () => {
-        if (identicalFailureGate) await identicalFailureGate;
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: "Same failure every run.",
-          errorCode: IDENTICAL_FAILURE_TEST_ERROR_CODE,
-          resultJson: {},
-        };
-      },
-      testEnvironment: async () => ({
-        adapterType: IDENTICAL_FAILURE_TEST_ADAPTER,
-        status: "pass",
-        checks: [],
-        testedAt: new Date().toISOString(),
-      }),
-    });
-    registerServerAdapter({
-      // Fails the same transient-looking way every run, with a deliberately
-      // tight retry budget so a single run can exhaust it. Mirrors the real
-      // production shape: an OpenRouter key asked for an amazon-bedrock model
-      // answers "Unexpected server error", which classifies as a retryable
-      // upstream fault forever even though it will never start working.
-      type: TRANSIENT_STORM_TEST_ADAPTER,
-      execute: async () => {
-        if (transientStormGate) await transientStormGate;
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: "Unexpected server error. Check server logs for details.",
-          errorCode: TRANSIENT_STORM_TEST_ERROR_CODE,
-          errorFamily: "transient_upstream" as const,
-          resultJson: {
-            errorFamily: "transient_upstream",
-            transientRetryMaxAttempts: 1,
-          },
-        };
-      },
-      testEnvironment: async () => ({
-        adapterType: TRANSIENT_STORM_TEST_ADAPTER,
-        status: "pass" as const,
-        checks: [],
-        testedAt: new Date().toISOString(),
-      }),
-    });
-    registerServerAdapter({
-      type: SETUP_FAILURE_TEST_ADAPTER,
-      // Registration only: the agent needs a resolvable adapter type, but the
-      // non-retryable-setup-failure test never actually reaches execute(). It
-      // injects the failure earlier, at environment lease acquisition (see
-      // that test's dedicated heartbeatService instance), matching where
-      // isNonRetryableAdapterSetupFailure's real trigger (a k8s sandbox
-      // provider rejecting an adapter type) actually throws.
-      execute: async () => {
-        throw new Error("setup_failure_test adapter should never execute in this suite");
-      },
-      testEnvironment: async () => ({
-        adapterType: SETUP_FAILURE_TEST_ADAPTER,
-        status: "pass",
-        checks: [],
-        testedAt: new Date().toISOString(),
-      }),
-    });
-    registerServerAdapter({
-      type: AUTH_FAILURE_TEST_ADAPTER,
-      execute: async () => {
-        if (authFailureGate) await authFailureGate;
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: "Claude authentication required. Connect a provider credential.",
-          errorCode: "claude_auth_required",
-          resultJson: {},
-        };
-      },
-      testEnvironment: async () => ({
-        adapterType: AUTH_FAILURE_TEST_ADAPTER,
-        status: "pass",
-        checks: [],
-        testedAt: new Date().toISOString(),
-      }),
-    });
-    registerServerAdapter({
-      type: CODEX_AUTH_FAILURE_TEST_ADAPTER,
-      execute: async () => ({
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: "Incorrect API key provided. Connect a valid OpenAI API key.",
-        errorCode: "codex_auth_required",
-        resultJson: {},
-      }),
-      testEnvironment: async () => ({
-        adapterType: CODEX_AUTH_FAILURE_TEST_ADAPTER,
-        status: "pass",
-        checks: [],
-        testedAt: new Date().toISOString(),
-      }),
-    });
   }, 20_000);
 
   afterEach(async () => {
-    authFailureGate = null;
-    identicalFailureGate = null;
-    transientStormGate = null;
-    setupFailureGate = null;
     // Await every in-flight background heartbeat run to quiescence before the
     // cleanup deletes. heartbeat.invoke claims a run and dispatches its
     // execution fire-and-forget, and that run can schedule a follow-up retry
@@ -331,12 +139,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   });
 
   afterAll(async () => {
-    await closeDbClient(db);
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
-    unregisterServerAdapter(AUTH_FAILURE_TEST_ADAPTER);
-    unregisterServerAdapter(CODEX_AUTH_FAILURE_TEST_ADAPTER);
-    unregisterServerAdapter(IDENTICAL_FAILURE_TEST_ADAPTER);
-    unregisterServerAdapter(SETUP_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -365,6 +168,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(approvals);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
     await cleanupHeartbeatRunDependents();
@@ -428,8 +232,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input.scheduledRetryAttempt ? "transient_failure" : null,
-      resultJson: {
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: input.resultJson ?? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         ...(input.errorFamily ? { errorFamily: input.errorFamily } : {}),
         ...(input.retryNotBefore
           ? {
@@ -437,7 +240,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
               transientRetryNotBefore: input.retryNotBefore,
             }
           : {}),
-        ...input.resultJson,
       },
       contextSnapshot: {
         issueId: randomUUID(),
@@ -464,12 +266,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
   });
 
-  it("retains the failure budget after many pre-provider workspace waits", async () => {
+  it.each([
+    ["workspace_busy", "failureRetriesBeforeWorkspaceWait"],
+    ["ai_connection_busy", "failureRetriesBeforeAiConnectionWait"],
+  ])("retains the failure budget after many pre-provider %s waits", async (reason, countKey) => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
     await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "overloaded", errorFamily: "transient_upstream" });
-    await db.update(heartbeatRuns).set({ scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 12,
-      contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: reason, scheduledRetryAttempt: 12,
+      contextSnapshot: { [countKey]: 1 } }).where(eq(heartbeatRuns.id, runId));
     const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
     expect(scheduled).toMatchObject({ outcome: "scheduled", run: { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" } });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
@@ -557,494 +362,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
-  });
-
-  it("pauses an agent whose run fails with a permanent auth error instead of re-running it", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
-
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Keyless Agent",
-      role: "engineer",
-      status: "idle",
-      adapterType: AUTH_FAILURE_TEST_ADAPTER,
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
-        },
-      },
-      permissions: {},
-    });
-
-    const gate = createGate();
-    authFailureGate = gate.promise;
-
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    // Seed the queued sibling only after this run has already claimed the
-    // agent's single concurrency slot (mirrors the prod incident: the retry
-    // run was enqueued 150ms after the failing run started, not before).
-    await waitForRunClaimed(heartbeat, run!.id);
-    const queuedSiblingId = await seedQueuedSiblingRun(db, { companyId, agentId });
-    gate.release();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("claude_auth_required");
-
-    await expect
-      .poll(
-        () =>
-          db
-            .select({ status: agents.status })
-            .from(agents)
-            .where(eq(agents.id, agentId))
-            .then((rows) => rows[0]?.status ?? null),
-        { timeout: 5_000, interval: 50 },
-      )
-      .toBe("paused");
-
-    // No retry run is scheduled for a permanent auth failure.
-    const retryCount = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows.length);
-    expect(retryCount).toBe(0);
-
-    const pausedAgent = await db
-      .select({ pauseReason: agents.pauseReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-    expect(pausedAgent?.pauseReason).toContain("Connect a model key");
-
-    // The invariant manual pause guarantees (no live runs left behind) must
-    // also hold for auto-pause: the queued sibling gets cancelled, not left
-    // stuck forever behind a paused agent's dequeue skip.
-    await expectSiblingCancelledAsPaused(db, queuedSiblingId);
-  });
-
-  it("pauses an agent whose run fails with codex_auth_required instead of re-running it", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
-
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Codex Agent With Bad Key",
-      role: "engineer",
-      status: "idle",
-      adapterType: CODEX_AUTH_FAILURE_TEST_ADAPTER,
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
-        },
-      },
-      permissions: {},
-    });
-
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("codex_auth_required");
-
-    await expect
-      .poll(
-        () =>
-          db
-            .select({ status: agents.status })
-            .from(agents)
-            .where(eq(agents.id, agentId))
-            .then((rows) => rows[0]?.status ?? null),
-        { timeout: 5_000, interval: 50 },
-      )
-      .toBe("paused");
-
-    // No retry run is scheduled for a permanent auth failure.
-    const retryCount = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
-      .then((rows) => rows.length);
-    expect(retryCount).toBe(0);
-  });
-
-  async function seedIdenticalFailureFixture(input: {
-    companyId: string;
-    agentId: string;
-    adapterType?: string;
-    priorRuns: Array<{ status: "failed" | "succeeded"; errorCode?: string | null }>;
-  }) {
-    await db.insert(companies).values({
-      id: input.companyId,
-      name: "Paperclip",
-      issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
-
-    await db.insert(agents).values({
-      id: input.agentId,
-      companyId: input.companyId,
-      name: "Stuck Agent",
-      role: "engineer",
-      status: "idle",
-      adapterType: input.adapterType ?? IDENTICAL_FAILURE_TEST_ADAPTER,
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
-        },
-      },
-      permissions: {},
-    });
-
-    // Oldest first; each row gets an older createdAt so the newly invoked run is
-    // always the most recent one.
-    const base = Date.now() - input.priorRuns.length * 60_000;
-    for (const [index, prior] of input.priorRuns.entries()) {
-      const at = new Date(base + index * 60_000);
-      await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
-        companyId: input.companyId,
-        agentId: input.agentId,
-        invocationSource: "assignment",
-        status: prior.status,
-        error: prior.status === "failed" ? "Same failure every run." : null,
-        errorCode: prior.status === "failed" ? (prior.errorCode ?? IDENTICAL_FAILURE_TEST_ERROR_CODE) : null,
-        finishedAt: at,
-        resultJson: {},
-        contextSnapshot: {},
-        createdAt: at,
-        updatedAt: at,
-      });
-    }
-  }
-
-  it("pauses an agent after N consecutive failed runs with the same error code", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await seedIdenticalFailureFixture({
-      companyId,
-      agentId,
-      priorRuns: Array.from(
-        { length: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1 },
-        () => ({ status: "failed" as const }),
-      ),
-    });
-
-    const gate = createGate();
-    identicalFailureGate = gate.promise;
-
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    await waitForRunClaimed(heartbeat, run!.id);
-    const queuedSiblingId = await seedQueuedSiblingRun(db, { companyId, agentId });
-    gate.release();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe(IDENTICAL_FAILURE_TEST_ERROR_CODE);
-
-    await expect
-      .poll(
-        () =>
-          db
-            .select({ status: agents.status })
-            .from(agents)
-            .where(eq(agents.id, agentId))
-            .then((rows) => rows[0]?.status ?? null),
-        { timeout: 5_000, interval: 50 },
-      )
-      .toBe("paused");
-
-    const pausedAgent = await db
-      .select({ pauseReason: agents.pauseReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-    expect(pausedAgent?.pauseReason).toContain(IDENTICAL_FAILURE_TEST_ERROR_CODE);
-    expect(pausedAgent?.pauseReason).toContain("then resume");
-
-    await expectSiblingCancelledAsPaused(db, queuedSiblingId);
-  });
-
-  // A transient recovery contract used to take the bounded-retry branch and
-  // return before the identical-failure storm breaker was ever evaluated. The
-  // bounded retry caps attempts inside ONE chain, but each heartbeat opens a
-  // fresh chain, so a permanent misconfiguration that merely looks transient
-  // looped failed runs forever (521 in 48 hours for one real company).
-  async function runTransientStormAgent(input: {
-    companyId: string;
-    agentId: string;
-    priorFailures: number;
-    priorErrorCode?: string;
-    exhaustBudget: boolean;
-  }) {
-    await seedIdenticalFailureFixture({
-      companyId: input.companyId,
-      agentId: input.agentId,
-      adapterType: TRANSIENT_STORM_TEST_ADAPTER,
-      priorRuns: Array.from({ length: input.priorFailures }, () => ({
-        status: "failed" as const,
-        errorCode: input.priorErrorCode ?? TRANSIENT_STORM_TEST_ERROR_CODE,
-      })),
-    });
-
-    const gate = createGate();
-    transientStormGate = gate.promise;
-
-    const run = await heartbeat.invoke(input.agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-    await waitForRunClaimed(heartbeat, run!.id);
-
-    if (input.exhaustBudget) {
-      // The adapter caps the budget at 1 attempt, so a run already carrying
-      // attempt 1 has nothing left: nextAttempt (2) > maxAttempts (1).
-      await db
-        .update(heartbeatRuns)
-        .set({ scheduledRetryAttempt: 1 })
-        .where(eq(heartbeatRuns.id, run!.id));
-    }
-    gate.release();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe(TRANSIENT_STORM_TEST_ERROR_CODE);
-    return run!.id;
-  }
-
-  async function agentStatus(agentId: string) {
-    return db
-      .select({ status: agents.status, pauseReason: agents.pauseReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-  }
-
-  it("pauses an agent whose exhausted transient retries keep failing the same way", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await runTransientStormAgent({
-      companyId,
-      agentId,
-      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
-      exhaustBudget: true,
-    });
-
-    await expect
-      .poll(() => agentStatus(agentId).then((row) => row?.status ?? null), {
-        timeout: 5_000,
-        interval: 50,
-      })
-      .toBe("paused");
-
-    const paused = await agentStatus(agentId);
-    expect(paused?.pauseReason).toContain(TRANSIENT_STORM_TEST_ERROR_CODE);
-  });
-
-  it("keeps retrying while the transient budget still has attempts left", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await runTransientStormAgent({
-      companyId,
-      agentId,
-      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
-      exhaustBudget: false,
-    });
-
-    // Give the breaker the same window the passing case needs before asserting
-    // the absence of a pause.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect((await agentStatus(agentId))?.status).not.toBe("paused");
-  });
-
-  it("does not pause when the exhausted failures carry different error codes", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await runTransientStormAgent({
-      companyId,
-      agentId,
-      priorFailures: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1,
-      priorErrorCode: "some_other_error",
-      exhaustBudget: true,
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect((await agentStatus(agentId))?.status).not.toBe("paused");
-  });
-
-  it("pauses an agent whose run throws a non-retryable adapter setup failure instead of re-running it", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
-
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Unrunnable Adapter Agent",
-      role: "engineer",
-      status: "idle",
-      adapterType: SETUP_FAILURE_TEST_ADAPTER,
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
-        },
-      },
-      permissions: {},
-    });
-
-    // The real non-retryable-setup-failure trigger (isNonRetryableAdapterSetupFailure)
-    // fires when environment lease acquisition throws "... is not in the
-    // configured adapter registry" BEFORE the adapter ever dispatches (e.g. a k8s
-    // sandbox provider rejecting an adapter type). Reproduce that exact shape by
-    // wrapping the real environment runtime's acquireRunLease and injecting the
-    // failure only for this test's adapter type; every other call (and every
-    // other test's heartbeat instance) is untouched.
-    const gate = createGate();
-    setupFailureGate = gate.promise;
-    const realEnvironmentRuntime = environmentRuntimeService(db);
-    const setupFailureHeartbeat = heartbeatService(db, {
-      environmentRuntime: {
-        ...realEnvironmentRuntime,
-        acquireRunLease: async (input) => {
-          if (input.adapterType === SETUP_FAILURE_TEST_ADAPTER) {
-            if (setupFailureGate) await setupFailureGate;
-            throw new Error(`Adapter "${input.adapterType}" is not in the configured adapter registry`);
-          }
-          return realEnvironmentRuntime.acquireRunLease(input);
-        },
-      },
-    });
-
-    const run = await setupFailureHeartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    await waitForRunClaimed(setupFailureHeartbeat, run!.id);
-    const queuedSiblingId = await seedQueuedSiblingRun(db, { companyId, agentId });
-    gate.release();
-
-    const failedRun = await waitForRunToFinish(setupFailureHeartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("setup_failed");
-
-    await expect
-      .poll(
-        () =>
-          db
-            .select({ status: agents.status })
-            .from(agents)
-            .where(eq(agents.id, agentId))
-            .then((rows) => rows[0]?.status ?? null),
-        { timeout: 5_000, interval: 50 },
-      )
-      .toBe("paused");
-
-    const pausedAgent = await db
-      .select({ pauseReason: agents.pauseReason })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-    expect(pausedAgent?.pauseReason).toContain("non-retryable setup failure");
-    expect(pausedAgent?.pauseReason).toContain("Reconfigure the agent's adapter/runtime");
-
-    await expectSiblingCancelledAsPaused(db, queuedSiblingId);
-    await setupFailureHeartbeat.drain();
-  });
-
-  it("does not pause an agent whose identical-failure streak is below the threshold", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await seedIdenticalFailureFixture({
-      companyId,
-      agentId,
-      priorRuns: Array.from(
-        { length: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 2 },
-        () => ({ status: "failed" as const }),
-      ),
-    });
-
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-
-    // Give the finalize pipeline time to (wrongly) pause before asserting.
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    const agentStatus = await db
-      .select({ status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0]?.status ?? null);
-    expect(agentStatus).not.toBe("paused");
-  });
-
-  it("does not pause an agent when a success or a different error code breaks the streak", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    await seedIdenticalFailureFixture({
-      companyId,
-      agentId,
-      priorRuns: [
-        { status: "failed" },
-        { status: "failed" },
-        { status: "succeeded" },
-        { status: "failed" },
-        { status: "failed", errorCode: "some_other_code" },
-      ],
-    });
-
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(run).not.toBeNull();
-
-    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
-    expect(failedRun?.status).toBe("failed");
-
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    const agentStatus = await db
-      .select({ status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0]?.status ?? null);
-    expect(agentStatus).not.toBe("paused");
   });
 
   async function seedMaxTurnFixture(input?: {
@@ -1135,6 +452,87 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
     return { companyId, agentId, issueId, runId, now };
   }
+
+  it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    const resultJson = { conversationContinuation: "continue_conversation_v1" };
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", resultJson })
+      .where(eq(heartbeatRuns.id, runId));
+    let predecessor = runId;
+    for (const attempt of [1, 2]) {
+      const restarted = heartbeatService(db);
+      const outcomes = await Promise.all([
+        restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+        restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+      ]);
+      expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
+      const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
+      expect(children).toHaveLength(1);
+      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt });
+      predecessor = children[0]!.id;
+      await db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: now, resultJson })
+        .where(eq(heartbeatRuns.id, predecessor));
+    }
+    expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    // Exhaustion leaves the task available to a new explicit request.
+    const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it.each(["dependency", "disabled", "reassigned"])("respects the %s gate for interrupted conversations", async gate => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "process_lost",
+      resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    if (gate === "dependency") {
+      const blockerId = randomUUID();
+      await db.insert(issues).values({ id: blockerId, companyId, title: "Required work", status: "todo" });
+      await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    } else if (gate === "disabled") {
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+    } else {
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+    }
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it.each([
+    ["interaction", false], ["approval", false], ["interaction", true], ["approval", true],
+  ] as const)("waits for a pending %s before continuing (already scheduled: %s)", async (kind, alreadyScheduled) => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "process_lost",
+      resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    let retryRunId = runId;
+    if (alreadyScheduled) {
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") throw new Error("Expected a retry");
+      retryRunId = scheduled.run.id;
+    }
+    if (kind === "interaction") {
+      await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "ask_user_questions",
+        status: "pending", payload: { version: 1, questions: [] } });
+    } else {
+      const approvalId = randomUUID();
+      await db.insert(approvals).values({ id: approvalId, companyId, type: "hire_agent", status: "pending", payload: {} });
+      await db.insert(issueApprovals).values({ companyId, issueId, approvalId });
+    }
+    if (alreadyScheduled) {
+      const adapter = createPostgresRunDispatchAdapter(db);
+      expect(await adapter.promoteOrCancelDueRetry({ companyId, runId: retryRunId, now: new Date(now.getTime() + 60_000) }))
+        .toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_waiting_for_response" });
+      const stopped = await heartbeat.getRun(retryRunId);
+      expect(stopped?.status).toBe("cancelled");
+      const { legacyExecutionNeedsReconciliation } = await import("../services/legacy-execution-recovery.js");
+      expect(legacyExecutionNeedsReconciliation(stopped!)).toBe(false);
+    } else {
+      expect(await heartbeat.scheduleBoundedRetry(runId, { now }))
+        .toMatchObject({ outcome: "not_scheduled", errorCode: "issue_waiting_for_response" });
+    }
+  });
 
   it("schedules a retry with durable metadata and only promotes it when due", async () => {
     const companyId = randomUUID();
@@ -1980,6 +1378,55 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
   });
 
+  it.each(["schedule", "transaction", "promote", "dispatch"] as const)(
+    "suppresses a busy-subscription retry whose task lock was cleared before %s",
+    async (phase) => {
+      const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+      await db.update(heartbeatRuns).set({
+        status: "cancelled", errorCode: "ai_connection_busy",
+        resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, runId));
+      const clearLock = () => db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      if (phase === "schedule") await clearLock();
+      const transaction = db.transaction.bind(db);
+      let raceApplied = false;
+      const transactionSpy = phase === "transaction"
+        ? vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, config) => {
+            await clearLock();
+            raceApplied = true;
+            return transaction(callback, config);
+          })
+        : null;
+      const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+        now, retryReason: "ai_connection_busy", wakeReason: "ai_connection_busy_retry",
+        maxAttempts: 1, delayMs: 1_000,
+      }).finally(() => transactionSpy?.mockRestore());
+      if (phase === "transaction") expect(raceApplied).toBe(true);
+      if (phase === "schedule" || phase === "transaction") {
+        expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "issue_execution_lock_changed" });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+        return;
+      }
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      if (phase === "promote") await clearLock();
+      const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
+      if (phase === "promote") {
+        expect(promotion).toEqual({ promoted: 0, runIds: [] });
+      } else {
+        expect(promotion.runIds).toContain(scheduled.run.id);
+        await clearLock();
+        const adapter = createPostgresRunDispatchAdapter(db);
+        expect(await adapter.cancelStaleQueuedRun({
+          companyId, runId: scheduled.run.id, expectedStatus: "queued", now: scheduled.dueAt,
+        })).toMatchObject({ outcome: "cancelled", errorCode: "issue_execution_lock_changed" });
+      }
+      expect(await heartbeat.getRun(scheduled.run.id)).toMatchObject({
+        status: "cancelled", errorCode: "issue_execution_lock_changed",
+      });
+    },
+  );
+
   it("does not promote a duplicate max-turn continuation that does not own the issue lock", async () => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
 
@@ -2389,59 +1836,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
     });
-  });
 
-  it("honors an adapter-supplied transientRetryMaxAttempts cap tighter than the default", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const now = new Date("2026-04-20T12:00:00.000Z");
-
-    // Within the per-run cap of 2: nextAttempt (2) <= cap (2) -> still schedules.
-    const withinCapRunId = randomUUID();
-    await seedRetryFixture({
-      runId: withinCapRunId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "inference_model_unavailable",
-      scheduledRetryAttempt: 1,
-      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
-    });
-
-    const withinCap = await heartbeat.scheduleBoundedRetry(withinCapRunId, {
-      now,
-      random: () => 0.5,
-    });
-    expect(withinCap.outcome).toBe("scheduled");
-
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agents);
-    await db.delete(companies);
-
-    // Past the per-run cap of 2: nextAttempt (3) > cap (2) -> exhausted now,
-    // even though the default bounded backoff would still allow attempt 3.
-    const pastCapRunId = randomUUID();
-    await seedRetryFixture({
-      runId: pastCapRunId,
-      companyId,
-      agentId,
-      now,
-      errorCode: "inference_model_unavailable",
-      scheduledRetryAttempt: 2,
-      resultJson: { errorFamily: "transient_upstream", transientRetryMaxAttempts: 2 },
-    });
-
-    const pastCap = await heartbeat.scheduleBoundedRetry(pastCapRunId, {
-      now,
-      random: () => 0.5,
-    });
-    expect(pastCap).toEqual({
-      outcome: "retry_exhausted",
-      attempt: 3,
-      maxAttempts: 2,
-    });
+    const onLiveEvent = vi.fn();
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, onLiveEvent);
+    try {
+      const restartedHeartbeat = heartbeatService(createDb(tempDb!.connectionString));
+      const repeated = await Promise.all(Array.from({ length: 8 }, (_, index) =>
+        (index % 2 ? heartbeat : restartedHeartbeat).scheduleBoundedRetry(cappedRunId, {
+          now, random: () => 0.5,
+        })));
+      expect(repeated).toEqual(Array.from({ length: 8 }, () => exhausted));
+      expect(await db.select().from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, cappedRunId))).toHaveLength(1);
+      expect((await heartbeat.getRun(cappedRunId))?.nextEventSeq).toBe(2);
+      expect(onLiveEvent).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("advances codex transient fallback stages across bounded retry attempts", async () => {
