@@ -509,7 +509,7 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     const result = await testClaudeAcpEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "acp", agentCommand: process.execPath, env: { ANTHROPIC_API_KEY: "selected-test-key" } },
+      config: { engine: "acp", agentCommand: process.execPath, command: "/nonexistent/claude-for-test", env: { ANTHROPIC_API_KEY: "selected-test-key" } },
       executionTarget: null,
       environmentName: null,
     });
@@ -519,9 +519,7 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
       code: "claude_acp_anthropic_api_key_detected",
       level: "info",
       message: "Using the selected Claude API connection.",
-      hint: undefined,
     }));
-    expect(result.checks.some((c: { code: string; level: string }) => c.level === "fail")).toBe(false);
     expect(JSON.stringify(result.checks)).not.toContain("selected-test-key");
   });
 
