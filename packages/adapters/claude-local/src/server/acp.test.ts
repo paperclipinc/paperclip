@@ -454,7 +454,9 @@ describe("claude_local ACP lane", () => {
     const remoteCwd = "/sandbox/workspace";
     const mkdir = vi.spyOn(fs, "mkdir").mockRejectedValue(new Error("Host filesystem must not be used"));
     const execute = vi.fn(async () => ({
-      exitCode: 0, signal: null, timedOut: false, stdout: "hello", stderr: "",
+      exitCode: 0, signal: null, timedOut: false,
+      stdout: '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}',
+      stderr: "",
       pid: null, startedAt: new Date().toISOString(),
     }));
     try {
