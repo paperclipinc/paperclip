@@ -807,6 +807,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             "stdout",
             `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "CODEX_HOME" : "workspace and CODEX_HOME"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
+          const sharedHostCodexHome = resolveSharedCodexHomeDir(process.env);
+          const sharedHostHasUsableAuth = await codexHomeHasUsableAuth(sharedHostCodexHome);
           // Stage only the files Codex actually needs into a curated temp dir and
           // ship THAT as the `home` asset, instead of the whole managed
           // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
@@ -851,20 +853,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                restore: async ({ assetDir, readFile }) => {
+                  if (configuredCodexAuthJson && ctx.onCredentialRotated) {
+                    try {
+                      const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
+                      if (shouldReplaceStoredCodexAuth(configuredCodexAuthJson, rotated)) {
+                        await ctx.onCredentialRotated({
+                          envKey: "CODEX_AUTH_JSON",
+                          value: rotated,
+                        });
+                        await onLog(
+                          "stdout",
+                          "[paperclip] Codex plan credential refreshed during this run; stored the new one.\n",
+                        );
+                      }
+                    } catch (err) {
+                      await onLog(
+                        "stdout",
+                        `[paperclip] Codex plan credential copy-back skipped: ${
+                          err instanceof Error ? err.message : String(err)
+                        }\n`,
+                      );
+                    }
+                    return;
+                  }
+                  if (!sharedHostHasUsableAuth) {
+                    await onLog(
+                      "stdout",
+                      "[paperclip] Codex auth copy-back skipped: no shared host credential store.\n",
+                    );
+                    return;
+                  }
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                    // Additive cache write (sandbox to host): also cache the
-                    // sandbox subscription credential in its per-identity slot,
-                    // keyed by the real `account_id`. Company-scoped root; the
-                    // helper ensures the slot directory private and containment-
-                    // guarded. The off-switch (default on) is read inside.
                     resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  })),
+                  }));
+                },
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
