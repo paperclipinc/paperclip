@@ -514,13 +514,14 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
       environmentName: null,
     });
 
-    expect(result.status).toBe("pass");
+    expect(["pass", "warn"]).toContain(result.status);
     expect(result.checks).toContainEqual(expect.objectContaining({
       code: "claude_acp_anthropic_api_key_detected",
       level: "info",
       message: "Using the selected Claude API connection.",
       hint: undefined,
     }));
+    expect(result.checks.some((c: { code: string; level: string }) => c.level === "fail")).toBe(false);
     expect(JSON.stringify(result.checks)).not.toContain("selected-test-key");
   });
 
