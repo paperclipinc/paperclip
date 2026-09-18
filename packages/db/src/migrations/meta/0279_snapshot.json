@@ -21653,7 +21653,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "heartbeat_run_events_agent_id_agents_id_fk": {
