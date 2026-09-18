@@ -44,6 +44,7 @@ import {
 } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
@@ -3364,7 +3365,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!issueId && !!currentUserId,
   });
   const { data: instanceGeneralSettings } = useFeatures();
-  const { data: instanceExperimentalSettings } = useFeatures();
+  const { data: instanceExperimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: !!issueId,
+    retry: false,
+  });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;

@@ -105,7 +105,6 @@ import {
   findMatchingCompanySecret,
 } from "../lib/credential-connected";
 import { cloudCompaniesApi } from "../api/cloudCompanies";
-import { healthApi } from "../api/health";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
