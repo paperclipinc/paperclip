@@ -309,39 +309,40 @@ test("the trusted PR workflow passes the shard's spec filter to Playwright witho
 });
 
 test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
-  // Implementation PRs validate the workflow under development here. The
-  // caller remains pinned to the last merged trusted SHA until a separate
-  // activation PR advances it, so unmerged PR code never runs on trusted
-  // infrastructure.
+  // Validate the proposed workflow here. The caller executes the merged master
+  // workflow; edits to this workflow take effect after code-owner review and merge.
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   assert.match(
     workflow,
     /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
-  assert.match(
-    workflow,
-    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
-    "the policy job must restore the pnpm cache before dependency resolution",
+  const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
+  assert.doesNotMatch(
+    policy,
+    /cache: pnpm|uses: actions\/cache/,
+    "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
-    workflow,
+    policy,
     /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
     "the policy job must resolve the complete merge tree without rewriting platform metadata",
   );
-  assert.match(
-    workflow,
-    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
-    "the policy job must upload a lockfile only when regeneration changed it",
-  );
 
-  const restoreSteps = workflow.match(
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  // Test lanes no longer wait on a policy-job artifact: each install step
+  // resolves a stale lockfile inline, so a manifest-changing or stacked PR
+  // still installs while the policy job validates resolution in parallel.
+  const fallbackInstalls = workflow.match(
+    /if ! pnpm install --frozen-lockfile; then\n[\s\S]{0,240}?pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile\n\s+pnpm install --frozen-lockfile\n\s+fi/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(
+    fallbackInstalls.length,
+    7,
+    "every downstream install job must resolve a stale lockfile inline",
+  );
   assert.doesNotMatch(
     workflow,
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
-    "a missing artifact must fail after the policy job says it uploaded one",
+    /Restore regenerated PR lockfile|lockfile_regenerated|name: pr-lockfile/,
+    "the policy lockfile artifact chain must stay removed; it put the policy job on every lane's critical path",
   );
 });
