@@ -660,6 +660,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const configuredCodexAuthJson =
+    typeof envConfig.CODEX_AUTH_JSON === "string" && envConfig.CODEX_AUTH_JSON.trim().length > 0
+      ? envConfig.CODEX_AUTH_JSON.trim()
+      : null;
   // A configured CODEX_HOME that lives under the Paperclip-managed company tree
   // (the per-agent home set by the server isolation guard) still needs auth
   // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
@@ -697,6 +701,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
+      authJson: configuredCodexAuthJson,
     });
   }
   if (configuredHomeIsManaged && configuredCodexHome) {
@@ -705,6 +710,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } : process.env;
     await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
+      authJson: configuredCodexAuthJson,
     });
   }
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
