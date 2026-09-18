@@ -81,6 +81,7 @@ import {
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
+  shouldReplaceStoredCodexAuth,
 } from "./codex-home.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
