@@ -54,6 +54,13 @@ export interface InstanceExperimentalSettings {
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /**
+   * Move the execution workspace default for a project that carries no policy
+   * of its own from the shared project checkout to an isolated per-task
+   * worktree. Inert unless `enableIsolatedWorkspaces` is also on, and never
+   * overrides a project that stores its own policy.
+   */
+  enableIsolatedWorkspacesByDefault: boolean;
   enableStreamlinedLeftNavigation: boolean;
   /**
    * Use the streamlined shell, navigation, and contextual-sidebar experience.
@@ -67,6 +74,7 @@ export interface InstanceExperimentalSettings {
   enableChatConnectors: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
+  enableAgentChat: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;

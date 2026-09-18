@@ -34,6 +34,35 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
+    "preserves the requested Claude model %s in its isolated settings",
+    async (model) => {
+      const fixture = await sandboxFixture("claude");
+      const sandbox = await prepareAcpxRuntimeSandbox({
+        binding: { ...fixture.binding, requestedModel: model },
+        agent: "claude",
+      });
+      const settingsPath = join(sandbox.agentHomeDirectory, "settings.json");
+      expect(JSON.parse(await readFile(settingsPath, "utf8"))).toMatchObject({
+        model,
+        availableModels: [model],
+      });
+      expect((await stat(settingsPath)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it("pins Claude's exact model in isolated settings on open and recovery", async () => {
+    const fixture = await sandboxFixture("claude");
+    for (const model of ["claude-sonnet-5", "custom-claude-model"]) {
+      const binding = { ...fixture.binding, requestedModel: model, effectiveModel: model };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const sandbox = await prepareAcpxRuntimeSandbox({ binding, agent: "claude" });
+        const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+        expect(settings).toMatchObject({ model, availableModels: [model] });
+      }
+    }
+  });
+
   it.each([
     ["pi", "OPENROUTER_API_KEY", "pi-home"],
     ["claude", "ANTHROPIC_API_KEY", "claude-home"],

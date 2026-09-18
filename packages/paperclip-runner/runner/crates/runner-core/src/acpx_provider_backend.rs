@@ -33,6 +33,10 @@ use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
 use crate::qualified_launch::verify_launch_artifact;
+
+fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
+    matches!(operation_id, "paperclip_finish" | "paperclip_block")
+}
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS};
 
 pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
@@ -236,6 +240,28 @@ impl AcpxProviderDescriptor {
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
         let transport = self.verified_transport(launch_profile)?;
+        // Keep the controller's full authority catalog durable so terminal
+        // semantic results can be correlated through the reserved bridge.
+        // The ACPX provider session receives only dynamic operations: its
+        // reserved finish/block contract is runner-owned and validated by
+        // AcpxProviderSession itself.
+        let provider_operations = tool_set
+            .operations
+            .into_iter()
+            .filter(|tool| !is_reserved_terminal_operation_id(&tool.operation_id))
+            .collect::<Vec<_>>();
+        let provider_tool_set = AuthorizedToolSet {
+            schema: tool_set.schema.clone(),
+            schema_version: tool_set.schema_version,
+            catalog_digest: authorized_tool_catalog_digest(&provider_operations).map_err(
+                |error| {
+                    DurableRunnerError::invalid(format!(
+                        "ACPX provider tool catalog is invalid: {error}"
+                    ))
+                },
+            )?,
+            operations: provider_operations,
+        };
         Ok(AcpxProviderSessionConfig {
             transport,
             agent: self.agent.clone(),
@@ -248,7 +274,8 @@ impl AcpxProviderDescriptor {
             permission_mode: self.permission_mode,
             permission_mode_pinned: self.permission_mode_pinned,
             system_instructions: self.instructions.clone(),
-            tool_set,
+            runtime_context: self.runtime_context.clone(),
+            tool_set: provider_tool_set,
             expected_identity,
         })
     }
@@ -632,7 +659,9 @@ impl AcpxCommandExecutor {
                 event_type: "run.terminal".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
+                    "schema": "paperclip.prp.terminal.v1",
                     "status": "failed",
+                    "turnTerminalState": "failed",
                     "runTerminalState": "failed",
                     "reportedWorkDisposition": "unknown",
                     "provider": "acpx",
@@ -1393,11 +1422,11 @@ impl AcpxCommandExecutor {
                     {
                         continue;
                     }
-                    let status = match event_type.as_str() {
-                        "turn.completed" => "succeeded",
-                        "turn.cancelled" => "cancelled",
-                        "turn.interrupted" => "interrupted",
-                        _ => "failed",
+                    let (turn_terminal_state, status) = match event_type.as_str() {
+                        "turn.completed" => ("completed", "succeeded"),
+                        "turn.cancelled" => ("cancelled", "cancelled"),
+                        "turn.interrupted" => ("interrupted", "cancelled"),
+                        _ => ("failed", "failed"),
                     };
                     let disposition = goal_terminal_disposition(
                         state
@@ -1415,7 +1444,9 @@ impl AcpxCommandExecutor {
                         event_type: "run.terminal".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
+                            "schema": "paperclip.prp.terminal.v1",
                             "status": status,
+                            "turnTerminalState": turn_terminal_state,
                             "runTerminalState": status,
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",
@@ -1527,6 +1558,13 @@ impl CommandExecutor for AcpxCommandExecutor {
             return Ok(Vec::new());
         }
         self.poll_provider()?;
+        self.retained_events()
+    }
+
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Explicit drain runs while control traffic suppresses provider polling.
+        // Expose the already-retained suffix so runnerd can commit and ACK it
+        // before suspension, without restoring or advancing the provider.
         Ok(self
             .state
             .as_ref()
@@ -1803,6 +1841,57 @@ mod tests {
             "permissionModePinned": true,
             "runtimeContext": null,
         })
+    }
+
+    #[test]
+    fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
+        let directory = temporary_directory("retained-terminal-suffix");
+        let config = test_config(&directory, None);
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // Invalid on-disk state would fail restoration. Retained-only reads
+        // must neither restore a provider nor inspect a different state owner.
+        fs::write(executor.state_path(), b"not provider state").unwrap();
+        assert!(executor.retained_events().unwrap().is_empty());
+
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("claude")).unwrap(),
+            tool_set,
+            "retained-only-test".to_owned(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        for event_type in ["turn.completed", "run.usage", "run.completed"] {
+            state
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+        }
+        executor.state = Some(state);
+        let suffix = executor.retained_events().unwrap();
+        assert_eq!(
+            suffix
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["turn.completed", "run.usage", "run.completed"],
+        );
+        // Reading is not acknowledgement: a retry sees the exact same FIFO.
+        assert_eq!(executor.retained_events().unwrap(), suffix);
+        assert!(executor.session.is_none());
+        assert_eq!(
+            fs::read(executor.state_path()).unwrap(),
+            b"not provider state"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2169,6 +2258,8 @@ mod tests {
         assert_eq!(events[0].event_type, "turn.failed");
         assert_eq!(events[0].payload["providerShutdownFailed"], true);
         assert_eq!(events[1].event_type, "run.terminal");
+        assert_eq!(events[1].payload["schema"], "paperclip.prp.terminal.v1");
+        assert_eq!(events[1].payload["turnTerminalState"], "failed");
         let cleanup_error = recovered
             .shutdown()
             .expect_err("cleanup must not succeed while the original lifetime remains active");

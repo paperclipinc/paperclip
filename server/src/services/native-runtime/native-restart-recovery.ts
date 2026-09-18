@@ -1,3 +1,4 @@
+import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -12,6 +13,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 
 export type NativeControllerIdentity = {
@@ -472,6 +474,10 @@ export async function claimNativeRestartRecoveries(input: {
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
+    // Set inside the transaction only when the write below genuinely
+    // transitions the run into "failed". Read after the transaction
+    // commits, so a rolled-back write never reports a false failure.
+    let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
     const disposition = await input.db.transaction(async (tx) => {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -781,7 +787,7 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
-        await tx
+        const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
             status: "failed",
@@ -793,7 +799,11 @@ export async function claimNativeRestartRecoveries(input: {
             error: reason,
             updatedAt: now,
           })
-          .where(eq(heartbeatRuns.id, row.run.id));
+          .where(eq(heartbeatRuns.id, row.run.id))
+          .returning();
+        if (updatedRun && updatedRun.status !== row.run.status) {
+          terminalRunToReport = updatedRun;
+        }
         await tx
           .update(issues)
           .set({ executionRunId: null, updatedAt: now })
@@ -909,6 +919,10 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      if (claimKind !== "reattach_existing_runner") {
+        await recordNativeLocalProcessStop(tx as unknown as Db, row.run);
+      }
+
       await tx
         .update(heartbeatRuns)
         .set({
@@ -953,6 +967,7 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     });
+    if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport);
     dispositions.push(disposition);
   }
   return dispositions;

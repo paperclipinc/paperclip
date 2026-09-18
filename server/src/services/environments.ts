@@ -1614,8 +1614,10 @@ export function environmentService(db: Db) {
       id: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained" | "pending_cleanup"> = "released",
       options?: {
+        expectedPendingCleanupAttemptId?: string;
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
+        remoteExecutionTermination?: Record<string, unknown>;
       },
     ) => {
       const now = new Date();
@@ -1628,8 +1630,16 @@ export function environmentService(db: Db) {
           updatedAt: now,
           ...(options?.failureReason !== undefined ? { failureReason: options.failureReason } : {}),
           ...(options?.cleanupStatus !== undefined ? { cleanupStatus: options.cleanupStatus } : {}),
+          // A later release without a receipt cannot reuse an earlier stop's
+          // authority (for example after a same-run lease resume).
+          metadata: options?.remoteExecutionTermination
+            ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
+            : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`,
         })
-        .where(eq(environmentLeases.id, id))
+        .where(and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
+          ? and(eq(environmentLeases.status, "pending_cleanup"),
+              sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
+          : undefined))
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironmentLease(row) : null;

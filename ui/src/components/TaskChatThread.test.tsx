@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactElement } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -20,10 +20,12 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
+  hydratedRunIds: undefined as Set<string> | undefined,
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -47,6 +49,7 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
+      hydratedRunIds: transcriptState.hydratedRunIds,
     };
   },
 }));
@@ -56,6 +59,7 @@ vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
     return {
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
+      hydratedRunIds: nativeTranscriptState.hydratedRunIds,
     };
   },
 }));
@@ -106,8 +110,10 @@ beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
+  transcriptState.hydratedRunIds = undefined;
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
+  nativeTranscriptState.hydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -164,6 +170,80 @@ it("coordinates first reveal while keeping the composer and visible history moun
     container.querySelector('[data-testid="task-chat-history-loading"]'),
   ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+});
+
+describe.each(["legacy", "native"] as const)("%s task history readiness", (runtimeMode) => {
+  const retryRun = {
+    runId: "scheduled-run",
+    runtimeMode,
+    status: "scheduled_retry",
+    agentId: "agent-1",
+    adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local",
+    createdAt: "2026-08-25T18:00:00.000Z",
+    startedAt: null,
+  };
+
+  beforeEach(() => {
+    transcriptState.hydratedRunIds = new Set();
+    nativeTranscriptState.hydratedRunIds = new Set();
+  });
+
+  it("reveals comments while a scheduled retry has no transcript to hydrate", () => {
+    render(
+      <TaskChatThread
+        issueId="issue-1"
+        comments={createLongThreadComments()}
+        onAdd={async () => {}}
+        linkedRuns={[retryRun]}
+      />,
+    );
+
+    expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-history-loading"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-thread-anchor="comment-1"]')?.closest("[inert]"),
+    ).toBeNull();
+    expect(container.textContent).toContain("Thread message 1");
+  });
+
+  it.each(["running", "succeeded"])(
+    "waits for a %s run to hydrate even when a scheduled retry is present",
+    async (status) => {
+      const props = {
+        issueId: "issue-1",
+        comments: createLongThreadComments(),
+        onAdd: async () => {},
+        linkedRuns: [
+          retryRun,
+          {
+            ...retryRun,
+            runId: "started-run",
+            status,
+            startedAt: "2026-08-25T18:00:00.000Z",
+          },
+        ],
+      };
+      render(<TaskChatThread {...props} />);
+      expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).not.toBeNull();
+
+      transcriptState.hydratedRunIds = new Set(["started-run"]);
+      nativeTranscriptState.hydratedRunIds = new Set(["started-run"]);
+      render(<TaskChatThread {...props} />);
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      });
+
+      expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="task-chat-history-loading"]'),
+      ).toBeNull();
+    },
+  );
 });
 
 it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
@@ -423,9 +503,9 @@ describe("TaskChatThread draft pass-through", () => {
     const thread = container.querySelector('[data-testid="task-chat-thread"]');
     expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
     expect(thread?.classList).toContain("flex-1");
-    expect(dock?.classList).toContain("px-2");
+    expect(dock?.classList).toContain("px-1");
     expect(dock?.classList).toContain("md:px-0");
-    expect(dock?.classList).not.toContain("px-1");
+    expect(dock?.classList).not.toContain("px-2");
     expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(dock?.classList).not.toContain("pt-1");
     expect(dock?.classList).toContain("md:pb-0");
@@ -988,7 +1068,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       );
     const revealUsage = () => {
       const summary = container.querySelector<HTMLButtonElement>(
-        '[data-testid="task-chat-phase-summary"]',
+        '[data-testid="task-chat-activity-phase-toggle"]',
       );
       expect(summary).not.toBeNull();
       if (summary?.getAttribute("aria-expanded") !== "true") {
@@ -1056,6 +1136,40 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-failed");
   });
 
+  it.each([false, true])("keeps a later bootstrap failure actionable only after the old recovery has a successor: %s", async (continued) => {
+    const onRetryFailedRun = vi.fn();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
+      onRetryFailedRun={onRetryFailedRun} linkedRuns={[
+        {
+          runId: "old-native", runtimeMode: "native", status: "failed", errorCode: "adapter_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+          execution: {
+            phase: continued ? "completed" : "recovery_needed", label: continued ? "Continued in another run" : "Stopped",
+            cause: "native_continuation_requires_reconciliation", lastConfirmedActivityAt: null,
+            retryAt: null, attempt: 1, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+            permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: continued ? "failed-bootstrap" : null,
+          },
+        },
+        {
+          runId: "failed-bootstrap", runtimeMode: "legacy", status: "failed", errorCode: "setup_failed",
+          agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+          createdAt: "2026-08-25T18:01:00.000Z", startedAt: "2026-08-25T18:01:00.000Z",
+          finishedAt: "2026-08-25T18:01:02.000Z",
+        },
+      ]} />);
+    const retryButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]'));
+    if (!continued) {
+      expect(retryButtons).toHaveLength(0);
+      return;
+    }
+    expect(retryButtons.length).toBeGreaterThan(0);
+    flushSync(() => retryButtons.at(-1)!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("failed-bootstrap");
+  });
+
   it("explains a native provider usage limit without exposing its error code", async () => {
     const onRetryFailedRun = vi.fn();
     render(
@@ -1114,10 +1228,28 @@ describe("TaskChatThread runtime transcript selection", () => {
       adapterType: "claude_local", createdAt: "2026-08-25T18:00:00.000Z",
       startedAt: null, finishedAt: "2026-08-25T18:00:00.012Z",
     }]} />);
-    expect(container.textContent).toContain("Couldn't start");
+    expect(container.textContent).toContain("Waiting to resume");
     expect(container.textContent).not.toContain("No user-facing response");
     expect(container.textContent).not.toContain("Run completed");
     expect(container.querySelector(".text-destructive")).toBeNull();
+  });
+
+  it.each(["legacy", "native"] as const)("groups repeated %s pre-start holds without hiding executed work", (runtimeMode) => {
+    const heldRun = (id: string, recoveryActionId: string, startedAt: string | null = null) => ({
+      runId: id, runtimeMode, status: "cancelled", errorCode: "execution_reconciliation_required",
+      agentId: "agent-1", adapterType: runtimeMode === "native" ? "paperclip_runner" : "claude_local",
+      createdAt: "2026-09-10T18:00:00.000Z", finishedAt: "2026-09-10T18:00:01.000Z", startedAt,
+      resultJson: { executionWait: { recoveryActionId } },
+    });
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[
+      ...Array.from({ length: 100 }, (_, i) => heldRun(`wait-${i}`, "hold-1")),
+      heldRun("ran", "hold-1", "2026-09-10T18:00:00.500Z"),
+      heldRun("new-hold", "hold-2"),
+      heldRun("same-new-hold", "hold-2"),
+    ]} />);
+    expect(container.textContent?.match(/Waiting to resume/g)).toHaveLength(2);
+    expect(container.textContent).not.toContain("Couldn't start");
+    expect(container.textContent).toContain(runtimeMode === "native" ? "Run cancelled" : "Stopped");
   });
 
   it("shows cancellation after native progress without offering a retry", () => {
@@ -1229,31 +1361,108 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
-  it("does not show a completed-response notice for a redundant cancelled continuation", () => {
-    render(
-      <TaskChatThread
-        comments={[]}
-        onAdd={async () => {}}
-        linkedRuns={[
-          {
-            runId: "connection-continuation-skipped",
-            status: "cancelled",
-            errorCode: "issue_not_in_progress",
-            startedAt: null,
-            agentId: "agent-1",
-            agentName: "Runner",
-            adapterType: "paperclip_runner",
-            createdAt: "2026-09-07T18:00:00.000Z",
-            finishedAt: "2026-09-07T18:00:01.000Z",
-          },
-        ]}
-      />,
-    );
-    expect(container.textContent).not.toContain(
-      "The runner returned no user-facing response.",
-    );
+  it("shows an actionable approval-required reason for a stopped native run", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "approval-required", runtimeMode: "native", status: "failed",
+      errorCode: "native_provider_approval_required",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+      startedAt: "2026-09-14T15:00:00.000Z", createdAt: "2026-09-14T15:00:00.000Z",
+      finishedAt: "2026-09-14T15:00:02.000Z",
+    }]} />);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Approval required");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    expect(container.textContent).toContain("Review the operation and update the agent's permission setting before retrying");
+    expect(container.textContent).not.toContain("The runner stopped");
+  });
+
+  it("keeps workspace contention out of the conversation's cancellation markers", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "workspace-wait", runtimeMode: "native", status: "cancelled", errorCode: "workspace_busy",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner", startedAt: null,
+      createdAt: "2026-09-12T18:00:00.000Z", finishedAt: "2026-09-12T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("Run cancelled");
+    expect(container.textContent).not.toContain("Run failed");
+    expect(container.textContent).not.toContain("before returning an answer");
+  });
+
+  it("does not render an empty response notice for a conversation reset", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "chat-reset", status: "succeeded", startedAt: null, resultJson: { conversationReset: true },
+      agentId: "agent-1", agentName: "Claude", adapterType: "claude_local",
+      createdAt: "2026-09-11T18:00:00.000Z", finishedAt: "2026-09-11T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
     expect(container.textContent).not.toContain("Run completed");
   });
+
+  it.each([
+    ["legacy", "issue_not_in_progress"],
+    ["native", "issue_not_in_progress"],
+    ["legacy", "issue_terminal_status"],
+    ["native", "issue_terminal_status"],
+  ] as const)(
+    "hides a redundant cancelled continuation (%s, %s)",
+    (runtimeMode, errorCode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "connection-continuation-skipped",
+              runtimeMode,
+              status: "cancelled",
+              errorCode,
+              startedAt: null,
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).not.toContain(
+        "The runner returned no user-facing response.",
+      );
+      expect(container.textContent).not.toContain("Run completed");
+      expect(container.textContent).not.toContain("Couldn't start");
+      expect(container.textContent).not.toContain("Run cancelled");
+      expect(container.textContent).not.toContain("before returning an answer");
+    },
+  );
+
+  it.each(["legacy", "native"] as const)(
+    "keeps a cancellation visible when the %s run had already started",
+    (runtimeMode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "started-cancellation",
+              runtimeMode,
+              status: "cancelled",
+              errorCode: "issue_terminal_status",
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              startedAt: "2026-09-07T18:00:00.500Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).toContain(
+        runtimeMode === "native" ? "Run cancelled" : "Stopped",
+      );
+    },
+  );
 
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
@@ -1493,7 +1702,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         ?.textContent,
     ).toContain(repeated);
     expect(container.textContent).toContain(
-      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
     );
     const turnHeaders = Array.from(
       container.querySelectorAll('[data-testid="task-chat-turn-summary"]'),
@@ -1571,7 +1780,7 @@ describe("TaskChatThread runtime transcript selection", () => {
         ?.textContent,
     ).toContain("Continued after steering · Working for");
     expect(container.textContent).toContain(
-      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+      new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
     );
   });
 
@@ -1917,41 +2126,156 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("transcript withheld");
   });
 
-  it("keeps an empty failed direct run on its legacy failure surface", () => {
+  it.each(["failed", "timed_out", "cancelled"] as const)(
+    "keeps an empty legacy %s actionable without turning Stop into Retry",
+    async (status) => {
+      const onRetryFailedRun = vi.fn();
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="blocked"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[
+            {
+              runId: "legacy-failed",
+              runtimeMode: "legacy",
+              status,
+              errorCode: "legacy_process_exited",
+              agentId: "agent-1",
+              agentName: "Direct Codex",
+              adapterType: "codex_local",
+              createdAt: "2026-08-25T18:00:00.000Z",
+              startedAt: "2026-08-25T18:00:00.000Z",
+              finishedAt: "2026-08-25T18:00:02.000Z",
+            },
+          ]}
+        />,
+      );
+
+      expect(container.textContent).toContain(status === "cancelled" ? "Stopped" : "Run failed");
+      if (status !== "cancelled") {
+        expect(container.textContent).toContain("You can retry this message now.");
+      }
+      expect(
+        container.querySelector('[data-testid="task-chat-collapsible-marker"]'),
+      ).toBeNull();
+      const retry = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+      if (status === "cancelled") {
+        expect(retry).toBeNull();
+      } else {
+        expect(retry).not.toBeNull();
+        flushSync(() => retry!.click());
+        await Promise.resolve();
+        expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("legacy-failed");
+      }
+      expect(
+        container.querySelector('[data-testid="task-chat-runner-turn"]'),
+      ).toBeNull();
+    },
+  );
+
+  it.each(["active execution", "pending decision", "recovery hold"] as const)(
+    "does not promise legacy Retry during %s and restores it when the gate clears",
+    (gate) => {
+      const onRetryFailedRun = vi.fn();
+      const failedRun = {
+        runId: "legacy-failed",
+        runtimeMode: "legacy" as const,
+        status: "failed",
+        errorCode: "legacy_process_exited",
+        agentId: "agent-1",
+        agentName: "Direct Codex",
+        adapterType: "codex_local",
+        createdAt: "2026-08-25T18:00:00.000Z",
+        startedAt: "2026-08-25T18:00:00.000Z",
+        finishedAt: "2026-08-25T18:00:02.000Z",
+      };
+      const gateProps: Partial<ComponentProps<typeof TaskChatThread>> =
+        gate === "pending decision"
+          ? { interactions: [planReviewInteraction()] }
+          : {
+              linkedRuns: [{
+                ...failedRun,
+                execution: {
+                  phase: gate === "active execution" ? "working" : "recovery_needed",
+                  label: "Waiting",
+                  cause: null,
+                  lastConfirmedActivityAt: null,
+                  retryAt: null,
+                  attempt: 1,
+                  maxAttempts: 3,
+                  recoveryOwner: null,
+                  nextAction: null,
+                  permittedActions: [],
+                  predecessorRunId: null,
+                  successorRunId: null,
+                },
+              }],
+            };
+      const renderRun = (held: boolean) => render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="blocked"
+          onRetryFailedRun={onRetryFailedRun}
+          linkedRuns={[failedRun]}
+          {...(held ? gateProps : {})}
+        />,
+      );
+      renderRun(true);
+      expect(container.textContent).toContain("Your message is preserved.");
+      expect(container.textContent).not.toContain("You can retry this message now.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+      renderRun(false);
+      expect(container.textContent).toContain("You can retry this message now.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).not.toBeNull();
+    },
+  );
+
+  it.each([
+    ...["claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+      "pi_local", "grok_local", "kimi_local", "hermes_local"].flatMap((adapterType) =>
+      ["failed", "timed_out"].map((status) => ({ adapterType, status, runtimeMode: "legacy" as const,
+        cause: "legacy_execution_requires_reconciliation", canRetry: true }))),
+    { adapterType: "paperclip_runner", status: "failed", runtimeMode: "native" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+    { adapterType: "process", status: "failed", runtimeMode: "legacy" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+    { adapterType: "claude_local", status: "failed", runtimeMode: "legacy" as const,
+      cause: "uncertain_provider_action", canRetry: false },
+    { adapterType: "claude_local", status: "cancelled", runtimeMode: "legacy" as const,
+      cause: "legacy_execution_requires_reconciliation", canRetry: false },
+  ])("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause", (testCase) => {
     render(
       <TaskChatThread
         comments={[]}
         onAdd={async () => {}}
         issueStatus="blocked"
         onRetryFailedRun={vi.fn()}
-        linkedRuns={[
-          {
-            runId: "legacy-failed",
-            runtimeMode: "legacy",
-            status: "failed",
-            errorCode: "legacy_process_exited",
-            agentId: "agent-1",
-            agentName: "Direct Codex",
-            adapterType: "codex_local",
-            createdAt: "2026-08-25T18:00:00.000Z",
-            startedAt: "2026-08-25T18:00:00.000Z",
-            finishedAt: "2026-08-25T18:00:02.000Z",
+        linkedRuns={[{
+          runId: "stopped-run",
+          runtimeMode: testCase.runtimeMode,
+          adapterType: testCase.adapterType,
+          status: testCase.status,
+          agentId: "agent-1",
+          agentName: "Stopped agent",
+          createdAt: "2026-08-25T18:00:00.000Z",
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: "2026-08-25T18:00:02.000Z",
+          execution: {
+            phase: "recovery_needed", label: "Stopped", cause: testCase.cause,
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: null, nextAction: null, permittedActions: [],
+            predecessorRunId: null, successorRunId: null,
           },
-        ]}
+        }]}
       />,
     );
-
-    expect(container.textContent).toContain("Run failed");
-    expect(container.textContent).toContain("You can retry this message now.");
-    expect(
-      container.querySelector('[data-testid="task-chat-collapsible-marker"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[data-testid="task-chat-run-failed-try-again"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[data-testid="task-chat-runner-turn"]'),
-    ).toBeNull();
+    expect(Boolean(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')))
+      .toBe(testCase.canRetry);
+    if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
+    else expect(container.textContent).not.toContain("You can retry this message now.");
   });
 
   it.each(DIRECT_ADAPTER_TYPES)(
@@ -2742,6 +3066,41 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     return container.textContent?.split(text).length! - 1;
   }
 
+  it("hides queued actions while paused and restores the queue after resume", () => {
+    const onSteerQueuedComment = vi.fn(async () => {});
+    const props = {
+      comments: [queuedComment],
+      onAdd: async () => {},
+      queuedCommentQueue: queue,
+      onEditQueuedComment: async () => {},
+      onReorderQueuedComments: async () => {},
+      onSteerQueuedComment,
+      onDiscardQueuedComment: async () => {},
+    };
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+
+    render(<TaskChatThread {...props} composerPause={{ scope: "leaf", onResume: () => {} }} />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    expect(onSteerQueuedComment).not.toHaveBeenCalled();
+
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it("hides legacy transcript interrupt actions while paused", () => {
+    render(<TaskChatThread
+      comments={[{ ...queuedComment, queueState: "queued", queueTargetRunId: "run-1" }]}
+      onAdd={async () => {}}
+      onInterruptQueued={async () => {}}
+      composerPause={{ scope: "leaf", onResume: () => {} }}
+    />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Interrupt")).toBe(false);
+  });
+
   it("suppresses the transcript echo until the queued entry is consumed", async () => {
     const props = {
       comments: [queuedComment],
@@ -2787,7 +3146,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it("keeps legacy follow-ups in the composer queue with an interrupt fallback", () => {
+  it.each(["run-1", null])("keeps legacy queued delivery available with target %s", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     render(
       <TaskChatThread
@@ -2802,6 +3161,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
         onInterruptQueued={onInterruptQueued}
         queuedCommentQueue={{
           ...queue,
+          targetRunId,
           protocol: "legacy",
           steeringDisposition: "unsupported",
         }}
@@ -2825,7 +3185,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     );
     expect(interrupt).not.toBeNull();
     flushSync(() => interrupt!.click());
-    expect(onInterruptQueued).toHaveBeenCalledWith("run-1");
+    expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {
@@ -3110,6 +3470,18 @@ describe("TaskChatThread live transcript", () => {
     expect(tail2!.textContent).toContain("Waiting for transcript...");
   });
 
+  it("does not send a workspace bootstrap failure to connection settings", () => {
+    const run = { id: "workspace-prep", status: "running" as const, invocationSource: "issue", triggerDetail: null,
+      startedAt: "2026-09-15T10:00:00Z", finishedAt: null, createdAt: "2026-09-15T10:00:00Z",
+      agentId: "agent-1", agentName: "Worker", adapterType: "process" };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[
+      { ...run, runId: run.id, status: "failed", errorCode: "workspace_git_scan_timeout", finishedAt: "2026-09-15T10:00:10Z" },
+    ]} />);
+    expect(container.textContent).toContain("Workspace setup failed before the agent started.");
+    expect(container.textContent).not.toContain("Review the task’s connection");
+  });
+
   it("renders in-flight output through TaskChatLiveTail, dropping the debug plumbing (PAP-463 C1)", () => {
     // Interleave the exact noise the old RunTranscriptView tail surfaced (init
     // row, stdout/stderr/system dumps) with real content. Only the streamed
@@ -3179,9 +3551,9 @@ describe("TaskChatThread live transcript", () => {
       "Streaming through the shared renderer",
     );
     const phaseSummary = tail!.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-phase-summary"]',
+      '[data-testid="task-chat-activity-phase-toggle"]',
     );
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
     expect(tail!.textContent).toContain("src/app.ts");
     // None of the debug plumbing reaches the thread.
     for (const noise of [
@@ -3476,7 +3848,7 @@ describe("TaskChatThread composer execution controls", () => {
     };
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopScope="subtree" />);
     const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!;
-    expect(button.title).toBe("Stop and pause subtree");
+    expect(button.title).toBe("Stop response");
     await act(async () => { button.click(); });
     expect(onStop).toHaveBeenCalledOnce();
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopPending />);

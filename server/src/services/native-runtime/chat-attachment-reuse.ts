@@ -180,6 +180,8 @@ export type PreparedReusedChatAttachment = {
       attachmentId: string;
       workProductId: string;
       commentId: string;
+      filename: string;
+      byteSize: number;
       sha256: string;
     };
   };
@@ -422,6 +424,7 @@ export async function authorizeChatConversationForBoundRun(
     "discord",
     "microsoft-teams",
     "telegram",
+    "imessage-photon",
   ].find(
     (candidate) =>
       source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
@@ -552,6 +555,7 @@ function externalChatWaitCandidate(
     "discord",
     "microsoft-teams",
     "telegram",
+    "imessage-photon",
   ].find(
     (candidate) =>
       source === `chat:${candidate}` || source === `chat:${candidate}:recovery`,
@@ -1528,6 +1532,8 @@ export async function prepareReusedChatAttachment(input: {
           attachmentId: attachment.id,
           workProductId: attachment.artifactWorkProductId,
           commentId: comment.id,
+          filename: input.source.filename,
+          byteSize: body.length,
           sha256: attachment.sha256,
         },
       },
