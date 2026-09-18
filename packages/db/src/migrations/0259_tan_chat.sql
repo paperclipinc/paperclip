@@ -1,1 +1,0 @@
-ALTER TABLE "chat_endpoints" ALTER COLUMN "allow_group_chats" SET DEFAULT false;
