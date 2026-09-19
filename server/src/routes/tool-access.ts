@@ -4,9 +4,9 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
-  DEFAULT_OWNERSHIP_AVAILABILITY,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isAgentStatusAssignableToWork,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   TOOL_ACTION_REQUEST_STATUSES,
@@ -16,6 +16,7 @@ import {
   type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  configureRailwaySshSchema,
   createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
@@ -55,9 +56,11 @@ import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, ge
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { RailwayError } from "../services/railway.js";
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
+  appWithPaperclipCloudConnectorAvailability,
   isPaperclipCloudConnectorStrategy,
   invalidatePaperclipCloudConnectorCapabilities,
   type PaperclipCloudConnector,
@@ -709,7 +712,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
     throw forbidden(`Missing one of permissions: ${permissionKeys.join(", ")}`);
   }
 
-  async function assertCanTestAsAgent(req: Request, companyId: string, agentId: string) {
+  async function assertCanTestAsAgent(req: Request, companyId: string, agentId: string, knownAgent?: { id: string; status: string }) {
+    const agent = knownAgent ?? (await db
+      .select({ id: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .limit(1))[0];
+    // Admin permission bypasses must not make unassignable agents testable.
+    if (!agent || agent.id !== agentId || !isAgentStatusAssignableToWork(agent.status)) {
+      throw forbidden("This agent is not available for testing");
+    }
     const decision = await access.decide({
       actor: req.actor,
       action: "tasks:assign",
@@ -802,7 +814,6 @@ function connectorEnrollmentPrincipal(req: Request): string {
       : options.paperclipCloudConnector
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
-    const connectorProfiles = new Set<string>(advertisedProfiles);
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
@@ -819,20 +830,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: APP_STORE_DEFINITIONS.map((app) => {
-        const methods = app.methods.filter((method) =>
-          !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-          || Boolean(method.connectorProfile && connectorProfiles.has(method.connectorProfile))
-        );
-        return {
-          ...app,
-          methods,
-          ownershipAvailability: {
-            ...DEFAULT_OWNERSHIP_AVAILABILITY,
-            platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
-          },
-        };
-      }),
+      apps: APP_STORE_DEFINITIONS.map((app) =>
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+      ),
     });
   });
 
@@ -1681,6 +1681,19 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(await svc.listComposioServices(connection.id, getActorInfo(req)));
   });
 
+  router.post("/tool-connections/:connectionId/railway/ssh", validate(configureRailwaySshSchema), async (req, res) => {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    const setup = await svc.configureRailwaySsh(connection.id, connection.companyId, req.body, getActorInfo(req)).catch((error) => {
+      if (error instanceof RailwayError) throw new HttpError(error.status, error.message);
+      throw error;
+    });
+    await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: req.actor.userId ?? "board", action: "tool_connection.railway_ssh_updated", entityType: "tool_connection", entityId: connection.id, details: { action: req.body.action, grantId: req.body.grantId, enabled: setup?.enabled ?? false } });
+    res.json(setup);
+  });
+
   router.post("/tool-connections/:connectionId/services/:toolkitSlug/connect", async (req, res) => {
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!connection) return;
@@ -2004,7 +2017,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const candidates = [];
     for (const agent of rows) {
       try {
-        await assertCanTestAsAgent(req, connection.companyId, agent.id);
+        await assertCanTestAsAgent(req, connection.companyId, agent.id, agent);
       } catch {
         continue;
       }

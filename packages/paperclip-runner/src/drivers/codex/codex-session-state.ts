@@ -100,7 +100,9 @@ export class CodexSessionState {
   readonly goalAvailability: CodexGoalAvailability;
   readonly goalReasonCode: string | null;
   readonly goalReason: string | null;
+  readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
+  readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
   readonly eventQueue = new AsyncQueue<PrpEvent>();
   sourceSequence: number;
@@ -171,7 +173,9 @@ export class CodexSessionState {
     goalAvailability: CodexGoalAvailability;
     goalReasonCode: string | null;
     goalReason: string | null;
+    skillInputs?: CodexAppServerDriverOptions["skillInputs"];
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
+    completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
   }) {
     this.codexUsageBaseline = input.codexUsageBaseline ?? null;
@@ -193,8 +197,10 @@ export class CodexSessionState {
     this.goalAvailability = input.goalAvailability;
     this.goalReasonCode = input.goalReasonCode;
     this.goalReason = input.goalReason;
+    this.skillInputs = structuredClone(input.skillInputs ?? []);
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
+    this.completionFeedback = input.completionFeedback;
     this.currentGoal = input.goal === undefined ? null : structuredClone(input.goal);
     for (const entry of input.lineage ?? [input.opened.lineage]) {
       this.lineageByThread.set(entry.threadId, structuredClone(entry));
@@ -412,7 +418,12 @@ export class CodexSessionState {
     }
     this.terminal = true;
     this.eventQueue.close();
-    void this.transport.close(`protocol_failure:${code}`);
+    // Notification failure can initiate cleanup before the owning runtime joins
+    // it. Observe this background rejection immediately so a deleted remote
+    // sandbox cannot crash the controller. The transport retains its original
+    // close promise: the owner's awaited session.close still receives any
+    // cleanup failure and must not treat it as confirmed termination.
+    void this.transport.close(`protocol_failure:${code}`).catch(() => undefined);
   }
 
   emit(

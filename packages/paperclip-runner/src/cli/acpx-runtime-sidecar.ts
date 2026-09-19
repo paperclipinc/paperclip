@@ -10,6 +10,7 @@ import type {
 } from "acpx/runtime";
 
 import { createAcpxToolEventNormalizer } from "../provider-events.js";
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
@@ -23,6 +24,7 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { AcpxApprovalRequiredError } from "../drivers/acpx/permission-policy.js";
 import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
@@ -261,6 +263,7 @@ async function dispatch(
         model: params.model,
         permissionMode: params.permissionMode,
         systemInstructions: params.systemInstructions,
+        runtimeContext: params.runtimeContext,
         environment: process.env,
         expectedIdentity: params.expectedIdentity,
         semanticTools: {
@@ -563,7 +566,11 @@ async function pumpTurn(
   } catch (error) {
     terminal = {
       status: "failed",
-      error: { message: safeMessage(error), retryable: false },
+      error: {
+        ...(error instanceof AcpxApprovalRequiredError ? { code: error.code } : {}),
+        message: safeMessage(error),
+        retryable: false,
+      },
     };
   } finally {
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
@@ -582,6 +589,9 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   const callId = boundedIdentity(call.callId, "callId");
   if (tools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
+  if (tools.size >= MAX_PENDING_TOOLS) {
+    throw new Error("ACPX pending tool limit reached");
+  }
   if (
     operationId === PRP_COMPLETION_TOOL_NAME ||
     operationId === PRP_BLOCK_TOOL_NAME
@@ -599,9 +609,12 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
         "ACPX semantic result disposition does not match its terminal operation",
       );
     }
-    // The authenticated runner bridge admitted this built-in invocation. Send
-    // that fact across the sidecar boundary before its locally produced result
-    // so runnerd can authorize and correlate the terminal claim.
+    // The authenticated runner bridge must admit this built-in invocation
+    // before the provider sees a result. Keep the call pending until runnerd
+    // sends tool.resolve after the server's completion feedback accepts it.
+    // This is the same roundtrip used by ordinary dynamic tools; emitting a
+    // local semantic_result here would let an invalid review handoff appear
+    // accepted before the server has checked it.
     emit(
       "runtime.tool_called",
       {
@@ -611,21 +624,22 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       },
       activeTurnId,
     );
-    emit(
-      "runtime.event",
-      {
-        type: "semantic_result",
-        callId,
-        operationId,
-        ok: true,
-        result: validation.result,
-      },
-      activeTurnId,
-    );
-    return { accepted: true };
-  }
-  if (tools.size >= MAX_PENDING_TOOLS) {
-    throw new Error("ACPX pending tool limit reached");
+    return await new Promise((settle, reject) => {
+      const abort = () => {
+        const pending = tools.get(callId);
+        if (!pending || !tools.delete(callId)) return;
+        pending.cleanup();
+        reject(new Error("ACPX tool call was cancelled"));
+      };
+      call.signal.addEventListener("abort", abort, { once: true });
+      tools.set(callId, {
+        turnId: activeTurnId,
+        settle,
+        reject,
+        cleanup: () => call.signal.removeEventListener("abort", abort),
+      });
+      if (call.signal.aborted) abort();
+    });
   }
   emit(
     "runtime.tool_called",
@@ -1012,9 +1026,6 @@ function parseOpenParams(
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   resolveQualifiedAcpxProfile(agent, model);
-  if (value.runtimeContext !== undefined && value.runtimeContext !== null) {
-    throw new Error("ACPX sidecar runtime context must be pre-materialized");
-  }
   if (
     value.providerSessionKey !== undefined &&
     value.providerSessionKey !== null
@@ -1039,7 +1050,9 @@ function parseOpenParams(
       "systemInstructions",
       1024 * 1024,
     ),
-    runtimeContext: null,
+    runtimeContext: value.runtimeContext == null
+      ? null
+      : parseNativeRuntimeContext(value.runtimeContext),
     tools: parseTools(value.tools),
     ...(value.expectedIdentity === undefined || value.expectedIdentity === null
       ? {}

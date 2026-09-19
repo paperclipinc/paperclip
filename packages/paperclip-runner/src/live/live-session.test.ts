@@ -1831,7 +1831,11 @@ describe("Capability live runnerd and Codex session", () => {
         ...binding,
         workingDirectory: directory,
         attemptId: "attempt-real-killed",
-        turnTimeoutMs: 2_000,
+        // The kill below ends this turn, so the timeout is only a backstop.
+        // A short one races a loaded machine and settles the turn first,
+        // which fails the assertion that the turn was still running when the
+        // process died — the flake that starves this lane in CI.
+        turnTimeoutMs: 60_000,
       });
       const observed = observeSavedEffect(store, {
         ...binding,

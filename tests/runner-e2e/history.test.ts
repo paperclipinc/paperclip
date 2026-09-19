@@ -67,6 +67,53 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
 }
 
 describe("runner E2E campaign history", () => {
+  it("retains incomplete journeys in campaign, suite and history without marking them green", () => {
+    const execution = runnerMatrix.find(e => e.suite.id === "first-task")!;
+    const incomplete: RunnerE2EResult = {
+      ...result(execution, "failed"), failureClass: "candidate_failure",
+      firstTask: {
+        caseId: execution.task.id, nonce: "fixture", onboardingIssueId: "issue", agentId: "agent",
+        initialTaskIds: ["issue"], instructions: [], configuredModel: null, observedModels: [], checkpoints: [],
+        checks: [{ id: "acceptance-recorded", passed: false, detail: "Acceptance", evidence: [], notReached: "Recording stopped" }],
+      },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "incomplete", generatedAt: incomplete.finishedAt, expected: [execution.id], results: [incomplete] });
+    expect(campaign).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    expect(campaign.suites[0]).toMatchObject({ passed: 0, failed: 0, incomplete: 1 });
+    const record = campaignHistoryRecord(campaign, "https://example.test");
+    expect(record.executions[0].status).toBe("incomplete");
+    const history = mergeRunnerHistory(null, { ...record, complete: true, suites: record.suites.map(s => ({ ...s, complete: true })) });
+    expect(history.latestGreenCampaignId).toBeNull();
+    expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
+    expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
+    expect(renderRunnerE2EDashboard({ title: "History", generatedAt: incomplete.finishedAt, expected: [], catalog: [], entries: [], history })).toContain('data-history-status="incomplete"');
+  });
+
+  it("shows unknown campaign costs without plotting zero dollars", () => {
+    const execution = runnerMatrix[0];
+    const campaign = buildRunnerCampaign({ campaignId: "unknown-cost", generatedAt: "2026-09-15T00:00:00Z", expected: [execution.id], results: [result(execution, "passed")] });
+    campaign.billing.observedAndEstimatedCostUsd = null;
+    const record = { ...campaignHistoryRecord(campaign, "https://example.test"), complete: true };
+    const history = mergeRunnerHistory(null, record);
+    expect(renderRunnerHistoryIndex(history)).toContain("Unknown");
+    const dashboard = renderRunnerE2EDashboard({ title: "History", generatedAt: campaign.generatedAt, expected: [], catalog: [], entries: [], history });
+    expect(dashboard).toContain("Unknown measurements are not plotted");
+    expect(dashboard).not.toContain("NaN");
+  });
+
+  it("does not turn a clean-evidence behavior failure into a pass when regenerating", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-failed-evidence-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0];
+    const failedResult = { ...result(execution, "failed"), failureClass: "candidate_failure" as const, error: "Behavior check failed", evidenceValid: true, evidenceErrors: [] };
+    const campaign = buildRunnerCampaign({ campaignId: "failed", generatedAt: failedResult.finishedAt, expected: [execution.id], results: [failedResult] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({ ...campaign, results: [failedResult] }));
+    await regenerateRunnerDashboard({ bundle: root });
+    const page = await readFile(path.join(root, "index.html"), "utf8");
+    expect(page).toContain('class="case case-failed"');
+    expect(page).not.toContain('class="case case-passed"');
+  });
+
   it("records the resolved paid target instead of the trusted workflow checkout", () => {
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_SHA", "target-sha");
     vi.stubEnv("PAPERCLIP_RUNNER_E2E_SOURCE_REF", "refs/heads/target");
@@ -195,8 +242,8 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
-    expect(index).toContain("68/68 passed");
-    expect(index).toContain("67/68 passed");
+    expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);
+    expect(index).toContain(`${runnerMatrix.length - 1}/${runnerMatrix.length} passed`);
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
       "campaigns/complete-red/public-images/campaign-summary.png",
@@ -501,9 +548,25 @@ describe("historical publication security", () => {
     ).rejects.toThrow("does not match its raster file type");
   });
 
+  it("refuses a public bundle when any declared screenshot is absent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-missing-screenshot-"));
+    temporaryDirectories.push(root);
+    const directory = path.join(root, "evidence", "agent-chat.runner-codex.local.plan-handoff", "attempt-1");
+    await mkdir(directory, { recursive: true });
+    const base = "evidence/agent-chat.runner-codex.local.plan-handoff/attempt-1";
+    const declared = new Set([`${base}/final-state.png`, `${base}/chat-plan-draft.png`]);
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    await writeFile(path.join(directory, "final-state.png"), png);
+    await expect(createBundleManifest(root, "campaign-1", false, declared))
+      .rejects.toThrow(`Declared public screenshots are missing from the historical bundle: ${base}/chat-plan-draft.png`);
+    await writeFile(path.join(directory, "chat-plan-draft.png"), png);
+    const manifest = await createBundleManifest(root, "campaign-1", false, declared);
+    expect(new Set(manifest.files.map((file) => file.path))).toEqual(declared);
+  });
+
   it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
     const execution = runnerMatrix[0]!;
-    const campaign = buildRunnerCampaign({
+    expect(() => buildRunnerCampaign({
       campaignId: "unsafe-screenshot",
       generatedAt: "2026-08-28T00:01:00.000Z",
       expected: [execution.id],
@@ -520,10 +583,7 @@ describe("historical publication security", () => {
           ],
         },
       ],
-    });
-    expect(() => publicScreenshotPaths(campaign)).toThrow(
-      "Cannot publish unsafe screenshot path",
-    );
+    })).toThrow("Invalid retained runner result field: result.screenshots[0].file");
 
     const failedCampaign = buildRunnerCampaign({
       campaignId: "failed-screenshot",

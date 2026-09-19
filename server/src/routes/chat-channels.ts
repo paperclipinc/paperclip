@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   CHAT_PROVIDERS,
   configureChatEndpointSchema,
+  inspectPhotonProjectSchema,
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
@@ -152,6 +153,12 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       );
     },
   );
+
+  router.post("/chat-endpoints/:endpointId/photon/inspect", validate(inspectPhotonProjectSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.inspectPhoton(endpointId(req), req.body));
+  });
 
   router.post(
     "/chat-endpoints/:endpointId/setup",
@@ -482,7 +489,7 @@ export function chatWebhookRoutes(
       });
     }
     const provider = req.params.provider as ChatProvider;
-    if (!CHAT_PROVIDERS.includes(provider))
+    if (!CHAT_PROVIDERS.includes(provider) || provider === "agentmail")
       throw badRequest("Unsupported chat provider");
     const response = await service.handleWebhook(
       req.params.publicId as string,

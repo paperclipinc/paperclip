@@ -5,6 +5,7 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -380,31 +381,6 @@ function createRunContextDb(
   return dbStub;
 }
 
-async function createApp(
-  actor: Record<string, unknown>,
-  db?: unknown,
-  options: { chatRunRetries?: typeof mockChatRunRetries } = {},
-) {
-  const routeDb = db ?? createRunContextDb(
-    {},
-    typeof actor.agentId === "string" ? actor.agentId : ownerAgentId,
-    typeof actor.runId === "string" ? actor.runId : ownerRunId,
-  );
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = actor;
-    next();
-  });
-  app.use("/api", issueRoutes(routeDb as any, mockStorageService as any, options));
-  app.use(errorHandler);
-  return app;
-}
-
 function peerActor(overrides: Record<string, unknown> = {}) {
   return {
     type: "agent",
@@ -437,23 +413,43 @@ function boardActor() {
 }
 
 describe("agent issue mutation checkout ownership", () => {
+  const routeModules = hoistModuleGraph(registerRouteMocks, async () => {
+    const [{ errorHandler }, { issueRoutes, __clearIssueListResponseCacheForTests }] = await Promise.all([
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+    ]);
+    return { errorHandler, issueRoutes, __clearIssueListResponseCacheForTests };
+  });
+
+  function createApp(
+    actor: Record<string, unknown>,
+    db?: unknown,
+    options: { chatRunRetries?: typeof mockChatRunRetries } = {},
+  ) {
+    const routeDb = db ?? createRunContextDb(
+      {},
+      typeof actor.agentId === "string" ? actor.agentId : ownerAgentId,
+      typeof actor.runId === "string" ? actor.runId : ownerRunId,
+    );
+    const { errorHandler, issueRoutes } = routeModules.value;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = actor;
+      next();
+    });
+    app.use("/api", issueRoutes(routeDb as any, mockStorageService as any, options));
+    app.use(errorHandler);
+    return app;
+  }
+
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/access.js");
-    vi.doUnmock("../services/activity-log.js");
-    vi.doUnmock("../services/cross-issue-influence-limit.js");
-    vi.doUnmock("../services/agents.js");
-    vi.doUnmock("../services/documents.js");
-    vi.doUnmock("../services/external-objects.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/issues.js");
-    vi.doUnmock("../services/work-products.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerRouteMocks();
+    // This block loads the route module graph one time (see
+    // hoistModuleGraph above). As a result, the issue-list route keeps its
+    // response cache in memory between tests. Clear the cache before each
+    // test. This stops one test from reusing a cached response left behind
+    // by an earlier test.
+    routeModules.value.__clearIssueListResponseCacheForTests();
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
@@ -2026,11 +2022,12 @@ describe("agent issue mutation checkout ownership", () => {
       expect.soft(mockLogActivity).not.toHaveBeenCalled();
       // This is a route-boundary test, not a fake SQL engine: inspect the
       // actual compiled predicate so a global or active-only query cannot pass.
+      // Only restricted chat bindings use this recovery gate; email uses normal agent work.
       expect(db.chatBindingQueries).toHaveLength(1);
       expect(db.chatBindingQueries[0].sql).toBe(
-        '("chat_conversations"."company_id" = $1 and "chat_conversations"."issue_id" = $2)',
+        '("chat_endpoints"."external_execution_policy" = $1 and "chat_conversations"."company_id" = $2 and "chat_conversations"."issue_id" = $3)',
       );
-      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+      expect(db.chatBindingQueries[0].params).toEqual(["restricted", companyId, issueId]);
     },
   );
 
@@ -2157,7 +2154,7 @@ describe("agent issue mutation checkout ownership", () => {
       ).toHaveBeenCalledExactlyOnceWith(chatRetryActionId);
       expect(order).toEqual(["begin", "stage", "commit", "dispatch"]);
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+      expect(db.chatBindingQueries[0].params).toEqual(["restricted", companyId, issueId]);
     });
 
     it("keeps committed recovery resolution successful when immediate dispatch rejects", async () => {

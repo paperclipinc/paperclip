@@ -90,11 +90,18 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(22);
+    expect(authority.definitions()).toHaveLength(26);
+    const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
+    expect(questions.description).toContain("ask only the next unanswered question");
+    expect(questions.description).toContain("Never infer answers");
+    expect(questions.description).toContain("Do not fabricate answer links");
+    expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
+    expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");
+
     expect(authority.definitions().map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "connections_search",
-        "connection_request",
+        "connection_request", "create_project", "list_project_repositories", "list_projects",
         "get_task_context",
         "get_task_history",
         "search_tasks",
@@ -106,6 +113,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         "read_document",
         "list_document_revisions",
         "write_document",
+        "create_skill",
         "list_agents",
         "get_agent",
         "list_approvals",
@@ -249,13 +257,13 @@ describe("PaperclipRunnerToolAuthority", () => {
         "current Paperclip task bound to this run",
       );
       expect(advertised.description).toContain(
-        "interactionKind 'questions' with payload.questions",
+        "payload.questions for choices",
       );
       expect(advertised.description).toContain(
-        "supported provider question controls or a safe fallback",
+        "Paperclip renders it and authenticates the response",
       );
       expect(advertised.description).toContain(
-        "Normal task permissions and review gates still apply",
+        "Preserve existing review gates",
       );
       expect(advertised.description).not.toContain("mock");
       expect(advertised.description).not.toContain("questionSpec");
@@ -268,7 +276,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     },
   );
 
-  it("executes the advertised payload.questions shape once on the bound reviewed task", async () => {
+  it.each(["choice", "text"] as const)("executes the advertised %s question once on the bound reviewed task", async (answerMode) => {
     const binding = {
       companyId: randomUUID(),
       agentId: randomUUID(),
@@ -278,7 +286,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.insert(companies).values({
       id: binding.companyId,
       name: "Question invocation",
-      issuePrefix: "RQA",
+      issuePrefix: answerMode === "choice" ? "RQA" : "RQT",
     });
     await db.insert(agents).values({
       id: binding.agentId,
@@ -328,6 +336,33 @@ describe("PaperclipRunnerToolAuthority", () => {
         ],
       },
     ];
+    const payloadDescription = (advertised.inputSchema as {
+      properties: { payload: { description: string } };
+    }).properties.payload.description;
+    expect(payloadDescription).toContain("at least two distinct meaningful options");
+    expect(payloadDescription).toContain("questionSet");
+    expect(payloadDescription).not.toContain("use exactly");
+    const payload = answerMode === "choice"
+      ? { version: 1, questions }
+      : {
+          version: 1,
+          questions: [{
+            id: "goal",
+            prompt: "What should we accomplish?",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "describe", label: "Your answer", freeText: true }],
+          }],
+          questionSet: {
+            schema: "paperclip.question_set.v1",
+            questions: [{
+              id: "goal",
+              prompt: "What should we accomplish?",
+              answerMode: "text",
+              required: true,
+            }],
+          },
+        };
     const call = {
       tool: "request_human_input",
       callId: "advertised-question",
@@ -337,7 +372,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         title: "Choose one color",
         prompt: "Choose one color",
         continuationPolicy: "wake_assignee",
-        payload: { version: 1, questions },
+        payload,
       },
     };
     const first = await authority.execute(call);
@@ -350,7 +385,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         kind: "ask_user_questions",
         status: "pending",
         continuationPolicy: "wake_assignee",
-        payload: { version: 1, questions },
+        payload,
       },
     });
     await expect(

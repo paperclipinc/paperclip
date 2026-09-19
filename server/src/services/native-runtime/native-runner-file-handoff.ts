@@ -34,6 +34,9 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { issueService } from "../issues.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+
+export type RemoteWorkspaceFileReader = (input: Pick<NativeRunnerFileHandoffInput, "contentRef" | "byteSize" | "sha256">) => Promise<Buffer>;
 
 export interface NativeRunnerFileHandoffBinding {
   readonly companyId: string;
@@ -42,6 +45,8 @@ export interface NativeRunnerFileHandoffBinding {
   readonly agentId: string;
   readonly workspaceRoot: string;
   readonly executionTargetKind: "local" | "remote";
+  /** Server-bound reader. Never supplied by the model or a request body. */
+  readonly readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
 }
 
 export interface NativeRunnerFileHandoffInput {
@@ -59,6 +64,9 @@ export interface NativeRunnerFileHandoffResult {
   readonly stateRevision: number;
   readonly entityRefs: readonly string[];
   readonly scheduledWakeIds: readonly string[];
+  readonly attachmentId: string;
+  readonly contentPath: string;
+  readonly downloadPath: string;
 }
 
 export interface PreparedNativeRunnerFileHandoff {
@@ -286,8 +294,43 @@ async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
-  if (binding.executionTargetKind !== "local") {
-    throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+  const filename = requiredText(input.filename, "filename", 500);
+  if (path.basename(filename) !== filename || filename.includes("\\")) {
+    throw new Error("paperclip_runner_file_handoff_invalid_filename");
+  }
+  const title = requiredText(input.title, "title", 500);
+  if (
+    !Number.isSafeInteger(input.byteSize) ||
+    input.byteSize <= 0 ||
+    input.byteSize > MAX_ATTACHMENT_BYTES
+  ) {
+    throw new Error("paperclip_runner_file_handoff_size_denied");
+  }
+  const expectedSha256 = input.sha256.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) {
+    throw new Error("paperclip_runner_file_handoff_invalid_sha256");
+  }
+  const contentType = normalizeUploadAttachmentContentType({
+    contentType: requiredText(input.contentType, "content_type", 200),
+    originalFilename: filename,
+    isAllowedContentType,
+  });
+  if (!isAllowedContentType(contentType)) {
+    throw new Error("paperclip_runner_file_handoff_content_type_denied");
+  }
+
+  if (binding.executionTargetKind === "remote") {
+    if (!binding.readRemoteWorkspaceFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+    const contentRef = requiredText(input.contentRef, "content_ref", 2_000);
+    if (path.posix.isAbsolute(contentRef) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
+      || contentRef.includes("\\") || path.posix.normalize(contentRef) === ".."
+      || path.posix.normalize(contentRef).startsWith("../")) {
+      throw new Error("paperclip_runner_file_handoff_path_denied");
+    }
+    const body = await binding.readRemoteWorkspaceFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
+    if (body.length !== input.byteSize) throw new Error("paperclip_runner_file_handoff_size_denied");
+    if (createHash("sha256").update(body).digest("hex") !== expectedSha256) throw new Error("paperclip_runner_file_handoff_hash_mismatch");
+    return { body, contentType, filename, sha256: expectedSha256, title };
   }
 
   const workspaceRoot = await realpath(
@@ -313,31 +356,6 @@ async function readVerifiedWorkspaceFile(
   const canonicalCandidate = await realpath(candidate);
   if (!isWithin(workspaceRoot, canonicalCandidate)) {
     throw new Error("paperclip_runner_file_handoff_path_denied");
-  }
-
-  const filename = requiredText(input.filename, "filename", 500);
-  if (path.basename(filename) !== filename || filename.includes("\\")) {
-    throw new Error("paperclip_runner_file_handoff_invalid_filename");
-  }
-  const title = requiredText(input.title, "title", 500);
-  if (
-    !Number.isSafeInteger(input.byteSize) ||
-    input.byteSize <= 0 ||
-    input.byteSize > MAX_ATTACHMENT_BYTES
-  ) {
-    throw new Error("paperclip_runner_file_handoff_size_denied");
-  }
-  const expectedSha256 = input.sha256.trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/u.test(expectedSha256)) {
-    throw new Error("paperclip_runner_file_handoff_invalid_sha256");
-  }
-  const contentType = normalizeUploadAttachmentContentType({
-    contentType: requiredText(input.contentType, "content_type", 200),
-    originalFilename: filename,
-    isAllowedContentType,
-  });
-  if (!isAllowedContentType(contentType)) {
-    throw new Error("paperclip_runner_file_handoff_content_type_denied");
   }
 
   const handle = await open(
@@ -799,6 +817,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
     .select({
       contextSnapshot: heartbeatRuns.contextSnapshot,
       agentStatus: agents.status,
+      assigneeAgentId: issues.assigneeAgentId,
     })
     .from(heartbeatRuns)
     .innerJoin(
@@ -825,7 +844,6 @@ export async function stageNativeRunnerWakeAttachments(input: {
         inArray(heartbeatRuns.status, ["queued", "running"]),
         eq(issues.id, input.binding.issueId),
         eq(issues.companyId, input.binding.companyId),
-        eq(issues.assigneeAgentId, input.binding.agentId),
         eq(issues.executionRunId, input.binding.runId),
         eq(agents.id, input.binding.agentId),
         eq(agents.companyId, input.binding.companyId),
@@ -838,6 +856,18 @@ export async function stageNativeRunnerWakeAttachments(input: {
       run.agentStatus,
     )
   ) {
+    throw new Error("paperclip_runner_attachment_staging_not_authorized");
+  }
+  const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+  const nativeReview = reviewContext
+    ? await getNativeReviewAssignment(input.db, {
+        companyId: input.binding.companyId,
+        issueId: input.binding.issueId,
+        agentId: input.binding.agentId,
+        contextSnapshot: reviewContext,
+      })
+    : null;
+  if (run.assigneeAgentId !== input.binding.agentId && !nativeReview) {
     throw new Error("paperclip_runner_attachment_staging_not_authorized");
   }
   const selections = wakeAttachmentSelections(run.contextSnapshot);
@@ -1181,6 +1211,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${existing.attachmentId}`,
         disposition: "duplicate",
+        attachmentId: existing.attachmentId,
+        contentPath: `/api/attachments/${existing.attachmentId}/content`,
+        downloadPath: `/api/attachments/${existing.attachmentId}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           existing.attachmentId,
@@ -1251,6 +1284,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${attachment.id}`,
         disposition: "applied",
+        attachmentId: attachment.id,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           attachment.id,

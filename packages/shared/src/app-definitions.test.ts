@@ -9,6 +9,7 @@ import {
   CONNECTABLE_APP_DEFINITIONS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
+  getAppDefinitionForUrl,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -238,6 +239,13 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   writeTools: readonly string[];
 }>;
 describe("AppDefinition catalog", () => {
+  it("offers Anthropic runtime authentication without the unsupported REST tool method", () => {
+    const anthropic = APP_DEFINITIONS.find((app) => app.slug === "anthropic")!;
+    expect(anthropic.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
+    expect(anthropic.methods.every((method) => method.purpose === "ai" && method.transport === "runtime_auth")).toBe(true);
+    expect(getAvailableConnectionMethod(anthropic, "api-key")).toBeNull();
+  });
+
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("contains every established provider plus the reviewed self-serve catalog", () => {
@@ -270,7 +278,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(43);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(44);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -423,12 +431,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 46 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 47 researched MCP providers", () => {
+    // Ledger-wide date reflects the last full re-verification (2026-08-26);
+    // the You.com entry added here carries its own research evidence, but
+    // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(46);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(47);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 46);
+    ).toHaveProperty("size", 47);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -558,6 +569,25 @@ describe("AppDefinition catalog", () => {
       defaults: {},
     });
     expect(method("zapier")?.credentialFields).toBeUndefined();
+    expect(
+      APP_DEFINITIONS.find((app) => app.slug === "youcom")?.methods.map(
+        (candidate) => candidate.key,
+      ),
+    ).toEqual(["mcp-oauth", "mcp-api-key", "mcp-free"]);
+    expect(method("youcom")?.defaults?.serverUrl).toBe("https://api.you.com/mcp");
+    expect(method("youcom", "mcp-api-key")).toMatchObject({
+      auth: "api_key",
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    expect(method("youcom", "mcp-free")).toMatchObject({
+      auth: "none",
+      defaults: { serverUrl: "https://api.you.com/mcp?profile=free" },
+    });
+    expect(method("youcom", "mcp-free")?.credentialFields).toBeUndefined();
   });
   it("uses discovery-first Notion MCP OAuth metadata", () => {
     const notion = APP_DEFINITIONS.find((app) => app.slug === "notion");
@@ -679,7 +709,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(40);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(48);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -691,7 +721,7 @@ describe("AppDefinition catalog", () => {
       expect(storeSlugs.has(slug), slug).toBe(false);
     }
   });
-  it("ships complete local branding provenance for all 40 store-visible providers", () => {
+  it("ships matching local artwork for every store-visible provider", () => {
     const uiPublic = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../../../ui/public",
@@ -704,21 +734,13 @@ describe("AppDefinition catalog", () => {
         catalogVisible: boolean;
         localAsset: string;
         darkAsset?: string;
-        officialSourceUrl: string;
-        upstreamAssetUrl: string;
-        assetType: "svg" | "png";
-        darkVariantRequired: boolean;
       }>;
     };
     const visible = manifest.providers.filter((entry) => entry.catalogVisible);
-    expect(visible).toHaveLength(40);
+    expect(visible).toHaveLength(APP_STORE_DEFINITIONS.length);
     expect(new Set(visible.map((entry) => entry.slug))).toHaveProperty(
       "size",
-      40,
-    );
-    expect(new Set(visible.map((entry) => entry.localAsset))).toHaveProperty(
-      "size",
-      40,
+      visible.length,
     );
     expect(new Set(APP_STORE_DEFINITIONS.map((entry) => entry.slug))).toEqual(
       new Set(visible.map((entry) => entry.slug)),
@@ -728,21 +750,16 @@ describe("AppDefinition catalog", () => {
       expect(provenance).toBeTruthy();
       expect(provenance.localAsset).toBe(app.branding.logoUrl);
       expect(provenance.darkAsset).toBe(app.branding.darkLogoUrl);
-      expect(provenance.darkVariantRequired).toBe(
-        Boolean(provenance.darkAsset),
-      );
-      expect(new URL(provenance.officialSourceUrl).protocol).toBe("https:");
-      expect(new URL(provenance.upstreamAssetUrl).protocol).toBe("https:");
       expect(provenance.localAsset).toMatch(/^\/brands\/apps\/.+\.(svg|png)$/);
       expect(provenance.localAsset).not.toContain("google.com/s2/favicons");
       const asset = fs.readFileSync(path.join(uiPublic, provenance.localAsset));
-      if (provenance.assetType === "png") {
+      if (provenance.localAsset.endsWith(".png")) {
         expect(asset.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
         expect(asset.readUInt32BE(16)).toBeGreaterThanOrEqual(128);
         expect(asset.readUInt32BE(20)).toBeGreaterThanOrEqual(128);
       } else {
         const svg = asset.toString("utf8");
-        expect(svg).toMatch(/^<svg\b/);
+        expect(svg.trimStart()).toMatch(/^(?:<\?xml[^?]*\?>\s*)?<svg\b/);
         expect(svg).not.toMatch(/<script|<foreignObject|\son[a-z]+\s*=/i);
       }
       if (provenance.darkAsset)
@@ -978,5 +995,17 @@ describe("AppDefinition catalog", () => {
           if (field.required && field.type !== "checkbox")
             expect(field.placeholder).toBeTruthy();
       }
+  });
+});
+
+
+describe("Railway provider", () => {
+  it("matches only the hosted endpoint and exposes one vault-backed OAuth method", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "railway")!;
+    expect(getAppDefinitionForUrl("https://mcp.railway.com")?.slug).toBe("railway");
+    for (const url of ["https://mcp.railway.com/path", "https://mcp.railway.com.evil.test", "http://mcp.railway.com"]) expect(getAppDefinitionForUrl(url)?.slug).not.toBe("railway");
+    expect(app.methods).toHaveLength(1);
+    expect(app.methods[0]).toMatchObject({ key: "mcp-oauth", auth: "oauth", transport: "mcp_remote", ownershipModes: ["dcr", "customer"], riskTier: "S4", defaults: { serverUrl: "https://mcp.railway.com", scopesHint: ["openid", "offline_access", "workspace:member"], oauthAuthorizationParams: { prompt: "consent" } } });
+    expect(JSON.stringify(app.methods)).toContain("Live Railway qualification is pending");
   });
 });

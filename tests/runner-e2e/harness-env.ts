@@ -104,7 +104,14 @@ export function buildRunnerE2EProcessEnvironment(
   executions: readonly MatrixExecution[],
 ): NodeJS.ProcessEnv {
   const result = { ...source };
+  // Announcements are unrelated to the scenarios and obscure screenshot evidence.
+  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
+  // Hiring needs the opt-in native API surface. Scope this to the explicit
+  // manual hiring story; production and other suites retain their defaults.
+  if (executions.some((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")) {
+    result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
+  }
   if (
     executions.length > 0 &&
     executions.every(

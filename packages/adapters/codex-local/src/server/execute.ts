@@ -1,17 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  firstMeaningfulStderrLine,
-  inferOpenAiCompatibleBiller,
-  type AdapterExecutionContext,
-  type AdapterExecutionResult,
-} from "@paperclipai/adapter-utils";
-import {
-  SANDBOX_EXEC_TIMEOUT_ERROR_CODE,
-  detectSandboxExecTimeout,
-  extractSandboxExecTimeoutMessage,
-} from "@paperclipai/adapter-utils/sandbox-exec-timeout";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -55,9 +45,11 @@ import {
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -71,7 +63,6 @@ import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
-  isCodexInvalidApiKeyError,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -138,11 +129,14 @@ function stripCodexRolloutNoise(text: string): string {
   return kept.join("\n");
 }
 
-// The benign-banner filter this adapter used to carry privately now lives in
-// adapter-utils, so every adapter that derives a fallback run error from stderr
-// shares one list. Re-exported here because callers (and the adapter's own
-// regression suite) import it from this module.
-export { firstMeaningfulStderrLine };
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? ""
+  );
+}
 
 // Benign stderr lines that never explain a nonzero exit and must not be
 // surfaced as the run error: Codex always prints the YOLO approvals warning
@@ -159,6 +153,13 @@ function isBenignCodexStderrLine(line: string): boolean {
   return BENIGN_CODEX_STDERR_LINE_RES.some((re) => re.test(line));
 }
 
+export function firstMeaningfulStderrLine(text: string): string {
+  const meaningful = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !isBenignCodexStderrLine(line));
+  return meaningful ?? firstNonEmptyLine(text);
+}
 
 function signalCodexChild(
   target: { pid: number | null; processGroupId: number | null },
@@ -589,7 +590,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
@@ -633,10 +636,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
-  const configuredCodexHome =
+  let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+  const connectorSourceHome = configuredCodexHome;
+  const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
+    && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
+  if (connectorSkillDigest) {
+    // Never mount assignment-specific skills into the shared company/user home.
+    // A different skill revision gets a new home, so revoked/changed resources
+    // cannot survive as stale symlinks or bleed into another agent's session.
+    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+      "connector-runtimes", agent.id, connectorSkillDigest);
+  }
   const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
     // A missing-source entry would become a dangling skill symlink; skip it.
     .filter((entry) => !isPaperclipSkillSourceMissing(entry));
@@ -648,11 +661,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
-  // A Codex `auth.json` the user minted with `codex login` on their own machine.
-  // This is how a ChatGPT plan reaches a hosted install: there is no shared host
-  // login for a tenant to inherit, and inheriting one would be another tenant's.
-  // An explicit OPENAI_API_KEY still wins, matching the precedence Codex itself
-  // applies inside auth.json.
   const configuredCodexAuthJson =
     typeof envConfig.CODEX_AUTH_JSON === "string" && envConfig.CODEX_AUTH_JSON.trim().length > 0
       ? envConfig.CODEX_AUTH_JSON.trim()
@@ -672,7 +680,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (isCodexAuthCacheEnabled(process.env)) {
+  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -691,13 +699,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null) {
+  if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
       authJson: configuredCodexAuthJson,
     });
-  } else if (configuredHomeIsManaged) {
-    await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
+  }
+  if (configuredHomeIsManaged && configuredCodexHome) {
+    const seedEnv = connectorSkillDigest ? {
+      ...process.env, CODEX_HOME: connectorSourceHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
+    } : process.env;
+    await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
       authJson: configuredCodexAuthJson,
     });
@@ -796,11 +808,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             "stdout",
             `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "CODEX_HOME" : "workspace and CODEX_HOME"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
-          // Captured at launch time, before the sandbox runs: does the SHARED
-          // host credential store (the symlink source the managed homes point
-          // their `auth.json` at) hold usable auth? The teardown copy-back
-          // below gates on this instead of re-probing, so a run can never
-          // manufacture a copy-back target that did not exist at launch.
           const sharedHostCodexHome = resolveSharedCodexHomeDir(process.env);
           const sharedHostHasUsableAuth = await codexHomeHasUsableAuth(sharedHostCodexHome);
           // Stage only the files Codex actually needs into a curated temp dir and
@@ -848,15 +855,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
                 restore: async ({ assetDir, readFile }) => {
-                  // Hosted path first. When the run authenticated with a
-                  // credential the USER supplied, the refreshed copy has to go
-                  // back to where that credential came from — the credential
-                  // store — not to any host file. This is not an optimisation:
-                  // OpenAI rotates the refresh token on every refresh and the
-                  // old one dies immediately, so skipping this would leave the
-                  // stored credential invalid from the next run onward. The
-                  // feature would look fine for about an hour and then break
-                  // permanently, which is worse than not shipping it.
                   if (configuredCodexAuthJson && ctx.onCredentialRotated) {
                     try {
                       const rotated = (await readFile(path.posix.join(assetDir, "auth.json"))).toString("utf8");
@@ -871,10 +869,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                         );
                       }
                     } catch (err) {
-                      // A failed copy-back must never fail a run that already
-                      // did the user's work. The cost is a stale stored
-                      // credential, which surfaces as a normal auth error on a
-                      // later run, not as a lost result here.
                       await onLog(
                         "stdout",
                         `[paperclip] Codex plan credential copy-back skipped: ${
@@ -884,15 +878,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     }
                     return;
                   }
-                  // The copy-back exists to persist refreshed ChatGPT-subscription
-                  // tokens back to the credential the managed homes symlink to.
-                  // When no shared host credential store exists (cloud/multi-tenant
-                  // servers whose auth lives only in managed per-company homes, or
-                  // a host that never ran `codex login`) there is nothing to merge
-                  // into, and creating a shared `~/.codex` on a multi-tenant server
-                  // would leak one tenant's credential into the store every other
-                  // tenant's managed home is seeded from. Skip instead of letting
-                  // the ENOENT fail the teardown and mark a completed run failed.
                   if (!sharedHostHasUsableAuth) {
                     await onLog(
                       "stdout",
@@ -904,12 +889,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(sharedHostCodexHome, "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
-                    // Additive cache write (sandbox to host): also cache the
-                    // sandbox subscription credential in its per-identity slot,
-                    // keyed by the real `account_id`. Company-scoped root; the
-                    // helper ensures the slot directory private and containment-
-                    // guarded. The off-switch (default on) is read inside.
-                    resolveCacheEntryPath: (accountId) =>
+                    resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
                   }));
@@ -1178,7 +1158,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !sessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      resumedSession: Boolean(sessionId),
+      conversationMode: context.conversationMode === true,
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
     instructionsChars = promptInstructionsPrefix.length;
@@ -1261,6 +1246,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       wakePrompt,
       codexFallbackHandoffNote,
       sessionHandoffNote,
+      taskContextNote,
       renderedPrompt,
     ]);
     const promptMetrics = {
@@ -1269,6 +1255,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 
@@ -1472,15 +1459,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       }
       if (attempt.proc.timedOut) {
-        const sandboxExecTimedOut = detectSandboxExecTimeout(attempt.proc.stderr);
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: sandboxExecTimedOut
-            ? extractSandboxExecTimeoutMessage(attempt.proc.stderr) ?? "Sandbox exec channel timed out"
-            : `Timed out after ${timeoutSec}s`,
-          errorCode: sandboxExecTimedOut ? SANDBOX_EXEC_TIMEOUT_ERROR_CODE : undefined,
+          errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
@@ -1525,18 +1508,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
-      const invalidApiKey =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
-        !authRefreshFailure &&
-        isCodexInvalidApiKeyError({
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
-        !invalidApiKey &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1545,7 +1519,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
         !authRefreshFailure &&
-        !invalidApiKey &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
@@ -1581,8 +1554,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? attempt.proc.errorCode
             : authRefreshFailure
             ? authRefreshFailure
-            : invalidApiKey
-            ? "codex_auth_required"
             : providerQuota
             ? "provider_quota"
             : transientUpstream
@@ -1621,6 +1592,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (
         sessionId &&
         !initial.proc.timedOut &&
+        !initial.proc.signal &&
+        // A started session can emit stale-rollout warnings for other threads.
+        // After Ctrl-C those warnings must not restart the cancelled turn.
+        !initial.parsed.sessionId &&
         (initial.proc.exitCode ?? 0) !== 0 &&
         isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {

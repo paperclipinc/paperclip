@@ -31,12 +31,14 @@ const ALLOWLIST = new Set([
   join(SRC_ROOT, "components", "LegacyIssuesList.tsx"),
   join(SRC_ROOT, "components", "Sidebar.production.tsx"),
   join(SRC_ROOT, "components", "SidebarAgents.production.tsx"),
+  join(SRC_ROOT, "hooks", "useAgentChatEnabled.ts"),
   join(SRC_ROOT, "hooks", "useChatConnectorsEnabled.ts"),
   join(SRC_ROOT, "hooks", "useStreamlinedUiEnabled.ts"),
   join(SRC_ROOT, "pages", "AgentDetail.production.tsx"),
   join(SRC_ROOT, "pages", "apps", "chat", "ChatEndpointSetup.tsx"),
   join(SRC_ROOT, "pages", "AgentDetail.tsx"),
   join(SRC_ROOT, "pages", "Agents.production.tsx"),
+  join(SRC_ROOT, "pages", "IssueDetail.tsx"),
   join(SRC_ROOT, "pages", "LegacyInbox.tsx"),
 ]);
 

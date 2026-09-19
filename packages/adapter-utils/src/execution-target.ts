@@ -1872,8 +1872,17 @@ export async function prepareGitHubOperationLaunchers(input: {
   const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
-  const profile = `export PATH=${shellQuote(managedPath)}\n`;
+  // Empty merge overrides clear host identity before launch, but Git treats
+  // them as an explicit empty author. Remove them once the shell has inherited
+  // its final environment; preserve nonempty per-operation identity values.
+  const clearEmptyGitIdentity = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
+    .map((key) => `if [ -z "\${${key}-}" ]; then unset ${key}; fi\n`)
+    .join("");
+  const profile = `export PATH=${shellQuote(managedPath)}\n${clearEmptyGitIdentity}`;
   const files: Record<string, string> = Object.fromEntries([
+    // Remote launchers live beneath the checkout. Pin their own package scope
+    // so an enclosing project's "type": "module" cannot reinterpret require().
+    ["package.json", '{"type":"commonjs"}\n'],
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
@@ -4494,10 +4503,16 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
   const bridgeToken = createSandboxCallbackBridgeToken();
+  const configuredAttachmentBytes = Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES);
+  // A larger upload limit needs multipart headroom. A smaller attachment limit
+  // remains enforced by the API and must not shrink unrelated JSON responses.
+  const defaultBodyBytes = Number.isSafeInteger(configuredAttachmentBytes) && configuredAttachmentBytes > 0
+    ? Math.max(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES, configuredAttachmentBytes + 64 * 1024)
+    : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
   const maxBodyBytes =
     typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
       ? Math.trunc(input.maxBodyBytes)
-      : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+      : defaultBodyBytes;
   // The bridge worker runs inside the same process that serves the Paperclip
   // API, so forwarded sandbox calls must target the LOCAL listen origin. The
   // PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL exports now prefer a
@@ -4557,20 +4572,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       path: string;
       query: string;
       headers: Record<string, string>;
-      /** The file bridge passes the whole request body here as one string.
-       * The HTTP/2 bridge passes it as the raw `Buffer` it read off the wire. */
+      /** Legacy text envelopes remain strings; binary uploads are raw bytes. */
       body?: string | Buffer;
     },
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
       /**
-       * The caller's stream reservation owner, if it has one. The HTTP/2
-       * bridge passes the stream's own owner here, so the response body copy
-       * reserves against the same ceiling the request body copy already
-       * reserved against. The queue transport passes no owner, so its
-       * response-body read enforces only the per-request size ceiling, exactly
-       * as it did before this option existed.
+       * Both transports pass the request's reservation owner, so response
+       * buffers count toward the same host process ceiling as request buffers.
        */
       reservation?: BridgeBodyReservation;
     },
@@ -4599,8 +4609,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
-    // bridge passes the whole body as one string; the HTTP/2 bridge passes it
-    // as a raw `Buffer`. Undici accepts a `Buffer` request body directly (a
+    // bridge passes legacy JSON as a string and binary data as a `Buffer`;
+    // HTTP/2 passes raw `Buffer` bodies. Undici accepts a `Buffer` request body directly (a
     // `Buffer` is an `ArrayBufferView`), so neither shape needs a conversion.
     // The cast below only bridges a `BodyInit` typing gap: the DOM library
     // type this project's ambient `RequestInit` resolves to excludes a
@@ -5011,13 +5021,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      // The queue transport writes the response body to a text file, so this
-      // is the one place the forward path decodes the response `Buffer` to a
-      // UTF-8 string. The queue's own on-wire behavior does not change.
-      handleRequest: async (request, options) => {
-        const result = await forwardBridgeRequest(request, options?.signal);
-        return { status: result.status, headers: result.headers, body: result.body.toString("utf8") };
-      },
+      // The worker encodes binary bodies only at the queue boundary.
+      handleRequest: (request, options) => forwardBridgeRequest(request, options?.signal, {
+        reservation: options?.reservation,
+      }),
     });
     server = await startSandboxCallbackBridgeServer({
       runner,
