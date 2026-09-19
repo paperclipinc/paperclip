@@ -1361,14 +1361,9 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
-      companyIds: ["company-1"],
-      isInstanceAdmin: true,
-      source: "session",
-      keyId: null,
-      user: null,
-      userId: null,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true }),
+    );
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
@@ -2774,6 +2769,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
     });
+    // Keyboard shortcuts come from board access on the fork.
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ isInstanceAdmin: true, features: { keyboardShortcuts: true } }),
+    );
 
     await act(async () => {
       root.render(
@@ -4149,13 +4148,10 @@ describe("IssueDetail", () => {
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
-      buildCurrentBoardAccess({
-        companyIds: ["company-1"],
-        isInstanceAdmin: true,
-        features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: true },
-      }),
-    );
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: true,
+    });
 
     await act(async () => {
       root.render(
