@@ -315,6 +315,7 @@ describe("SidebarAccountMenu", () => {
         cloudBaseUrl: "https://cloud.example.test",
       },
     });
+    mockCloudBillingApi.summary.mockResolvedValue({});
 
     await act(async () => {
       root.render(
